@@ -195,7 +195,11 @@ export interface SystemMessage extends TranscriptMeta {
 export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessage;
 
 export interface JsonSchemaProperty {
-  type: string;
+  /** JSON Schema type. A string for a single type, or an array of types for a
+   *  union (e.g. `['string','boolean','number']`) — parity with Claude's
+   *  `union([...])` value parameters. Consumers that branch on a single type
+   *  must handle the array form (see synthetic-output / workflow-runtime). */
+  type: string | string[];
   description?: string;
   enum?: string[];
   default?: unknown;

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { updateConfigFile, validateConfigJson, stripJsoncComments, type ProjectConfig } from '../config';
+import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
 import { listProviders, MODEL_ALIASES, resolveModelAlias } from '../model-registry';
@@ -306,6 +306,7 @@ function buildExamples(): string {
     '  - Set a model: action="set" key="model" value="claude-opus-4-6"\n' +
     '  - Enable a boolean: action="set" key="safeMode" value="true"\n' +
     '  - Set a number: action="set" key="maxTurns" value="40"\n' +
+    '  - Set in the global store: action="set" key="model" value="opus" scope="global"\n' +
     '  - Reset to default: action="set" key="model" value="default"'
   );
 }
@@ -317,9 +318,15 @@ function buildDescription(): string {
     return `  - ${key} (${c.type})${opts}: ${c.description}`;
   });
   return (
-    'Read or update AMI project configuration in .ami/config.json. ' +
+    'Read or update AMI configuration. ' +
     'Use action="get" [key] to read, or action="set" key=<name> value=<value>. ' +
-    'Set value to "default" to reset a key to its built-in default. Supported settings:\n' +
+    'Omit value to read a setting; include value to write it. ' +
+    'Set value to "default" to reset a key to its built-in default.\n' +
+    '## Storage scope\n' +
+    'scope="project" (default) reads/writes the project store .ami/config.json (this repo only); ' +
+    'scope="global" reads/writes the user-global store ~/.ami/config.json (applies to every project). ' +
+    'Choose "global" for machine-wide preferences, "project" for repo-specific settings.\n' +
+    'Supported settings:\n' +
     lines.join('\n') +
     generateModelSection() +
     buildExamples()
@@ -337,19 +344,38 @@ export const configTool: ToolDefinition = {
       action: { type: 'string', enum: ['get', 'set'], description: 'Get current config or set a value.' },
       key: { type: 'string', description: 'Config key (see tool description for the supported list).' },
       value: {
+        type: ['string', 'boolean', 'number'],
+        description: 'Value to set (string, boolean, or number accepted; "default" resets the key). Omit to read.',
+      },
+      scope: {
         type: 'string',
-        description: 'Value to set (string, boolean, or number accepted; "default" resets the key).',
+        enum: ['project', 'global'],
+        description: 'Storage scope: "project" (default, .ami/config.json in this repo) or "global" (~/.ami/config.json, all projects).',
       },
     },
     required: ['action'],
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const configPath = path.join(context.cwd, ...CONFIG_REL);
     const action = input.action as string;
 
-    if (action === 'get') return handleGet(configPath, input.key as string | undefined);
-    if (action === 'set') return handleSet(configPath, input);
+    // Resolve the storage target from the requested scope. 'global' routes to the
+    // user-global store (~/.ami/config.json) that the config waterfall reads via
+    // loadGlobalConfig; 'project' (default) routes to this repo's .ami/config.json.
+    const scope = input.scope === 'global' ? 'global' : 'project';
+    let configPath: string;
+    if (scope === 'global') {
+      const globalPath = getGlobalConfigPath();
+      if (!globalPath) {
+        return { output: 'Cannot resolve the global config path: no home directory (HOME/USERPROFILE) is set.', isError: true };
+      }
+      configPath = globalPath;
+    } else {
+      configPath = path.join(context.cwd, ...CONFIG_REL);
+    }
+
+    if (action === 'get') return handleGet(configPath, input.key as string | undefined, scope);
+    if (action === 'set') return handleSet(configPath, input, scope);
     return { output: 'Usage: action="get" [key] or action="set" key=... value=...', isError: true };
   },
 };
@@ -396,9 +422,12 @@ function writeConfigMutation(configPath: string, mutate: (cfg: Record<string, un
   }
 }
 
-function handleGet(configPath: string, key: string | undefined): ToolResult {
+function handleGet(configPath: string, key: string | undefined, scope: 'project' | 'global'): ToolResult {
   const { config, error, absent } = readConfigRaw(configPath);
-  if (absent) return { output: 'No project config found. Create .ami/config.json via action="set".' };
+  if (absent) {
+    const where = scope === 'global' ? 'global config (~/.ami/config.json)' : 'project config';
+    return { output: `No ${where} found. Create it via action="set"${scope === 'global' ? ' scope="global"' : ''}.`, metadata: { operation: 'get', scope } };
+  }
   if (error) {
     return { output: `Config file is corrupt and cannot be read: ${error}`, isError: true };
   }
@@ -409,12 +438,12 @@ function handleGet(configPath: string, key: string | undefined): ToolResult {
     const settingConfig = getSettingConfig(key)!;
     const value = getValueByPath(config!, getSettingPath(key));
     const display = settingConfig.formatOnRead ? settingConfig.formatOnRead(value) : value;
-    return { output: `${key} = ${JSON.stringify(display)}`, metadata: { operation: 'get', setting: key, value: display } };
+    return { output: `${key} = ${JSON.stringify(display)}`, metadata: { operation: 'get', setting: key, value: display, scope } };
   }
-  return { output: JSON.stringify(config, null, 2), metadata: { operation: 'get' } };
+  return { output: JSON.stringify(config, null, 2), metadata: { operation: 'get', scope } };
 }
 
-function handleSet(configPath: string, input: Record<string, unknown>): ToolResult {
+function handleSet(configPath: string, input: Record<string, unknown>, scope: 'project' | 'global'): ToolResult {
   const key = input.key as string | undefined;
   const value = input.value;
   if (!key) {
@@ -445,13 +474,13 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
   // Reset-to-default: value "default" unsets the key so it falls back to the built-in default.
   if (typeof value === 'string' && value.toLowerCase().trim() === 'default') {
     if (previousValue === undefined) {
-      return { output: `${key} is already at its default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined } };
+      return { output: `${key} is already at its default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined, scope } };
     }
     const resetWrite = writeConfigMutation(configPath, cfg => deleteValueByPath(cfg, settingPath));
     if (resetWrite.error) {
       return { output: resetWrite.error, isError: true };
     }
-    return { output: `Reset ${key} to default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined } };
+    return { output: `Reset ${key} to default.`, metadata: { operation: 'set', setting: key, previousValue, newValue: undefined, scope } };
   }
 
   if (value === undefined) {
@@ -481,7 +510,7 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
 
   // No-op short-circuit when unchanged.
   if (previousValue === finalValue) {
-    return { output: `${key} is already ${JSON.stringify(finalValue)} (no change).`, metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue } };
+    return { output: `${key} is already ${JSON.stringify(finalValue)} (no change).`, metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue, scope } };
   }
 
   const setWrite = writeConfigMutation(configPath, cfg => setValueByPath(cfg, settingPath, finalValue));
@@ -490,6 +519,6 @@ function handleSet(configPath: string, input: Record<string, unknown>): ToolResu
   }
   return {
     output: `Set ${key} = ${JSON.stringify(finalValue)}${previousValue !== undefined ? ` (was ${JSON.stringify(previousValue)})` : ''}`,
-    metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue },
+    metadata: { operation: 'set', setting: key, previousValue, newValue: finalValue, scope },
   };
 }

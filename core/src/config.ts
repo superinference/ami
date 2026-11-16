@@ -177,10 +177,21 @@ export function loadLocalConfig(cwd: string): ProjectConfig | null {
  * Returns `null` when the file does not exist.
  */
 export function loadGlobalConfig(): ProjectConfig | null {
+  const configPath = getGlobalConfigPath();
+  if (!configPath) return null;
+  return loadConfigFile(configPath);
+}
+
+/**
+ * Resolve the absolute path to the global config file (`~/.ami/config.json`),
+ * or `null` when no home directory can be determined. Single source of truth so
+ * the config tool's `scope:'global'` writes land in the same file the config
+ * waterfall reads via {@link loadGlobalConfig}.
+ */
+export function getGlobalConfigPath(): string | null {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (!home) return null;
-  const configPath = path.join(home, '.ami', 'config.json');
-  return loadConfigFile(configPath);
+  return path.join(home, '.ami', 'config.json');
 }
 
 /**
