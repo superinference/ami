@@ -204,18 +204,21 @@ describe('generateToolSummary', () => {
     assert.equal(out, 'bash: OK — done\nedit: ERROR — boom');
   });
 
-  it('uses only the first line of multi-line output', () => {
+  it('uses only the first line of multi-line output + a (+N more lines) marker', () => {
     const out = generateToolSummary([
       { toolName: 'grep', output: 'line1\nline2\nline3', isError: false },
     ]);
-    assert.equal(out, 'grep: OK — line1');
+    // Additive (U024): a multi-line output gets a trailing marker so the one-line
+    // summary is not mistaken for the whole result.
+    assert.equal(out, 'grep: OK — line1 (+2 more lines)');
   });
 
-  it('truncates output to 100 characters', () => {
+  it('truncates the first line to 100 chars with a … indicator', () => {
     const long = 'x'.repeat(250);
     const out = generateToolSummary([{ toolName: 't', output: long, isError: false }]);
     const tail = out.split('— ')[1];
-    assert.equal(tail.length, 100);
+    // 100 kept chars + the '…' clip marker (single line, so no more-lines marker).
+    assert.equal(tail, 'x'.repeat(100) + '…');
   });
 
   it('returns an empty string for no results', () => {

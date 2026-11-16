@@ -57,6 +57,13 @@ export const MAX_ANALYTICS_STRING_LEN = 2048;
 const MAX_SANITIZE_DEPTH = 6;
 
 const TOOL_NAME_KEYS = new Set(['tool', 'toolname', 'tool_name', 'name']);
+/**
+ * Keys whose VALUE is a raw filesystem path — replaced on egress with a truncated
+ * SHA-256 so a self-hosted collector can still correlate/dedup by file (same path →
+ * same hash) without the path itself (which can embed project names, usernames, PII)
+ * ever leaving the machine. Mirrors Claude's fileOperationAnalytics hashFilePath.
+ */
+const PATH_KEYS = new Set(['file_path', 'filepath', 'path', 'filename', 'file', 'cwd', 'dir', 'directory']);
 /** Keys carrying raw user/model prose (prompts, messages) — redacted unless user-prompt logging is opted in. */
 const USER_PROMPT_KEYS = new Set(['prompt', 'user_prompt', 'message', 'system_prompt', 'text']);
 /**
@@ -221,6 +228,36 @@ export function sanitizeAgentName(name: string, builtins: ReadonlySet<string>): 
   return builtins.has(name) ? name : 'user-defined';
 }
 
+/** Length (hex chars) of a privacy-preserving file-path hash (matches Claude's 16). */
+export const FILE_PATH_HASH_LEN = 16;
+/**
+ * Max content bytes hashed by {@link hashFileContent} — above this the content is
+ * not hashed (returns undefined) to avoid memory blow-ups on huge/base64 blobs
+ * (mirrors Claude's MAX_CONTENT_HASH_SIZE = 100KB).
+ */
+export const MAX_CONTENT_HASH_SIZE = 100 * 1024;
+
+/**
+ * Privacy-preserving, STABLE hash of a file path for analytics: a truncated
+ * ({@link FILE_PATH_HASH_LEN}-char) SHA-256 so the same path always maps to the same
+ * token (enabling per-file correlation/dedup downstream) while the raw path — which
+ * can embed usernames, project names, or other PII — never leaves the machine.
+ * Mirrors Claude's `hashFilePath`.
+ */
+export function hashFilePath(filePath: string): string {
+  return crypto.createHash('sha256').update(filePath).digest('hex').slice(0, FILE_PATH_HASH_LEN);
+}
+
+/**
+ * Full (64-char) SHA-256 of file CONTENT for change-detection/dedup analytics, or
+ * undefined when the content exceeds {@link MAX_CONTENT_HASH_SIZE} (size-guarded to
+ * avoid hashing huge/base64 blobs). Mirrors Claude's `hashFileContent`.
+ */
+export function hashFileContent(content: string): string | undefined {
+  if (content.length > MAX_CONTENT_HASH_SIZE) return undefined;
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
 function redactString(s: string): string {
   const redacted = redactCredentials(s);
   if (redacted.length <= MAX_ANALYTICS_STRING_LEN) return redacted;
@@ -317,6 +354,13 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
       const serialized = extractToolInputForTelemetry(value, env);
       if (serialized !== undefined) out[key] = serialized;
       else redactToLength(key, value);
+      continue;
+    }
+    // Raw path fields are replaced on egress with a stable truncated hash — the
+    // path never leaves the machine but downstream correlation/dedup by file still
+    // works (same path → same hash). Skipped when raw paths are explicitly opted in.
+    if (PATH_KEYS.has(lk) && typeof value === 'string' && value !== '' && !logUserPrompts) {
+      out[`${key}_hash`] = hashFilePath(value);
       continue;
     }
     if (USER_PROMPT_KEYS.has(lk) && !logUserPrompts) {
@@ -431,6 +475,41 @@ export function filterEventForEgress(
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {
     if (fieldSet.has(k)) out[k] = v;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Per-sink killswitch (Claude-Code sinkKillswitch.ts parity): disable an individual
+// analytics sink (in-memory / on-disk JSONL / off-machine OTLP) at runtime without
+// tearing the tracker down. Fail-OPEN: an unset/malformed entry leaves the sink ON
+// and only a strict `=== true` disables it.
+// ---------------------------------------------------------------------------
+
+/** The three analytics sinks that can be individually killed. */
+export const SINK_NAMES = ['memory', 'file', 'otlp'] as const;
+export type SinkName = (typeof SINK_NAMES)[number];
+
+/**
+ * Resolve the set of killed sinks from the environment, merged over an explicit map
+ * (explicit wins). `AMI_NO_ANALYTICS` (truthy) kills ALL sinks. `SUPERINFERENCE_DISABLE_SINKS`
+ * is a comma list of sink names (`memory,file,otlp`); unknown tokens are ignored.
+ * Fail-open: returns a map containing only the sinks set strictly to true.
+ */
+export function resolveKilledSinks(
+  env: NodeJS.ProcessEnv = process.env,
+  explicit: Partial<Record<SinkName, boolean>> = {},
+): Partial<Record<SinkName, boolean>> {
+  const out: Partial<Record<SinkName, boolean>> = {};
+  if (isEnvTruthy(env.AMI_NO_ANALYTICS)) {
+    for (const s of SINK_NAMES) out[s] = true;
+  }
+  for (const tok of (env.SUPERINFERENCE_DISABLE_SINKS || '').split(',')) {
+    const name = tok.trim();
+    if ((SINK_NAMES as readonly string[]).includes(name)) out[name as SinkName] = true;
+  }
+  for (const s of SINK_NAMES) {
+    if (explicit[s] === true) out[s] = true;
   }
   return out;
 }
@@ -802,6 +881,80 @@ export function getEnvironmentFingerprint(
   };
 }
 
+/** Point-in-time process resource metrics attached to analytics events (opt-in). */
+export interface ProcessMetrics {
+  uptime: number;
+  rss: number;
+  heapTotal: number;
+  heapUsed: number;
+  external: number;
+  cpuUserUs: number;
+  cpuSystemUs: number;
+  /** CPU utilization since the previous sample (undefined on the first sample). */
+  cpuPercent?: number;
+}
+
+/** Injectable process readers for {@link ProcessMetricsSampler} (deterministic tests). */
+export interface ProcessMetricsDeps {
+  memoryUsage?: () => NodeJS.MemoryUsage;
+  cpuUsage?: () => NodeJS.CpuUsage;
+  uptime?: () => number;
+  now?: () => number;
+}
+
+/**
+ * Samples process memory + CPU usage and derives a CPU% figure from the delta since
+ * the PREVIOUS sample — the first sample has no `cpuPercent` (no baseline yet). State
+ * is per-instance (not module-global) so independent trackers don't corrupt each
+ * other's deltas. Best-effort: a reader that throws yields `undefined`. Mirrors
+ * Claude's buildProcessMetrics (metadata.ts) CPU%-delta pattern.
+ */
+export class ProcessMetricsSampler {
+  private _prevCpu: NodeJS.CpuUsage | null = null;
+  private _prevWallMs: number | null = null;
+  private readonly _mem: () => NodeJS.MemoryUsage;
+  private readonly _cpu: () => NodeJS.CpuUsage;
+  private readonly _uptime: () => number;
+  private readonly _now: () => number;
+
+  constructor(deps: ProcessMetricsDeps = {}) {
+    this._mem = deps.memoryUsage ?? (() => process.memoryUsage());
+    this._cpu = deps.cpuUsage ?? (() => process.cpuUsage());
+    this._uptime = deps.uptime ?? (() => process.uptime());
+    this._now = deps.now ?? Date.now;
+  }
+
+  sample(): ProcessMetrics | undefined {
+    try {
+      const mem = this._mem();
+      const cpu = this._cpu();
+      const now = this._now();
+      let cpuPercent: number | undefined;
+      if (this._prevCpu && this._prevWallMs !== null) {
+        const wallDeltaMs = now - this._prevWallMs;
+        if (wallDeltaMs > 0) {
+          const deltaUs = (cpu.user - this._prevCpu.user) + (cpu.system - this._prevCpu.system);
+          cpuPercent = (deltaUs / (wallDeltaMs * 1000)) * 100;
+        }
+      }
+      this._prevCpu = cpu;
+      this._prevWallMs = now;
+      return {
+        uptime: this._uptime(),
+        rss: mem.rss,
+        heapTotal: mem.heapTotal,
+        heapUsed: mem.heapUsed,
+        external: mem.external,
+        cpuUserUs: cpu.user,
+        cpuSystemUs: cpu.system,
+        ...(cpuPercent !== undefined ? { cpuPercent } : {}),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+}
+
 const CI_CONTEXT_VARS: Record<string, string> = {
   'ci.actor': 'GITHUB_ACTOR',
   'ci.actor_id': 'GITHUB_ACTOR_ID',
@@ -1001,6 +1154,105 @@ export interface AnalyticsTrackerOpts {
    * Claude's otelHeadersHelper setting.
    */
   otlpHeadersHelper?: { command: string; exec?: (command: string) => string; now?: () => number };
+  /**
+   * Per-sink killswitch: individually disable the in-memory, on-disk JSONL, or
+   * off-machine OTLP sink. Merged over the env knobs (`AMI_NO_ANALYTICS` kills all;
+   * `SUPERINFERENCE_DISABLE_SINKS=memory,file,otlp`). Fail-open; mutable at runtime via
+   * {@link AnalyticsTracker.setKilledSinks}. Mirrors Claude's per-sink killswitch config.
+   */
+  killedSinks?: Partial<Record<SinkName, boolean>>;
+  /**
+   * Attach point-in-time process metrics (memory + CPU% delta) under a `process`
+   * field on every logged event. Off by default (noise); also enabled by the
+   * `AMI_OTEL_PROCESS_METRICS` env knob. Readers are injectable for tests. Mirrors
+   * Claude's buildProcessMetrics attachment.
+   */
+  includeProcessMetrics?: boolean;
+  processMetricsDeps?: ProcessMetricsDeps;
+  /**
+   * Persist OTLP batches that are permanently dropped (after in-process retries are
+   * exhausted) to disk, and re-send them on a later flush/session — so a collector
+   * outage spanning a whole session does not silently lose telemetry. Enabled by this
+   * flag or the `AMI_OTEL_PERSIST_FAILED` env knob; spool dir defaults to
+   * `<logDir>/telemetry-failed` (override with {@link failedBatchDir}). Mirrors
+   * Claude's cross-run failed-batch retry.
+   */
+  persistFailedBatches?: boolean;
+  /** Override directory for the durable failed-batch spool. */
+  failedBatchDir?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Durable failed-batch spool (Claude-Code firstPartyEventLoggingExporter.ts parity):
+// a telemetry batch that is permanently dropped after exhausting its in-process
+// retries is written to disk, and a LATER process (next session's flush) re-reads
+// and re-POSTs it, deleting the file on success — so a transient collector outage
+// across a whole session does not silently lose telemetry.
+// ---------------------------------------------------------------------------
+
+/** Prefix of every spooled failed-batch file (distinguishes them in the dir). */
+export const FAILED_BATCH_FILE_PREFIX = 'failed-batch-';
+const FAILED_BATCH_FILE_RE = /^failed-batch-.*\.jsonl$/;
+
+/**
+ * Append-only, crash-safe disk spool for telemetry batches that could not be sent.
+ * Each spooled batch is one file of NDJSON event lines, written via a temp file +
+ * atomic rename (a reader never sees a half-written file). Files are created 0o600 in
+ * a 0o700 dir. All ops are best-effort (never throw) — the spool is a backstop, not a
+ * critical path. Mirrors Claude's per-batch disk persistence + cross-run retry.
+ */
+export class FailedBatchStore {
+  constructor(private readonly _dir: string) {}
+
+  /** Persist one batch's events to a new spool file. Returns the path, or null on failure. */
+  spool(events: TelemetryBatch['events'], rand: () => number = Math.random): string | null {
+    if (events.length === 0) return null;
+    try {
+      fs.mkdirSync(this._dir, { recursive: true, mode: 0o700 });
+      const id = `${Date.now()}-${Math.floor(rand() * 1e9).toString(36)}`;
+      const file = path.join(this._dir, `${FAILED_BATCH_FILE_PREFIX}${id}.jsonl`);
+      const tmp = `${file}.tmp`;
+      // Quarantine any un-serializable (poison) event rather than losing the file.
+      const body = events.map(e => trySerialize(e)).filter((l): l is string => l !== null).join('\n');
+      if (!body) return null;
+      fs.writeFileSync(tmp, body + '\n', { mode: 0o600 });
+      fs.renameSync(tmp, file);
+      return file;
+    } catch {
+      return null;
+    }
+  }
+
+  /** List absolute paths of all spooled failed-batch files (oldest first). Best-effort. */
+  list(): string[] {
+    try {
+      return fs.readdirSync(this._dir)
+        .filter(f => FAILED_BATCH_FILE_RE.test(f))
+        .sort()
+        .map(f => path.join(this._dir, f));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Load one spool file back into an event array (best-effort; [] on any failure). */
+  load(file: string): TelemetryBatch['events'] {
+    try {
+      const out: TelemetryBatch['events'] = [];
+      for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try { out.push(JSON.parse(line)); } catch { /* skip poison line */ }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Remove a spool file (after a successful re-send). Best-effort. */
+  delete(file: string): void {
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
+  }
 }
 
 export class AnalyticsTracker {
@@ -1056,8 +1308,16 @@ export class AnalyticsTracker {
   private _shutdown = false;
   /** One-time latch for the "no telemetry sink configured" diagnostic. */
   private _warnedNoSink = false;
+  /** Resolved per-sink killswitch map (memory/file/otlp), mutable at runtime. */
+  private _killedSinks: Partial<Record<SinkName, boolean>>;
+  /** Per-event process-metrics sampler, created only when the feature is enabled. */
+  private _processMetrics: ProcessMetricsSampler | null;
+  /** Durable spool for permanently-dropped batches (cross-run retry); null when off. */
+  private _failedStore: FailedBatchStore | null;
   /** One-time latch for the unsupported-protocol diagnostic. */
   private _warnedProtocol = false;
+  /** One-time latch for the OTLP-mirror exception-isolation diagnostic. */
+  private _warnedMirror = false;
   /** Serializes mid-session (onBatch) sends so concurrent boundary flushes don't interleave. */
   private _sendChain: Promise<void> = Promise.resolve();
 
@@ -1112,6 +1372,15 @@ export class AnalyticsTracker {
     this._egressAllowlist = (opts?.egressEventAllowlist || opts?.egressFieldAllowlist)
       ? { events: opts?.egressEventAllowlist, fields: opts?.egressFieldAllowlist }
       : null;
+    this._killedSinks = resolveKilledSinks(this._env, opts?.killedSinks ?? {});
+    this._processMetrics = (opts?.includeProcessMetrics || isEnvTruthy(this._env.AMI_OTEL_PROCESS_METRICS))
+      ? new ProcessMetricsSampler(opts?.processMetricsDeps)
+      : null;
+    // Durable failed-batch spool: only when persistence is requested AND a directory
+    // is resolvable (explicit opt, or `<logDir>/telemetry-failed`).
+    const persist = opts?.persistFailedBatches || isEnvTruthy(this._env.AMI_OTEL_PERSIST_FAILED);
+    const failedDir = opts?.failedBatchDir ?? (logDir ? path.join(logDir, 'telemetry-failed') : undefined);
+    this._failedStore = persist && failedDir ? new FailedBatchStore(failedDir) : null;
     this._dedup = opts?.dedupeContent ? new TelemetryContentDedup() : null;
     this._headersHelper = opts?.otlpHeadersHelper
       ? new OtelHeadersHelper(opts.otlpHeadersHelper.command, {
@@ -1175,6 +1444,22 @@ export class AnalyticsTracker {
     return this._shutdown;
   }
 
+  /** Whether the named sink is currently killed (strict `=== true`; fail-open). */
+  isSinkKilled(sink: SinkName): boolean {
+    return this._killedSinks[sink] === true;
+  }
+
+  /**
+   * Enable/disable individual sinks at runtime (merged over the current map; a
+   * `false` re-enables a previously-killed sink). Fail-open. Lets a consumer kill a
+   * noisy/leaky sink without reconstructing the tracker (Claude per-sink killswitch).
+   */
+  setKilledSinks(update: Partial<Record<SinkName, boolean>>): void {
+    for (const s of SINK_NAMES) {
+      if (update[s] !== undefined) this._killedSinks[s] = update[s];
+    }
+  }
+
   /** The resolved privacy level (default | no-telemetry | essential-traffic). */
   getPrivacyLevel(): PrivacyLevel {
     return getPrivacyLevel(this._env);
@@ -1231,7 +1516,13 @@ export class AnalyticsTracker {
       return;
     }
     const sampled = effectiveRate < 1;
-    const recordData = sampled ? { ...data, sample_rate: effectiveRate } : data;
+    let recordData = sampled ? { ...data, sample_rate: effectiveRate } : data;
+
+    // Optional per-event process metrics (memory + CPU% delta since the last event).
+    if (this._processMetrics) {
+      const pm = this._processMetrics.sample();
+      if (pm) recordData = { ...recordData, process: pm };
+    }
 
     // In-memory events keep the RAW data for faithful local introspection; the
     // egress copies (JSONL on disk + OTLP batch) are data-minimized/redacted.
@@ -1242,9 +1533,12 @@ export class AnalyticsTracker {
       data: recordData,
       sequence: this._sequence++,
     } as AnalyticsEvent;
-    this.events.push(event);
-    if (this.events.length > MAX_IN_MEMORY_EVENTS) {
-      this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);
+    // In-memory sink (killable): skip retention when the memory sink is disabled.
+    if (!this.isSinkKilled('memory')) {
+      this.events.push(event);
+      if (this.events.length > MAX_IN_MEMORY_EVENTS) {
+        this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);
+      }
     }
 
     // Branded so only redaction-verified (or explicitly-marked) metadata can reach
@@ -1300,19 +1594,30 @@ export class AnalyticsTracker {
     // Lazily created so the batch carries the (by-then-known) session id; a
     // size/byte boundary flush is POSTed mid-session via the onBatch hook, and the
     // resolved per-signal interval drives the periodic timer flush.
-    if (this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env)) {
-      if (!this._telemetry) {
-        this._telemetry = new TelemetryBatchSender({
-          sessionId: this._sessionId ?? 'unknown',
-          endpoint: this._otlpEndpoint,
-          maxBatchSize: this._telemetryMaxBatchSize,
-          maxBatchBytes: this._telemetryMaxBatchBytes,
-          flushIntervalMs: this._exportIntervalMs,
-          onBatch: (batch) => this._scheduleSend(batch),
-        });
-        this._telemetry.startAutoFlush();
+    if (this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env) && !this.isSinkKilled('otlp')) {
+      // Exception-isolated like the file-append sink above: a throw from sender
+      // construction / enqueue (e.g. a bad batch opt) must never propagate into the
+      // engine's hot loop — analytics is always best-effort (mirrors Claude's
+      // backend-mirror try/catch isolation). A failure warns once, then is swallowed.
+      try {
+        if (!this._telemetry) {
+          this._telemetry = new TelemetryBatchSender({
+            sessionId: this._sessionId ?? 'unknown',
+            endpoint: this._otlpEndpoint,
+            maxBatchSize: this._telemetryMaxBatchSize,
+            maxBatchBytes: this._telemetryMaxBatchBytes,
+            flushIntervalMs: this._exportIntervalMs,
+            onBatch: (batch) => this._scheduleSend(batch),
+          });
+          this._telemetry.startAutoFlush();
+        }
+        this._telemetry.enqueue(type, egressData, event.sequence);
+      } catch (e) {
+        if (!this._warnedMirror) {
+          this._warnedMirror = true;
+          this._diag(`[telemetry] OTLP mirror failed (events stay local): ${(e as Error).message}`);
+        }
       }
-      this._telemetry.enqueue(type, egressData, event.sequence);
     }
   }
 
@@ -1326,7 +1631,7 @@ export class AnalyticsTracker {
    * event is skipped rather than crashing the writer.
    */
   private _appendEgress(event: AnalyticsEvent, egressData: AnalyticsSafeMetadata): void {
-    if (!this.logFile) return;
+    if (!this.logFile || this.isSinkKilled('file')) return;
     try {
       if (!this.dirInitialized) {
         fs.mkdirSync(path.dirname(this.logFile), { recursive: true, mode: 0o700 });
@@ -1399,7 +1704,15 @@ export class AnalyticsTracker {
    *  re-queued (at-least-once) and an actionable remediation diagnostic is emitted
    *  so a slow/unreachable collector never blocks exit unboundedly. Best-effort. */
   async flushOtlp(): Promise<void> {
-    if (!this._otlpEndpoint || !this._otlpExport || this._shutdown || !this._telemetry) return;
+    if (!this._otlpEndpoint || !this._otlpExport || this._shutdown) return;
+    // OTLP sink killed at runtime: leave everything queued for a later flush.
+    if (this.isSinkKilled('otlp')) return;
+    // First re-send anything a previous run/flush spooled to disk (cross-run retry),
+    // so a recovered collector drains the durable backlog before new batches. This
+    // runs even when nothing was logged THIS session (no live sender) — the whole
+    // point is to recover a prior session's dropped telemetry.
+    if (this._failedStore) await this.recoverPersistedBatches();
+    if (!this._telemetry) return;
     // Let any in-flight mid-session (onBatch) sends settle first so a boundary
     // batch is never POSTed concurrently with the shutdown drain.
     await this._sendChain;
@@ -1429,8 +1742,10 @@ export class AnalyticsTracker {
         continue;
       }
       // Batch was retried to exhaustion and permanently dropped (counted in
-      // _dropBatch). Extend the failure streak.
+      // _dropBatch). Extend the failure streak, and durably spool it so a later
+      // process can re-send it (cross-run retry) rather than losing it outright.
       this._consecutiveFailures++;
+      this._failedStore?.spool(batches[i].events, this._rand);
       // Default (no circuit breaker): the endpoint looks down after the first
       // fully-retried failure — short-circuit and re-queue the rest for the next
       // flush (at-least-once, order preserved). With maxConsecutiveFailures set,
@@ -1520,6 +1835,39 @@ export class AnalyticsTracker {
     this._droppedBatches++;
     this._onBatchDropped?.(batch.events.length, this._droppedBatches);
     return false;
+  }
+
+  /**
+   * Re-send any batches a PREVIOUS run (or an earlier flush) spooled to disk: each
+   * file is reloaded and POSTed with the normal retry; a file that sends successfully
+   * is deleted, one that still fails is left for the next attempt. No-op when
+   * persistence is off, no endpoint is configured, OTLP is disabled/killed, or the
+   * tracker is shut down. Returns the number of files successfully re-sent. Invoked
+   * automatically at the head of {@link flushOtlp}; also callable directly.
+   */
+  async recoverPersistedBatches(): Promise<number> {
+    if (!this._failedStore || !this._otlpEndpoint || !this._otlpExport || this._shutdown) return 0;
+    if (isTelemetryDisabled(this._env) || this.isSinkKilled('otlp') || this._isKilled?.()) return 0;
+    let recovered = 0;
+    for (const file of this._failedStore.list()) {
+      const events = this._failedStore.load(file);
+      if (events.length === 0) { this._failedStore.delete(file); continue; }
+      const batch: TelemetryBatch = { events, sessionId: this._sessionId ?? 'unknown', batchId: -1 };
+      const headers = this._resolveHeaders();
+      const res = await postOtlpBatch(this._otlpEndpoint, batch, {
+        fetchImpl: this._otlpFetch, env: this._env, headers,
+        resourceAttrs: this._otlpResourceAttrs, timeoutMs: this._otlpTimeoutMs,
+      });
+      if (res.ok) {
+        this._failedStore.delete(file);
+        recovered++;
+      } else if (!res.retryable) {
+        // Permanent (4xx) — the collector will never accept it; stop re-spooling.
+        this._failedStore.delete(file);
+      }
+      // Retryable failure: leave the file in place for the next recovery pass.
+    }
+    return recovered;
   }
 }
 
@@ -1941,12 +2289,27 @@ export async function sendOtlpBatch(
   return (await postOtlpBatch(endpoint, batch, deps)).ok;
 }
 
+/** Max chars of the first output line kept verbatim in a tool summary line. */
+export const TOOL_SUMMARY_LINE_MAX = 100;
+
 export function generateToolSummary(
   toolResults: Array<{ toolName: string; output: string; isError: boolean }>,
 ): string {
   const summaries = toolResults.map(r => {
-    const shortOutput = r.output.split('\n')[0].substring(0, 100);
-    return `${r.toolName}: ${r.isError ? 'ERROR' : 'OK'} — ${shortOutput}`;
+    const lines = r.output.split('\n');
+    // Clip the first line and, when it was clipped, append a '…' so a truncated
+    // summary is visually distinguishable from a complete one (mirrors Claude's
+    // truncate.ts indicator) — otherwise an exactly-100-char line and a clipped
+    // 100-char line would look identical.
+    let shortOutput = lines[0].substring(0, TOOL_SUMMARY_LINE_MAX);
+    if (lines[0].length > TOOL_SUMMARY_LINE_MAX) shortOutput += '…';
+    let summary = `${r.toolName}: ${r.isError ? 'ERROR' : 'OK'} — ${shortOutput}`;
+    // When the output spanned multiple lines, append a '(+N more lines)' marker so
+    // a single-line summary of a large multi-line output is not mistaken for the
+    // whole result.
+    const moreLines = lines.length - 1;
+    if (moreLines > 0) summary += ` (+${moreLines} more lines)`;
+    return summary;
   });
   return summaries.join('\n');
 }
