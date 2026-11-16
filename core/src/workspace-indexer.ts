@@ -13,9 +13,120 @@ const execFileAsync = promisify(execFile);
  * File-system hooks for the indexer. Defaults to the real implementations;
  * the `glob` entry is overridable in tests purely as a dependency-injection
  * seam so the glob-failure fallback can be exercised without a pathological
- * filesystem. Production behavior is identical to calling `tinyglobby.glob`.
+ * filesystem. The `execFileAsync` seam exists so the git-subprocess timeout /
+ * failure fallback in getGitTrackedFiles can be exercised deterministically.
+ * Production behavior is identical to calling `tinyglobby.glob` /
+ * `child_process.execFile`.
  */
-export const indexerHooks: { glob: typeof glob } = { glob };
+export const indexerHooks: { glob: typeof glob; execFileAsync: typeof execFileAsync } = {
+  glob,
+  execFileAsync,
+};
+
+// ---------------------------------------------------------------------------
+// Fuzzy (subsequence) symbol-name scoring
+//
+// Mirrors Claude Code's nucleo/fzf-v2-style scorer (references
+// native-ts/file-index/index.ts) so symbol search ranks by MATCH QUALITY
+// (boundary / camelCase / consecutive bonuses minus gap penalties) and can
+// match non-contiguous queries (e.g. 'wspidx' → 'WorkspaceIndexer'), instead
+// of the old case-insensitive substring test + coarse 3-tier alpha sort.
+// ---------------------------------------------------------------------------
+
+const SCORE_MATCH = 16;
+const BONUS_BOUNDARY = 8;
+const BONUS_CAMEL = 6;
+const BONUS_CONSECUTIVE = 4;
+const BONUS_FIRST_CHAR = 8;
+const PENALTY_GAP_START = 3;
+const PENALTY_GAP_EXTENSION = 1;
+
+// Tier bonuses layered on the fuzzy score so the historical
+// exact > starts-with > subsequence ordering is preserved while still ranking
+// by quality within each tier. Large enough to dominate any fuzzy delta.
+const BONUS_EXACT = 100_000;
+const BONUS_PREFIX = 10_000;
+
+/**
+ * Query-length cap for fuzzy symbol search. Bounds the per-symbol scan so a
+ * pathological / oversized query cannot blow up scoring cost (DoS / resource
+ * guard). Mirrors Claude Code's MAX_QUERY_LEN=64.
+ */
+export const MAX_SYMBOL_QUERY_LEN = 64;
+
+/**
+ * Deliberate down-rank of test / spec / fixture paths so a test file's symbol
+ * does not outrank the real implementation on an otherwise-equal match. Mirrors
+ * Claude Code's 1.05× test-path penalty, applied here as a small score nudge
+ * (ties only — never overrides a genuinely better match).
+ */
+const TEST_PATH_PENALTY = 2;
+const TEST_PATH_RE =
+  /(^|[\\/])(__tests__|__mocks__|tests?|spec|fixtures?)([\\/]|$)|\.(test|spec)\./i;
+
+function isBoundary(code: number): boolean {
+  // / \ - _ . space
+  return code === 47 || code === 92 || code === 45 || code === 95 || code === 46 || code === 32;
+}
+function isLower(code: number): boolean {
+  return code >= 97 && code <= 122;
+}
+function isUpper(code: number): boolean {
+  return code >= 65 && code <= 90;
+}
+
+/**
+ * Boundary / camelCase bonus for a match at position `pos` (`pos >= 1`) in the
+ * original-case `name`. The first-char bonus is handled by the caller.
+ */
+function boundaryBonus(name: string, pos: number): number {
+  const prevCh = name.charCodeAt(pos - 1);
+  if (isBoundary(prevCh)) return BONUS_BOUNDARY;
+  if (isLower(prevCh) && isUpper(name.charCodeAt(pos))) return BONUS_CAMEL;
+  return 0;
+}
+
+/**
+ * Score how well `needle` (already lowercased + length-clamped) fuzzy-matches
+ * `name`. Returns null when `needle` is not a subsequence of the lowercased
+ * name. Higher is better. Boundary/camel/consecutive bonuses + gap penalties
+ * mirror Claude Code's file-index scorer; a shorter-name bonus favors tighter
+ * matches among equal-quality candidates.
+ */
+export function fuzzySymbolScore(name: string, needle: string): number | null {
+  const nLen = needle.length;
+  if (nLen === 0) return null;
+  const lower = name.toLowerCase();
+  const hLen = lower.length;
+
+  // Greedy earliest-subsequence positions.
+  const positions: number[] = new Array(nLen);
+  let from = 0;
+  for (let j = 0; j < nLen; j++) {
+    const pos = lower.indexOf(needle[j]!, from);
+    if (pos === -1) return null;
+    positions[j] = pos;
+    from = pos + 1;
+  }
+
+  let score = nLen * SCORE_MATCH;
+  let prev = -2;
+  for (let j = 0; j < nLen; j++) {
+    const pos = positions[j]!;
+    if (j === 0) {
+      score += pos === 0 ? BONUS_FIRST_CHAR : boundaryBonus(name, pos);
+    } else {
+      const gap = pos - prev - 1;
+      if (gap === 0) score += BONUS_CONSECUTIVE;
+      else score -= PENALTY_GAP_START + gap * PENALTY_GAP_EXTENSION;
+      score += boundaryBonus(name, pos);
+    }
+    prev = pos;
+  }
+  // Shorter names rank slightly higher for equal-quality matches.
+  score += Math.max(0, 32 - (hLen >> 2));
+  return score;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,11 +254,19 @@ export function findProjectRoot(startDir: string): string | null {
   return null;
 }
 
+// Bound the `git ls-files` subprocess so a hung git (credential prompt on a
+// misconfigured remote, a stalled network/overlay filesystem, an enormous repo)
+// cannot block index build — and every awaiting search_symbols/find_references
+// call — indefinitely. On timeout/error we return null so buildIndex degrades
+// gracefully to the glob fallback. Mirrors Claude Code's 5s git-subprocess cap.
+const GIT_LS_FILES_TIMEOUT_MS = 5_000;
+
 async function getGitTrackedFiles(cwd: string): Promise<string[] | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['ls-files', '-z'], {
+    const { stdout } = await indexerHooks.execFileAsync('git', ['ls-files', '-z'], {
       cwd,
       maxBuffer: 10 * 1024 * 1024,
+      timeout: GIT_LS_FILES_TIMEOUT_MS,
     });
     return stdout.split('\0').filter(Boolean);
   } catch {
@@ -473,34 +592,52 @@ export class WorkspaceIndexer {
   }
 
   // -------------------------------------------------------------------------
-  // Search symbols by name (fuzzy-ish: substring match, case-insensitive)
+  // Search symbols by name — fuzzy (subsequence) match with weighted scoring.
+  //
+  // Scans EVERY indexed symbol (no insertion-order early-break) and keeps the
+  // globally highest-scoring `limit` entries, so results are the best matches,
+  // not merely the earliest-indexed ones. Scoring mirrors Claude Code's
+  // file-index scorer (boundary/camel/consecutive bonuses + gap penalties),
+  // layered with exact/prefix tier bonuses (to preserve the historical
+  // exact > starts-with > contains ordering) and a small test-path penalty.
+  // The incoming query is clamped to MAX_SYMBOL_QUERY_LEN to bound scan cost.
   // -------------------------------------------------------------------------
 
   searchSymbols(query: string, limit: number = 20): SymbolEntry[] {
-    const lowerQuery = query.toLowerCase();
-    const results: SymbolEntry[] = [];
+    if (limit <= 0) return [];
+    // Clamp an oversized query to bound per-symbol scan cost (DoS guard).
+    const needle = query.toLowerCase().slice(0, MAX_SYMBOL_QUERY_LEN);
+    if (needle.length === 0) return [];
 
+    const scored: { entry: SymbolEntry; score: number }[] = [];
     for (const [name, entries] of this.symbolIndex) {
-      if (name.toLowerCase().includes(lowerQuery)) {
-        results.push(...entries);
+      const base = fuzzySymbolScore(name, needle);
+      if (base === null) continue;
+
+      const lower = name.toLowerCase();
+      let nameScore = base;
+      if (lower === needle) nameScore += BONUS_EXACT;
+      else if (lower.startsWith(needle)) nameScore += BONUS_PREFIX;
+
+      for (const entry of entries) {
+        let s = nameScore;
+        // Match on the workspace-relative path so only in-repo test/spec/fixture
+        // locations are penalized (not an incidental 'test' in an absolute prefix).
+        if (TEST_PATH_RE.test(path.relative(this.cwd, entry.filePath))) {
+          s -= TEST_PATH_PENALTY;
+        }
+        scored.push({ entry, score: s });
       }
-      if (results.length >= limit * 3) break; // collect extra for ranking
     }
 
-    // Sort: exact match first, then starts-with, then contains
-    results.sort((a, b) => {
-      const aLower = a.name.toLowerCase();
-      const bLower = b.name.toLowerCase();
-      const aExact = aLower === lowerQuery ? 0 : 1;
-      const bExact = bLower === lowerQuery ? 0 : 1;
-      if (aExact !== bExact) return aExact - bExact;
-      const aStarts = aLower.startsWith(lowerQuery) ? 0 : 1;
-      const bStarts = bLower.startsWith(lowerQuery) ? 0 : 1;
-      if (aStarts !== bStarts) return aStarts - bStarts;
-      return a.name.localeCompare(b.name);
-    });
+    scored.sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.entry.name.localeCompare(b.entry.name) ||
+        a.entry.filePath.localeCompare(b.entry.filePath),
+    );
 
-    return results.slice(0, limit);
+    return scored.slice(0, limit).map(x => x.entry);
   }
 
   // -------------------------------------------------------------------------
