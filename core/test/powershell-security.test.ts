@@ -17,6 +17,12 @@ import {
   detectDangerousPsCmdlets,
   detectStopParsingToken,
   detectDangerousPowerShellCommand,
+  NETWORK_CMDLETS,
+  FILEPATH_EXECUTION_CMDLETS,
+  DANGEROUS_SCRIPT_BLOCK_CMDLETS,
+  ARG_GATED_CMDLETS,
+  POWERSHELL_NEVER_SUGGEST,
+  isPowerShellNeverSuggest,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
 
@@ -416,5 +422,123 @@ describe('detectDangerousPowerShellCommand aggregate + permission-path wiring', 
     assert.equal(validateBashSecurity('rm file.txt').safe, true);
     assert.equal(validateBashSecurity('set-content out.txt "data"').safe, true);
     assert.equal(validateBashSecurity('git log --%H').safe, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Categorized dangerous-cmdlet config lists (network / filepath-exec /
+// scriptblock) — mirrors Claude's dangerousCmdlets.ts data structures.
+// ---------------------------------------------------------------------------
+describe('categorized dangerous-cmdlet config lists', () => {
+  it('NETWORK_CMDLETS covers the web-request/exfil cmdlets', () => {
+    assert.equal(NETWORK_CMDLETS.has('invoke-webrequest'), true);
+    assert.equal(NETWORK_CMDLETS.has('invoke-restmethod'), true);
+  });
+
+  it('FILEPATH_EXECUTION_CMDLETS covers -FilePath script runners', () => {
+    for (const c of ['invoke-command', 'start-job', 'start-threadjob', 'register-scheduledjob']) {
+      assert.equal(FILEPATH_EXECUTION_CMDLETS.has(c), true, c);
+    }
+  });
+
+  it('DANGEROUS_SCRIPT_BLOCK_CMDLETS covers code-exec scriptblock sinks', () => {
+    for (const c of [
+      'invoke-command',
+      'invoke-expression',
+      'start-job',
+      'new-pssession',
+      'enter-pssession',
+      'register-engineevent',
+    ]) {
+      assert.equal(DANGEROUS_SCRIPT_BLOCK_CMDLETS.has(c), true, c);
+    }
+  });
+
+  it('ARG_GATED_CMDLETS covers allowlist callback-gated cmdlets + native exes', () => {
+    for (const c of [
+      'select-object',
+      'where-object',
+      'write-output',
+      'start-sleep',
+      'ipconfig',
+      'hostname',
+      'route',
+    ]) {
+      assert.equal(ARG_GATED_CMDLETS.has(c), true, c);
+    }
+    // foreach-object is handled separately in NEVER_SUGGEST (its -MemberName
+    // positional arg has no allowlist entry to sync with), not in ARG_GATED.
+    assert.equal(ARG_GATED_CMDLETS.has('foreach-object'), false);
+  });
+
+  it('all config-list entries are stored lowercase (no sync drift)', () => {
+    for (const set of [
+      NETWORK_CMDLETS,
+      FILEPATH_EXECUTION_CMDLETS,
+      DANGEROUS_SCRIPT_BLOCK_CMDLETS,
+      ARG_GATED_CMDLETS,
+    ]) {
+      for (const entry of set) {
+        assert.equal(entry, entry.toLowerCase(), `${entry} must be lowercase`);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEVER_SUGGEST — commands never offered as a wildcard-prefix permission rule.
+// ---------------------------------------------------------------------------
+describe('POWERSHELL_NEVER_SUGGEST wildcard-prefix suggestion gate', () => {
+  it('includes every dangerous-cmdlet category', () => {
+    const canonical = [
+      // process spawners / code loaders
+      'start-process',
+      'add-type',
+      'new-object',
+      // network
+      'invoke-webrequest',
+      'invoke-restmethod',
+      // filepath / scriptblock execution
+      'invoke-command',
+      'start-job',
+      'invoke-expression',
+      'new-pssession',
+      // module loading
+      'import-module',
+      'install-module',
+      // wmi/cim
+      'invoke-wmimethod',
+      'invoke-cimmethod',
+      // alias/variable hijack
+      'set-alias',
+      'new-alias',
+      // arg-gated
+      'foreach-object',
+      'select-object',
+    ];
+    for (const c of canonical) {
+      assert.equal(POWERSHELL_NEVER_SUGGEST.has(c), true, `${c} should be NEVER_SUGGEST`);
+    }
+  });
+
+  it('includes alias forms derived from the shared COMMON_ALIASES map', () => {
+    // iex→Invoke-Expression, iwr→Invoke-WebRequest, icm→Invoke-Command,
+    // ipmo→Import-Module, iwmi→Invoke-WmiMethod, %→ForEach-Object.
+    for (const a of ['iex', 'iwr', 'irm', 'icm', 'ipmo', 'iwmi', '%']) {
+      assert.equal(POWERSHELL_NEVER_SUGGEST.has(a), true, `${a} alias should be NEVER_SUGGEST`);
+    }
+  });
+
+  it('isPowerShellNeverSuggest is case-insensitive and matches canonical + alias', () => {
+    assert.equal(isPowerShellNeverSuggest('Invoke-WebRequest'), true);
+    assert.equal(isPowerShellNeverSuggest('INVOKE-EXPRESSION'), true);
+    assert.equal(isPowerShellNeverSuggest('iwr'), true);
+    assert.equal(isPowerShellNeverSuggest('ForEach-Object'), true);
+  });
+
+  it('does not block benign commands', () => {
+    for (const c of ['git', 'npm', 'ls', 'cargo', 'get-childitem', 'get-content']) {
+      assert.equal(isPowerShellNeverSuggest(c), false, c);
+    }
   });
 });

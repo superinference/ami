@@ -1,3 +1,5 @@
+import { COMMON_ALIASES } from './powershell-parser';
+
 /**
  * PowerShell Constrained Language Mode (CLM) type-cast security boundary.
  *
@@ -334,6 +336,145 @@ export const ENV_WRITE_CMDLETS: ReadonlySet<string> = new Set([
   'add-content',
   'ac',
 ]);
+
+/**
+ * Network cmdlets. A wildcard allow-rule for these (`invoke-webrequest*`)
+ * enables arbitrary download/exfil without a prompt — there is no legitimate
+ * narrow prefix. They are NOT unconditionally blocked (a bare web request is
+ * allowed; only download-and-execute cradles are surfaced by
+ * detectPowerShellExecution), but they are never offered as a wildcard rule.
+ */
+export const NETWORK_CMDLETS: ReadonlySet<string> = new Set([
+  'invoke-webrequest',
+  'invoke-restmethod',
+]);
+
+/**
+ * Cmdlets that accept a `-FilePath` (or positional path) and execute the
+ * file's contents as a script — the same arbitrary-code-execution risk as
+ * `Invoke-Expression`, so they must never be blanket-allowed via a prefix rule.
+ */
+export const FILEPATH_EXECUTION_CMDLETS: ReadonlySet<string> = new Set([
+  'invoke-command',
+  'start-job',
+  'start-threadjob',
+  'register-scheduledjob',
+]);
+
+/**
+ * Cmdlets where a scriptblock argument executes arbitrary code (not merely
+ * filtering/transforming pipeline input). A `foo*` wildcard rule would
+ * auto-allow any scriptblock passed to them forever.
+ */
+export const DANGEROUS_SCRIPT_BLOCK_CMDLETS: ReadonlySet<string> = new Set([
+  'invoke-command',
+  'invoke-expression',
+  'start-job',
+  'start-threadjob',
+  'register-scheduledjob',
+  'register-engineevent',
+  'register-objectevent',
+  'register-wmievent',
+  'new-pssession',
+  'enter-pssession',
+]);
+
+/**
+ * Arg-gated cmdlets: safe for ordinary string arguments but dangerous when
+ * passed a scriptblock / variable / subexpression. `ForEach-Object` and the
+ * other allowlist cmdlets auto-allow safe args (StringConstant identifiers),
+ * so the permission dialog only fires when the arg is a scriptblock —
+ * accepting a `foreach-object*` wildcard at that point would match ALL future
+ * invocations (`ForEach-Object { Remove-Item -Recurse / }`), bypassing the
+ * arg gate forever. The native executables (ipconfig/route/hostname) carry the
+ * same callback-gated flag cases (`ipconfig /all` allowed, `/flushdns`
+ * rejected) and the same wildcard-bypass risk. Mirrors Claude Code's
+ * ARG_GATED_CMDLETS (utils/powershell/dangerousCmdlets.ts).
+ */
+export const ARG_GATED_CMDLETS: ReadonlySet<string> = new Set([
+  'select-object',
+  'sort-object',
+  'group-object',
+  'where-object',
+  'measure-object',
+  'write-output',
+  'write-host',
+  'start-sleep',
+  'format-table',
+  'format-list',
+  'format-wide',
+  'format-custom',
+  'out-string',
+  'out-host',
+  // Native executables with callback-gated args (same bypass risk).
+  'ipconfig',
+  'hostname',
+  'route',
+]);
+
+// PowerShell shells / process spawners / code loaders that must never be
+// offered as a bare wildcard prefix. The bare shell names (pwsh/powershell/cmd/
+// bash/…) are already covered by permissions.ts's BARE_SHELL_PREFIXES, so this
+// list holds only the PowerShell-cmdlet spawners/loaders not represented there.
+const PS_SPAWNERS_AND_LOADERS: readonly string[] = [
+  'start-process',
+  'add-type',
+  'new-object',
+];
+
+/**
+ * Alias forms (from the shared {@link COMMON_ALIASES} map) whose canonical
+ * cmdlet is in `canonical` — so `invoke-expression` in the set automatically
+ * pulls in `iex`. Mirrors Claude Code's `aliasesOf()` derivation: add a cmdlet
+ * to one validator list and its aliases follow, no separate maintenance.
+ */
+function aliasesOf(canonical: ReadonlySet<string>): string[] {
+  return Object.entries(COMMON_ALIASES)
+    .filter(([, target]) => canonical.has(target.toLowerCase()))
+    .map(([alias]) => alias.toLowerCase());
+}
+
+/**
+ * Commands never offered as a reusable wildcard-prefix ("allow always") rule in
+ * the permission dialog. Derived from EVERY dangerous-cmdlet category above plus
+ * the PowerShell spawners/loaders, then expanded with their aliases — so a
+ * cmdlet listed once (in the category that fits its hazard) is covered here
+ * automatically, with no sync drift. A wildcard rule for any of these would
+ * defeat the per-command security checks (download/exfil, code-exec, process
+ * spawn, scriptblock arg gate, …). Mirrors Claude Code's `NEVER_SUGGEST`
+ * (utils/powershell/dangerousCmdlets.ts): the suggestion gate is a single-name
+ * lookup on the command's first word, so the set holds bare names only.
+ */
+export const POWERSHELL_NEVER_SUGGEST: ReadonlySet<string> = (() => {
+  const canonical = new Set<string>([
+    ...PS_SPAWNERS_AND_LOADERS,
+    ...CODE_EXEC_CMDLETS,
+    ...MODULE_LOADING_CMDLETS,
+    ...NETWORK_CMDLETS,
+    ...FILEPATH_EXECUTION_CMDLETS,
+    ...DANGEROUS_SCRIPT_BLOCK_CMDLETS,
+    ...ALIAS_HIJACK_CMDLETS,
+    ...WMI_CIM_CMDLETS,
+    ...ARG_GATED_CMDLETS,
+    // ForEach-Object's -MemberName (positional `% Delete`) resolves against the
+    // runtime pipeline object (`Get-ChildItem | % Delete` invokes
+    // FileInfo.Delete()); its arg carries no property/method signal, so it is
+    // never allowlisted and must never be wildcard-suggested. Not in ARG_GATED.
+    'foreach-object',
+  ]);
+  return new Set<string>([...canonical, ...aliasesOf(canonical)]);
+})();
+
+/**
+ * True if `name` (a command's first word, any case, with or without a Windows
+ * executable extension) is a PowerShell cmdlet/alias that must never be offered
+ * as a wildcard-prefix permission rule. Consumed by permissions.ts's
+ * prefix-suggestion helpers (suggestAllowPrefix / getFirstWordPrefix).
+ */
+export function isPowerShellNeverSuggest(name: string): boolean {
+  const lower = name.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
+  return POWERSHELL_NEVER_SUGGEST.has(lower);
+}
 
 type PsDetection = { blocked: boolean; reason?: string };
 const PS_PASS: PsDetection = { blocked: false };

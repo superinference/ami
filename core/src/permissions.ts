@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
+import { isPowerShellNeverSuggest } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { getManagedConfigPath } from './config';
 import type { SandboxPolicy } from './types';
@@ -1950,6 +1951,10 @@ export function getFirstWordPrefix(command: string): string | null {
   if (!cmd) return null;
   if (!SUBCOMMAND_SHAPE_RE.test(cmd)) return null;
   if (BARE_SHELL_PREFIXES.has(cmd)) return null;
+  // Dangerous PowerShell cmdlets/aliases (download/exfil, code-exec, process
+  // spawn, scriptblock-arg gate, …): a `invoke-webrequest*` / `foreach-object*`
+  // wildcard would defeat the per-command security checks, so never suggest one.
+  if (isPowerShellNeverSuggest(cmd)) return null;
   return cmd;
 }
 
@@ -1964,7 +1969,10 @@ export function getFirstWordPrefix(command: string): string | null {
  */
 export function suggestAllowPrefix(command: string): string | null {
   const two = getSimpleCommandPrefix(command);
-  if (two) return two;
+  // Guard the two-word path too: `start-process notepad*` would match
+  // `start-process notepad.exe & evil`, so a dangerous PowerShell spawner as
+  // the ROOT word is never offered even with a scoped subcommand.
+  if (two) return isPowerShellNeverSuggest(two.split(' ')[0]!) ? null : two;
   const one = getFirstWordPrefix(command);
   if (one && !SUBCOMMAND_AWARE_ROOTS.has(one)) return one;
   return null;

