@@ -214,6 +214,8 @@ export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSetting
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { getSettingsTierShortName, getSettingsTierDisplayName, getSettingsTierDisplayNameLowercase, getSettingsTierLabels, getManagedSettingsSources } from './settings-guard';
 export type { ManagedSettingsSource } from './settings-guard';
+export { CUSTOMIZATION_SURFACES, parseStrictPluginOnlyCustomization, isRestrictedToPluginOnly, isSourceAdminTrusted, ADMIN_TRUSTED_SOURCES } from './plugin-only-policy';
+export type { CustomizationSurface, StrictPluginOnlyPolicy } from './plugin-only-policy';
 export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveManagedApproval, MANAGED_SETTINGS_DECISIONS } from './managed-settings-guard';
 export type { ManagedSettingsDecision, ManagedSettingsReview } from './managed-settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';

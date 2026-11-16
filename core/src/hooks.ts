@@ -7,6 +7,7 @@ import type { Message, AssistantMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
 import { canHookEvent, shouldSkipHookDueToTrust } from './hook-protection';
+import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 
@@ -1421,6 +1422,25 @@ export class HookManager extends EventEmitter {
   setAllowManagedHooksOnly(on: boolean): void { this._allowManagedHooksOnly = on; }
   isAllowManagedHooksOnly(): boolean { return this._allowManagedHooksOnly; }
 
+  /**
+   * Read the raw `strictPluginOnlyCustomization` value from the managed/policy
+   * settings file so {@link isRestrictedToPluginOnly} can decide whether the
+   * `hooks` surface is locked to plugin/managed-only sources. Managed-sourced by
+   * construction (this is the admin policy file). Never throws: a missing or
+   * malformed file degrades to `undefined` (nothing locked). Parity: Claude's
+   * `getSettingsForSource('policySettings')?.strictPluginOnlyCustomization`.
+   */
+  private readManagedPluginOnlyPolicy(managedPath: string): unknown {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(managedPath, 'utf-8'));
+      return parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>).strictPluginOnlyCustomization
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Managed-policy kill-switch (Claude Code's disableAllHooks). When set via a
    *  managed source it skips ALL hooks, including managed ones. */
   private _disableAllHooks = false;
@@ -1665,7 +1685,9 @@ export class HookManager extends EventEmitter {
     const filePath = path.join(cwd, '.ami', 'hooks.json');
     const userHooksPath = path.join(os.homedir(), '.ami', 'hooks.json');
 
-    const sources: Array<{ path: string; source: 'project' | 'user'; managed?: boolean }> = [];
+    // `managed` = admin/policy settings; `plugin` = plugin-bundle contributed. Both
+    // are admin-trusted sources that bypass the strictPluginOnlyCustomization hooks lock.
+    const sources: Array<{ path: string; source: 'project' | 'user'; managed?: boolean; plugin?: boolean }> = [];
     // Admin/managed settings (highest authority) — the ONLY source honored when
     // allowManagedHooksOnly is set.
     const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
@@ -1697,14 +1719,24 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
             continue;
           }
-          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src });
+          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, plugin: true });
         }
       }
     } catch { /* plugins module optional */ }
 
     // Org policy: when allowManagedHooksOnly is set, drop every non-managed source
     // so only admin/managed-settings hooks execute.
-    const effectiveSources = this._allowManagedHooksOnly ? sources.filter(s => s.managed) : sources;
+    let effectiveSources = this._allowManagedHooksOnly ? sources.filter(s => s.managed) : sources;
+
+    // Managed per-surface lock: `strictPluginOnlyCustomization` (admin/managed-only
+    // policy) can confine the `hooks` surface to plugin- and managed-provided sources
+    // only, dropping user/project filesystem hooks (.ami/.claude). Composes with
+    // allowManagedHooksOnly (which is stricter — managed only). Parity: Claude Code's
+    // strictPluginOnlyCustomization. The policy lives in the managed settings file.
+    if (managedPath && isRestrictedToPluginOnly('hooks', this.readManagedPluginOnlyPolicy(managedPath))) {
+      effectiveSources = effectiveSources.filter(s => s.managed || s.plugin);
+      coreLog('hooks', "strictPluginOnlyCustomization locks the 'hooks' surface: loading plugin/managed hooks only");
+    }
 
     // Content-identity de-dup across overlapping sources: the same hook defined
     // in two places (e.g. .ami/hooks.json and .claude/settings.json) registers once.
