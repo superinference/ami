@@ -413,6 +413,94 @@ export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
+ * Glob exclude-list for instruction (CLAUDE.md / AGENTS.md / *.local.md) files.
+ * Parity with Claude Code's `claudeMdExcludes` setting (utils/claudemd.ts
+ * `isClaudeMdExcluded`): a user can opt specific instruction files OUT of the
+ * auto-load (e.g. a vendored `**\/node_modules/**\/CLAUDE.md`). Only USER /
+ * PROJECT / LOCAL instruction files are eligible — team-managed `.ami/rules/`
+ * are NEVER excluded, since those are the project's enforced rules. Patterns are
+ * separated by comma, colon, or semicolon.
+ */
+const MEMORY_EXCLUDES_ENV = 'AMI_MEMORY_EXCLUDES';
+
+/**
+ * Parse {@link MEMORY_EXCLUDES_ENV} into a glob pattern list (empty when unset).
+ * Matched against instruction-file paths by {@link isInstructionExcluded}.
+ */
+export function resolveMemoryExcludes(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env[MEMORY_EXCLUDES_ENV];
+  if (!raw || !raw.trim()) return [];
+  return raw.split(/[,:;]+/).map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Extra memory guidelines injected verbatim into the memory-guidance prompt
+ * block. Parity with Claude Code's `CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`
+ * (memdir.ts `extraGuidelines`): a host/SDK can append organization-specific
+ * memory rules without patching the prompt builder. The value is memory-content
+ * sanitized (system-tag neutralization + invisible-char stripping) so a hostile
+ * env value cannot inject fake system tags into the prompt.
+ */
+const MEMORY_EXTRA_GUIDELINES_ENV = 'AMI_MEMORY_EXTRA_GUIDELINES';
+
+/** Resolve {@link MEMORY_EXTRA_GUIDELINES_ENV} (sanitized), or '' when unset. */
+export function resolveMemoryExtraGuidelines(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env[MEMORY_EXTRA_GUIDELINES_ENV];
+  return raw && raw.trim() ? sanitizeMemoryContent(raw.trim()) : '';
+}
+
+/**
+ * Classify an fs read/stat/mkdir failure as the EXPECTED "does not exist" case.
+ * `ENOENT` (missing file/dir) and `ENOTDIR` (a parent segment is a file) are the
+ * normal "no memory yet" fallbacks and are handled silently. Any OTHER errno
+ * (`EACCES`/`EPERM`/`EISDIR`/`EIO`/`EEXIST`/…) means the path exists but is
+ * genuinely inaccessible or malformed — NOT the same as "empty" — so callers
+ * surface it via {@link logUnexpectedReadError} before falling back. Mirrors
+ * Claude Code's errno-discriminated memory reads (SessionMemory/sessionMemoryUtils).
+ */
+export function isExpectedMissing(err: unknown): boolean {
+  const code = errnoCode(err);
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/** Extract a NodeJS errno string from an unknown thrown value ('' when absent). */
+function errnoCode(err: unknown): string {
+  return err && typeof err === 'object' && 'code' in err
+    ? String((err as NodeJS.ErrnoException).code)
+    : '';
+}
+
+/**
+ * Log a memory file-read failure that is NOT an expected "missing" case, so a
+ * corrupt / permission-denied memory file is never silently equated with an
+ * empty one. A no-op for ENOENT/ENOTDIR (the silent fallback).
+ */
+function logUnexpectedReadError(err: unknown, filePath: string): void {
+  if (isExpectedMissing(err)) return;
+  coreLog('memory', `memory read failed for ${filePath}`, { code: errnoCode(err) || 'unknown' }, 'warn');
+}
+
+/**
+ * Owner-only permissions for the auto-memory tree. Parity with Claude Code's
+ * session-memory hardening (0o700 dir / 0o600 file): memory can hold personal
+ * context (user profile, preferences, project state) and must not be group- or
+ * world-readable. The mode is passed to mkdir/writeFile AND re-applied with an
+ * explicit chmod — mkdir's mode is masked by the umask and ignored entirely when
+ * the directory already exists, so the chmod is what actually defeats a loose
+ * umask on a pre-existing memory dir/file.
+ */
+const MEMORY_DIR_MODE = 0o700;
+const MEMORY_FILE_MODE = 0o600;
+
+/** mkdir -p the memory dir with owner-only mode, then chmod to defeat the umask
+ *  / tighten an existing dir. Best-effort chmod: a filesystem that rejects the
+ *  mode (e.g. a mounted volume) must not abort the memory write. */
+function ensureMemoryDirMode(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: MEMORY_DIR_MODE });
+  try { fs.chmodSync(dir, MEMORY_DIR_MODE); } catch { /* best effort — mode not enforceable here */ }
+}
+
+/**
  * Environment variable that force-disables ALL auto-memory behavior (the stored-
  * memory / team-memory prompt injection, the oversized-file health warning, and
  * the memory save/recall guidance block). Parity with Claude Code's
@@ -547,7 +635,45 @@ function normalizeForScanning(text: string): string {
   return normalized;
 }
 
+/**
+ * Strip block-level HTML comments (`<!-- … -->`) from instruction/memory
+ * content before it is injected into the prompt. Parity with Claude Code's
+ * `stripHtmlComments` (utils/claudemd.ts): authorial notes written as HTML
+ * comments are editorial, not instructions, and should not reach the model.
+ *
+ * Preserved verbatim (never stripped):
+ *  - comments inside FENCED code blocks (```… ```), which are documentation of
+ *    the comment syntax itself;
+ *  - comments inside INLINE code spans (`` `…` ``);
+ *  - an UNCLOSED `<!--` (no matching `-->`) — a typo must not silently swallow
+ *    the rest of the file, so only well-formed spans are removed.
+ */
+export function stripHtmlComments(content: string): string {
+  if (!content.includes('<!--')) return content;
+  // Mask code so comment-like text inside it is untouchable, strip the real
+  // comment spans, then restore the code. NUL sentinels can't occur in the masks
+  // (fenced/inline code), and are fully restored before returning.
+  const fenced: string[] = [];
+  let masked = content.replace(/```[\s\S]*?```/g, (m) => {
+    fenced.push(m);
+    return `\u0000F${fenced.length - 1}\u0000`;
+  });
+  const inline: string[] = [];
+  masked = masked.replace(/`[^`\n]*`/g, (m) => {
+    inline.push(m);
+    return `\u0000I${inline.length - 1}\u0000`;
+  });
+  masked = masked.replace(/<!--[\s\S]*?-->/g, '');
+  masked = masked.replace(/\u0000I(\d+)\u0000/g, (_m, n) => inline[Number(n)]);
+  masked = masked.replace(/\u0000F(\d+)\u0000/g, (_m, n) => fenced[Number(n)]);
+  return masked;
+}
+
 function sanitizeContent(content: string, filePath: string): string {
+  // Drop editorial HTML comments FIRST (before the size cap) so comment bulk
+  // doesn't count toward the truncation budget and comment text never reaches
+  // the injection scanner / the model.
+  content = stripHtmlComments(content);
   if (content.length > MAX_INSTRUCTION_FILE_SIZE) {
     coreLog('memory', `Instruction file ${filePath} exceeds ${MAX_INSTRUCTION_FILE_SIZE} bytes — truncating`);
     let cut = content.slice(0, MAX_INSTRUCTION_FILE_SIZE);
@@ -590,6 +716,28 @@ export function matchesPaths(pathGlobs: string[], currentFile: string): boolean 
     escaped = escaped.replace(/\*\*/g, '⧫⧫');
     const pattern = escaped.replace(/\*/g, '[^/]*').replace(/⧫⧫/g, '.*').replace(/\?/g, '[^/]');
     if (new RegExp(`^${pattern}$`).test(currentFile)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an instruction file is excluded by the {@link MEMORY_EXCLUDES_ENV}
+ * glob list. Matched against the raw path, its forward-slash form, AND the
+ * symlink-resolved realpath (both forms) so an exclude written against a logical
+ * path still matches when the cwd resolves through a symlink (e.g. `/tmp` →
+ * `/private/tmp`). Parity with Claude Code's `isClaudeMdExcluded`
+ * realpath-expanded matching.
+ */
+function isInstructionExcluded(filePath: string, excludes: string[]): boolean {
+  if (excludes.length === 0) return false;
+  const candidates = new Set<string>([filePath, filePath.replace(/\\/g, '/')]);
+  const real = realpathDeepest(filePath);
+  if (real) {
+    candidates.add(real);
+    candidates.add(real.replace(/\\/g, '/'));
+  }
+  for (const c of candidates) {
+    if (matchesPaths(excludes, c)) return true;
   }
   return false;
 }
@@ -744,6 +892,20 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
         : collected.join('\n').trim();
     }
 
+    // YAML block SEQUENCE: `key:` on its own line followed by indented `- item`
+    // entries (parity with Claude Code block-list frontmatter values such as
+    // `allowed-tools:` / `arguments:`). Collected into a comma-joined scalar so
+    // the existing {@link parseFrontmatterList} consumer yields the items. Only
+    // triggers when the inline value is empty (a `key: value` scalar wins).
+    if (value === '') {
+      const items: string[] = [];
+      while (i + 1 < lines.length && /^\s+-\s+/.test(lines[i + 1])) {
+        i++;
+        items.push(lines[i].replace(/^\s+-\s+/, '').trim());
+      }
+      if (items.length > 0) value = items.join(', ');
+    }
+
     frontmatter[key] = value;
   }
 
@@ -798,8 +960,30 @@ function buildFrontmatter(
  * behaviors.
  */
 export function computeIndexAppend(existing: string, entry: string): string | null {
-  if (existing.includes(entry)) return null;
-  return existing.trimEnd() + '\n' + entry + '\n';
+  const clamped = clampIndexEntry(entry);
+  if (existing.includes(clamped)) return null;
+  return existing.trimEnd() + '\n' + clamped + '\n';
+}
+
+/**
+ * Recommended maximum length of a single MEMORY.md index pointer line. Parity
+ * with Claude Code's consolidation index rule ("if an index line is over ~200
+ * chars, it's carrying content that belongs in the topic file"). The whole-index
+ * line/byte caps still apply on load ({@link truncateEntrypointContent}).
+ */
+export const MAX_INDEX_ENTRY_CHARS = 200;
+
+/**
+ * Demote an over-long index pointer: a MEMORY.md entry longer than
+ * {@link MAX_INDEX_ENTRY_CHARS} is carrying body content that belongs in the
+ * topic file, so it is truncated (with an ellipsis) on write rather than bloating
+ * the always-loaded index. Shorter entries pass through unchanged. Applied by
+ * {@link computeIndexAppend} so every index writer enforces the same per-entry
+ * bound (resource-exhaustion defense on untrusted memory writes).
+ */
+export function clampIndexEntry(entry: string): string {
+  if (entry.length <= MAX_INDEX_ENTRY_CHARS) return entry;
+  return entry.slice(0, MAX_INDEX_ENTRY_CHARS - 1).trimEnd() + '…';
 }
 
 /** Per-file upper bound when scanning the memory dir: a single runaway file must
@@ -951,13 +1135,14 @@ export class MemoryManager {
 
   loadProjectInstructions(): string {
     const sections: string[] = [];
+    const excludes = resolveMemoryExcludes();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
 
     while (depth <= MAX_PARENT_SCAN_DEPTH) {
       const found = this.findInstructionFile(currentDir);
-      if (found) {
+      if (found && !isInstructionExcluded(found, excludes)) {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
           if (raw) {
@@ -974,6 +1159,7 @@ export class MemoryManager {
 
       for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
+        if (isInstructionExcluded(localPath, excludes)) continue;
         try {
           if (fs.statSync(localPath).isFile()) {
             const raw = fs.readFileSync(localPath, 'utf-8').trim();
@@ -1077,8 +1263,10 @@ export class MemoryManager {
           f.endsWith('.md') &&
           path.basename(f) !== MEMORY_INDEX_FILENAME &&
           f.split(/[\\/]/)[0] !== 'team');
-    } catch {
-      // Directory doesn't exist yet — no memories
+    } catch (err) {
+      // ENOENT (dir not created yet) is the expected empty case; a real error
+      // (permissions, I/O) is logged rather than silently treated as "no memories".
+      logUnexpectedReadError(err, memoryDir);
       return [];
     }
 
@@ -1196,7 +1384,7 @@ export class MemoryManager {
     // reads), so the model can now AUTHOR a team memory, not just read one.
     const baseDir = this.getMemoryDir();
     const memoryDir = scope === 'team' ? path.join(baseDir, 'team') : baseDir;
-    fs.mkdirSync(memoryDir, { recursive: true });
+    ensureMemoryDirMode(memoryDir);
 
     const safeName = name
       .replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -1214,7 +1402,10 @@ export class MemoryManager {
     // into a memory body to a long-lived .md on disk.
     const fileContent = `${frontmatter}\n${redactCredentials(content)}\n`;
 
-    fs.writeFileSync(filePath, fileContent, 'utf-8');
+    // Owner-only file mode + chmod (defeat umask) — a memory file may hold
+    // personal context and must not be group/world readable.
+    fs.writeFileSync(filePath, fileContent, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+    try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
 
     // Step 2 of the two-step save: append a one-line pointer to the always-loaded
     // MEMORY.md index at the auto-memory root (a single index may point into the
@@ -1229,8 +1420,9 @@ export class MemoryManager {
       try { existing = fs.readFileSync(indexPath, 'utf-8'); } catch { /* no index yet */ }
       const next = computeIndexAppend(existing, entry);
       if (next !== null) {
-        fs.mkdirSync(baseDir, { recursive: true });
-        fs.writeFileSync(indexPath, next, 'utf-8');
+        ensureMemoryDirMode(baseDir);
+        fs.writeFileSync(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+        try { fs.chmodSync(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
       }
     }
 
@@ -1398,6 +1590,11 @@ export class MemoryManager {
     }
 
     if (memories.length > 0 || teamMemories.length > 0) {
+      // Host/SDK-injected extra memory guidelines (AMI_MEMORY_EXTRA_GUIDELINES),
+      // appended to the guidance block so an organization can add memory rules
+      // without patching the prompt builder.
+      const extra = resolveMemoryExtraGuidelines();
+      const extraGuidelinesBlock = extra ? `\n\n### Additional memory guidelines\n${extra}` : '';
       const hasOldMemories = memories.some(m => (m.ageDays ?? 0) > 1);
       const driftCaveat = hasOldMemories
         ? `\n\n## Memory Drift Warning\nMemories may be stale. Always verify against current file contents, git log, and observed behavior before acting on recalled information.`
@@ -1432,7 +1629,7 @@ ${PERSISTENCE_GUIDANCE}
 Lead feedback/project memories with the rule/fact, then a **Why:** line and a **How to apply:** line. Use this frontmatter:
 ${MEMORY_FRONTMATTER_EXAMPLE}
 
-${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
+${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       sections.push(memoryGuidance);
     }
 
@@ -1573,7 +1770,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
     if (facts.length === 0) return;
 
     const memoryDir = this.getMemoryDir();
-    fs.mkdirSync(memoryDir, { recursive: true });
+    ensureMemoryDirMode(memoryDir);
 
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
     const filename = `session-${safeId}.md`;
@@ -1606,7 +1803,8 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       lines.push('');
     }
 
-    fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+    fs.writeFileSync(filePath, lines.join('\n'), { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+    try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
   }
 
   /**
@@ -1623,7 +1821,11 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
     let raw: string;
     try {
       raw = fs.readFileSync(filePath, 'utf-8');
-    } catch {
+    } catch (err) {
+      // ENOENT (no session file yet) is the expected fallback; any other error
+      // (corrupt/locked/permission-denied) is logged before falling back, so an
+      // inaccessible session-memory file is not silently equated with "empty".
+      logUnexpectedReadError(err, filePath);
       return [];
     }
 
@@ -1848,7 +2050,9 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       // The entrypoint is injected every turn — cap it (lines + bytes) so a
       // runaway index can't stuff the context / inflate cost.
       return truncateEntrypointContent(content).split('\n').filter(l => l.startsWith('- ['));
-    } catch {
+    } catch (err) {
+      // ENOENT (no index yet) is expected; any other read error is logged.
+      logUnexpectedReadError(err, indexPath);
       return [];
     }
   }
@@ -1862,12 +2066,14 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
   async addToMemoryIndex(cwd: string, entry: string): Promise<void> {
     const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
     try {
-      await fsp.mkdir(path.dirname(indexPath), { recursive: true });
+      await fsp.mkdir(path.dirname(indexPath), { recursive: true, mode: MEMORY_DIR_MODE });
+      try { await fsp.chmod(path.dirname(indexPath), MEMORY_DIR_MODE); } catch { /* best effort */ }
       let content = '';
       try { content = await fsp.readFile(indexPath, 'utf-8'); } catch { /* file doesn't exist */ }
       const next = computeIndexAppend(content, entry);
       if (next !== null) {
-        await fsp.writeFile(indexPath, next, 'utf-8');
+        await fsp.writeFile(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+        try { await fsp.chmod(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
       }
     } catch { /* best effort */ }
   }
@@ -1912,13 +2118,14 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
     }
 
     // 2. Project-level instruction files
+    const excludes = resolveMemoryExcludes();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
 
     while (depth <= MAX_PARENT_SCAN_DEPTH) {
       const found = this.findInstructionFile(currentDir);
-      if (found) {
+      if (found && !isInstructionExcluded(found, excludes)) {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
           if (raw) {
@@ -1931,6 +2138,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}`;
       // 3. User-level local variants
       for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
+        if (isInstructionExcluded(localPath, excludes)) continue;
         try {
           if (fs.statSync(localPath).isFile()) {
             const raw = fs.readFileSync(localPath, 'utf-8').trim();
