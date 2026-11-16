@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import { ToolContext, ToolDefinition, ToolResult } from '../types';
+import { findRemoteBase, isShallowClone } from '../utils/git';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -355,11 +356,23 @@ export const enterWorktreeTool: ToolDefinition = {
       try {
         _enterWorktreeHooks.exec(['rev-parse', '--verify', `${requestedBaseRef}^{commit}`], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
       } catch {
-        return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).`, isError: true };
+        // A shallow clone has a truncated history, so a legitimate ref can be
+        // genuinely absent locally. Surface that as the likely cause with the
+        // concrete recovery command instead of a bare "invalid ref".
+        const shallowHint = isShallowClone(context.cwd)
+          ? ' This repository is a shallow clone (truncated history), so a valid ref may not be present locally — run `git fetch --unshallow` (or `git fetch --depth=<n>`) to retrieve it.'
+          : '';
+        return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).${shallowHint}`, isError: true };
       }
     }
+    // Default base (no explicit base_ref): prefer the current branch's upstream
+    // tracking ref (`@{u}`), then origin/HEAD, then the conventional candidate
+    // list (findRemoteBase, all local refs — never contacts the network),
+    // falling back to origin/<default-branch> only when none of those resolve.
+    // This matches git's own base-selection priority so a worktree branches from
+    // the ref the user is actually tracking rather than a hardcoded origin/main.
+    const baseRef = requestedBaseRef || findRemoteBase(context.cwd) || `origin/${defaultBranch}`;
     try {
-      const baseRef = requestedBaseRef || `origin/${defaultBranch}`;
       try {
         _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
         _enterWorktreeHooks.exec(['worktree', 'add', '-B', branchName, worktreeDir, baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
@@ -401,7 +414,7 @@ export const enterWorktreeTool: ToolDefinition = {
       context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
-    const baseLabel = requestedBaseRef || `origin/${defaultBranch}`;
+    const baseLabel = baseRef;
     return {
       output:
         `Worktree created (session switched to it):\n` +
