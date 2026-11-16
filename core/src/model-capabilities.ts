@@ -1624,6 +1624,71 @@ export function getModelDeprecationWarning(
 }
 
 /**
+ * The exact offsets of every inline `ultrathink` keyword in `text`. Each entry
+ * is the matched word plus its `[start, end)` character range, so a UI can
+ * highlight / underline the trigger it recognized and acknowledge the
+ * escalation to the user. A fresh global regex is built per call —
+ * `String.prototype.matchAll` copies `lastIndex` from the source pattern, so a
+ * shared instance would leak state between calls. Mirrors Claude Code's
+ * `findThinkingTriggerPositions` (utils/thinking.ts:L37-L58). Returns `[]` for a
+ * non-string or keyword-free input.
+ */
+export function findThinkingTriggerPositions(
+  text: string,
+): Array<{ word: string; start: number; end: number }> {
+  const positions: Array<{ word: string; start: number; end: number }> = [];
+  if (typeof text !== 'string' || !text) return positions;
+  for (const match of text.matchAll(/\bultrathink\b/gi)) {
+    if (match.index !== undefined) {
+      positions.push({ word: match[0], start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return positions;
+}
+
+/**
+ * Whether `text` contains the inline `ultrathink` magic keyword — a per-message,
+ * input-layer escalation knob: typing `ultrathink` anywhere in a turn bumps that
+ * turn's reasoning to the deepest level, independent of the sticky `/thinking`
+ * level or any env override. Word-boundary + case-insensitive, so `ultrathink`,
+ * `Ultrathink` and `ULTRATHINK` all match but `ultrathinking`/`myultrathink` do
+ * not. Mirrors Claude Code's `hasUltrathinkKeyword` (utils/thinking.ts:L29-L31).
+ */
+export function hasUltrathinkKeyword(text: string): boolean {
+  if (typeof text !== 'string') return false;
+  return /\bultrathink\b/i.test(text);
+}
+
+/**
+ * Per-model-family fallback suggestion when a selected model is unavailable on a
+ * THIRD-PARTY (non-first-party) endpoint — e.g. a brand-new version a gateway has
+ * not provisioned yet. Walks a version-downgrade chain to the previous shipped
+ * version of the same family so the user gets a concrete "try this instead"
+ * target. Returns `undefined` on a first-party endpoint (where the canonical API
+ * always serves the current model, so no downgrade is warranted — see
+ * {@link isFirstPartyProvider}) and for any id outside the known chain.
+ *
+ * Mirrors Claude Code's `get3PModelFallbackSuggestion` (services/api/errors.ts:
+ * L936-L959): Opus 4.6→4.1, Sonnet 4.6→4.5, Sonnet 4.5→4. This is DISTINCT from
+ * {@link getModelDeprecationWarning} / `suggestDeprecatedReplacement` (which map a
+ * removed/old id UP to a newer successor); this maps a too-new id DOWN to the
+ * last version a 3P host is likely to have. Read at call time so env toggles
+ * take effect. Accepts `-`/`_` version separators.
+ */
+export function get3PModelFallbackSuggestion(
+  modelId: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (typeof modelId !== 'string' || !modelId) return undefined;
+  if (isFirstPartyProvider(env)) return undefined;
+  const m = modelId.toLowerCase();
+  if (m.includes('opus-4-6') || m.includes('opus_4_6')) return 'claude-opus-4-1';
+  if (m.includes('sonnet-4-6') || m.includes('sonnet_4_6')) return 'claude-sonnet-4-5';
+  if (m.includes('sonnet-4-5') || m.includes('sonnet_4_5')) return 'claude-sonnet-4';
+  return undefined;
+}
+
+/**
  * Rough cost estimate for running a compaction summary on a model.
  *
  * Assumes compaction reads all `tokens` as input and produces ~10% as output
