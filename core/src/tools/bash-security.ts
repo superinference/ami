@@ -1241,6 +1241,46 @@ function hasUnbalancedQuotes(command: string): boolean {
   return doubleCount % 2 !== 0 || singleCount % 2 !== 0;
 }
 
+/**
+ * After quote stripping, report the name of any structural delimiter pair
+ * (`{}`, `()`, `[]`) that has MORE openers than closers — an unclosed opener.
+ * Mirrors the balanced-delimiter arm of Claude Code's `hasMalformedTokens`
+ * (shellQuote.ts L145-161), which rejects tokens with unbalanced braces/parens/
+ * brackets as malformed. AMI's `validateBraceExpansion` already blocks the
+ * EXCESS-CLOSER direction (`close > open`) for `{}`; this complements it by
+ * covering the unclosed-OPENER direction for all three delimiter pairs, which is
+ * the injection-relevant case: an unclosed `{` lets bash treat the brace as a
+ * literal and run whatever follows an embedded separator
+ * (`echo {a; rm -rf /tmp/x` → the `rm` runs), and an unclosed `(`/`[` is a
+ * malformed token the shell would re-tokenize unpredictably.
+ *
+ * Counting is done on the fully-unquoted content so delimiters that are literal
+ * data inside quotes (e.g. `awk '{print}'`, `grep '[a]'`) are NOT counted, and a
+ * backslash escapes the next character so `echo \{` is a literal brace. Only the
+ * opener-excess direction is flagged, so legitimate `case … )` patterns (which
+ * have `close > open`) and balanced `[ -f x ]` test brackets / `(subshell)` /
+ * `$( … )` / `$(( … ))` never false-positive.
+ */
+function unclosedStructuralDelimiter(fullyUnquoted: string): string | null {
+  const pairs: [string, string, string][] = [
+    ['{', '}', 'brace'],
+    ['(', ')', 'parenthesis'],
+    ['[', ']', 'bracket'],
+  ];
+  for (const [open, close, name] of pairs) {
+    let openN = 0;
+    let closeN = 0;
+    for (let i = 0; i < fullyUnquoted.length; i++) {
+      const c = fullyUnquoted[i];
+      if (c === '\\') { i++; continue; }
+      if (c === open) openN++;
+      else if (c === close) closeN++;
+    }
+    if (openN > closeN) return name;
+  }
+  return null;
+}
+
 function validateMalformedTokenInjection(command: string): SecurityCheckResult {
   // Only a concern when a command separator is present: ambiguous/unbalanced
   // quoting combined with `;`/`&&`/`||`/`|`/`&` is the eval-reparse bypass class
@@ -1249,6 +1289,13 @@ function validateMalformedTokenInjection(command: string): SecurityCheckResult {
   if (!/[;|&]/.test(command)) return PASS;
   if (hasUnbalancedQuotes(command)) {
     return fail(CHECK_IDS.MALFORMED_TOKEN, 'Blocked: potentially malformed quoting with command separators');
+  }
+  // Quotes balance (checked above), so quoted content strips cleanly; scan the
+  // remainder for an unclosed structural delimiter that could hide an injected
+  // command after an embedded separator.
+  const delim = unclosedStructuralDelimiter(extractQuotedContent(command).fullyUnquoted);
+  if (delim !== null) {
+    return fail(CHECK_IDS.MALFORMED_TOKEN, `Blocked: unclosed ${delim} with command separators (malformed token may hide an injected command)`);
   }
   return PASS;
 }
