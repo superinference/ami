@@ -229,23 +229,53 @@ describe('path-traversal guards', () => {
     }
   });
 
-  it('copyWorktreeIncludes skips a tracked file and copies an untracked one', () => {
+  it('copyWorktreeIncludes copies a gitignored file, skips tracked and plain-untracked', () => {
+    // Claude parity (utils/worktree.ts copyWorktreeIncludeFiles): a file is only
+    // carried over when it is BOTH named in .worktreeinclude AND gitignored.
     const repo = makeRepo();
     try {
       // tracked file
       fs.writeFileSync(path.join(repo, 'tracked.txt'), 'T');
       git(repo, 'add', 'tracked.txt');
       git(repo, 'commit', '-q', '-m', 'add tracked');
-      // untracked file
+      // gitignored file (untracked AND ignored) → eligible
+      fs.writeFileSync(path.join(repo, '.gitignore'), 'local.env\n');
       fs.writeFileSync(path.join(repo, 'local.env'), 'SECRET=1');
-      fs.writeFileSync(path.join(repo, '.worktreeinclude'), 'tracked.txt\nlocal.env\n../escape\n');
+      // plain-untracked file (not ignored) → NOT eligible under the gated rule
+      fs.writeFileSync(path.join(repo, 'stray.txt'), 'S');
+      fs.writeFileSync(
+        path.join(repo, '.worktreeinclude'),
+        'tracked.txt\nlocal.env\nstray.txt\n../escape\n',
+      );
       const wt = path.join(repo, 'wt');
       fs.mkdirSync(wt, { recursive: true });
       const copied = copyWorktreeIncludes(repo, wt);
-      assert.ok(copied.includes('local.env'), 'untracked file copied');
+      assert.ok(copied.includes('local.env'), 'gitignored file copied');
       assert.ok(!copied.includes('tracked.txt'), 'tracked file skipped');
+      assert.ok(!copied.includes('stray.txt'), 'plain-untracked (not ignored) file skipped');
       assert.ok(!copied.includes('../escape'), 'escaping entry skipped');
       assert.equal(fs.existsSync(path.join(wt, 'local.env')), true);
+      assert.equal(fs.existsSync(path.join(wt, 'stray.txt')), false);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('copyWorktreeIncludes expands a gitignored directory entry to its ignored files', () => {
+    const repo = makeRepo();
+    try {
+      fs.writeFileSync(path.join(repo, '.gitignore'), 'cache/\n');
+      fs.mkdirSync(path.join(repo, 'cache', 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'cache', 'a.bin'), 'A');
+      fs.writeFileSync(path.join(repo, 'cache', 'sub', 'b.bin'), 'B');
+      fs.writeFileSync(path.join(repo, '.worktreeinclude'), 'cache\n');
+      const wt = path.join(repo, 'wt');
+      fs.mkdirSync(wt, { recursive: true });
+      const copied = copyWorktreeIncludes(repo, wt);
+      assert.ok(copied.includes('cache/a.bin'), 'nested gitignored file copied');
+      assert.ok(copied.includes('cache/sub/b.bin'), 'deeply nested gitignored file copied');
+      assert.equal(fs.readFileSync(path.join(wt, 'cache', 'a.bin'), 'utf-8'), 'A');
+      assert.equal(fs.readFileSync(path.join(wt, 'cache', 'sub', 'b.bin'), 'utf-8'), 'B');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

@@ -377,8 +377,22 @@ export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string,
 
 /**
  * Copy files listed in `.worktreeinclude` from source to worktree.
- * Each line in the file is a relative path or glob pattern (simple globs only).
- * Lines starting with # are comments; empty lines are skipped.
+ * Each line in the file is a relative path (a file or a directory). Lines
+ * starting with `#` are comments; empty lines are skipped.
+ *
+ * Parity with Claude's copyWorktreeIncludeFiles (utils/worktree.ts): a file is
+ * only carried over when it is BOTH named in `.worktreeinclude` AND GITIGNORED
+ * (untracked-and-ignored). `.worktreeinclude` is for local, gitignored artifacts
+ * (`.env`, caches, build outputs) — a git-TRACKED file is already present in the
+ * worktree checkout, and a plain untracked file that is NOT ignored is almost
+ * always a stray source file the user would not expect to be duplicated. The
+ * eligible set is computed once from
+ * `git ls-files --others --ignored --exclude-standard`. A directory entry copies
+ * exactly the gitignored files beneath it (so a collapsed `node_modules/` or
+ * `config/secrets/` carries its ignored contents, not tracked siblings).
+ *
+ * When `sourceCwd` is not a git repo (the lister fails), there is no gitignore
+ * information, so we fall back to a best-effort literal copy of each entry.
  */
 export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): string[] {
   const includeFile = path.join(sourceCwd, '.worktreeinclude');
@@ -394,17 +408,47 @@ export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): s
     return copied;
   }
 
+  // The gitignored (untracked + ignored) file set, or null when `sourceCwd` is
+  // not a git repo / git is unavailable.
+  const gitignored = listGitignoredFiles(sourceCwd);
+
+  const copyOne = (rel: string): void => {
+    const sourcePath = path.join(sourceCwd, rel);
+    const targetPath = path.join(worktreePath, rel);
+    if (!isWithin(sourceCwd, sourcePath) || !isWithin(worktreePath, targetPath)) return;
+    try {
+      if (!fs.existsSync(sourcePath)) return;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+      copied.push(rel);
+    } catch { /* best effort per file */ }
+  };
+
   for (const entry of lines) {
-    const sourcePath = path.join(sourceCwd, entry);
-    const targetPath = path.join(worktreePath, entry);
+    const normEntry = entry.replace(/^\.\//, '').replace(/\/$/, '').normalize('NFC');
+    const sourcePath = path.join(sourceCwd, normEntry);
+    const targetPath = path.join(worktreePath, normEntry);
     // Path-escape guard: an entry must stay inside BOTH the source repo and the
     // worktree — never copy an arbitrary absolute/`..` path.
     if (!isWithin(sourceCwd, sourcePath) || !isWithin(worktreePath, targetPath)) continue;
-    // Skip git-TRACKED files: .worktreeinclude is for carrying over untracked /
-    // gitignored files (.env, local caches); a tracked file is already present
-    // in the worktree checkout, so copying it would be redundant/wrong. Files in
-    // a non-git dir (or untracked) are still copied.
-    if (isGitTracked(sourceCwd, entry)) continue;
+
+    if (gitignored) {
+      // Gitignore-gated copy. For a directory entry, expand to the gitignored
+      // files beneath it; for a file entry, require it to be gitignored.
+      let stat: fs.Stats | undefined;
+      try { stat = fs.statSync(sourcePath); } catch { stat = undefined; }
+      if (stat?.isDirectory()) {
+        const prefix = normEntry + '/';
+        for (const rel of gitignored) {
+          if (rel === normEntry || rel.startsWith(prefix)) copyOne(rel);
+        }
+      } else if (gitignored.has(normEntry)) {
+        copyOne(normEntry);
+      }
+      continue;
+    }
+
+    // Non-git fallback: best-effort literal copy (file or directory tree).
     try {
       if (!fs.existsSync(sourcePath)) continue;
       const stat = fs.statSync(sourcePath);
@@ -414,22 +458,31 @@ export function copyWorktreeIncludes(sourceCwd: string, worktreePath: string): s
       } else {
         fs.copyFileSync(sourcePath, targetPath);
       }
-      copied.push(entry);
+      copied.push(normEntry);
     } catch { /* best effort per entry */ }
   }
 
   return copied;
 }
 
-/** True when `relPath` is a git-TRACKED file in the repo at `cwd`. In a
- *  non-git directory (or for an untracked path) this returns false. */
-function isGitTracked(cwd: string, relPath: string): boolean {
+/**
+ * List the repo's gitignored (untracked AND ignored) files, relative to `cwd`,
+ * NFC-normalized. Returns null when `cwd` is not a git repo / git is
+ * unavailable, so the caller can fall back to a non-gitignore code path.
+ */
+function listGitignoredFiles(cwd: string): Set<string> | null {
   try {
-    // ls-files --error-unmatch exits 0 only when the path is tracked.
-    gitExec(['ls-files', '--error-unmatch', '--', relPath], { cwd, stdio: 'pipe' });
-    return true;
+    const out = gitExec(
+      ['ls-files', '--others', '--ignored', '--exclude-standard'],
+      { cwd, stdio: 'pipe' },
+    );
+    return new Set(
+      out
+        ? out.split('\n').map(l => l.trim()).filter(Boolean).map(l => l.normalize('NFC'))
+        : [],
+    );
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -469,6 +522,63 @@ export function validateWorktreeGitFile(worktreePath: string): { valid: boolean;
 
   if (!fs.existsSync(resolvedGitdir)) {
     return { valid: false, error: 'stale worktree: gitdir target does not exist' };
+  }
+
+  return validateWorktreeCommondirTrust(worktreePath, resolvedGitdir);
+}
+
+/**
+ * Anti-hijack trust-chain validation for a linked worktree, mirroring git's own
+ * `.git` file → `gitdir:` → `commondir` structure and Claude's
+ * resolveCanonicalRoot hardening (utils/git.ts).
+ *
+ * The `.git` file, its admin-dir `commondir`, and the `gitdir` back-link are all
+ * attacker-controlled in a cloned/downloaded repo. A malicious repo can point
+ * `commondir` at any path the victim has trusted to borrow its identity, or
+ * reuse a victim's existing worktree entry. We validate the exact structure
+ * `git worktree add` creates before trusting the worktree:
+ *   1. `<worktreeGitDir>` is a direct child of `<commonDir>/worktrees/`
+ *   2. `<worktreeGitDir>/gitdir` back-link resolves to `<worktreePath>/.git`
+ *
+ * When the `commondir`/`gitdir` files are absent (a submodule, or any `.git`
+ * pointer that is not a linked worktree) the check cannot run and we fall
+ * through to `valid` — the hardening only REJECTS a definitively-mismatched
+ * structure, never a legitimate worktree it cannot verify.
+ */
+function validateWorktreeCommondirTrust(
+  worktreePath: string,
+  worktreeGitDir: string,
+): { valid: boolean; error?: string } {
+  let commonDirRaw: string;
+  try {
+    commonDirRaw = fs.readFileSync(path.join(worktreeGitDir, 'commondir'), 'utf-8').trim();
+  } catch {
+    return { valid: true }; // no commondir → not a linked worktree we can validate
+  }
+  if (!commonDirRaw) return { valid: true };
+
+  const commonDir = path.resolve(worktreeGitDir, commonDirRaw);
+  // (1) The admin gitdir must live directly under <commonDir>/worktrees/.
+  if (path.resolve(path.dirname(worktreeGitDir)) !== path.join(commonDir, 'worktrees')) {
+    return { valid: false, error: 'untrusted worktree: gitdir is not under commondir/worktrees' };
+  }
+
+  // (2) The back-link must point at THIS worktree's .git, so an attacker cannot
+  // borrow a victim's existing worktree entry by guessing its path.
+  let backlinkRaw: string;
+  try {
+    backlinkRaw = fs.readFileSync(path.join(worktreeGitDir, 'gitdir'), 'utf-8').trim();
+  } catch {
+    return { valid: false, error: 'untrusted worktree: missing gitdir back-link' };
+  }
+  try {
+    const backlink = fs.realpathSync(backlinkRaw);
+    const expected = path.join(fs.realpathSync(worktreePath), '.git');
+    if (backlink !== expected) {
+      return { valid: false, error: 'untrusted worktree: gitdir back-link mismatch' };
+    }
+  } catch {
+    return { valid: false, error: 'untrusted worktree: unresolvable gitdir back-link' };
   }
 
   return { valid: true };
