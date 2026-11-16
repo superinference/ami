@@ -214,6 +214,25 @@ export const KNOWN_BINARY_EXTENSIONS = new Set([
 ]);
 
 
+/**
+ * Document (non-text, specially-parsed) file extensions, stored WITHOUT a leading
+ * dot. Modeling the document types as a data structure + a normalizing membership
+ * test ({@link isPDFExtension}) replaces scattered inline `ext === '.pdf'` string
+ * compares, so the check is correct whether or not the caller passed a leading dot.
+ * Mirrors Claude Code's DOCUMENT_EXTENSIONS set (utils/pdfUtils.ts).
+ */
+export const DOCUMENT_EXTENSIONS = new Set(['pdf']);
+
+/**
+ * Whether `ext` names a PDF, normalizing a possible leading dot and case before
+ * the Set lookup (so '.PDF', 'pdf', and '.pdf' all match). Mirrors Claude Code's
+ * isPDFExtension (utils/pdfUtils.ts).
+ */
+export function isPDFExtension(ext: string): boolean {
+  const normalized = ext.startsWith('.') ? ext.slice(1) : ext;
+  return DOCUMENT_EXTENSIONS.has(normalized.toLowerCase());
+}
+
 function isUNCPath(filePath: string): boolean {
   return filePath.startsWith('\\\\') || filePath.startsWith('//');
 }
@@ -363,13 +382,31 @@ export function detectImageFormatFromBase64(data: string): string | null {
 }
 
 /**
+ * Normalize a possibly-`{default}`-wrapped module to the underlying value. Module
+ * interop differs by resolution mode — an ESM build of a drop-in replacement may
+ * resolve as `{ default: fn }` while CommonJS resolves to the callable directly —
+ * so unwrap a `.default` when the top-level export is not itself callable. Mirrors
+ * Claude Code's unwrapDefault (imageProcessor.ts).
+ */
+export function unwrapDefault<T>(mod: T | { default: T }): T {
+  if (typeof mod === 'function') return mod as T;
+  if (mod && typeof mod === 'object' && 'default' in (mod as { default?: T })) {
+    return (mod as { default: T }).default;
+  }
+  return mod as T;
+}
+
+/**
  * Indirection seam for the optional native `sharp` dependency. Production loads
  * the real module via require; tests swap it to exercise the compression branch
- * deterministically (sharp is an optional dep that may be absent). Behavior is
- * unchanged in production.
+ * deterministically (sharp is an optional dep that may be absent). The require
+ * result is passed through {@link unwrapDefault} so an ESM-published sharp (or a
+ * drop-in replacement wrapped in `{default}`) resolves to the callable factory
+ * instead of crashing with "sharp is not a function". Behavior is unchanged when
+ * sharp resolves as plain CommonJS.
  */
 export const imageHooks: { loadSharp: () => any } = {
-  loadSharp: () => require('sharp'),
+  loadSharp: () => unwrapDefault(require('sharp')),
 };
 
 /**
@@ -714,20 +751,33 @@ async function readFileInRange(
 ): Promise<{ text: string; hasMore: boolean; scannedLines: number }> {
   const lines: string[] = [];
   const stream = fs.createReadStream(filePath, { encoding: 'utf-8', signal });
+  // Attach an error handler so a stream-level failure (EIO, permission revoked
+  // mid-read) rejects the readline async-iterator instead of surfacing as an
+  // unhandled 'error' event that crashes the process. Mirrors Claude Code's
+  // once('error', reject) on its range stream (readFileInRange.ts).
+  stream.once('error', () => { /* propagated through the async iterator below */ });
   const rl = require('readline').createInterface({ input: stream, crlfDelay: Infinity });
   let lineNum = 0;
   let hasMore = false;
-  for await (const line of rl) {
-    lineNum++;
-    // Reaching this line means at least one line exists past the window, so the
-    // output is being capped by `limit` (not EOF) — signal that to the caller.
-    if (lineNum > offset + limit) { hasMore = true; break; }
-    // Normalize leading tabs in the SOURCE line (not the gutter separator) so a
-    // streamed range renders indentation tab-width-independently, matching the
-    // full-read path. See convertLeadingTabsToSpaces.
-    if (lineNum > offset) lines.push(`${lineNum}\t${convertLeadingTabsToSpaces(line)}`);
+  // try/finally guarantees the stream is torn down even when the readline
+  // iteration throws mid-stream (decode error, abort, EIO) — without it a thrown
+  // iteration left the file descriptor open (a leak over many failed reads).
+  // Mirrors Claude Code's stream.destroy()-on-any-exit cleanup.
+  try {
+    for await (const line of rl) {
+      lineNum++;
+      // Reaching this line means at least one line exists past the window, so the
+      // output is being capped by `limit` (not EOF) — signal that to the caller.
+      if (lineNum > offset + limit) { hasMore = true; break; }
+      // Normalize leading tabs in the SOURCE line (not the gutter separator) so a
+      // streamed range renders indentation tab-width-independently, matching the
+      // full-read path. See convertLeadingTabsToSpaces.
+      if (lineNum > offset) lines.push(`${lineNum}\t${convertLeadingTabsToSpaces(line)}`);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
   }
-  stream.destroy();
   // `scannedLines` is the number of lines actually seen. When the window yields no
   // text and we did not break early (hasMore=false), this equals the file's total
   // line count — enough to tell "empty file" (0) apart from "offset overshot".
@@ -777,12 +827,12 @@ export const fileReadTool: ToolDefinition = {
       },
       offset: {
         type: 'number',
-        description: 'Line number to start reading from (0-based, non-negative integer). Defaults to 0.',
+        description: 'Line number to start reading from (0-based, non-negative integer). Defaults to 0. Prefer reading the whole file by omitting offset/limit; use offset/limit only when you already know which part of the file you need (important for large files).',
       },
       limit: {
         type: 'number',
         description:
-          'Maximum number of lines to read (positive integer). Defaults to 2000.',
+          'Maximum number of lines to read (positive integer). Defaults to 2000. When you know the exact region you need, pass offset+limit to read just that part instead of the whole file — this matters most for large files.',
       },
       pages: {
         type: 'string',
@@ -944,7 +994,7 @@ export const fileReadTool: ToolDefinition = {
     const PARTIAL_VIEW_LINES = 200;
     // PDFs have their own page/spill handling; allow_large opts past the cap.
     if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)
-        && ext !== '.pdf' && input.offset === undefined && input.limit === undefined && !input.allow_large) {
+        && !isPDFExtension(ext) && input.offset === undefined && input.limit === undefined && !input.allow_large) {
       try {
         const fd = fs.openSync(resolved, 'r');
         const buf = Buffer.alloc(MAX_READ_SIZE);
@@ -1016,7 +1066,14 @@ export const fileReadTool: ToolDefinition = {
     }
 
     // Handle PDF files — extract text
-    if (ext === '.pdf') {
+    if (isPDFExtension(ext)) {
+      // A 0-byte PDF carries no content: short-circuit with a distinct `empty`
+      // classification BEFORE the %PDF- header probe (which would otherwise report
+      // the less-accurate "missing %PDF- header"). Mirrors Claude Code's
+      // originalSize === 0 → reason:'empty' guard (utils/pdf.ts).
+      if (stat.size === 0) {
+        return { output: classifyPdfError('PDF file is empty (0 bytes)'), isError: true };
+      }
       // Guard PDF size BEFORE loading the whole file into memory. file-read exempts
       // .pdf from the generic MAX_READ_SIZE partial-view cap, so without this a huge
       // PDF would be read whole via fs.readFile → unbounded memory (DoS). Mirrors
@@ -1516,25 +1573,67 @@ export function coerceReadLineParam(
 }
 
 /**
- * Classify a PDF-parse failure into an actionable, model-facing error string.
- * A password-protected / encrypted PDF is called out distinctly (so the model/
- * user knows to supply an unprotected copy) instead of being buried in a generic
- * "Error reading PDF" message. Mirrors Claude Code's password_protected branch.
+ * Machine-readable taxonomy of why a PDF read failed. Mirrors Claude Code's
+ * `PDFError.reason` discriminated union (utils/pdf.ts) so a failure can be
+ * classified by cause (empty 0-byte file, over-size, password/encryption,
+ * corrupted bytes, renderer unavailable) rather than collapsed into one opaque
+ * string. The reason drives the actionable message in {@link classifyPdfError}.
+ */
+export type PdfErrorReason =
+  | 'empty'
+  | 'too_large'
+  | 'password_protected'
+  | 'corrupted'
+  | 'unavailable'
+  | 'unknown';
+
+/**
+ * Classify a PDF-parse failure message into a {@link PdfErrorReason}. The reason
+ * is the single source of truth the user-facing message in {@link classifyPdfError}
+ * switches on, so the two never drift. Mirrors Claude Code's pdf.ts stderr-regex
+ * branches: `/password/i` → password_protected, `/damaged|corrupt/i` → corrupted,
+ * plus empty/too-large/unavailable detection; anything else → unknown.
+ */
+export function classifyPdfErrorReason(message: string): PdfErrorReason {
+  if (/password|encrypt(ed|ion)?|\bdecrypt/i.test(message)) return 'password_protected';
+  // A damaged/corrupt PDF gets its own actionable classification so the model/
+  // user knows the bytes themselves are bad and a re-download/regeneration is
+  // needed. Matches `damaged`/`corrupt` (incl. corrupted/corruption); bare
+  // "invalid" is intentionally excluded so a benign parser message like
+  // "Invalid xref table" stays the generic unknown error. Mirrors Claude Code's
+  // pdf.ts corrupted branch.
+  if (/damaged|corrupt(ed|ion)?/i.test(message)) return 'corrupted';
+  // A 0-byte / empty document, surfaced distinctly so the model knows the file
+  // itself carries no content (not a parser fault). Mirrors Claude's `empty` reason.
+  if (/\bempty\b|0 bytes|zero[- ]?length/i.test(message)) return 'empty';
+  if (/too large|exceeds the|maximum.*size|size limit/i.test(message)) return 'too_large';
+  // The optional renderer/parser dependency is missing. Mirrors Claude's `unavailable`.
+  if (/not installed|unavailable|cannot find module|poppler|pdftoppm/i.test(message)) return 'unavailable';
+  return 'unknown';
+}
+
+/**
+ * Classify a PDF-parse failure into an actionable, model-facing error string via
+ * the typed {@link classifyPdfErrorReason} taxonomy. Each reason yields a distinct
+ * message (e.g. password-protected → "provide an unprotected version") instead of
+ * being buried in a generic "Error reading PDF" string. Mirrors Claude Code's
+ * per-reason PDF error messages (utils/pdf.ts).
  */
 export function classifyPdfError(message: string): string {
-  if (/password|encrypt(ed|ion)?|\bdecrypt/i.test(message)) {
-    return 'Error: PDF is password-protected or encrypted. Please provide an unprotected version.';
+  switch (classifyPdfErrorReason(message)) {
+    case 'password_protected':
+      return 'Error: PDF is password-protected or encrypted. Please provide an unprotected version.';
+    case 'corrupted':
+      return 'Error: PDF file is corrupted or invalid. Please provide a valid PDF.';
+    case 'empty':
+      return 'Error: PDF file is empty (0 bytes).';
+    case 'too_large':
+      return `Error: ${message}`;
+    case 'unavailable':
+      return `Error: PDF support is unavailable: ${message}`;
+    default:
+      return `Error reading PDF: ${message}`;
   }
-  // A damaged/corrupt PDF gets its own actionable classification (distinct from
-  // the generic reader error) so the model/user knows the bytes themselves are
-  // bad and a re-download/regeneration is needed. Matches `damaged`/`corrupt`
-  // (incl. corrupted/corruption); bare "invalid" is intentionally excluded so a
-  // benign parser message like "Invalid xref table" stays the generic error.
-  // Mirrors Claude Code's pdf.ts corrupted branch (/damaged|corrupt|invalid/i).
-  if (/damaged|corrupt(ed|ion)?/i.test(message)) {
-    return 'Error: PDF file is corrupted or invalid. Please provide a valid PDF.';
-  }
-  return `Error reading PDF: ${message}`;
 }
 
 export async function checkBinaryContent(filePath: string): Promise<boolean> {
