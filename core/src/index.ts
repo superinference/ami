@@ -88,7 +88,8 @@ export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
-export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError } from './logger';
+export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming } from './logger';
+export type { LogTailResult } from './logger';
 export type { FileEntry, SymbolEntry, ImportEdge, BuildIndexResult } from './workspace-indexer';
 
 export { SuperInferenceEngine, Critic, Retriever } from './superinference';

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { redactCredentials } from './credential-guard';
+import { isEnvTruthy } from './privacy-level';
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
@@ -228,6 +229,9 @@ export const fsHooks = {
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   renameSync: fs.renameSync as typeof fs.renameSync,
   appendFileSync: fs.appendFileSync as typeof fs.appendFileSync,
+  openSync: fs.openSync as typeof fs.openSync,
+  readSync: fs.readSync as typeof fs.readSync,
+  closeSync: fs.closeSync as typeof fs.closeSync,
 };
 
 let initialized = false;
@@ -254,6 +258,20 @@ export function getInMemoryErrors(): Array<{ error: string; timestamp: string }>
   return [...inMemoryErrors];
 }
 
+/**
+ * Push a redacted entry onto the bounded recent-errors ring (oldest evicted at
+ * {@link MAX_IN_MEMORY_ERRORS}). Single internal helper so `logError` and the
+ * severity-filtered diagnostic bridge share ONE ring-maintenance path (no
+ * duplicated shift/push logic).
+ */
+function pushErrorRing(text: string): void {
+  const entry = { error: redactCredentials(text), timestamp: new Date().toISOString() };
+  if (inMemoryErrors.length >= MAX_IN_MEMORY_ERRORS) {
+    inMemoryErrors.shift(); // drop the oldest
+  }
+  inMemoryErrors.push(entry);
+}
+
 /** Test-only seam: force the next log() call to re-run directory setup/rotation. */
 export function __resetLoggerForTest(): void {
   initialized = false;
@@ -261,6 +279,7 @@ export function __resetLoggerForTest(): void {
   logDir = DEFAULT_LOG_DIR;
   logFile = path.join(DEFAULT_LOG_DIR, 'engine.log');
   inMemoryErrors = [];
+  lastApiRequest = null;
   debugFilterCache.clear();
 }
 
@@ -379,15 +398,243 @@ export function logApiResponse(
 }
 
 export function logError(component: string, error: string, context?: Record<string, unknown>): void {
+  // Enrich with HTTP/network request context (url/status/server-body) when the
+  // caller threads the originating error object through `context.httpError`.
+  // The raw error object itself is NOT written to the structured `data` (it may
+  // be large/circular and leak internals) — only the extracted bracketed prefix.
+  const { httpError, ...restContext } = context ?? {};
+  const enriched = `${httpErrorContext(httpError)}${error}`;
+  const dataContext = Object.keys(restContext).length > 0 ? restContext : undefined;
+
+  // Hard-fail mode: surface silently-swallowed errors by throwing immediately,
+  // so a logged error crashes the run instead of being buried. Checked FIRST so
+  // it fires regardless of the error-reporting opt-out. Mirrors Claude Code's
+  // `--hard-fail` (AMI gates on the `AMI_LOG_HARD_FAIL` env flag).
+  if (isEnvTruthy(process.env.AMI_LOG_HARD_FAIL)) {
+    throw new Error(`[HARD FAIL] [${component}] ${enriched}`);
+  }
+
+  // Opt-out of error capture entirely (data minimization). Mirrors Claude Code's
+  // `DISABLE_ERROR_REPORTING` knob: skip both the in-memory ring and disk.
+  if (isEnvTruthy(process.env.DISABLE_ERROR_REPORTING)) return;
+
   // Always capture the error in the in-memory ring (redacted, bounded) so it is
   // retrievable for diagnostics/bug reports even if the disk write is filtered
   // or fails. Mirrors Claude Code's "always add to in-memory log" behavior.
-  const entry = { error: redactCredentials(`[${component}] ${error}`), timestamp: new Date().toISOString() };
-  if (inMemoryErrors.length >= MAX_IN_MEMORY_ERRORS) {
-    inMemoryErrors.shift(); // drop the oldest
+  pushErrorRing(`[${component}] ${enriched}`);
+  log(component, `ERROR: ${enriched}`, dataContext, 'error');
+}
+
+// ---------------------------------------------------------------------------
+// HTTP / network error enrichment (url + status + server body message).
+// ---------------------------------------------------------------------------
+/**
+ * Extract a human-readable server message from an error's response payload.
+ * Accepts a raw string body, `{ message }`, or `{ error: { message } }`.
+ * Mirrors Claude Code's `extractServerMessage`.
+ */
+export function extractServerMessage(data: unknown): string | undefined {
+  if (typeof data === 'string') return data;
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.message === 'string') return obj.message;
+    const inner = obj.error;
+    if (inner && typeof inner === 'object' && typeof (inner as Record<string, unknown>).message === 'string') {
+      return (inner as Record<string, unknown>).message as string;
+    }
   }
-  inMemoryErrors.push(entry);
-  log(component, `ERROR: ${error}`, context, 'error');
+  return undefined;
+}
+
+/**
+ * Build a bracketed `[url=…,status=…,body=…] ` prefix from an HTTP/network error
+ * object for inclusion in the persisted error log. Duck-types both axios-style
+ * (`error.config.url`, `error.response.status`, `error.response.data`) and
+ * fetch-style (`error.url`, `error.status`, `error.body`) shapes so no HTTP
+ * client dependency is required. Returns `''` when no request context is found.
+ * Mirrors the axios-error enrichment in Claude Code's `errorLogSink`.
+ */
+export function httpErrorContext(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const err = error as Record<string, unknown>;
+  const config = err.config as Record<string, unknown> | undefined;
+  const response = err.response as Record<string, unknown> | undefined;
+  const url = (config?.url ?? err.url) as unknown;
+  if (typeof url !== 'string' || url === '') return '';
+
+  const parts = [`url=${url}`];
+  const status = (response?.status ?? err.status) as unknown;
+  if (typeof status === 'number') parts.push(`status=${status}`);
+  const body = extractServerMessage(response?.data ?? err.body ?? err.data);
+  if (body) parts.push(`body=${body}`);
+  return `[${parts.join(',')}] `;
+}
+
+// ---------------------------------------------------------------------------
+// Memory-bounded tail read of the (unbounded) log — for /doctor & bug reports.
+// ---------------------------------------------------------------------------
+const TAIL_READ_BYTES = 64 * 1024;
+const DEFAULT_TAIL_LINES = 20;
+
+/** Result of {@link readLogTail}: the tail lines + full size, or a miss/error. */
+export type LogTailResult =
+  | { ok: true; lines: string[]; size: number }
+  | { ok: false; missing: boolean; error?: string };
+
+function isENOENT(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Read the last N lines of a log file WITHOUT loading the whole thing: stat for
+ * the size, positioned-read the trailing window (default 64KB), then keep the
+ * last `maxLines` lines. Debug logs grow unbounded in long sessions, so a full
+ * read would spike RSS. A missing file is special-cased (`missing: true`) so a
+ * caller can distinguish "no log yet" from a real read failure. Mirrors Claude
+ * Code's bundled debug-skill tail read.
+ */
+export function readLogTail(opts?: { file?: string; maxBytes?: number; maxLines?: number }): LogTailResult {
+  const file = opts?.file ?? getLogPath();
+  const maxBytes = opts?.maxBytes ?? TAIL_READ_BYTES;
+  const maxLines = opts?.maxLines ?? DEFAULT_TAIL_LINES;
+  let fd: number | undefined;
+  try {
+    const stat = fsHooks.statSync(file);
+    const readSize = Math.min(stat.size, maxBytes);
+    const startOffset = stat.size - readSize;
+    const buffer = Buffer.alloc(readSize);
+    fd = fsHooks.openSync(file, 'r');
+    const bytesRead = fsHooks.readSync(fd, buffer, 0, readSize, startOffset);
+    const lines = buffer
+      .toString('utf-8', 0, bytesRead)
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .slice(-maxLines);
+    return { ok: true, lines, size: stat.size };
+  } catch (e) {
+    if (isENOENT(e)) return { ok: false, missing: true };
+    return { ok: false, missing: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    if (fd !== undefined) {
+      try { fsHooks.closeSync(fd); } catch {}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable value summarizer for diagnostic output.
+// ---------------------------------------------------------------------------
+/**
+ * Compact one value for a diagnostic description: `Array[N]`, `Object{N keys}`,
+ * strings truncated to 80 chars with an ellipsis, everything else `String(v)`.
+ * Keeps diagnostic lines bounded and readable. Mirrors the per-value summary in
+ * Claude Code's slow-operation description builder.
+ */
+export function summarizeValue(v: unknown): string {
+  if (Array.isArray(v)) return `Array[${v.length}]`;
+  if (v !== null && typeof v === 'object') return `Object{${Object.keys(v as Record<string, unknown>).length} keys}`;
+  if (typeof v === 'string') return v.length > 80 ? `${v.slice(0, 80)}…` : v;
+  return String(v);
+}
+
+// ---------------------------------------------------------------------------
+// Last-API-request capture (for bug reports / diagnostics).
+// ---------------------------------------------------------------------------
+let lastApiRequest: { timestamp: string; params: Record<string, unknown> } | null = null;
+
+/**
+ * Record the most recent API request parameters so a later bug report or
+ * `/doctor` can include "what was the last call that failed". String values are
+ * credential-redacted on capture so an API key in a header never lingers in
+ * memory. Only the latest is kept. Mirrors Claude Code's captureAPIRequest.
+ */
+export function captureApiRequest(params: Record<string, unknown>): void {
+  const redacted: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(params)) {
+    redacted[k] = typeof val === 'string' ? redactCredentials(val) : val;
+  }
+  lastApiRequest = { timestamp: new Date().toISOString(), params: redacted };
+}
+
+/** Return a copy of the last captured API request, or null if none. */
+export function getLastApiRequest(): { timestamp: string; params: Record<string, unknown> } | null {
+  return lastApiRequest ? { timestamp: lastApiRequest.timestamp, params: { ...lastApiRequest.params } } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Severity-filtered diagnostic bridge + async timing wrapper.
+// ---------------------------------------------------------------------------
+/**
+ * Whether a severity should be surfaced to the telemetry/bug-report pipeline:
+ * `warn` and `error` surface; `info`/`debug`/`verbose` are suppressed (they stay
+ * only in the on-disk debug log). Lets a noisy diagnostic channel feed just the
+ * actionable entries into the retrievable error ring.
+ */
+export function shouldSurfaceToTelemetry(level: LogLevel): boolean {
+  return LEVEL_ORDER[level] >= LEVEL_ORDER.warn;
+}
+
+/**
+ * Record a structured diagnostic event. Always writes to the on-disk debug log
+ * at `level`; additionally, when the severity is surfaced
+ * ({@link shouldSurfaceToTelemetry}), pushes a compact entry onto the retrievable
+ * in-memory error ring so warn/error diagnostics show up in bug reports while
+ * low-severity chatter does not.
+ */
+export function recordDiagnostic(level: LogLevel, event: string, data?: Record<string, unknown>): void {
+  log('diag', event, data, level);
+  if (shouldSurfaceToTelemetry(level)) {
+    const dataStr = data ? ' ' + JSON.stringify(data) : '';
+    pushErrorRing(`[diag:${level}] ${event}${dataStr}`);
+  }
+}
+
+/** Slow-operation threshold (ms); off by default. `AMI_SLOW_OPERATION_THRESHOLD_MS`. */
+function getSlowOpThresholdMs(): number {
+  const raw = process.env.AMI_SLOW_OPERATION_THRESHOLD_MS;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
+  }
+  return Infinity;
+}
+
+/**
+ * Wrap an async operation with start/complete/fail diagnostic timing events
+ * (`<event>_started`, `<event>_completed`, `<event>_failed`) carrying
+ * `duration_ms`, plus automatic slow-operation detection: if the op exceeds
+ * `AMI_SLOW_OPERATION_THRESHOLD_MS` a `[SLOW OPERATION DETECTED]` warn record is
+ * emitted. `getData` optionally extracts extra fields from the result for the
+ * completion event. Mirrors Claude Code's `withDiagnosticsTiming` +
+ * slow-operation logging. The original error is always rethrown unchanged.
+ */
+export async function withDiagnosticsTiming<T>(
+  event: string,
+  fn: () => Promise<T>,
+  getData?: (result: T) => Record<string, unknown>,
+): Promise<T> {
+  const start = Date.now();
+  recordDiagnostic('debug', `${event}_started`);
+  try {
+    const result = await fn();
+    const duration = Date.now() - start;
+    const extra = getData ? getData(result) : {};
+    recordDiagnostic('debug', `${event}_completed`, { duration_ms: duration, ...extra });
+    maybeWarnSlowOp(event, duration);
+    return result;
+  } catch (err) {
+    const duration = Date.now() - start;
+    recordDiagnostic('error', `${event}_failed`, { duration_ms: duration });
+    maybeWarnSlowOp(event, duration);
+    throw err;
+  }
+}
+
+/** Emit a `[SLOW OPERATION DETECTED]` warn record when `duration` exceeds the threshold. */
+function maybeWarnSlowOp(description: string, duration: number): void {
+  if (duration > getSlowOpThresholdMs()) {
+    recordDiagnostic('warn', `[SLOW OPERATION DETECTED] ${description} (${duration}ms)`);
+  }
 }
 
 export function getLogPath(): string {

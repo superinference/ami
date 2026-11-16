@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -739,5 +739,335 @@ describe('debug-filter integration through log()', () => {
     log('api', 'kept');
     log('memory', 'also kept');
     assert.equal(s.written.length, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeValue (U060 — human-readable value summarizer)
+// ---------------------------------------------------------------------------
+describe('summarizeValue', () => {
+  it('renders arrays as Array[N]', () => {
+    assert.equal(summarizeValue([1, 2, 3]), 'Array[3]');
+    assert.equal(summarizeValue([]), 'Array[0]');
+  });
+  it('renders objects as Object{N keys}', () => {
+    assert.equal(summarizeValue({ a: 1, b: 2 }), 'Object{2 keys}');
+    assert.equal(summarizeValue({}), 'Object{0 keys}');
+  });
+  it('truncates long strings to 80 chars with an ellipsis', () => {
+    const s = 'x'.repeat(100);
+    assert.equal(summarizeValue(s), 'x'.repeat(80) + '…');
+  });
+  it('leaves short strings intact', () => {
+    assert.equal(summarizeValue('hello'), 'hello');
+  });
+  it('stringifies primitives and null', () => {
+    assert.equal(summarizeValue(42), '42');
+    assert.equal(summarizeValue(true), 'true');
+    assert.equal(summarizeValue(null), 'null');
+    assert.equal(summarizeValue(undefined), 'undefined');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractServerMessage + httpErrorContext (U060 — HTTP error enrichment)
+// ---------------------------------------------------------------------------
+describe('extractServerMessage', () => {
+  it('returns a raw string body unchanged', () => {
+    assert.equal(extractServerMessage('boom'), 'boom');
+  });
+  it('reads a top-level { message }', () => {
+    assert.equal(extractServerMessage({ message: 'bad request' }), 'bad request');
+  });
+  it('reads a nested { error: { message } }', () => {
+    assert.equal(extractServerMessage({ error: { message: 'nested' } }), 'nested');
+  });
+  it('returns undefined for unrecognized shapes', () => {
+    assert.equal(extractServerMessage(42), undefined);
+    assert.equal(extractServerMessage(null), undefined);
+    assert.equal(extractServerMessage({ foo: 'bar' }), undefined);
+  });
+});
+
+describe('httpErrorContext', () => {
+  it('enriches an axios-style error (config.url + response.status + response.data)', () => {
+    const err = { config: { url: 'https://api/x' }, response: { status: 503, data: { message: 'overloaded' } } };
+    assert.equal(httpErrorContext(err), '[url=https://api/x,status=503,body=overloaded] ');
+  });
+  it('enriches a fetch-style error (url + status + body)', () => {
+    const err = { url: 'https://api/y', status: 404, body: 'not found' };
+    assert.equal(httpErrorContext(err), '[url=https://api/y,status=404,body=not found] ');
+  });
+  it('returns empty string when there is no url', () => {
+    assert.equal(httpErrorContext({ status: 500 }), '');
+    assert.equal(httpErrorContext(null), '');
+    assert.equal(httpErrorContext('oops'), '');
+  });
+  it('omits status/body when absent', () => {
+    assert.equal(httpErrorContext({ url: 'https://api/z' }), '[url=https://api/z] ');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// logError enrichment / hard-fail / disable-error-reporting (U060)
+// ---------------------------------------------------------------------------
+describe('logError gating & enrichment', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  beforeEach(() => { __resetLoggerForTest(); });
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    process.env = { ...ORIG };
+  });
+
+  it('prepends HTTP context from context.httpError and does not dump the raw object to data', () => {
+    const s = capture();
+    logError('net', 'request failed', { httpError: { url: 'https://h/api', status: 500, body: 'srv' }, attempt: 2 });
+    assert.equal(s.written.length, 1);
+    const line = s.written[0];
+    assert.ok(line.includes('[url=https://h/api,status=500,body=srv] request failed'));
+    // restContext (attempt) is kept as structured data...
+    assert.ok(line.includes('"attempt":2'));
+    // ...but the raw httpError object is NOT serialized into the data blob.
+    assert.ok(!line.includes('"httpError"'));
+    // in-memory ring also carries the enriched text
+    assert.ok(getInMemoryErrors()[0].error.includes('[url=https://h/api,status=500,body=srv]'));
+  });
+
+  it('AMI_LOG_HARD_FAIL makes logError throw (crash-on-logged-error)', () => {
+    capture();
+    process.env.AMI_LOG_HARD_FAIL = '1';
+    assert.throws(() => logError('x', 'boom'), /\[HARD FAIL\] \[x\] boom/);
+  });
+
+  it('AMI_LOG_HARD_FAIL=off does not throw', () => {
+    capture();
+    process.env.AMI_LOG_HARD_FAIL = 'off';
+    assert.doesNotThrow(() => logError('x', 'fine'));
+  });
+
+  it('DISABLE_ERROR_REPORTING suppresses both the ring and the disk write', () => {
+    const s = capture();
+    process.env.DISABLE_ERROR_REPORTING = '1';
+    logError('x', 'silenced');
+    assert.equal(s.written.length, 0);
+    assert.equal(getInMemoryErrors().length, 0);
+  });
+
+  it('hard-fail fires even when error reporting is disabled', () => {
+    capture();
+    process.env.DISABLE_ERROR_REPORTING = '1';
+    process.env.AMI_LOG_HARD_FAIL = '1';
+    assert.throws(() => logError('x', 'boom'), /HARD FAIL/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readLogTail (U060 — memory-bounded tail read)
+// ---------------------------------------------------------------------------
+describe('readLogTail', () => {
+  afterEach(() => { mock.restoreAll(); __resetLoggerForTest(); });
+
+  it('returns the last N lines from the trailing byte window', () => {
+    const content = Array.from({ length: 50 }, (_, i) => `line${i}`).join('\n') + '\n';
+    const buf = Buffer.from(content, 'utf-8');
+    mock.method(fsHooks, 'statSync', () => ({ size: buf.length }) as fs.Stats);
+    mock.method(fsHooks, 'openSync', () => 7);
+    mock.method(fsHooks, 'readSync', (_fd: number, b: Buffer, off: number, len: number, pos: number) => {
+      buf.copy(b, off, pos, pos + len);
+      return len;
+    });
+    let closed = false;
+    mock.method(fsHooks, 'closeSync', () => { closed = true; });
+    const res = readLogTail({ maxLines: 5 });
+    assert.ok(res.ok);
+    if (res.ok) {
+      assert.deepEqual(res.lines, ['line45', 'line46', 'line47', 'line48', 'line49']);
+      assert.equal(res.size, buf.length);
+    }
+    assert.ok(closed, 'fd should be closed');
+  });
+
+  it('honors maxBytes by only reading the trailing window', () => {
+    const content = 'aaaa\nbbbb\ncccc\ndddd\n';
+    const buf = Buffer.from(content, 'utf-8');
+    let requestedPos = -1;
+    let requestedLen = -1;
+    mock.method(fsHooks, 'statSync', () => ({ size: buf.length }) as fs.Stats);
+    mock.method(fsHooks, 'openSync', () => 3);
+    mock.method(fsHooks, 'readSync', (_fd: number, b: Buffer, off: number, len: number, pos: number) => {
+      requestedPos = pos; requestedLen = len;
+      buf.copy(b, off, pos, pos + len);
+      return len;
+    });
+    mock.method(fsHooks, 'closeSync', () => undefined);
+    const res = readLogTail({ maxBytes: 10, maxLines: 20 });
+    assert.ok(res.ok);
+    assert.equal(requestedLen, 10);
+    assert.equal(requestedPos, buf.length - 10);
+  });
+
+  it('special-cases a missing file (ENOENT => missing:true)', () => {
+    mock.method(fsHooks, 'statSync', () => { const e = new Error('nope') as NodeJS.ErrnoException; e.code = 'ENOENT'; throw e; });
+    const res = readLogTail({ file: '/no/such/log' });
+    assert.deepEqual(res, { ok: false, missing: true });
+  });
+
+  it('reports other read errors with missing:false + message', () => {
+    mock.method(fsHooks, 'statSync', () => { const e = new Error('EACCES denied') as NodeJS.ErrnoException; e.code = 'EACCES'; throw e; });
+    const res = readLogTail({ file: '/root/log' });
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.missing, false);
+      assert.ok(res.error && res.error.includes('EACCES'));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// captureApiRequest / getLastApiRequest (U060)
+// ---------------------------------------------------------------------------
+describe('captureApiRequest', () => {
+  afterEach(() => { __resetLoggerForTest(); });
+
+  it('returns null before any capture', () => {
+    __resetLoggerForTest();
+    assert.equal(getLastApiRequest(), null);
+  });
+  it('keeps only the most recent request and redacts string params', () => {
+    captureApiRequest({ model: 'opus', authorization: 'Bearer sk-ant-api03-SECRETKEY', count: 3 });
+    captureApiRequest({ model: 'sonnet', count: 9 });
+    const last = getLastApiRequest();
+    assert.ok(last);
+    assert.equal(last!.params.model, 'sonnet');
+    assert.equal(last!.params.count, 9);
+    assert.ok(typeof last!.timestamp === 'string');
+  });
+  it('redacts credentials in captured string values', () => {
+    captureApiRequest({ authorization: 'Bearer sk-ant-api03-DEADBEEFDEADBEEFDEADBEEF' });
+    const last = getLastApiRequest();
+    assert.ok(last);
+    assert.ok(!String(last!.params.authorization).includes('DEADBEEFDEADBEEFDEADBEEF'));
+  });
+  it('returns a copy (mutating the result does not affect stored state)', () => {
+    captureApiRequest({ model: 'opus' });
+    const a = getLastApiRequest();
+    a!.params.model = 'tampered';
+    assert.equal(getLastApiRequest()!.params.model, 'opus');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSurfaceToTelemetry / recordDiagnostic (U060 — severity bridge)
+// ---------------------------------------------------------------------------
+describe('shouldSurfaceToTelemetry', () => {
+  it('surfaces warn and error only', () => {
+    assert.equal(shouldSurfaceToTelemetry('error'), true);
+    assert.equal(shouldSurfaceToTelemetry('warn'), true);
+    assert.equal(shouldSurfaceToTelemetry('info'), false);
+    assert.equal(shouldSurfaceToTelemetry('debug'), false);
+    assert.equal(shouldSurfaceToTelemetry('verbose'), false);
+  });
+});
+
+describe('recordDiagnostic', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  beforeEach(() => { __resetLoggerForTest(); process.env.AMI_DEBUG_LOG_LEVEL = 'verbose'; });
+  afterEach(() => { mock.restoreAll(); __resetLoggerForTest(); process.env = { ...ORIG }; });
+
+  it('writes to the debug log and pushes warn/error onto the in-memory ring', () => {
+    const s = capture();
+    recordDiagnostic('error', 'boom_event', { code: 7 });
+    assert.equal(s.written.length, 1);
+    assert.ok(s.written[0].includes('boom_event'));
+    const ring = getInMemoryErrors();
+    assert.equal(ring.length, 1);
+    assert.ok(ring[0].error.includes('[diag:error] boom_event'));
+    assert.ok(ring[0].error.includes('"code":7'));
+  });
+
+  it('does NOT push info/debug events onto the ring (only the debug log)', () => {
+    const s = capture();
+    recordDiagnostic('info', 'quiet_event');
+    assert.equal(s.written.length, 1);
+    assert.equal(getInMemoryErrors().length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withDiagnosticsTiming (U060 — timing wrapper + slow-op detection)
+// ---------------------------------------------------------------------------
+describe('withDiagnosticsTiming', () => {
+  const ORIG = { ...process.env };
+  function capture(): { written: string[] } {
+    const state = { written: [] as string[] };
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: fs.PathOrFileDescriptor, data: unknown) => {
+      state.written.push(String(data));
+    });
+    return state;
+  }
+  beforeEach(() => { __resetLoggerForTest(); process.env.AMI_DEBUG_LOG_LEVEL = 'verbose'; });
+  afterEach(() => { mock.restoreAll(); __resetLoggerForTest(); process.env = { ...ORIG }; });
+
+  it('emits started + completed events and returns the result', async () => {
+    const s = capture();
+    const result = await withDiagnosticsTiming('op', async () => 42);
+    assert.equal(result, 42);
+    const joined = s.written.join('');
+    assert.ok(joined.includes('op_started'));
+    assert.ok(joined.includes('op_completed'));
+    assert.ok(joined.includes('duration_ms'));
+  });
+
+  it('merges getData fields into the completed event', async () => {
+    const s = capture();
+    await withDiagnosticsTiming('op', async () => ({ n: 5 }), (r) => ({ extracted: r.n }));
+    assert.ok(s.written.join('').includes('"extracted":5'));
+  });
+
+  it('emits a failed event and rethrows the original error', async () => {
+    const s = capture();
+    const boom = new Error('kaboom');
+    await assert.rejects(() => withDiagnosticsTiming('op', async () => { throw boom; }), /kaboom/);
+    const joined = s.written.join('');
+    assert.ok(joined.includes('op_failed'));
+    // the failure surfaces on the in-memory ring (error severity)
+    assert.ok(getInMemoryErrors().some((e) => e.error.includes('op_failed')));
+  });
+
+  it('emits [SLOW OPERATION DETECTED] when over AMI_SLOW_OPERATION_THRESHOLD_MS', async () => {
+    const s = capture();
+    process.env.AMI_SLOW_OPERATION_THRESHOLD_MS = '0';
+    await withDiagnosticsTiming('slowop', async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return 'done';
+    });
+    assert.ok(s.written.join('').includes('[SLOW OPERATION DETECTED] slowop'));
+  });
+
+  it('does NOT warn when under the threshold (off by default)', async () => {
+    const s = capture();
+    await withDiagnosticsTiming('fastop', async () => 'done');
+    assert.ok(!s.written.join('').includes('SLOW OPERATION DETECTED'));
   });
 });
