@@ -711,7 +711,8 @@ export const sendMessageTool: ToolDefinition = {
     '\n' +
     'Your plain text output is NOT visible to other agents — to communicate with a teammate you MUST call this ' +
     'tool. Messages from teammates are delivered to you automatically; you do not poll an inbox. Refer to ' +
-    'teammates by their bare name (no "@", never a UUID). When relaying a teammate message to the user, do not ' +
+    'teammates by their bare name (no "@", never a UUID). To reply to an incoming message, copy its sender ' +
+    '("from"/<peer-message from=...>) value into "to". When relaying a teammate message to the user, do not ' +
     'quote the original — it is already rendered.\n' +
     '\n' +
     'Your sender identity is taken from your trusted agent context, not from the "from" field. Messages queue ' +
@@ -757,6 +758,19 @@ export const sendMessageTool: ToolDefinition = {
     required: ['to', 'content'],
   },
   isReadOnly: false,
+  // PARITY (additive): per-invocation read-only verdict. A plain-text chat message
+  // mutates nothing (it just queues text), so it is read-only and auto-allows
+  // without a permission prompt; a STRUCTURED control message (shutdown / plan /
+  // permission / mode / task) changes a teammate's lifecycle or posture and stays
+  // on the permission-asking path. Mirrors Claude's `isReadOnly(input) =>
+  // typeof input.message === 'string'` (plain text = read-only), discriminating on
+  // AMI's string-encoded content via the single canonical structured-message
+  // detector. Consumed by tool-executor through isToolReadOnlyForInput.
+  isReadOnlyForInput: (input: Record<string, unknown>): boolean => {
+    const c = (input.message as string) ?? (input.content as string);
+    if (typeof c !== 'string') return true;
+    return !isStructuredProtocolMessage(c);
+  },
 
   async execute(input, context: ToolContext): Promise<ToolResult> {
     let toRaw = input.to as string;
