@@ -10,8 +10,10 @@ import {
   isEssentialTrafficOnly,
   getEssentialTrafficOnlyReason,
   getPrivacyPosture,
+  isNonessentialFeatureAllowedOnMiss,
   PRIVACY_LEVELS,
   ESSENTIAL_TRAFFIC_VARS,
+  ESSENTIAL_TRAFFIC_DENY_ON_MISS,
   type PrivacyLevel,
   type PrivacyPosture,
 } from './privacy-level';
@@ -25,8 +27,10 @@ export {
   isEssentialTrafficOnly,
   getEssentialTrafficOnlyReason,
   getPrivacyPosture,
+  isNonessentialFeatureAllowedOnMiss,
   PRIVACY_LEVELS,
   ESSENTIAL_TRAFFIC_VARS,
+  ESSENTIAL_TRAFFIC_DENY_ON_MISS,
 };
 export type { PrivacyLevel, PrivacyPosture };
 

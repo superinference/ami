@@ -76,6 +76,47 @@ export function getEssentialTrafficOnlyReason(env: NodeJS.ProcessEnv = process.e
   return null;
 }
 
+/**
+ * Nonessential outbound product features that must fail CLOSED when their
+ * per-feature enablement cannot be resolved (a policy/config "cache miss") while
+ * essential-traffic-only mode is active. Mirrors Claude's
+ * `ESSENTIAL_TRAFFIC_DENY_ON_MISS`: a lookup failure (missing managed policy,
+ * network timeout resolving an org restriction) must NEVER silently re-enable a
+ * nonessential egress for a restricted (e.g. HIPAA) org — it defaults to denied
+ * instead of the usual fail-open. Keys are AMI's nonessential egress features.
+ */
+export const ESSENTIAL_TRAFFIC_DENY_ON_MISS = new Set<string>([
+  // URL skill/plugin catalog discovery fetch (SkillDiscovery.pull)
+  'skill-catalog',
+  // Live model-pricing refresh (cost-tracker)
+  'live-pricing',
+  // Live model-list / capabilities discovery (model-registry)
+  'model-capabilities',
+  // Background update check (update-check)
+  'auto-update',
+  // Product-feedback / survey egress
+  'product-feedback',
+]);
+
+/**
+ * Decide whether a nonessential feature may run when its per-feature enablement
+ * CANNOT be resolved from policy/config (a "cache miss"). Mirrors Claude's
+ * `isPolicyAllowed` default — fail OPEN (return `true`) — with the one exception
+ * that a feature in {@link ESSENTIAL_TRAFFIC_DENY_ON_MISS} fails CLOSED (returns
+ * `false`) while essential-traffic-only mode is active, so an unresolved lookup
+ * never silently re-enables a nonessential egress for a restricted org.
+ * (parity: services/policyLimits.isPolicyAllowed / ESSENTIAL_TRAFFIC_DENY_ON_MISS)
+ */
+export function isNonessentialFeatureAllowedOnMiss(
+  feature: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isEssentialTrafficOnly(env) && ESSENTIAL_TRAFFIC_DENY_ON_MISS.has(feature)) {
+    return false;
+  }
+  return true;
+}
+
 /** A resolved, introspectable snapshot of the current privacy posture. */
 export interface PrivacyPosture {
   /** The effective ordered privacy level. */

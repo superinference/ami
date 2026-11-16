@@ -63,14 +63,15 @@ export { AnalyticsTracker, generateToolSummary } from './analytics';
 export type { AnalyticsEvent, AnalyticsTrackerOpts } from './analytics';
 export {
   getPrivacyLevel, isTelemetryDisabled, isEssentialTrafficOnly, getEssentialTrafficOnlyReason, isEnvTruthy,
+  getPrivacyPosture, isNonessentialFeatureAllowedOnMiss,
   sanitizeToolNameForAnalytics, sanitizeAnalyticsData, sanitizeAnalyticsValue,
   shouldSampleEvent, resolveSampleRate, trySerialize, markAnalyticsSafe, MAX_ANALYTICS_STRING_LEN,
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
 } from './analytics';
-export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS } from './analytics';
-export type { PrivacyLevel, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
+export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
+export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
 export { Profiler, FpsTracker, slowWarning } from './profiler';
 export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';
