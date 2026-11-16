@@ -245,18 +245,34 @@ export function buildCompletionSummary(
 }
 
 /**
+ * FUNCTIONAL (parity): the `usage` clause appended to a completion note — a
+ * ready-made `Usage: ran 3.2s.` fragment, mirroring Claude Code's completion
+ * notification which surfaces a usage section (`duration_ms`) so the model can see
+ * how long a finished background task ran. Rendered only when
+ * {@link CompletedTaskEvent.durationMs} is a known non-negative value; returns ''
+ * otherwise so a legacy event's note is unchanged. Pure + exported so the wording
+ * has ONE source (No-Duplication rule) and is unit-testable in isolation.
+ */
+export function formatUsageClause(event: CompletedTaskEvent): string {
+  if (typeof event.durationMs !== 'number' || event.durationMs < 0) return '';
+  return ` Usage: ran ${(event.durationMs / 1000).toFixed(1)}s.`;
+}
+
+/**
  * FUNCTIONAL (parity): the status-aware model-facing note for a drained background
  * completion, mirroring Claude Code's enqueueShellNotification. Prefers the
  * pre-computed {@link CompletedTaskEvent.summary} (set in emitComplete) so the
  * wording is the single source of truth, falling back to {@link buildCompletionSummary}
- * for a legacy emitter that omitted it. Keeps AMI's task_output guidance (the
- * differentiator) and output-file reference.
+ * for a legacy emitter that omitted it. Appends a {@link formatUsageClause} usage
+ * section (duration/tokens) when the emitter attached them. Keeps AMI's task_output
+ * guidance (the differentiator) and output-file reference.
  */
 export function formatBackgroundCompletionNote(event: CompletedTaskEvent): string {
   const outputInfo = event.outputPath ? ` Output file: ${event.outputPath}.` : '';
   const summary = event.summary ?? buildCompletionSummary(event.status, event.exitCode);
+  const usage = formatUsageClause(event);
   return (
-    `[Background task "${event.taskId}" ${summary}. Command: ${event.description}.${outputInfo} ` +
+    `[Background task "${event.taskId}" ${summary}.${usage} Command: ${event.description}.${outputInfo} ` +
     `Use task_output({ task_id: "${event.taskId}" }) to read the output.]`
   );
 }
@@ -283,6 +299,17 @@ export function computeElapsedMs(
  *  buffered stdout/stderr can flush, before finalizing the task regardless of any
  *  grandchildren that inherited the fds (see the 'exit'-not-'close' rationale). */
 export const OUTPUT_FLUSH_MS = 50;
+
+/**
+ * Grace period (ms) a TERMINAL task is retained after it finishes before it is
+ * eligible for automatic eviction, mirroring Claude Code's panel-grace /
+ * `evictAfter` retention window (teammateViewHelpers PANEL_GRACE_MS). A finished
+ * task stays in the task table and on disk for this long so the model can still
+ * read its output via task_output and see it in task_list; past the deadline it is
+ * reaped opportunistically ({@link ProcessManager.pruneExpired}) so a long session
+ * does not accumulate stale completed rows / orphaned output files without bound.
+ */
+export const TERMINAL_RETENTION_MS = 5 * 60_000; // 5 minutes
 
 /**
  * Stall-watchdog tuning knobs (parity with Claude Code's LocalShellTask
@@ -412,6 +439,15 @@ export interface BackgroundProcess {
    * paused (treated as 0).
    */
   totalPausedMs?: number;
+  /**
+   * Wall-clock deadline (ms epoch) after which a TERMINAL task becomes eligible for
+   * automatic eviction — set to `endTime + TERMINAL_RETENTION_MS` on the first
+   * terminal transition (see {@link setTerminalTimestamps}). {@link ProcessManager.pruneExpired}
+   * reaps terminal entries whose deadline has passed so finished rows/output files
+   * do not accumulate forever. Mirrors Claude Code's `evictAfter` retention field.
+   * Undefined while the task is still running.
+   */
+  evictAfter?: number;
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
   /**
@@ -469,6 +505,14 @@ export interface CompletedTaskEvent {
    * its shell-notification events. Undefined only on a legacy direct emit.
    */
   summary?: string;
+  /**
+   * Wall-clock active duration (ms) the task ran before reaching this terminal
+   * state — frozen pause-discounted value from {@link computeElapsedMs}, set by
+   * emitComplete from the tracked entry. Surfaced in the completion note's usage
+   * clause (`ran 3.2s`), mirroring Claude Code's LocalAgentTask `duration_ms`.
+   * Undefined on a legacy direct emit that bypassed emitComplete.
+   */
+  durationMs?: number;
 }
 
 /**
@@ -700,6 +744,7 @@ export class ProcessManager extends EventEmitter {
       entry.exitCode = resolveExitCode(code, signal);
       this.settlePause(entry);
       entry.endTime = Date.now();
+      this.setEvictDeadline(entry);
       try { fs.closeSync(fd); } catch { /* already closed (e.g. after kill) */ }
       entry.outputFd = null;
       this.emitComplete({ taskId, exitCode: entry.exitCode, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: entry.status });
@@ -730,6 +775,7 @@ export class ProcessManager extends EventEmitter {
       entry.status = 'failed';
       this.settlePause(entry);
       entry.endTime = Date.now();
+      this.setEvictDeadline(entry);
       this.safeWrite(fd, Buffer.from(`\n[process error: ${err.message}]\n`));
       try { fs.closeSync(fd); } catch { /* ignore */ }
       entry.outputFd = null;
@@ -755,6 +801,15 @@ export class ProcessManager extends EventEmitter {
     // outcome string instead of re-deriving it from status/exitCode.
     if (payload.summary === undefined) {
       payload.summary = buildCompletionSummary(payload.status, payload.exitCode);
+    }
+    // Attach the active run duration from the tracked entry so the completion
+    // note's usage clause can report how long the task ran — parity with Claude
+    // Code's completion notification `duration_ms`. Frozen, pause-discounted value
+    // via the shared computeElapsedMs formula; omitted for an untracked task or one
+    // whose endTime isn't set yet (defensive — emitComplete always runs after the
+    // terminal transition froze endTime).
+    if (entry && payload.durationMs === undefined && entry.endTime !== undefined) {
+      payload.durationMs = computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0);
     }
     // Bounded buffer (parity with Claude Code's sdkEventQueue): evict the oldest
     // entry at the cap so the durable buffer can never grow without bound across a
@@ -816,6 +871,7 @@ export class ProcessManager extends EventEmitter {
     // in-process agents / MCP monitors (no exit event) this is the only place the
     // terminal timestamp is set.
     entry.endTime = Date.now();
+    this.setEvictDeadline(entry);
     if (entry._intervalHandle) {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
@@ -928,6 +984,18 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry._pausedAt === undefined) return false;
     this.settlePause(entry);
     return true;
+  }
+
+  /**
+   * Derive the automatic-eviction deadline for a just-finished task from its frozen
+   * {@link BackgroundProcess.endTime}: `endTime + TERMINAL_RETENTION_MS`. Called at
+   * every terminal transition (finalize / error / kill / terminal updateEntry)
+   * right after endTime is set, so {@link pruneExpired} can reap stale terminal rows
+   * once their grace window elapses. No-op if endTime is somehow unset. Shared one
+   * site (No-Duplication rule) rather than inlining the arithmetic per transition.
+   */
+  private setEvictDeadline(entry: InternalProcess): void {
+    if (entry.endTime !== undefined) entry.evictAfter = entry.endTime + TERMINAL_RETENTION_MS;
   }
 
   /** Close any open pause window into totalPausedMs (no-op if not paused). Shared
@@ -1105,6 +1173,27 @@ export class ProcessManager extends EventEmitter {
   pruneTerminal(): number {
     let removed = 0;
     for (const taskId of Array.from(this.processes.keys())) {
+      if (this.removeTask(taskId)) removed++;
+    }
+    return removed;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's `evictAfter` retention): reap every
+   * TERMINAL task whose eviction deadline ({@link BackgroundProcess.evictAfter},
+   * set to endTime + {@link TERMINAL_RETENTION_MS}) has passed, via removeTask().
+   * Unlike {@link pruneTerminal} (which drops ALL terminal tasks immediately) this
+   * honours the panel grace window, so a freshly-finished task stays readable via
+   * task_output/task_list for TERMINAL_RETENTION_MS before it is auto-evicted.
+   * Called opportunistically on reads (task_list) so a long session doesn't
+   * accumulate stale completed rows / orphaned output files without a timer.
+   * `now` is injectable for deterministic tests. Returns the count reaped.
+   */
+  pruneExpired(now: number = Date.now()): number {
+    let removed = 0;
+    for (const taskId of Array.from(this.processes.keys())) {
+      const entry = this.processes.get(taskId);
+      if (!entry || entry.evictAfter === undefined || entry.evictAfter > now) continue;
       if (this.removeTask(taskId)) removed++;
     }
     return removed;
@@ -1382,6 +1471,7 @@ export class ProcessManager extends EventEmitter {
       // event). Keep the first terminal timestamp if one was already recorded.
       if (isTerminalTaskStatus(updates.status) && entry.endTime === undefined) {
         entry.endTime = Date.now();
+        this.setEvictDeadline(entry);
       }
     }
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;

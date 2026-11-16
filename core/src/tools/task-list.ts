@@ -106,6 +106,14 @@ export const taskListTool: ToolDefinition = {
       return { output: 'Error: Background process manager is not available.', isError: true };
     }
 
+    // Opportunistic retention GC (parity: Claude Code's `evictAfter` panel grace):
+    // reap terminal tasks whose grace window has elapsed before we list, so a long
+    // session doesn't accumulate stale completed rows / orphaned output files
+    // without a background timer. Optional-chained so a minimal manager stub (older
+    // tests) that lacks pruneExpired simply skips it. A freshly-finished task is
+    // still within TERMINAL_RETENTION_MS and therefore remains listed.
+    context.processManager.pruneExpired?.();
+
     const statusFilter = typeof input.status === 'string' ? input.status : undefined;
     const typeFilter = typeof input.type === 'string' ? input.type : undefined;
 
