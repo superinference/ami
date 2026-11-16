@@ -986,6 +986,33 @@ export class McpManager extends EventEmitter {
     await this.ensureConnected(name);
   }
 
+  /**
+   * Re-establish a server's session for the `authenticate` pseudo-tool.
+   *
+   * FUNCTIONAL FIX (parity, U102): the `mcp__<server>__authenticate` tool called
+   * `mcpManager.reconnect?.(name)`, but the manager exposed **no** `reconnect`
+   * method — so against the real manager the optional call was a silent no-op and
+   * the tool reported a false "already connected" success without ever attempting
+   * a connection. This wires a real re-auth entry point the tool depends on.
+   *
+   * The auth tool calls this (not `ensureConnected`/`restartServer` directly) so
+   * auth-cache invalidation and tool-set reconciliation live in one place: the
+   * server's cached tool schemas are dropped first (so a post-auth tool-swap is
+   * picked up on re-discovery), then the session is (re)established — a ready
+   * server is fully restarted so a freshly-minted credential is used, while a
+   * pending/errored/disconnected server is connected on demand (running the OAuth
+   * consent leg when required). Connection failures propagate so the tool can
+   * surface them instead of claiming success.
+   */
+  async reconnect(name: string): Promise<void> {
+    this.invalidateToolCache(name);
+    if (this.clients.get(name)?.state === 'ready') {
+      await this.restartServer(name);
+    } else {
+      await this.ensureConnected(name);
+    }
+  }
+
   isPending(name: string): boolean {
     const pending = this.pendingServers.get(name);
     if (!pending || this.clients.has(name)) return false;
