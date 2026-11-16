@@ -1,13 +1,16 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { ToolContext, EngineEvent } from '../src/types';
+import { ToolContext, EngineEvent, Message } from '../src/types';
 import {
   todoWriteTool,
   todoReadTool,
   getTodos,
+  setTodos,
   resetTodos,
   formatTodoReadOutput,
   validateInProgressActiveForm,
+  extractTodosFromTranscript,
+  rehydrateTodosFromTranscript,
   TODO_MAX_RESULT_CHARS,
 } from '../src/tools/todo-write';
 import { createDefaultTools } from '../src/tools/index';
@@ -340,6 +343,100 @@ describe('U091 — todo-write parity additions', () => {
       const items = getTodos('s1:');
       assert.equal(items.length, 1);
       assert.equal(items[0].content, 'updated');
+    });
+  });
+
+  // --- Gap: todo-list rehydration from transcript on resume -----------------
+  // Parity: extractTodosFromTranscript / restoreSessionStateFromLog — the model's
+  // todo list must survive a session restart without on-disk task persistence.
+  describe('transcript rehydration on resume (parity: extractTodosFromTranscript)', () => {
+    /** Build an assistant message carrying a todo_write tool call. */
+    function todoCall(todos: unknown, id = 'c1'): Message {
+      return {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id, type: 'function', function: { name: 'todo_write', arguments: JSON.stringify({ todos }) } }],
+      } as Message;
+    }
+
+    it('extracts todos from the most recent todo_write call (newest-first)', () => {
+      const messages: Message[] = [
+        todoCall([{ id: '1', content: 'old', status: 'pending' }], 'a'),
+        { role: 'user', content: 'go' } as Message,
+        todoCall([
+          { id: '1', content: 'newest', status: 'in_progress', activeForm: 'Doing newest' },
+          { id: '2', content: 'second', status: 'pending' },
+        ], 'b'),
+      ];
+      const items = extractTodosFromTranscript(messages);
+      assert.equal(items.length, 2);
+      assert.equal(items[0].content, 'newest');
+      assert.equal(items[0].activeForm, 'Doing newest');
+    });
+
+    it('assigns index-based ids when the call omitted them (same as live write)', () => {
+      const items = extractTodosFromTranscript([todoCall([{ content: 'x', status: 'pending' }])]);
+      assert.equal(items[0].id, 'todo-1');
+    });
+
+    it('returns [] when the transcript has no todo_write call', () => {
+      assert.deepEqual(extractTodosFromTranscript([{ role: 'user', content: 'hi' } as Message]), []);
+    });
+
+    it('returns [] on a malformed (unparseable) tool-call argument', () => {
+      const bad: Message = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'z', type: 'function', function: { name: 'todo_write', arguments: '{not json' } }],
+      } as Message;
+      assert.deepEqual(extractTodosFromTranscript([bad]), []);
+    });
+
+    it('returns [] when the stored call fails strict validation', () => {
+      // status out of enum → validateTodoInput rejects → restore nothing
+      assert.deepEqual(extractTodosFromTranscript([todoCall([{ id: '1', content: 'x', status: 'bogus' }])]), []);
+    });
+
+    it('ignores a tool_use arguments object that is not an object', () => {
+      const m: Message = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'z', type: 'function', function: { name: 'todo_write', arguments: '[]' } }],
+      } as Message;
+      assert.deepEqual(extractTodosFromTranscript([m]), []);
+    });
+
+    it('rehydrateTodosFromTranscript repopulates the session store under the context key', () => {
+      const n = rehydrateTodosFromTranscript(
+        [todoCall([{ id: '1', content: 'resume me', status: 'pending' }])],
+        { sessionId: 's1' },
+      );
+      assert.equal(n, 1);
+      const stored = getTodos('s1:');
+      assert.equal(stored.length, 1);
+      assert.equal(stored[0].content, 'resume me');
+    });
+
+    it('rehydrateTodosFromTranscript returns 0 and leaves the store empty when nothing to restore', () => {
+      const n = rehydrateTodosFromTranscript([{ role: 'user', content: 'hi' } as Message], { sessionId: 's1' });
+      assert.equal(n, 0);
+      assert.equal(getTodos('s1:').length, 0);
+    });
+
+    it('a rehydrated list is immediately visible via todo_read in the same session', async () => {
+      rehydrateTodosFromTranscript(
+        [todoCall([{ id: '1', content: 'carried over', status: 'pending' }])],
+        { sessionId: 's1' },
+      );
+      const r = await todoReadTool.execute({}, ctx({ sessionId: 's1' }).context);
+      assert.match(r.output, /carried over/);
+    });
+
+    it('setTodos overwrites the store and an empty array clears it', () => {
+      setTodos([{ id: '1', content: 'x', status: 'pending' }], 's1:');
+      assert.equal(getTodos('s1:').length, 1);
+      setTodos([], 's1:');
+      assert.equal(getTodos('s1:').length, 0);
     });
   });
 

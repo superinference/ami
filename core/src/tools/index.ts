@@ -315,7 +315,7 @@ export { shouldUseSandbox, wrapWithSandbox, getSandboxStatus, checkSandboxDepend
 export type { SandboxDependencyCheck } from './bash-sandbox';
 export type { SandboxConfig } from './bash-sandbox';
 export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam } from './team';
-export { todoWriteTool, todoReadTool, resetTodos, getTodos, formatTodoReadOutput, validateInProgressActiveForm } from './todo-write';
+export { todoWriteTool, todoReadTool, resetTodos, getTodos, setTodos, formatTodoReadOutput, validateInProgressActiveForm, extractTodosFromTranscript, rehydrateTodosFromTranscript } from './todo-write';
 export { createMcpAuthTool } from './mcp-auth';
 export { createMcpTool } from './mcp-tool';
 export { createMcpConnectTool } from './mcp-connect';

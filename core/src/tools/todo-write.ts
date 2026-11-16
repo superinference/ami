@@ -1,4 +1,4 @@
-import { ToolContext, ToolDefinition, ToolResult, TodoItemView } from '../types';
+import { ToolContext, ToolDefinition, ToolResult, TodoItemView, Message } from '../types';
 import { coerceBool } from '../utils/coerce';
 
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
@@ -46,8 +46,10 @@ function isInternal(item: TodoItem): boolean {
  */
 const sessionTodos = new Map<string, TodoItem[]>();
 
-/** Derive the store key for a given tool context (T2). */
-function keyFor(context?: ToolContext): string {
+/** Derive the store key for a given tool context (T2). Accepts any object
+ *  carrying `sessionId`/`agentId` so the session-restore path can key the store
+ *  without constructing a full {@link ToolContext}. */
+function keyFor(context?: Pick<ToolContext, 'sessionId' | 'agentId'>): string {
   return `${context?.sessionId ?? 'default'}:${context?.agentId ?? ''}`;
 }
 
@@ -61,6 +63,32 @@ export function resetTodos(key: string = keyFor()): void {
  *  (back-compat). Pass a key for a specific session. */
 export function getTodos(key: string = keyFor()): TodoItem[] {
   return [...(sessionTodos.get(key) ?? [])];
+}
+
+/** Overwrite a session's todo store (restore/rehydration seam). Replaces the
+ *  whole list for `key`; an empty array clears it. Used by
+ *  {@link rehydrateTodosFromTranscript} so a resumed session repopulates the
+ *  in-memory store without going through the model-facing `execute` path. */
+export function setTodos(items: readonly TodoItem[], key: string = keyFor()): void {
+  if (items.length === 0) sessionTodos.delete(key);
+  else sessionTodos.set(key, [...items]);
+}
+
+/** Normalize the raw model-supplied items into stored {@link TodoItem}s: assign
+ *  an index-based id when omitted and copy through the optional fields. Shared by
+ *  {@link todoWriteTool.execute} and {@link extractTodosFromTranscript} so the
+ *  resume-rehydration path produces byte-identical items to a live write. */
+function normalizeItems(rawItems: readonly TodoItemInput[]): TodoItem[] {
+  return rawItems.map((it, idx) => {
+    const item: TodoItem = {
+      id: it.id ?? `todo-${idx + 1}`,
+      content: it.content,
+      status: it.status,
+    };
+    if (it.activeForm !== undefined) item.activeForm = it.activeForm;
+    if (it.metadata !== undefined) item.metadata = it.metadata;
+    return item;
+  });
 }
 
 function toView(item: TodoItem): TodoItemView {
@@ -132,6 +160,53 @@ export function validateInProgressActiveForm(items: readonly TodoItem[]): string
   return null;
 }
 
+/**
+ * Scan a restored transcript (newest-first) for the most recent `todo_write`
+ * tool call and return its parsed, normalized todos. Parity with Claude's
+ * `extractTodosFromTranscript` (sessionRestore.ts): the model's todo list must
+ * survive a session restart even without on-disk task persistence. A malformed /
+ * unparseable call, or no call at all, yields an empty list (never throws).
+ */
+export function extractTodosFromTranscript(messages: readonly Message[]): TodoItem[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== 'assistant') continue;
+    const call = msg.tool_calls?.find(c => c.function?.name === 'todo_write');
+    if (!call) continue;
+    let input: unknown;
+    try {
+      input = JSON.parse(call.function.arguments);
+    } catch {
+      return [];
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return [];
+    const rec = input as Record<string, unknown>;
+    // Reuse the exact same strict validator the live write path uses, so a
+    // transcript carrying a malformed call restores nothing rather than a
+    // half-valid list.
+    if (validateTodoInput(rec)) return [];
+    return normalizeItems((rec.todos as TodoItemInput[]) ?? []);
+  }
+  return [];
+}
+
+/**
+ * Repopulate the session todo store from a restored transcript. Called from the
+ * engine's session-restore path on `--resume`/`sessionId` so the model's last
+ * todo list is live again immediately. Returns the number of todos restored (0
+ * when the transcript has no usable todo_write call). Parity:
+ * `restoreSessionStateFromLog`'s todo branch.
+ */
+export function rehydrateTodosFromTranscript(
+  messages: readonly Message[],
+  context?: { sessionId?: string; agentId?: string },
+): number {
+  const items = extractTodosFromTranscript(messages);
+  if (items.length === 0) return 0;
+  setTodos(items, keyFor(context));
+  return items.length;
+}
+
 export const todoWriteTool: ToolDefinition = {
   name: 'todo_write',
   // Terse, intent-focused discovery phrase (synonyms not in the long
@@ -197,16 +272,7 @@ export const todoWriteTool: ToolDefinition = {
 
     const key = keyFor(context);
     const rawItems = (input.todos as TodoItemInput[]) ?? [];
-    const items: TodoItem[] = rawItems.map((it, idx) => {
-      const item: TodoItem = {
-        id: it.id ?? `todo-${idx + 1}`,
-        content: it.content,
-        status: it.status,
-      };
-      if (it.activeForm !== undefined) item.activeForm = it.activeForm;
-      if (it.metadata !== undefined) item.metadata = it.metadata;
-      return item;
-    });
+    const items: TodoItem[] = normalizeItems(rawItems);
     // Parity: route the boolean `merge` arg through coerceBool so a model/provider
     // that serializes it as the STRING "false" (or "true") is handled correctly — a
     // naive `(input.merge as boolean)` treats the non-empty string "false" as truthy
