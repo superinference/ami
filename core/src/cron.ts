@@ -26,7 +26,7 @@ export interface CronJob {
   runCount?: number;
 }
 
-const MAX_AGE_DAYS = 7;
+export const MAX_AGE_DAYS = 7;
 const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const MAX_JOBS = 50;
 const LOCK_STALE_MS = 120_000;
@@ -48,6 +48,12 @@ export interface CronJitterConfig {
   recurringCapMs: number;
   /** Max backward (early) jitter (ms) for one-shot jobs. */
   oneShotMaxMs: number;
+  /** Minimum backward (early) jitter (ms) for one-shot jobs: a non-pinned one-shot
+   *  always fires at least this far ahead of its nominal time so it never lands
+   *  exactly on a round instant shared by the herd. Must be ≤ oneShotMaxMs; 0
+   *  disables the floor (pure 0..max spread). Mirrors Claude's CronJitterConfig
+   *  oneShotFloorMs (src/utils/cronJitterConfig.ts). */
+  oneShotFloorMs: number;
   /** One-shot jitter only applies when the fire minute is divisible by this (preserves :00/:30 pins). */
   oneShotMinuteMod: number;
 }
@@ -56,8 +62,36 @@ export const DEFAULT_CRON_JITTER: CronJitterConfig = {
   recurringFrac: 0.1,
   recurringCapMs: 15 * 60 * 1000,
   oneShotMaxMs: 30 * 1000,
+  oneShotFloorMs: 0,
   oneShotMinuteMod: 30,
 };
+
+/** Cross-field validation of a jitter config (mirrors Claude's zod `.refine` on
+ *  CronJitterConfig): every knob must be a finite, non-negative number and the
+ *  one-shot floor can never exceed the one-shot cap (an inverted window would make
+ *  oneShotBackJitter produce a negative/empty span). Throws a clear error on an
+ *  invalid config so a mis-specified scheduler fails fast at construction rather
+ *  than silently mis-jittering every one-shot fire. */
+export function validateJitterConfig(cfg: CronJitterConfig): void {
+  const fields: Array<[keyof CronJitterConfig, number]> = [
+    ['recurringFrac', cfg.recurringFrac],
+    ['recurringCapMs', cfg.recurringCapMs],
+    ['oneShotMaxMs', cfg.oneShotMaxMs],
+    ['oneShotFloorMs', cfg.oneShotFloorMs],
+    ['oneShotMinuteMod', cfg.oneShotMinuteMod],
+  ];
+  for (const [name, value] of fields) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`CronJitterConfig.${String(name)} must be a non-negative finite number (got ${value}).`);
+    }
+  }
+  if (cfg.oneShotMinuteMod < 1) {
+    throw new Error(`CronJitterConfig.oneShotMinuteMod must be ≥ 1 (got ${cfg.oneShotMinuteMod}).`);
+  }
+  if (cfg.oneShotFloorMs > cfg.oneShotMaxMs) {
+    throw new Error(`CronJitterConfig.oneShotFloorMs (${cfg.oneShotFloorMs}) must not exceed oneShotMaxMs (${cfg.oneShotMaxMs}).`);
+  }
+}
 
 /** True if a process with the given pid is currently alive. Used as the primary
  *  staleness signal for the scheduler lock (take over a dead owner immediately,
@@ -216,6 +250,9 @@ export class CronScheduler {
   private exitRelease: (() => void) | null = null;
 
   constructor(cwd: string, sessionId?: string, jitterConfig: CronJitterConfig = DEFAULT_CRON_JITTER) {
+    // Fail fast on a mis-specified jitter config (inverted one-shot window, a
+    // negative/NaN knob, …) rather than silently mis-jittering every fire.
+    validateJitterConfig(jitterConfig);
     this.cwd = cwd;
     this.persistPath = path.join(projectStateDir(cwd), 'scheduled_tasks.json');
     this.lockPath = path.join(projectStateDir(cwd), 'cron.lock');
@@ -273,10 +310,17 @@ export class CronScheduler {
       const n = Number(raw);
       return Number.isFinite(n) && n >= 0 ? n : fallback;
     };
+    const oneShotMaxMs = num(process.env.AMI_CRON_ONESHOT_JITTER_MS, base.oneShotMaxMs);
+    // Clamp the resolved floor to the resolved cap: an env-set floor larger than
+    // the cap would invert the one-shot window, so collapse it to the cap (a floor
+    // == cap means "always fire exactly `cap` early") instead of throwing on a
+    // live, already-running scheduler.
+    const oneShotFloorMs = Math.min(num(process.env.AMI_CRON_ONESHOT_FLOOR_MS, base.oneShotFloorMs), oneShotMaxMs);
     return {
       recurringFrac: num(process.env.AMI_CRON_JITTER_FRAC, base.recurringFrac),
       recurringCapMs: num(process.env.AMI_CRON_JITTER_CAP_MS, base.recurringCapMs),
-      oneShotMaxMs: num(process.env.AMI_CRON_ONESHOT_JITTER_MS, base.oneShotMaxMs),
+      oneShotMaxMs,
+      oneShotFloorMs,
       oneShotMinuteMod: num(process.env.AMI_CRON_ONESHOT_MINUTE_MOD, base.oneShotMinuteMod) || base.oneShotMinuteMod,
     };
   }
@@ -466,7 +510,11 @@ export class CronScheduler {
   private oneShotBackJitter(jobId: string): number {
     const hash = jobId.split('').reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
     const norm = Math.abs(hash) / 2147483647;
-    return Math.floor(norm * this.jitterConfig.oneShotMaxMs);
+    // Deterministic early-fire in [floor, max]: the configured floor guarantees a
+    // non-pinned one-shot never lands exactly on its nominal (herd) instant, while
+    // the hash spreads the remaining span. floor defaults to 0 (pure 0..max spread).
+    const { oneShotFloorMs: floor, oneShotMaxMs: max } = this.jitterConfig;
+    return floor + Math.floor(norm * (max - floor));
   }
 
   markRun(id: string, deferSave = false): void {

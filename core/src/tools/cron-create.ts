@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, type CronJob } from '../cron';
+import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, MAX_AGE_DAYS, type CronJob } from '../cron';
 import { coerceBool } from '../utils/coerce';
 import { isCronEnabled } from './tool-gates';
 
@@ -12,7 +12,7 @@ export function resetCronScheduler(): void {
   resetScheduler();
 }
 
-const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent']);
+const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent', 'maxAgeDays']);
 
 // PARITY (additive): upper bound on a scheduled prompt's length. A prompt far
 // larger than this is almost always an accident (e.g. a whole file pasted in)
@@ -56,7 +56,7 @@ export const cronCreateTool: ToolDefinition = {
     'Examples: "*/5 * * * *" every 5 minutes; "0 9 * * 1-5" at 9:00am on weekdays; ' +
     'for a one-shot, pin the date fields and pass recurring:false (e.g. "30 14 25 12 *" = 2:30pm on Dec 25). ' +
     'Prefer OFF-MINUTE times (avoid :00 and :30) to dodge the thundering-herd of everyone\'s round-number schedules. ' +
-    'Recurring jobs auto-expire after 7 days unless permanent:true — tell the user about this limit. ' +
+    `Recurring jobs auto-expire after ${MAX_AGE_DAYS} days unless permanent:true (or a custom maxAgeDays, 0=never) — tell the user about this limit. ` +
     'Durability: use durable:true ONLY when the user explicitly asks for a schedule that survives a restart ' +
     '(it is persisted to disk). Most "remind me in 5 minutes" / "check back in an hour" requests should stay ' +
     'session-only (the default) — it is cheaper and avoids leaving stray jobs on disk. Cancel a job with cron_delete.',
@@ -83,8 +83,14 @@ export const cronCreateTool: ToolDefinition = {
       },
       permanent: {
         type: 'boolean',
-        description: 'true = exempt this recurring job from the 7-day auto-expiry. Default false.',
+        description: `true = exempt this recurring job from the ${MAX_AGE_DAYS}-day auto-expiry. Default false.`,
         default: false,
+      },
+      maxAgeDays: {
+        type: 'number',
+        description:
+          `Custom auto-expiry window (whole days) for a recurring job, overriding the ${MAX_AGE_DAYS}-day default. ` +
+          'Use 0 for "never expire" (equivalent to permanent:true). Ignored for one-shot jobs.',
       },
     },
     required: ['cron', 'prompt'],
@@ -107,6 +113,16 @@ export const cronCreateTool: ToolDefinition = {
     const recurring = input.recurring === undefined ? true : coerceBool(input.recurring);
     const durable = coerceBool(input.durable);
     const permanent = coerceBool(input.permanent);
+    // Optional per-job expiry window. Validate here for a clean tool-level error;
+    // create() re-validates as the engine-boundary guarantee. 0 = never expire.
+    let maxAgeDays: number | undefined;
+    if (input.maxAgeDays !== undefined) {
+      const n = Number(input.maxAgeDays);
+      if (!Number.isInteger(n) || n < 0) {
+        return { output: `Error: maxAgeDays must be a non-negative integer number of days (got ${String(input.maxAgeDays)}); use 0 for never-expire.`, isError: true };
+      }
+      maxAgeDays = n;
+    }
 
     // Full field-level validation (not just field count) with a clear error.
     if (typeof cron !== 'string' || !cron.trim()) {
@@ -156,14 +172,23 @@ export const cronCreateTool: ToolDefinition = {
 
     let job;
     try {
-      job = sched.create({ cron, prompt, recurring, durable, permanent, agentId: context.agentId });
+      job = sched.create({ cron, prompt, recurring, durable, permanent, maxAgeDays, agentId: context.agentId });
     } catch (err) {
       // MAX_JOBS cap and the minimum-interval floor surface as clean validation.
       return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
     const schedule = sched.formatSchedule(cron);
     const nextRun = job.nextRun ? new Date(job.nextRun).toLocaleString() : 'unknown';
-    const expiry = recurring && !permanent ? '\n  Auto-expires in 7 days (pass permanent:true to keep it).' : '';
+    // Reflect the EFFECTIVE expiry window: permanent / maxAgeDays:0 never expire;
+    // a custom maxAgeDays overrides the MAX_AGE_DAYS default. Interpolated from the
+    // single source constant so the message can never drift from expireOld().
+    const neverExpires = permanent || maxAgeDays === 0;
+    const effectiveAgeDays = maxAgeDays ?? MAX_AGE_DAYS;
+    const expiry = !recurring
+      ? ''
+      : neverExpires
+        ? '\n  Never auto-expires.'
+        : `\n  Auto-expires in ${effectiveAgeDays} day${effectiveAgeDays === 1 ? '' : 's'} (pass permanent:true or maxAgeDays:0 to keep it).`;
     // Report the EFFECTIVE durability (job.durable), which the scheduler may have
     // degraded to session-only when the durable kill-switch is active. If the
     // model requested durable:true but it was gated off, say so explicitly.

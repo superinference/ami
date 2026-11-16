@@ -98,10 +98,17 @@ export const cronListTool: ToolDefinition = {
       const schedule = sched.formatSchedule(j.cron);
       const active = isActiveJob(j);
       const next = active ? new Date(j.nextRun as number).toLocaleString() : 'N/A';
+      // Surface a custom per-job expiry window so a user can see at a glance that a
+      // recurring job will age out sooner/later than the default (or never, when
+      // maxAgeDays:0 was set without the permanent flag).
+      const ageFlag = j.recurring && !j.permanent && typeof j.maxAgeDays === 'number'
+        ? [j.maxAgeDays === 0 ? 'never-expires' : `expires in ${j.maxAgeDays}d`]
+        : [];
       const flags = [
         j.recurring ? 'recurring' : 'one-shot',
         j.durable ? 'durable' : 'session-only',
         ...(j.permanent ? ['permanent'] : []),
+        ...ageFlag,
         ...(active ? [] : ['inactive']),
       ].join(', ');
       // Surface the last fire so a user can tell a job that has run from one that
