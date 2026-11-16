@@ -117,7 +117,7 @@ describe('SettingsGuard — blocked-reason wording and accumulation', () => {
     const guard = new SettingsGuard();
     assert.equal(guard.checkOverride('processWrapper', 'project', 'managed'), false);
     const [b] = guard.getBlockedOverrides();
-    assert.equal(b.reason, '"processWrapper" can only be set by managed config');
+    assert.equal(b.reason, '"processWrapper" is managed by your organization and cannot be set here — contact your administrator.');
   });
 
   it('uses the tier-locked reason for tier-locked keys and names both tiers', () => {
@@ -126,7 +126,7 @@ describe('SettingsGuard — blocked-reason wording and accumulation', () => {
     const [b] = guard.getBlockedOverrides();
     assert.equal(
       b.reason,
-      '"maxSessionMs" is locked at tier "global" and cannot be overridden by "cli"',
+      '"maxSessionMs" is locked at tier "global" and cannot be overridden by "cli" — set it at the "global" tier or higher.',
     );
   });
 

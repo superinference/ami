@@ -495,7 +495,7 @@ describe('config: validateConfigJson', () => {
     try {
       const r = validateConfigJson('{}');
       assert.equal(r.valid, false);
-      assert.equal(r.error, 'Invalid JSON: boom-string');
+      assert.equal(r.error, 'Invalid JSON: boom-string. Check for missing commas, unmatched brackets, or trailing commas. Use a JSON validator to identify the exact syntax error.');
     } finally { m.mock.restore(); }
   });
   it('rejects null', () => {

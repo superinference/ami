@@ -532,7 +532,7 @@ describe('validateCatalogIndex', () => {
     });
     assert.equal(result.valid, true);
     assert.equal(result.index!.skills[0].executable, undefined);
-    assert.ok(result.errors.some(e => /executable entry for unknown\/unsafe file/.test(e)));
+    assert.ok(result.errors.some(e => /executable path "ghost\.sh" is not a declared file/.test(e)));
   });
 
   it('drops a non-string executable entry and records an error', () => {
