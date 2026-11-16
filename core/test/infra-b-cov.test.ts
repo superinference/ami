@@ -245,7 +245,7 @@ describe('SettingsGuard class', () => {
     assert.equal(g.checkOverride('permissionMode', 'cli', 'managed'), false);
     const blocks = g.getBlockedOverrides();
     assert.equal(blocks.length, 2);
-    assert.match(blocks[0].reason, /can only be set by managed config/);
+    assert.match(blocks[0].reason, /is managed by your organization and cannot be set here/);
     assert.match(blocks[1].reason, /is locked at tier "managed"/);
     assert.equal(g.getBlockedCount(), 2);
 
