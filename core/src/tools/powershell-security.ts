@@ -1,4 +1,15 @@
-import { COMMON_ALIASES } from './powershell-parser';
+import {
+  COMMON_ALIASES,
+  getAllCommands,
+  hasCommandNamed,
+  getVariablesByScope,
+  deriveSecurityFlags,
+  commandHasArgAbbreviation,
+} from './powershell-parser';
+import type {
+  ParsedPowerShellCommand,
+  ParsedCommandElement,
+} from './powershell-parser';
 
 /**
  * PowerShell Constrained Language Mode (CLM) type-cast security boundary.
@@ -1100,4 +1111,245 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
     }
   }
   return PS_PASS;
+}
+
+// ---------------------------------------------------------------------------
+// AST-based PowerShell security validator.
+//
+// Mirrors Claude Code's PowerShellTool/powershellSecurity.ts
+// `powershellCommandIsSafe(command, parsed)`: the ordered validator chain that
+// consumes a native-parsed `ParsedPowerShellCommand` AST (from
+// powershell-parser.ts's `parsePowerShellCommand`) and, crucially, FAILS SAFE —
+// a command whose AST could not be parsed (`valid === false`) returns `ask`,
+// never `allow`.
+//
+// This complements the textual `detectDangerousPowerShellCommand` /
+// `detectPowerShellExecution` guards used in the synchronous bash-security path:
+// those run over EVERY shell command (no pwsh spawn) and therefore must keep the
+// broad AST-only signals OFF to avoid over-flagging POSIX. When a REAL pwsh AST
+// is available, this function adds the structural checks the textual path cannot
+// safely do (dynamic command name via the StringConstant allowlist; subexpression
+// / expandable-string / splatting / member-invocation signals; positional
+// -FilePath/-MemberName binding; script-block injection triage; CLM type-literal
+// allowlist; env: scope manipulation; AST-alias-aware Invoke-Expression) and
+// DELEGATES the cmdlet/type-name hazards to the one canonical textual detector so
+// there is no second, parallel implementation of them.
+// ---------------------------------------------------------------------------
+
+/** Result of the AST-based validator (parity with Claude's shape). */
+export type PowerShellSecurityResult = {
+  behavior: 'passthrough' | 'ask';
+  message?: string;
+};
+
+const PS_SAFE_RESULT: PowerShellSecurityResult = { behavior: 'passthrough' };
+
+function askResult(message: string): PowerShellSecurityResult {
+  return { behavior: 'ask', message };
+}
+
+/**
+ * Alt-dash-aware wrapper around {@link commandHasArgAbbreviation}. PowerShell's
+ * tokenizer treats `/`, en-dash, em-dash and horizontal-bar as `-` equivalents,
+ * so `Start-Job –FilePath x` (en-dash) must match `-filepath`. Reuses the shared
+ * abbreviation helper (no re-implementation), retrying once with the alternate
+ * prefixes normalized to `-`. Mirrors Claude's psExeHasParamAbbreviation.
+ */
+function psParamAbbrevAltAware(
+  cmd: ParsedCommandElement,
+  fullParam: string,
+  minPrefix: string,
+): boolean {
+  if (commandHasArgAbbreviation(cmd, fullParam, minPrefix)) {
+    return true;
+  }
+  const normalized: ParsedCommandElement = {
+    ...cmd,
+    args: cmd.args.map((a) =>
+      a.length > 0 && PS_ALT_PARAM_PREFIX_RE.test(a[0]!) ? '-' + a.slice(1) : a,
+    ),
+  };
+  return commandHasArgAbbreviation(normalized, fullParam, minPrefix);
+}
+
+/**
+ * Validate a natively-parsed PowerShell command. Returns `ask` when ANY check
+ * matches (or when the parse failed), `passthrough` only when the whole ordered
+ * chain finds no hazard. The first `ask` short-circuits, matching the reference's
+ * validator ordering.
+ *
+ * @param command - the original command text (kept for API parity / messages).
+ * @param parsed - the native AST from `parsePowerShellCommand`.
+ */
+export function powershellCommandIsSafe(
+  command: string,
+  parsed: ParsedPowerShellCommand,
+): PowerShellSecurityResult {
+  // Fail-safe boundary: an un-parseable/un-analyzable command is never allowed.
+  if (!parsed.valid) {
+    return askResult('Could not parse command for security analysis');
+  }
+
+  const allCommands = getAllCommands(parsed);
+  const flags = deriveSecurityFlags(parsed);
+
+  // Invoke-Expression (eval). AST context means the `iex` alias CAN be flagged
+  // here (hasCommandNamed resolves it) — unlike the POSIX-shared textual path,
+  // which omits `iex` to avoid colliding with the Elixir shell.
+  if (hasCommandNamed(parsed, 'Invoke-Expression')) {
+    return askResult(
+      'Command uses Invoke-Expression which can execute arbitrary code',
+    );
+  }
+
+  // Dynamic command name: a legitimate command name is ALWAYS a StringConstant.
+  // Any other element type in name position is a runtime-computed name
+  // (`& ('i'+'ex')`, `& ('iex','x')[0]`, `& ${function:…}`). Allowlist
+  // StringConstant rather than denylisting dynamic types. The `!== undefined`
+  // guard keeps fail-open when elementTypes detail is unavailable.
+  for (const cmd of allCommands) {
+    if (cmd.elementType !== 'CommandAst') {
+      continue;
+    }
+    const nameElementType = cmd.elementTypes?.[0];
+    if (nameElementType !== undefined && nameElementType !== 'StringConstant') {
+      return askResult(
+        'Command name is a dynamic expression which cannot be statically validated',
+      );
+    }
+  }
+
+  // (Download cradles — IWR|IEX piped and $r=IWR;IEX $r.Content cross-statement —
+  // are covered already: the IEX leg is caught by the Invoke-Expression check
+  // above, and bash-security's detectPowerShellExecution flags the download+iex
+  // whole-command pattern in the synchronous path. No parallel check here.)
+
+  // Script-block injection triage: a denylisted cmdlet carrying a script block
+  // executes it as arbitrary code; otherwise, all script-block consumers must be
+  // in the safe filter/output allowlist (alias-resolved), else ask.
+  if (flags.hasScriptBlocks) {
+    for (const cmd of allCommands) {
+      if (DANGEROUS_SCRIPT_BLOCK_CMDLETS.has(cmd.name.toLowerCase())) {
+        return askResult(
+          'Command contains script block with dangerous cmdlet that may execute arbitrary code',
+        );
+      }
+    }
+    const allSafe = allCommands.every((cmd) => {
+      const lower = cmd.name.toLowerCase();
+      if (SAFE_SCRIPT_BLOCK_CMDLETS.has(lower)) {
+        return true;
+      }
+      const alias = COMMON_ALIASES[lower];
+      return alias !== undefined && SAFE_SCRIPT_BLOCK_CMDLETS.has(alias.toLowerCase());
+    });
+    if (!allSafe) {
+      return askResult('Command contains script block that may execute arbitrary code');
+    }
+  }
+
+  // Positional / flagged -FilePath execution on FILEPATH_EXECUTION_CMDLETS.
+  for (const cmd of allCommands) {
+    const lower = cmd.name.toLowerCase();
+    const resolved = COMMON_ALIASES[lower]?.toLowerCase() ?? lower;
+    if (!FILEPATH_EXECUTION_CMDLETS.has(resolved)) {
+      continue;
+    }
+    if (
+      psParamAbbrevAltAware(cmd, '-filepath', '-f') ||
+      psParamAbbrevAltAware(cmd, '-literalpath', '-l') ||
+      hasPositionalStringArgAst(cmd)
+    ) {
+      return askResult(`${cmd.name} -FilePath executes an arbitrary script file`);
+    }
+  }
+
+  // ForEach-Object -MemberName / positional member-name binding.
+  for (const cmd of allCommands) {
+    const lower = cmd.name.toLowerCase();
+    const resolved = COMMON_ALIASES[lower]?.toLowerCase() ?? lower;
+    if (resolved !== 'foreach-object') {
+      continue;
+    }
+    if (psParamAbbrevAltAware(cmd, '-membername', '-m') || hasPositionalStringArgAst(cmd)) {
+      return askResult(
+        'ForEach-Object invokes a method by name (-MemberName / positional) which cannot be validated',
+      );
+    }
+  }
+
+  // AST-only structural signals from deriveSecurityFlags.
+  if (flags.hasSubExpressions) {
+    return askResult('Command contains subexpressions $()');
+  }
+  if (flags.hasExpandableStrings) {
+    return askResult('Command contains expandable strings with embedded expressions');
+  }
+  if (flags.hasSplatting) {
+    return askResult('Command uses splatting (@variable)');
+  }
+  if (flags.hasStopParsing) {
+    return askResult('Command uses stop-parsing token (--%)');
+  }
+  if (flags.hasMemberInvocations) {
+    return askResult('Command invokes .NET methods');
+  }
+
+  // CLM type-literal allowlist over every [Type] literal found in the AST.
+  for (const t of parsed.typeLiterals ?? []) {
+    if (!isClmAllowedType(t)) {
+      return askResult(
+        `Command uses .NET type [${t}] outside the ConstrainedLanguage allowlist`,
+      );
+    }
+  }
+
+  // Environment-variable manipulation: gated on an env: scope reference, then an
+  // env: write cmdlet or an assignment.
+  const envVars = getVariablesByScope(parsed, 'env');
+  if (envVars.length > 0) {
+    for (const cmd of allCommands) {
+      if (ENV_WRITE_CMDLETS.has(cmd.name.toLowerCase())) {
+        return askResult('Command modifies environment variables');
+      }
+    }
+    if (flags.hasAssignments) {
+      return askResult('Command modifies environment variables');
+    }
+  }
+
+  // Delegate the cmdlet/type-name hazards (New-Object, Start-Process, runtime
+  // state, module/WMI/code-exec, scheduled task, Invoke-Item, encoded/download
+  // utilities, CLM casts) to the single canonical textual detector so they are
+  // implemented exactly once. The original command text carries the full
+  // argument syntax those checks need.
+  const textual = detectDangerousPowerShellCommand(command);
+  if (textual.blocked) {
+    return askResult(textual.reason ?? 'Command matched a PowerShell security check');
+  }
+  const typeCast = detectUnsafeTypeCast(command);
+  if (typeCast.blocked) {
+    return askResult(typeCast.reason ?? 'Command uses an unsafe .NET type cast');
+  }
+
+  return PS_SAFE_RESULT;
+}
+
+/**
+ * True if a command binds a non-dash positional StringConstant argument (which
+ * parameter-set resolution would route to -FilePath / -MemberName). A script
+ * block arg selects the ScriptBlock parameter set instead, so it does not count.
+ * Uses the AST `elementTypes` when present; over-flagging is fail-safe. Mirrors
+ * the positional-binding scan in Claude's checkDangerousFilePathExecution /
+ * checkForEachMemberName.
+ */
+function hasPositionalStringArgAst(cmd: ParsedCommandElement): boolean {
+  for (let i = 0; i < cmd.args.length; i++) {
+    const arg = cmd.args[i];
+    const argType = cmd.elementTypes?.[i + 1];
+    if (argType === 'StringConstant' && arg !== undefined && !arg.startsWith('-')) {
+      return true;
+    }
+  }
+  return false;
 }
