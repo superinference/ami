@@ -25,7 +25,10 @@ export const askUserQuestionTool: ToolDefinition = {
           properties: {
             question: {
               type: 'string',
-              description: 'The question to ask the user. Should be clear and specific.',
+              description:
+                'The complete question to ask the user. Should be clear, specific, and end with a ' +
+                'question mark. Example: "Which library should we use for date formatting?" If ' +
+                'multiSelect is true, phrase it accordingly, e.g. "Which features do you want to enable?".',
             },
             header: {
               type: 'string',
@@ -50,7 +53,7 @@ export const askUserQuestionTool: ToolDefinition = {
                   },
                   description: {
                     type: 'string',
-                    description: 'Explanation of what this option means or what will happen.',
+                    description: 'Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications.',
                   },
                   preview: {
                     type: 'string',
