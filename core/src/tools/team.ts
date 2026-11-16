@@ -4,6 +4,8 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME, clearMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode } from '../permissions';
+import { unassignTeammateTasks } from './task-tracker';
+import { log as coreLog } from '../logger';
 
 /** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
 const MAX_TEAM_NAME_LEN = 64;
@@ -338,6 +340,19 @@ export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   if (!m) return;
   m.isActive = active;
   persistTeam();
+  // Cancellation/abort boundary (PARITY): when a teammate goes inactive — it
+  // finished, errored, stalled, or was killed — release any unresolved tasks it
+  // still owns back to the pool so the work is not orphaned and an idle teammate
+  // can claim it. Match both identities a task can be owned under (agentId + name).
+  // Best-effort and fire-and-forget: a failure to release tasks must never break
+  // teammate teardown.
+  if (!active) {
+    void unassignTeammateTasks([m.agentId, m.name], m.name, 'shutdown')
+      .then((r) => {
+        if (r.unassignedTasks.length > 0) coreLog('team', r.notificationMessage);
+      })
+      .catch(() => { /* best-effort — never fail teardown on task release */ });
+  }
 }
 
 /**

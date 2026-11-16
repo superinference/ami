@@ -314,6 +314,65 @@ export function getAgentStatuses(): Array<{ owner: string; status: 'busy' | 'idl
 }
 
 /**
+ * Result of releasing a departing teammate's in-flight tasks: the tasks that were
+ * reset, plus a human-readable notification to surface to the team lead. Mirrors
+ * Claude Code's `UnassignTasksResult`.
+ */
+export interface UnassignTasksResult {
+  unassignedTasks: Array<{ id: number; subject: string }>;
+  notificationMessage: string;
+}
+
+/**
+ * Cancellation/abort boundary (PARITY): when a teammate is killed or gracefully
+ * shuts down, release every unresolved (non-completed) task it still owns back to
+ * the pool — clear the owner and reset the status to `pending` — so the work is not
+ * orphaned and an idle teammate can claim it. Completed tasks and tasks owned by
+ * other agents are left untouched. Mirrors Claude Code's `unassignTeammateTasks`
+ * (src/utils/tasks.ts:L818-L860): finds the agent's unresolved tasks, resets them,
+ * and builds a notification message naming the released tasks.
+ *
+ * `ownerIds` is matched against each task's owner, so pass every identity the
+ * teammate can own tasks under (its stable agentId AND its display name, since a
+ * task may be auto-assigned under either). The mutation runs under the same
+ * cross-process task lock as every other write, so it is atomic with concurrent
+ * claims — a task cannot be both claimed and unassigned.
+ */
+export async function unassignTeammateTasks(
+  ownerIds: string[],
+  teammateName: string,
+  reason: 'terminated' | 'shutdown',
+): Promise<UnassignTasksResult> {
+  const matchSet = new Set(
+    ownerIds.map(normalizeOwner).filter((o): o is string => o !== undefined),
+  );
+  const unassignedTasks = await mutate(() => {
+    const released: Array<{ id: number; subject: string }> = [];
+    if (matchSet.size === 0) return released;
+    for (const task of tasks.values()) {
+      if (task.status !== 'completed' && task.owner && matchSet.has(task.owner)) {
+        released.push({ id: task.id, subject: task.subject });
+        task.owner = undefined;
+        task.status = 'pending';
+      }
+    }
+    return released;
+  });
+  // Lowest id first so the notification reads deterministically.
+  unassignedTasks.sort((a, b) => a.id - b.id);
+
+  const actionVerb = reason === 'terminated' ? 'was terminated' : 'has shut down';
+  let notificationMessage = `${teammateName} ${actionVerb}.`;
+  if (unassignedTasks.length > 0) {
+    const taskList = unassignedTasks.map(t => `#${t.id} "${t.subject}"`).join(', ');
+    notificationMessage +=
+      ` ${unassignedTasks.length} task(s) were unassigned: ${taskList}.` +
+      ` Use task_tracker action "list" to check availability and "update" with an owner to reassign them to idle teammates.`;
+  }
+  return { unassignedTasks, notificationMessage };
+}
+
+/**
  * Post-completion affordance (PARITY): after a task transitions to completed,
  * point the agent at its next available work and, when the whole list is done,
  * nudge for a verification step. Mirrors Claude Code's TaskUpdateTool completion
