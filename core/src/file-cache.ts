@@ -22,8 +22,27 @@ export interface FileState {
   limit?: number;
 }
 
+/**
+ * Maximum number of bytes fed into a single SHA-256 digest. Hashing an entire
+ * large / base64-encoded payload (e.g. an inlined image) copies and digests the
+ * whole buffer, which can exhaust memory/CPU. Above this threshold we fold the
+ * content LENGTH into the digest and hash only a bounded prefix, so the hash is
+ * still change-sensitive (any length change or first-`MAX_CONTENT_HASH_SIZE`-byte
+ * change is detected) while the work stays O(threshold). Mirrors upstream's
+ * MAX_CONTENT_HASH_SIZE (100KB) memory-exhaustion guard.
+ */
+export const MAX_CONTENT_HASH_SIZE = 100 * 1024; // 100 KB
+
 function hashContent(content: string): string {
-  return crypto.createHash('sha256').update(content).digest('hex');
+  const h = crypto.createHash('sha256');
+  if (content.length > MAX_CONTENT_HASH_SIZE) {
+    // Bound the digest work: fold the full length in, then hash only a prefix.
+    h.update(String(content.length));
+    h.update(content.slice(0, MAX_CONTENT_HASH_SIZE));
+  } else {
+    h.update(content);
+  }
+  return h.digest('hex');
 }
 
 /**
@@ -152,9 +171,18 @@ export class FileCache {
 
   /**
    * Check if a file has changed since the last read.
-   * Compares mtime first (fast path). When mtime matches but the filesystem
-   * has coarse timestamps (e.g. ext4 1-second, NFS), falls back to a content
-   * hash comparison so rapid writes within the same tick are still detected.
+   *
+   * When full content is cached, the CONTENT HASH is authoritative: it both
+   *   (a) detects a same-mtime-tick rewrite on coarse-timestamp filesystems
+   *       (ext4 1-second, NFS), and
+   *   (b) suppresses a spurious "modified since read" when only the timestamp
+   *       moved but the bytes are identical (atomic re-save, `touch`, a linter
+   *       that rewrote identical content, `git checkout` to the same content).
+   *
+   * When only an mtime is tracked (no content — partial/range/track-only
+   * entries), the floored mtime is compared instead. Flooring suppresses
+   * sub-millisecond / watcher-touch jitter on filesystems that report
+   * fractional-millisecond timestamps.
    *
    * The content re-read is bounded: a cached file that has since grown past the
    * byte ceiling is treated as changed WITHOUT slurping it into memory to hash,
@@ -169,8 +197,10 @@ export class FileCache {
 
     try {
       const stat = fs.statSync(key);
-      if (stat.mtimeMs !== cached.mtime) return true;
-      if (!cached.content) return false;
+      // Floor both sides so sub-millisecond timestamp jitter is not a change.
+      const sameMtime = Math.floor(stat.mtimeMs) === Math.floor(cached.mtime);
+      // No content to compare (mtime-only / partial-view entry): mtime decides.
+      if (!cached.content) return !sameMtime;
       // Bounded freshness check: never read a file larger than the cache's byte
       // ceiling just to hash it. Treat an over-cap file as changed so callers
       // re-read it through the normal size-limited read path.

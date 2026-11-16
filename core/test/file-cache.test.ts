@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { FileCache, getFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES } from '../src/file-cache';
+import { FileCache, getFileCache, MAX_CACHE_BYTES, DEFAULT_MAX_ENTRIES, MAX_CONTENT_HASH_SIZE } from '../src/file-cache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,7 +88,7 @@ describe('FileCache – hasChanged', () => {
     }
   });
 
-  it('returns true when mtime differs', () => {
+  it('returns true when mtime differs AND content differs', () => {
     const tmpDir = makeTmpDir();
     try {
       const filePath = path.join(tmpDir, 'changing.txt');
@@ -98,8 +98,8 @@ describe('FileCache – hasChanged', () => {
       const cache = new FileCache();
       cache.set(filePath, 'v1', stat.mtimeMs);
 
-      // Modify the file to change its mtime
-      // Ensure a different mtime by using utimesSync
+      // Genuinely change the file's content AND its mtime.
+      fs.writeFileSync(filePath, 'v2-different');
       const newMtime = stat.mtimeMs + 1000;
       fs.utimesSync(filePath, stat.atimeMs / 1000, newMtime / 1000);
 
@@ -760,5 +760,152 @@ describe('FileCache — getStats entries list', () => {
     cache.set('/a.txt', 'a', 1);
     cache.set('/b.txt', 'b', 2);
     assert.deepEqual(cache.getStats().entries, cache.listPaths());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spurious "modified" suppression: mtime moved but bytes are identical
+// (atomic re-save / touch / git-checkout-to-identical-content)  [gap: avoid
+// spurious 'file modified since read' when only the timestamp changed]
+// ---------------------------------------------------------------------------
+describe('FileCache — identical-content mtime change is NOT a change', () => {
+  it('returns false when only the mtime moved but the bytes are identical', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'touched.txt');
+      fs.writeFileSync(filePath, 'identical bytes');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'identical bytes', stat.mtimeMs);
+
+      // Re-write the SAME content and bump the mtime (simulates an atomic
+      // save / `touch` / a linter that rewrote identical bytes).
+      fs.writeFileSync(filePath, 'identical bytes');
+      const newMtime = stat.mtimeMs + 5000;
+      fs.utimesSync(filePath, stat.atimeMs / 1000, newMtime / 1000);
+
+      // The content hash is authoritative: identical bytes → not changed,
+      // even though the mtime moved. Pre-change code returned true here.
+      assert.equal(cache.hasChanged(filePath), false);
+      // get() still serves the cached content (not invalidated).
+      assert.ok(cache.get(filePath));
+      assert.equal(cache.get(filePath)!.content, 'identical bytes');
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('still reports changed when both mtime and content differ', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'realchange.txt');
+      fs.writeFileSync(filePath, 'before');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, 'before', stat.mtimeMs);
+
+      fs.writeFileSync(filePath, 'after - genuinely different');
+      fs.utimesSync(filePath, stat.atimeMs / 1000, (stat.mtimeMs + 5000) / 1000);
+
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Floor mtimeMs to suppress sub-millisecond / watcher-touch false positives
+// [gap: floor mtimeMs for change detection]
+// ---------------------------------------------------------------------------
+describe('FileCache — floored mtime comparison for mtime-only entries', () => {
+  it('a sub-millisecond mtime jitter on an mtime-only entry is not a change', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'jitter.txt');
+      fs.writeFileSync(filePath, 'tracked-only');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      // mtime-only entry (no content), cached with a sub-ms fraction added.
+      cache.trackMtime(filePath, Math.floor(stat.mtimeMs) + 0.4);
+
+      // The on-disk mtime floors to the same integer second/ms, so a sub-ms
+      // difference must NOT be reported as a change. Pre-change exact-equality
+      // comparison would report true here.
+      assert.equal(cache.hasChanged(filePath), false);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('a whole-millisecond mtime move on an mtime-only entry IS a change', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'jitter2.txt');
+      fs.writeFileSync(filePath, 'tracked-only');
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.trackMtime(filePath, Math.floor(stat.mtimeMs) + 2000);
+
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MAX_CONTENT_HASH_SIZE: bound the bytes fed to SHA-256 before hashing, to
+// prevent memory/CPU exhaustion on large / base64 inputs.
+// [gaps: MAX_CONTENT_HASH_SIZE=100KB guard + content-size limit before hashing]
+// ---------------------------------------------------------------------------
+describe('FileCache — bounded content hashing (MAX_CONTENT_HASH_SIZE)', () => {
+  it('exports MAX_CONTENT_HASH_SIZE = 100KB', () => {
+    assert.equal(MAX_CONTENT_HASH_SIZE, 100 * 1024);
+  });
+
+  it('still produces a 64-char SHA-256 hash for over-threshold content', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'over.txt');
+      const big = 'a'.repeat(MAX_CONTENT_HASH_SIZE + 50_000);
+      fs.writeFileSync(filePath, big);
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, big, stat.mtimeMs);
+      const cached = cache.get(filePath);
+      assert.ok(cached);
+      assert.equal(cached!.contentHash.length, 64);
+    } finally {
+      cleanupDir(tmpDir);
+    }
+  });
+
+  it('a length change past the threshold is still detected as a different hash', () => {
+    const tmpDir = makeTmpDir();
+    try {
+      const filePath = path.join(tmpDir, 'bighash.txt');
+      const big = 'a'.repeat(MAX_CONTENT_HASH_SIZE + 10_000);
+      fs.writeFileSync(filePath, big);
+      const stat = fs.statSync(filePath);
+
+      const cache = new FileCache();
+      cache.set(filePath, big, stat.mtimeMs);
+      assert.equal(cache.hasChanged(filePath), false);
+
+      // Append more bytes (length changes) and keep the same mtime: the
+      // length is folded into the bounded hash, so the change is detected.
+      const bigger = big + 'b'.repeat(10_000);
+      fs.writeFileSync(filePath, bigger);
+      fs.utimesSync(filePath, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+      assert.equal(cache.hasChanged(filePath), true);
+    } finally {
+      cleanupDir(tmpDir);
+    }
   });
 });
