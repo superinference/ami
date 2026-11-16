@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { shellHooks } from '../utils/shell';
 import { BARE_GIT_REPO_FILES } from './bash-sandbox';
+import { sandboxViolationStore } from './sandbox-violations';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -306,13 +307,22 @@ function mentionsPathOutsideProject(stderr: string, projectDir: string): boolean
  * file). Appends a note when network is off and the stderr shows a network
  * failure, and/or when an absolute path outside the project mount is reported
  * missing. Returns the stderr unchanged when nothing matches.
+ *
+ * SIDE EFFECT (parity — Claude's violation store): each detected sandbox-caused
+ * failure is also recorded into the {@link sandboxViolationStore} (unless the
+ * operator allowlisted it via `cfg.ignoreViolations`), so the `/sandbox` surface
+ * can show the user the running total + last-N of what the boundary blocked — AMI
+ * otherwise blocks silently with no aggregated signal.
  */
 export function annotateStderrWithSandboxFailures(
   command: string,
   stderr: string,
-  cfg: { allowNetwork: boolean; projectDir: string },
+  cfg: { allowNetwork: boolean; projectDir: string; ignoreViolations?: Record<string, string[]> },
 ): string {
   if (!stderr) return stderr;
+  // Honor the per-command ignore map (Claude's `sandbox.ignoreViolations`) for the
+  // recorded-violation side effect only; the model-facing annotation is unaffected.
+  sandboxViolationStore.setIgnoreViolations(cfg.ignoreViolations);
   const notes: string[] = [];
   if (!cfg.allowNetwork && NETWORK_OFF_SIGNATURES.some((re) => re.test(stderr))) {
     notes.push(
@@ -320,6 +330,11 @@ export function annotateStderrWithSandboxFailures(
         + 'caused by blocked network access, not a real failure. Retry with '
         + 'dangerouslyDisableSandbox: true if this command legitimately needs the network.]',
     );
+    sandboxViolationStore.record({
+      kind: 'network',
+      command,
+      detail: 'outbound network blocked (--network none)',
+    });
   }
   if (/no such file or directory/i.test(stderr) && mentionsPathOutsideProject(stderr, cfg.projectDir)) {
     notes.push(
@@ -327,6 +342,11 @@ export function annotateStderrWithSandboxFailures(
         + 'container; files outside it do not exist there, so a "No such file or directory" above may '
         + 'be caused by sandbox isolation rather than a genuinely missing file.]',
     );
+    sandboxViolationStore.record({
+      kind: 'filesystem',
+      command,
+      detail: `path outside the project mount (${path.resolve(cfg.projectDir)}) is not present in the container`,
+    });
   }
   if (notes.length === 0) return stderr;
   return `${stderr}\n${notes.join('\n')}`;

@@ -1296,6 +1296,7 @@ export const bashTool: ToolDefinition = {
         ? annotateStderrWithSandboxFailures(command, presented.stderr, {
             allowNetwork: context.sandbox.allowNetwork !== false,
             projectDir: context.sandbox.projectDir || context.cwd,
+            ignoreViolations: context.sandbox.ignoreViolations,
           })
         : presented.stderr;
 
