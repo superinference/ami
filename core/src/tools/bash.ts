@@ -99,6 +99,10 @@ export const _bashHooks = {
   },
   existsSync: fs.existsSync as typeof fs.existsSync,
   statSync: fs.statSync as typeof fs.statSync,
+  // realpath seam for the working-directory resolver (TOCTOU-safe resolve +
+  // delete-recovery). Default is the real fs.realpathSync; tests drive the
+  // not-found / recovery-exhausted branches through this seam.
+  realpathSync: ((p: fs.PathLike): string => fs.realpathSync(p, 'utf8')) as (p: fs.PathLike) => string,
   // Defense-in-depth exfiltration re-check. validateBashSecurity already runs
   // detectDataExfiltration, so this standalone guard only fires if that upstream
   // check is ever narrowed; the seam lets tests exercise this safety net.
@@ -293,6 +297,41 @@ export function normalizeBashInput(command: string, cwd: string | undefined): st
   out = rewriteWindowsNullRedirect(out);
   out = collapseFindExecEscape(out);
   return out;
+}
+
+/**
+ * Resolve the working directory for a bash invocation without a check-then-use
+ * (TOCTOU) race, and recover when the directory was deleted out from under the
+ * session. Rather than a separate `existsSync` pre-check, it `realpath`s the cwd
+ * (canonicalizing symlinks) and acts on the result; if the cwd no longer exists
+ * (`ENOENT`/`ENOTDIR`) it falls back to the session's original launch directory
+ * (`fallback`, default `process.cwd()`), returning `{ recovered: true }` so the
+ * caller can surface the reset. Returns `null` only when neither the cwd nor the
+ * fallback can be resolved. Parity: Claude Code Shell.ts `setCwd` (realpath-and-
+ * act, no existsSync pre-check) + the delete-recovery fallback to the original
+ * cwd.
+ */
+export function resolveWorkingDirectory(
+  cwd: string,
+  fallback: string = process.cwd(),
+): { dir: string; recovered: boolean } | null {
+  try {
+    return { dir: _bashHooks.realpathSync(cwd), recovered: false };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    // A non-existence error is recoverable; any other failure (e.g. EACCES) is
+    // surfaced as an unresolved cwd so the caller errors rather than silently
+    // relocating the command.
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') return null;
+  }
+  // The cwd is gone — recover to the launch directory if it is a different,
+  // still-existing path.
+  if (path.resolve(fallback) === path.resolve(cwd)) return null;
+  try {
+    return { dir: _bashHooks.realpathSync(fallback), recovered: true };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1025,11 +1064,26 @@ export const bashTool: ToolDefinition = {
       return { output: lines.join('\n'), isError: true };
     }
 
-    if (!fs.existsSync(context.cwd)) {
+    // TOCTOU-safe working-directory resolution with delete-recovery: realpath the
+    // cwd (no separate existsSync pre-check) and, if it was deleted out from under
+    // the session, recover to the launch directory rather than failing closed.
+    const resolvedCwd = resolveWorkingDirectory(context.cwd);
+    if (!resolvedCwd) {
       return {
         output: `Error: working directory "${context.cwd}" does not exist. It may have been deleted or moved. Use /add-dir to set a new working directory.`,
         isError: true,
       };
+    }
+    let cwdResetNote: string | null = null;
+    if (resolvedCwd.dir !== context.cwd) {
+      if (resolvedCwd.recovered) {
+        cwdResetNote =
+          `Shell cwd was reset to ${resolvedCwd.dir} — the previous working directory ` +
+          `"${context.cwd}" no longer exists (it may have been deleted or moved).`;
+      }
+      // Persist the resolved/recovered directory for the rest of this call so
+      // path resolution, sandbox config, and the spawn all use it consistently.
+      context.cwd = resolvedCwd.dir;
     }
 
     if (detectGitCommit(command)) {
@@ -1363,6 +1417,7 @@ export const bashTool: ToolDefinition = {
     }
     if (forcePushAdvisory) output += `\n\n[Warning: ${forcePushAdvisory}]`;
     if (compoundCdGitAdvisory) output += `\n\n[Warning: ${compoundCdGitAdvisory}]`;
+    if (cwdResetNote) output += `\n\n[Warning: ${cwdResetNote}]`;
 
     let exitCodeInfo: ExitCodeInfo | null = null;
     if (result.exitCode !== 0) {

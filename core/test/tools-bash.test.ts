@@ -334,14 +334,17 @@ describe('bashTool – abort during execution', () => {
 // ---------------------------------------------------------------------------
 
 describe('bashTool – spawn error', () => {
-  it('handles error event from child process (lines 107-112)', async () => {
-    // Trigger error by executing in a non-existent cwd
-    // This may trigger an error event on the child process
+  it('recovers to the launch dir when cwd is non-existent (delete-recovery, U030)', async () => {
+    // [functional change — U030] A non-existent cwd no longer fails closed: the
+    // tool realpath-recovers to the launch directory (process.cwd()) and runs the
+    // command there, surfacing a "Shell cwd was reset to …" note.
     const result = await bashTool.execute(
       { command: 'echo test' },
       ctx({ cwd: '/nonexistent/dir/xyz' }),
     );
-    assert.ok(result.isError);
+    assert.ok(!result.isError, `expected recovery, got: ${result.output}`);
+    assert.ok(result.output.includes('test'));
+    assert.ok(result.output.includes('Shell cwd was reset to'));
   });
 
   it('detects container fork exhaustion so the runner retries', () => {
