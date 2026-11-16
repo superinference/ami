@@ -78,6 +78,16 @@ export interface SkillSource {
   tier: SkillTrustTier;
   url?: string;
   catalogName?: string;
+  /**
+   * For a plugin-contributed skill, the name of the originating plugin bundle
+   * (`PluginBundle.name`). Absent for a skill loaded from a tier directory
+   * (core/user/project) or a URL catalog. Surfaced in the skill listing as
+   * ` · <bundle>` so a user/model can see which plugin a skill came from,
+   * mirroring Claude Code's `skill.pluginInfo.pluginManifest.name` display field
+   * (SkillsMenu renderSkill). Kept on the canonical source record so the origin
+   * survives name-collision namespacing.
+   */
+  bundleName?: string;
 }
 
 // ---------------------------------------------------------------------------
