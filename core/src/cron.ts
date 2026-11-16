@@ -164,17 +164,26 @@ function validateCronField(spec: string, min: number, max: number): string | nul
   return null;
 }
 
-export function wrapPromptSafely(prompt: string): string {
-  // CommonMark: a fenced block is closed only by a fence at least as long as the
-  // opening one. Size the fence to exceed the longest backtick run in the prompt
-  // so an injected ``` cannot break out of the fence. Minimum 3.
+/** Size a CommonMark code fence so it is STRICTLY longer than the longest run of
+ *  backticks inside `body`. Per the CommonMark fence-matching rule a fenced block
+ *  is closed only by a fence at least as long as its opener, so a fence sized to
+ *  `max(3, longestRun + 1)` guarantees an injected ``` inside the body can never
+ *  close the fence early and un-wrap any trailing guidance text (prompt-injection
+ *  containment). Mirrors Claude's content-derived fence sizing (src/utils/cronScheduler.ts).
+ *  Single canonical fence helper — reused by every scheduled-prompt wrapper so the
+ *  sizing logic exists in exactly one place. */
+export function fenceFor(body: string): string {
   let longestRun = 0;
   let current = 0;
-  for (const ch of prompt) {
+  for (const ch of body) {
     if (ch === '`') { current++; if (current > longestRun) longestRun = current; }
     else current = 0;
   }
-  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return '`'.repeat(Math.max(3, longestRun + 1));
+}
+
+export function wrapPromptSafely(prompt: string): string {
+  const fence = fenceFor(prompt);
   return `Previously scheduled task (missed while offline). Ask the user to confirm before running it:\n${fence}\n${prompt}\n${fence}`;
 }
 
@@ -743,6 +752,49 @@ export class CronScheduler {
       }
     }
     return missed;
+  }
+
+  /** Build a single user-facing notification for one or more missed scheduled
+   *  tasks. Plural-aware; states the task(s) were missed while AMI was not running
+   *  and have already been removed from the schedule; and — crucially — instructs
+   *  the model to confirm with the user (AskUserQuestion) BEFORE running any of them,
+   *  so a missed prompt never silently re-runs autonomously. Each prompt is wrapped
+   *  in a backtick-run-safe fence (fenceFor) so an embedded ``` cannot break out and
+   *  un-wrap the trailing guidance (prompt-injection containment), and carries a
+   *  `[<schedule>, created <timestamp>]` meta line. Mirrors Claude's
+   *  buildMissedTaskNotification (src/utils/cronScheduler.ts). Returns '' for an
+   *  empty list so callers can treat "no missed tasks" uniformly. */
+  buildMissedTaskNotification(jobs: CronJob[]): string {
+    if (jobs.length === 0) return '';
+    const plural = jobs.length > 1;
+    const header = plural
+      ? `${jobs.length} scheduled tasks were missed while AMI was not running and have been removed from the schedule.`
+      : `A scheduled task was missed while AMI was not running and has been removed from the schedule.`;
+    const guidance = `Do NOT execute ${plural ? 'these prompts' : 'this prompt'} yet. First use the AskUserQuestion tool to ask whether to run ${plural ? 'each one' : 'it'} now. Only execute if the user confirms.`;
+    const blocks = jobs.map(job => {
+      const fence = fenceFor(job.prompt);
+      const schedule = this.formatSchedule(job.cron);
+      const created = new Date(job.createdAt).toLocaleString();
+      return `[${schedule}, created ${created}]\n${fence}\n${job.prompt}\n${fence}`;
+    });
+    return `${header}\n\n${guidance}\n\n${blocks.join('\n\n')}`;
+  }
+
+  /** Startup catch-up for ONE-SHOT tasks whose fire window elapsed while AMI was
+   *  offline. Removes each missed one-shot from the schedule BEFORE returning (so it
+   *  can never auto-fire unconfirmed on the next tick, and is not re-detected on a
+   *  later call — dedup + anti-re-fire guard), and returns a single ask-before-run
+   *  notification, or null when nothing was missed. Recurring missed jobs are
+   *  intentionally left untouched — they resume firing naturally on the next tick.
+   *  Mirrors Claude's load(initial) one-shot-only missed-task surfacing (surface,
+   *  delete-before-notify). This is the wired consumer of detectMissedTasks +
+   *  buildMissedTaskNotification. */
+  takeMissedOneShotNotification(): string | null {
+    const missedOneShots = this.detectMissedTasks().filter(job => !job.recurring);
+    if (missedOneShots.length === 0) return null;
+    const notification = this.buildMissedTaskNotification(missedOneShots);
+    for (const job of missedOneShots) this.delete(job.id);
+    return notification;
   }
 
   computeNextRun(cron: string, fromTime?: number): number | null {
