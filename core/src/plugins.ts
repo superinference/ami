@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSafeSegment } from './skill-catalog';
-import { parseFrontmatter } from './memory';
+import { parseFrontmatter, parseFrontmatterList } from './memory';
 
 // ---------------------------------------------------------------------------
 // Git source safety — SHARED validators reused by the plugin installer AND the
@@ -217,6 +217,9 @@ export interface CommandDefinition {
   disableModelInvocation?: boolean;
   /** If false, the user may not invoke it via /name (default true). */
   userInvocable?: boolean;
+  /** User-facing display name (Claude's `name` frontmatter → `userFacingName()`),
+   *  distinct from the namespaced lookup `name`. Omitted when unset. */
+  displayName?: string;
 }
 
 /**
@@ -370,10 +373,98 @@ function parseTomlString(content: string, key: string): string | undefined {
 export const DEFAULT_COMMAND_DESCRIPTION = 'Plugin command';
 
 /**
+ * Apply the optional behavioral knobs (Claude-parity) onto `cmd`, reading each
+ * from whichever format the command file is in. `getStr` returns a string knob by
+ * key (TOML quoted value or markdown-frontmatter value); `getBool` a boolean;
+ * `getList` a string array. Each knob is omitted from `cmd` when absent. A single
+ * applier keeps the `.toml` and `.md` loaders in exact knob parity.
+ */
+function applyCommandKnobs(
+  cmd: CommandDefinition,
+  getStr: (key: string) => string | undefined,
+  getBool: (key: string) => boolean | undefined,
+  getList: (key: string) => string[] | undefined,
+): void {
+  const argumentHint = getStr('argument-hint');
+  if (argumentHint) cmd.argumentHint = argumentHint;
+  const model = getStr('model');
+  if (model) cmd.model = model;
+  const effort = getStr('effort');
+  if (effort) cmd.effort = effort;
+  const whenToUse = getStr('when-to-use') ?? getStr('when_to_use');
+  if (whenToUse) cmd.whenToUse = whenToUse;
+  const version = getStr('version');
+  if (version) cmd.version = version;
+  const displayName = getStr('name');
+  if (displayName) cmd.displayName = displayName;
+  const allowedTools = getList('allowed-tools');
+  if (allowedTools) cmd.allowedTools = allowedTools;
+  const disableModelInvocation = getBool('disable-model-invocation');
+  if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
+  const userInvocable = getBool('user-invocable');
+  if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
+}
+
+/**
  * Parse a single `.toml` command file into a {@link CommandDefinition} with the
  * given (already namespaced) `name`, or undefined when the file has no `prompt`
  * (a command needs a prompt to do anything) or cannot be read. The description is
  * user-facing only and falls back to {@link DEFAULT_COMMAND_DESCRIPTION}.
+ */
+function parseTomlCommandFile(content: string, filePath: string, name: string): CommandDefinition | undefined {
+  const desc = parseTomlString(content, 'description');
+  const prompt = parseTomlString(content, 'prompt');
+  // A command needs a prompt to do anything; the description is user-facing
+  // only, so a prompt-only command loads with a labelled fallback description
+  // instead of being silently discarded (Claude parity).
+  if (!prompt) return undefined;
+  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
+  applyCommandKnobs(
+    cmd,
+    key => parseTomlString(content, key),
+    key => parseTomlBool(content, key),
+    key => parseTomlStringArray(content, key),
+  );
+  return cmd;
+}
+
+/**
+ * Parse a single markdown command file (Claude Code's native command format:
+ * YAML frontmatter + a markdown body that IS the prompt) into a
+ * {@link CommandDefinition}, or undefined when the body is empty / unreadable.
+ * `allowed-tools` accepts the comma-separated or single-value frontmatter form;
+ * booleans accept `true`/`false`. The description falls back to
+ * {@link DEFAULT_COMMAND_DESCRIPTION}.
+ */
+function parseMarkdownCommandFile(content: string, filePath: string, name: string): CommandDefinition | undefined {
+  const { frontmatter, body } = parseFrontmatter(content);
+  const prompt = body.trim();
+  if (!prompt) return undefined; // a command with no body does nothing — skip
+  const desc = frontmatter.description?.trim();
+  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
+  applyCommandKnobs(
+    cmd,
+    key => { const v = frontmatter[key]; return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined; },
+    key => {
+      const v = frontmatter[key]?.trim().toLowerCase();
+      return v === 'true' ? true : v === 'false' ? false : undefined;
+    },
+    key => {
+      const v = frontmatter[key];
+      if (v === undefined) return undefined;
+      const list = parseFrontmatterList(v);
+      return list;
+    },
+  );
+  return cmd;
+}
+
+/**
+ * Parse a single command file into a {@link CommandDefinition} with the given
+ * (already namespaced) `name`, dispatching on extension: `.toml` uses the TOML
+ * `key = "value"` format; `.md` uses Claude Code's YAML-frontmatter + body format
+ * (the body is the prompt). Returns undefined for an unreadable file or one with
+ * no usable prompt.
  */
 function parseCommandFile(filePath: string, name: string): CommandDefinition | undefined {
   let content: string;
@@ -382,42 +473,36 @@ function parseCommandFile(filePath: string, name: string): CommandDefinition | u
   } catch {
     return undefined; // unreadable command file — skip
   }
-  const desc = parseTomlString(content, 'description');
-  const prompt = parseTomlString(content, 'prompt');
-  // A command needs a prompt to do anything; the description is user-facing
-  // only, so a prompt-only command loads with a labelled fallback description
-  // instead of being silently discarded (Claude parity).
-  if (!prompt) return undefined;
-  const cmd: CommandDefinition = { name, description: desc || DEFAULT_COMMAND_DESCRIPTION, prompt, filePath };
-  // Optional behavioral knobs (Claude-parity). Each is omitted when absent.
-  const argumentHint = parseTomlString(content, 'argument-hint');
-  if (argumentHint) cmd.argumentHint = argumentHint;
-  const model = parseTomlString(content, 'model');
-  if (model) cmd.model = model;
-  const effort = parseTomlString(content, 'effort');
-  if (effort) cmd.effort = effort;
-  const whenToUse = parseTomlString(content, 'when-to-use') ?? parseTomlString(content, 'when_to_use');
-  if (whenToUse) cmd.whenToUse = whenToUse;
-  const version = parseTomlString(content, 'version');
-  if (version) cmd.version = version;
-  const allowedTools = parseTomlStringArray(content, 'allowed-tools');
-  if (allowedTools) cmd.allowedTools = allowedTools;
-  const disableModelInvocation = parseTomlBool(content, 'disable-model-invocation');
-  if (disableModelInvocation !== undefined) cmd.disableModelInvocation = disableModelInvocation;
-  const userInvocable = parseTomlBool(content, 'user-invocable');
-  if (userInvocable !== undefined) cmd.userInvocable = userInvocable;
-  return cmd;
+  return filePath.endsWith('.md')
+    ? parseMarkdownCommandFile(content, filePath, name)
+    : parseTomlCommandFile(content, filePath, name);
+}
+
+/** Command file extensions AMI loads: TOML (AMI's original) and Claude's `.md`. */
+const COMMAND_FILE_EXTS = ['.toml', '.md'] as const;
+
+/** Strip a recognized command-file extension from `fileName`, or null if none. */
+function commandBaseName(fileName: string): string | null {
+  for (const ext of COMMAND_FILE_EXTS) {
+    if (fileName.endsWith(ext)) return path.basename(fileName, ext);
+  }
+  return null;
 }
 
 /**
- * Recursively walk a commands directory, collecting every `.toml` command file.
- * The `namespace` accumulates the sub-path from the commands root to the file
- * (Claude parity: `walkPluginMarkdown`), so a command at `commands/git/commit.toml`
- * is namespaced `git:commit` while a top-level `commands/review.toml` keeps its
- * bare `review` name. Symlinked directories are NOT followed (readdir Dirents
- * report a symlink as `isDirectory() === false`), which both prevents walk loops
- * and keeps discovery contained to the plugin's own tree — consistent with the
- * realpath hardening used everywhere else in this module.
+ * Recursively walk a commands directory, collecting every `.toml` or `.md`
+ * command file. The `namespace` accumulates the sub-path from the commands root
+ * to the file (Claude parity: `getCommandNameFromFile`), and `pluginName` — when
+ * the walk was started for a named plugin bundle — is prepended as the top
+ * namespace segment so command names are globally unique ACROSS plugins
+ * (`${pluginName}:${namespace}:${base}`). Two bundles each shipping `deploy.toml`
+ * therefore register as `pluginA:deploy` / `pluginB:deploy` instead of silently
+ * colliding. A direct `loadCommands(dir)` with no plugin name keeps the bare
+ * `namespace:base` form (back-compat for non-bundle callers/tests).
+ * Symlinked directories are NOT followed (readdir Dirents report a symlink as
+ * `isDirectory() === false`), which both prevents walk loops and keeps discovery
+ * contained to the plugin's own tree — consistent with the realpath hardening
+ * used everywhere else in this module.
  */
 function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition[]): void {
   let entries: fs.Dirent[];
@@ -432,8 +517,9 @@ function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition
       walkCommandDir(full, [...namespace, entry.name], out);
       continue;
     }
-    if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
-    const base = path.basename(entry.name, '.toml');
+    if (!entry.isFile()) continue;
+    const base = commandBaseName(entry.name);
+    if (base === null) continue;
     const name = namespace.length > 0 ? `${namespace.join(':')}:${base}` : base;
     const cmd = parseCommandFile(full, name);
     if (cmd) out.push(cmd);
@@ -441,16 +527,19 @@ function walkCommandDir(dir: string, namespace: string[], out: CommandDefinition
 }
 
 /**
- * Load TOML command definitions from a plugin's commands/ directory, recursing
- * into nested subdirectories (Claude parity). Each `.toml` file defines a slash
- * command; `prompt` is required (it is what the command runs), while
- * `description` is optional and falls back to {@link DEFAULT_COMMAND_DESCRIPTION}.
- * A command in a subdirectory is namespaced by its sub-path with `:` separators
- * (e.g. `commands/git/commit.toml` → `git:commit`).
+ * Load command definitions from a plugin's commands/ directory, recursing into
+ * nested subdirectories (Claude parity). Each `.toml` or `.md` file defines a
+ * slash command; a prompt is required (it is what the command runs — the TOML
+ * `prompt` key or the markdown body), while `description` is optional and falls
+ * back to {@link DEFAULT_COMMAND_DESCRIPTION}. A command in a subdirectory is
+ * namespaced by its sub-path with `:` separators (e.g. `commands/git/commit.toml`
+ * → `git:commit`). When `pluginName` is given, it is prepended as the first
+ * segment so command names are unique across plugins (`pluginName:git:commit`).
  */
-export function loadCommands(dir: string): CommandDefinition[] {
+export function loadCommands(dir: string, pluginName?: string): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
-  walkCommandDir(dir, [], commands);
+  const base = pluginName && pluginName.trim() !== '' ? [pluginName.trim()] : [];
+  walkCommandDir(dir, base, commands);
   return commands;
 }
 
@@ -605,14 +694,21 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     errors.push({ path: 'commands', message: 'commands/ path escapes the plugin directory (symlink or ..).' });
   } else if (commandsDir) {
     for (const entry of safeReaddir(commandsDir)) {
-      if (!entry.endsWith('.toml')) continue;
+      const isMd = entry.endsWith('.md');
+      if (!entry.endsWith('.toml') && !isMd) continue;
       const file = path.join(commandsDir, entry);
       let content: string;
       try { content = fs.readFileSync(file, 'utf-8'); } catch (err) {
         errors.push({ path: `commands/${entry}`, message: `Failed to read: ${err instanceof Error ? err.message : String(err)}` });
         continue;
       }
-      if (!parseTomlString(content, 'description') || !parseTomlString(content, 'prompt')) {
+      if (isMd) {
+        // Markdown command: the body IS the prompt (Claude format), so a non-empty
+        // body is what makes the command runnable; description is optional.
+        if (!parseFrontmatter(content).body.trim()) {
+          errors.push({ path: `commands/${entry}`, message: 'markdown command must have a non-empty body (the prompt).' });
+        }
+      } else if (!parseTomlString(content, 'description') || !parseTomlString(content, 'prompt')) {
         errors.push({ path: `commands/${entry}`, message: 'command TOML must define both "description" and "prompt".' });
       }
     }

@@ -291,10 +291,13 @@ describe('loadCommands', () => {
     assert.deepEqual(cmds, []);
   });
 
-  it('returns empty array for directory with no .toml files', () => {
+  // Functional change: .md command files are now a supported command format
+  // (Claude parity), so a command dir is "empty" only when it has no .toml/.md
+  // command files — a non-command extension (e.g. .txt) is still ignored.
+  it('returns empty array for directory with no command files', () => {
     const dir = path.join(tmpDir, 'no-toml');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'README.md'), 'hello');
+    fs.writeFileSync(path.join(dir, 'NOTES.txt'), 'hello');
     const cmds = loadCommands(dir);
     assert.deepEqual(cmds, []);
   });
@@ -365,10 +368,12 @@ describe('loadCommands', () => {
     assert.deepEqual(names, ['alpha', 'beta']);
   });
 
-  it('ignores non-.toml files in the directory', () => {
+  // Functional change: .md is now a command format (Claude parity); only files
+  // with neither a .toml nor .md extension are ignored.
+  it('ignores files that are not .toml or .md command files', () => {
     const dir = path.join(tmpDir, 'mixed-cmds');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'readme.md'), '# Commands');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), '# Commands');
     fs.writeFileSync(path.join(dir, 'valid.toml'), [
       'description = "Valid"',
       'prompt = "Run"',
