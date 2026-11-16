@@ -22,6 +22,41 @@ export const _toolUtilsHooks: {
 };
 
 // ---------------------------------------------------------------------------
+// Case-insensitive-filesystem-aware path comparison
+// ---------------------------------------------------------------------------
+
+/**
+ * Platform seam for case-insensitive-filesystem detection. Default is the real
+ * `process.platform`; tests override it to exercise the Windows/macOS case-folding
+ * branch deterministically on a case-sensitive CI host.
+ */
+export const _pathCompareHooks: { platform: NodeJS.Platform } = { platform: process.platform };
+
+/**
+ * True when the host filesystem is case-INSENSITIVE by default (Windows, macOS/APFS).
+ * On these platforms two spellings of a path that differ only by letter-case name the
+ * SAME file, so path-equality/dedup keys must fold case to match the OS.
+ */
+export function isCaseInsensitiveFs(platform: NodeJS.Platform = _pathCompareHooks.platform): boolean {
+  return platform === 'win32' || platform === 'darwin';
+}
+
+/**
+ * Canonicalize a path for COMPARISON/dedup: always collapse `.`/`..`/duplicate
+ * separators via `path.normalize`, and — only on a case-insensitive filesystem —
+ * unify separators to `/` and lowercase, so the same file reached via two letter-cases
+ * (or mixed `\`/`/`) resolves to one key. On a case-sensitive FS (Linux) this is just
+ * `path.normalize` (case preserved). Mirrors Claude Code's `normalizePathForComparison`.
+ */
+export function normalizePathForComparison(filePath: string): string {
+  const normalized = path.normalize(filePath);
+  if (isCaseInsensitiveFs()) {
+    return normalized.replace(/\\/g, '/').toLowerCase();
+  }
+  return normalized;
+}
+
+// ---------------------------------------------------------------------------
 // Device / special-file blocklist — shared by file_read and file_edit
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { decodeBuffer } from './tools/tool-utils';
+import { decodeBuffer, normalizePathForComparison } from './tools/tool-utils';
 import { estimateTokensForFileType } from './utils/tokens';
 
 export interface FileState {
@@ -39,6 +39,44 @@ export interface FileState {
  * MAX_CONTENT_HASH_SIZE (100KB) memory-exhaustion guard.
  */
 export const MAX_CONTENT_HASH_SIZE = 100 * 1024; // 100 KB
+
+/**
+ * Why a cached file is considered stale, as classified by {@link FileCache.describeChange}:
+ * - `unchanged` — not cached, or the file still matches the cached read (no action needed).
+ * - `mtime`     — the file's modification time moved since the read (a user or another tool
+ *                 rewrote it). The bytes may or may not differ, but the read-before-edit
+ *                 contract still requires a fresh read.
+ * - `content`   — the timestamp is UNCHANGED but the bytes differ (a same-second rewrite on a
+ *                 coarse-timestamp filesystem, or an over-cap grow) — the classic signature of
+ *                 a linter/formatter that rewrote the file in place.
+ * - `missing`   — the file no longer exists on disk (deleted/moved since the read).
+ */
+export type FileChangeReason = 'unchanged' | 'mtime' | 'content' | 'missing';
+
+/** Discriminated freshness result — see {@link FileCache.describeChange}. */
+export interface FileChangeResult {
+  changed: boolean;
+  reason: FileChangeReason;
+}
+
+/**
+ * Build the Claude-style "read it again" affordance message for a stale file, naming the
+ * LIKELY cause (user/tool vs linter/formatter vs deletion) and the exact next action, so the
+ * model recovers correctly instead of seeing a flat "modified since read". Driven by the
+ * {@link FileChangeReason} from {@link FileCache.describeChange}. `verb` is the blocked action
+ * (e.g. `editing`, `overwriting`).
+ */
+export function describeFileChangeMessage(reason: FileChangeReason, verb: string): string {
+  switch (reason) {
+    case 'content':
+      return `File has been modified since you last read it — its timestamp is unchanged but its contents differ, which usually means a linter or formatter rewrote it in place. Read the file again before ${verb}.`;
+    case 'missing':
+      return `File no longer exists on disk — it was deleted or moved since you last read it. Read the current file again before ${verb}.`;
+    case 'mtime':
+    default:
+      return `File has been modified since you last read it, either by you or by another tool. Read the file again before ${verb}.`;
+  }
+}
 
 function hashContent(content: string): string {
   const h = crypto.createHash('sha256');
@@ -144,9 +182,15 @@ export class FileCache {
    * one entry (relative-vs-absolute redundant `/foo/../bar` segments, trailing
    * separators, `./` noise, duplicate separators). Keeps the read-before-edit /
    * staleness guard consistent regardless of how a caller spells the path.
+   *
+   * Routes through {@link normalizePathForComparison}, so on a case-INSENSITIVE
+   * filesystem (Windows, macOS/APFS) two spellings that differ only by letter-case
+   * (or by `\` vs `/`) collapse to ONE cache entry — matching the OS, so a read
+   * cached under `/Repo/A.ts` and a later edit of `/repo/a.ts` share read-state
+   * instead of silently desyncing. On Linux (case-sensitive) this is `path.normalize`.
    */
   private norm(key: string): string {
-    return path.normalize(key);
+    return normalizePathForComparison(key);
   }
 
   /**
@@ -243,36 +287,48 @@ export class FileCache {
    * error keeps the cached entry rather than reporting a false change.
    */
   hasChanged(path: string): boolean {
+    return this.describeChange(path).changed;
+  }
+
+  /**
+   * Classify WHY (and whether) a cached file is stale, returning a discriminated
+   * {@link FileChangeResult} so downstream consumers (file_edit / notebook_edit) can emit the
+   * Claude-style affordance that names the likely cause and the exact next action instead of a
+   * flat "modified since read". {@link hasChanged} is the boolean projection of this.
+   *
+   * The classification mirrors the old hasChanged logic exactly:
+   * - no cached entry → `unchanged` (nothing tracked).
+   * - mtime-only / partial entry (no cached content): floor both sides so sub-millisecond
+   *   timestamp jitter (watcher touch, fs rounding) is not a change; a whole-ms move → `mtime`.
+   * - content entry, mtime moved → `mtime` (user or another tool rewrote it; safety guard
+   *   rejects the edit regardless of whether bytes match).
+   * - content entry, mtime stable but file grew past the byte ceiling → `content` (treated as
+   *   changed WITHOUT slurping it, so a mtime-stable giant file can't become a memory/CPU DoS).
+   * - content entry, mtime stable, hash differs → `content` (same-tick rewrite, e.g. a linter).
+   * - content entry, hash matches → `unchanged`.
+   * - ENOENT → `missing` (deleted). Known-inaccessible FS condition → `unchanged` (keep entry).
+   *   Any OTHER unexpected error is surfaced, not swallowed into a false "unchanged".
+   */
+  describeChange(path: string): FileChangeResult {
     const key = this.norm(path);
     const cached = this.cache.get(key);
-    if (!cached) return false;
+    if (!cached) return { changed: false, reason: 'unchanged' };
 
     try {
       const stat = fs.statSync(key);
-      // mtime-only / partial entry (no cached content to compare): floor both
-      // sides so sub-millisecond timestamp jitter (watcher touch, fs rounding)
-      // is not reported as a change; a whole-ms move still is.
       if (!cached.content) {
-        return Math.floor(stat.mtimeMs) !== Math.floor(cached.mtime);
+        const changed = Math.floor(stat.mtimeMs) !== Math.floor(cached.mtime);
+        return { changed, reason: changed ? 'mtime' : 'unchanged' };
       }
-      // Content entry: any mtime change is "modified since read" (safety guard —
-      // the read-before-edit contract rejects an edit when the file's mtime moved
-      // so the caller must re-read first), regardless of whether bytes match.
-      if (stat.mtimeMs !== cached.mtime) return true;
-      // Bounded freshness check: never read a file larger than the cache's byte
-      // ceiling just to hash it. Treat an over-cap file as changed so callers
-      // re-read it through the normal size-limited read path.
-      if (stat.size > this.maxSizeBytes) return true;
+      if (stat.mtimeMs !== cached.mtime) return { changed: true, reason: 'mtime' };
+      if (stat.size > this.maxSizeBytes) return { changed: true, reason: 'content' };
       const rawBuf = fsHooks.readFileSync(key);
       const currentContent = decodeBuffer(rawBuf as Buffer).text;
-      return hashContent(currentContent) !== cached.contentHash;
+      const changed = hashContent(currentContent) !== cached.contentHash;
+      return { changed, reason: changed ? 'content' : 'unchanged' };
     } catch (err) {
-      // Deleted file → changed (invalidate). A known-inaccessible FS condition
-      // (permission/lock/type/resource) → keep the entry (not "changed"). Any
-      // OTHER, genuinely unexpected error is surfaced rather than silently
-      // swallowed into a false "unchanged", so real bugs are not masked.
-      if (isENOENT(err)) return true;
-      if (isFsInaccessible(err)) return false;
+      if (isENOENT(err)) return { changed: true, reason: 'missing' };
+      if (isFsInaccessible(err)) return { changed: false, reason: 'unchanged' };
       throw err;
     }
   }

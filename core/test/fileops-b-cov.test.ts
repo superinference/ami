@@ -398,7 +398,8 @@ describe('notebook-edit — uncovered paths', () => {
       ctx(),
     );
     assert.equal(result.isError, true);
-    assert.match(result.output, /modified since last read/);
+    // U095: reason-aware wording — a mtime-stale change names user/another tool.
+    assert.match(result.output, /modified since you last read it/);
     // The stale entry is evicted so the next read returns full content.
     assert.equal(getFileCache(tmpDir).get(real), null);
   });

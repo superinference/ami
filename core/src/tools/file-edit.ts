@@ -7,7 +7,7 @@ import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, 
 import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
-import { getFileCache } from '../file-cache';
+import { getFileCache, describeFileChangeMessage } from '../file-cache';
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
@@ -390,9 +390,10 @@ export async function writeEntireFile(
         isError: true,
       };
     }
-    if (fileCache.hasChanged(resolved)) {
+    const change = fileCache.describeChange(resolved);
+    if (change.changed) {
       fileCache.delete(resolved);
-      return { output: 'Error: File has been modified since you last read it. Read the file again before overwriting.', isError: true };
+      return { output: `Error: ${describeFileChangeMessage(change.reason, 'overwriting')}`, isError: true };
     }
   }
 
@@ -475,9 +476,10 @@ async function applySequentialEdits(
   }
 
   const fileCache = getFileCache(context.cwd, context.agentId);
-  if (fileCache.hasChanged(resolved)) {
+  const freshness = fileCache.describeChange(resolved);
+  if (freshness.changed) {
     fileCache.delete(resolved);
-    return { output: 'Error: File has been modified since you last read it. Read the file again before editing.', isError: true };
+    return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true };
   }
 
   const originalEnding = detectLineEnding(rawContent);
@@ -809,9 +811,10 @@ export const fileEditTool: ToolDefinition = {
     }
 
     const fileCache = getFileCache(context.cwd, context.agentId);
-    if (fileCache.hasChanged(resolved)) {
+    const freshness = fileCache.describeChange(resolved);
+    if (freshness.changed) {
       fileCache.delete(resolved);
-      return { output: 'Error: File has been modified since you last read it. Please read the file again before editing.', isError: true };
+      return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true };
     }
 
     const originalEnding = detectLineEnding(rawContent);

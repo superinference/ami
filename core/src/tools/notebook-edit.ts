@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { getFileCache } from '../file-cache';
+import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import {
   validateFilePath,
   validateFileWritePath,
@@ -171,9 +171,11 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    if (getFileCache(context.cwd, context.agentId).hasChanged(resolved)) {
-      getFileCache(context.cwd, context.agentId).delete(resolved);
-      return { output: 'Error: Notebook modified since last read. Read it again.', isError: true };
+    const nbCache = getFileCache(context.cwd, context.agentId);
+    const nbChange = nbCache.describeChange(resolved);
+    if (nbChange.changed) {
+      nbCache.delete(resolved);
+      return { output: `Error: ${describeFileChangeMessage(nbChange.reason, 'editing the notebook')}`, isError: true };
     }
 
     // --- Read and parse the notebook ---
