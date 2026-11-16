@@ -804,14 +804,13 @@ export function deduplicateToolCalls(
 /** Glob metacharacters that must never appear in a NEW write/create target.
  *  A create path like `src/*.ts` or `out/{a,b}` would pass base-directory
  *  validation but resolve to an unintended literal path (the write tool never
- *  expands globs), so a non-existent target containing any of `* ? [ ] { }` is
- *  hard-denied (Claude Code `GLOB_PATTERN_REGEX`). SUPERSET over Claude: the
- *  block is scoped to NON-existent targets, so editing an EXISTING literal file
- *  whose name legitimately contains brackets (e.g. a Next.js `[id].tsx` dynamic
- *  route) still works — there is no base-dir bypass when the literal path
- *  already exists on disk. */
-// eslint-disable-next-line no-useless-escape -- explicit class members for clarity
-const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
+ *  expands globs), so a non-existent target containing `* ? { }` is hard-denied
+ *  (Claude Code `GLOB_PATTERN_REGEX`). SUPERSET over Claude: brackets `[ ]` are
+ *  DELIBERATELY NOT rejected — framework dynamic-route filenames (e.g. a Next.js
+ *  `[id].tsx` or SvelteKit `[slug]/+page.svelte`) are legitimate literal paths,
+ *  and the write tool uses the path verbatim (no shell glob expansion), so there
+ *  is no base-dir bypass risk from brackets. */
+const GLOB_PATTERN_REGEX = /[*?{}]/;
 
 export function validateFileWritePath(filePath: string): { valid: boolean; error?: string } {
   const nullCheck = validateFilePath(filePath);
@@ -829,7 +828,7 @@ export function validateFileWritePath(filePath: string): { valid: boolean; error
     if (GLOB_PATTERN_REGEX.test(filePath)) {
       return {
         valid: false,
-        error: `Error: "${filePath}" contains glob metacharacters (*?[]{}). Provide a single literal file path for write/create operations.`,
+        error: `Error: "${filePath}" contains glob metacharacters (*?{}). Provide a single literal file path for write/create operations.`,
       };
     }
   }

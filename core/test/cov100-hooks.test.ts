@@ -99,7 +99,7 @@ describe('hooks.ts — runCommandHookAsync stdin delivery (guards A)', () => {
     assert.ok(written.length > 0, 'stop hook must still receive a non-empty stdin payload');
     // Payload now carries the Claude Code snake_case alias (hook_event_name)
     // alongside the camelCase `event`, plus a trailing newline.
-    assert.deepEqual(JSON.parse(written), { event: 'stop', hook_event_name: 'Stop' });
+    assert.deepEqual(JSON.parse(written), { event: 'stop', stop_hook_active: false, hook_event_name: 'Stop' });
     assert.ok(written.endsWith('\n'), 'CC hook payloads are newline-terminated');
   });
 

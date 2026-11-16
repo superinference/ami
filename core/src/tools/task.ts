@@ -16,6 +16,7 @@ import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 import { validateBoundedIntEnvVar } from '../config';
+import { buildPreloadedSkillsBlock } from '../skills';
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000;
@@ -1379,6 +1380,10 @@ export const taskTool: ToolDefinition = {
     // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt) — text prepended
     // to the first user turn on the initial spawn (never on resume).
     let agentInitialPrompt: string | undefined;
+    // Per-agent `skills` preload (parity: Claude's runAgent skill preloading) —
+    // a one-line note naming any declared-but-unresolvable skill, prepended to the
+    // agent's returned output so a typo'd/disabled preload is visible, not silent.
+    let agentSkillPreloadNote = '';
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -1395,6 +1400,26 @@ export const taskTool: ToolDefinition = {
       agentIsolationDefault = agentDef.isolation;
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
+
+      // Preload the bodies of the skills this agent declares (parity: Claude's
+      // runAgent skill preloading) into its authoritative system prompt, so the
+      // spawned agent starts already carrying that instruction context instead of
+      // having to discover + invoke each skill. Resolution reuses the SkillManager's
+      // name/alias lookup (getSkill); a disabled or blank-bodied skill is treated as
+      // unresolved. Unknown/invalid names are surfaced as a spawn note rather than a
+      // hard failure (a missing optional skill should not strand the whole agent).
+      if (agentDef.skills && agentDef.skills.length > 0) {
+        const preload = buildPreloadedSkillsBlock(
+          agentDef.skills,
+          (n) => context._skillManager!.getSkill(n),
+        );
+        if (preload.block) {
+          agentSystemPrompt = `${agentSystemPrompt}\n\n${preload.block}`;
+        }
+        if (preload.missing.length > 0) {
+          agentSkillPreloadNote = `Note: agent "${subagentType}" references unknown or disabled skill(s) in its "skills" preload: ${preload.missing.join(', ')}.`;
+        }
+      }
 
       if (agentDef.tools && agentDef.tools.length > 0) {
         const everything = allTools.getAll();
@@ -2084,7 +2109,10 @@ export const taskTool: ToolDefinition = {
     // A metadata-only tail (empty body + stats) reads as "nothing to act on" to
     // some models and ends the parent turn prematurely — substitute an explicit
     // no-output marker (mirrors Claude's "(Subagent completed but returned no output.)").
-    const body = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
+    const rawBody = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
+    // Prepend any skills-preload note (a declared preload skill that could not be
+    // resolved) so the typo/disabled skill is visible to the parent, not silent.
+    const body = agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n${rawBody}` : rawBody;
     // Continue-affordance: tell the parent it CAN message/resume this agent to
     // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
     // run OR a named one-shot built-in type (Explore/Plan) — which are never
