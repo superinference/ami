@@ -2267,7 +2267,7 @@ describe('todoWriteTool — coverage', () => {
     const r = await todoWriteTool.execute({
       todos: [
         { id: '1', content: 'First task', status: 'pending' },
-        { id: '2', content: 'Second task', status: 'in_progress' },
+        { id: '2', content: 'Second task', status: 'in_progress', activeForm: 'Doing second task' },
         { id: '3', content: 'Done task', status: 'completed' },
       ],
     }, ctx());

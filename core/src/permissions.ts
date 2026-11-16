@@ -2303,7 +2303,7 @@ export class PermissionManager {
     }
 
     if (this.mode === 'plan') {
-      const readOnlyTools = new Set(['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols', 'tool_search', 'task_tracker', 'task_list', 'task_output']);
+      const readOnlyTools = new Set(['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols', 'tool_search', 'task_tracker', 'task_list', 'task_output', 'todo_read']);
       if (readOnlyTools.has(toolName)) return 'allow';
       return 'deny';
     }

@@ -317,7 +317,7 @@ describe('todo-write', () => {
     const r = await todoWriteTool.execute({
       todos: [
         { id: '1', content: 'done thing', status: 'completed' },
-        { id: '2', content: 'working', status: 'in_progress' },
+        { id: '2', content: 'working', status: 'in_progress', activeForm: 'Working on it' },
         { id: '3', content: 'cancelled thing', status: 'cancelled' },
         { id: '4', content: 'todo thing', status: 'pending' },
       ],

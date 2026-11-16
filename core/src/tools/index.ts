@@ -34,7 +34,7 @@ import { sleepTool } from './sleep';
 import { workflowTool } from './workflow';
 import { briefTool } from './brief';
 import { teamCreateTool, teamDeleteTool } from './team';
-import { todoWriteTool } from './todo-write';
+import { todoWriteTool, todoReadTool } from './todo-write';
 import { configTool } from './config-tool';
 import { syntheticOutputTool } from './synthetic-output';
 import { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
@@ -120,6 +120,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   registry.register(sleepTool);
   registry.register(briefTool);
   registry.register(todoWriteTool);
+  registry.register(todoReadTool);
   registry.register(configTool);
   registry.register(syntheticOutputTool);
   registry.register(agenticFetchTool);
@@ -212,7 +213,7 @@ export type { CommandNode, ParseBudget, OutputRedirection } from './bash-parser'
 export { shouldUseSandbox, wrapWithSandbox, getSandboxStatus, resetSandboxCache } from './bash-sandbox';
 export type { SandboxConfig } from './bash-sandbox';
 export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam } from './team';
-export { todoWriteTool, resetTodos, getTodos } from './todo-write';
+export { todoWriteTool, todoReadTool, resetTodos, getTodos, formatTodoReadOutput, validateInProgressActiveForm } from './todo-write';
 export { createMcpAuthTool } from './mcp-auth';
 export { createMcpTool } from './mcp-tool';
 export { createMcpConnectTool } from './mcp-connect';

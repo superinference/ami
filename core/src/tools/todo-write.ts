@@ -2,12 +2,23 @@ import { ToolContext, ToolDefinition, ToolResult, TodoItemView } from '../types'
 
 type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 
+/** Optional per-item bookkeeping metadata. An item flagged `_internal` is tracked
+ *  in the store but hidden from the user-facing list and excluded from the
+ *  completion/clear computation (parity: Claude's useTasksV2 / TaskListTool
+ *  `t => !t.metadata?._internal` filter). */
+interface TodoMetadata {
+  _internal?: boolean;
+  [key: string]: unknown;
+}
+
 interface TodoItem {
   id: string;
   content: string;
   status: TodoStatus;
   /** Present-continuous label shown while the item is in progress (T5). */
   activeForm?: string;
+  /** Hidden-task bookkeeping (see {@link TodoMetadata}). */
+  metadata?: TodoMetadata;
 }
 
 /** Raw item shape as received from the model — `id` and `activeForm` optional (T5). */
@@ -16,6 +27,13 @@ interface TodoItemInput {
   content: string;
   status: TodoStatus;
   activeForm?: string;
+  metadata?: TodoMetadata;
+}
+
+/** True when an item is an internal/hidden bookkeeping task that must never appear
+ *  in the user-facing list or participate in the completion/hide computation. */
+function isInternal(item: TodoItem): boolean {
+  return item.metadata?._internal === true;
 }
 
 /**
@@ -52,7 +70,7 @@ function toView(item: TodoItem): TodoItemView {
 
 const VALID_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled'];
 const ALLOWED_TOP_KEYS = new Set(['todos', 'merge']);
-const ALLOWED_ITEM_KEYS = new Set(['id', 'content', 'status', 'activeForm']);
+const ALLOWED_ITEM_KEYS = new Set(['id', 'content', 'status', 'activeForm', 'metadata']);
 
 /** Hard cap on the serialized todo result size (parity with Claude's maxResultSizeChars). */
 export const TODO_MAX_RESULT_CHARS = 100_000;
@@ -88,6 +106,27 @@ export function validateTodoInput(input: Record<string, unknown>): string | null
     if (item.activeForm !== undefined && (typeof item.activeForm !== 'string' || item.activeForm.trim().length === 0)) {
       return `todos[${i}].activeForm cannot be empty when provided.`;
     }
+    if (item.metadata !== undefined && (typeof item.metadata !== 'object' || item.metadata === null || Array.isArray(item.metadata))) {
+      return `todos[${i}].metadata must be an object.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Parity with Claude's `activeForm: z.string().min(1)` contract: the
+ * present-continuous label is what the live-progress UI renders while an item is
+ * in progress, so every item that ends up `in_progress` must carry a non-empty
+ * `activeForm`. Checked on the RESOLVED (post-merge) list so AMI's merge
+ * extension can carry a label stored on an earlier write. Returns an error
+ * message, or null when every in-progress item has a label.
+ */
+export function validateInProgressActiveForm(items: readonly TodoItem[]): string | null {
+  for (let i = 0; i < items.length; i++) {
+    const t = items[i];
+    if (t.status === 'in_progress' && (typeof t.activeForm !== 'string' || t.activeForm.trim().length === 0)) {
+      return `todos[${i}].activeForm is required (a present-continuous label, e.g. "Running tests") when status is in_progress.`;
+    }
   }
   return null;
 }
@@ -108,9 +147,11 @@ export const todoWriteTool: ToolDefinition = {
     'replies, or work that is already done — tracking those just adds noise. ' +
     'By default the provided list REPLACES the stored list; pass merge:true to ' +
     'update existing items by id and append new ones instead of replacing ' +
-    '(an AMI extension). Each item may carry an optional activeForm — a ' +
-    'present-continuous label (e.g. "Running tests") shown while it is in ' +
-    'progress. Item id is optional; if omitted, an index-based id is assigned.\n' +
+    '(an AMI extension). ALWAYS provide both forms for each task: the imperative ' +
+    'content (e.g. "Run the tests") AND an activeForm — the present-continuous ' +
+    'label (e.g. "Running tests") shown while the item is in progress. activeForm ' +
+    'is REQUIRED for any item whose status is in_progress. Item id is optional; ' +
+    'if omitted, an index-based id is assigned.\n' +
     'Discipline: mark an item in_progress BEFORE you start it, and keep exactly ' +
     'one item in_progress at a time — complete the current item before starting ' +
     'the next. ONLY mark an item completed when it is FULLY accomplished; if you ' +
@@ -129,7 +170,8 @@ export const todoWriteTool: ToolDefinition = {
             id: { type: 'string', description: 'Stable item id (optional). If omitted, an index-based id is generated so merge-by-id still works.' },
             content: { type: 'string', minLength: 1, description: 'Imperative description of the task.' },
             status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
-            activeForm: { type: 'string', minLength: 1, description: 'Optional present-continuous label shown while this item is in_progress (e.g. "Running tests").' },
+            activeForm: { type: 'string', minLength: 1, description: 'Present-continuous label shown while this item is in_progress (e.g. "Running tests"). Always provide it; it is REQUIRED whenever status is in_progress.' },
+            metadata: { type: 'object', description: 'Optional bookkeeping metadata. Set `_internal: true` to track a task that must stay hidden from the user-facing list and excluded from completion/clear.' },
           },
           required: ['content', 'status'],
           // Strict object: reject unknown per-item keys at the advertised-schema
@@ -156,6 +198,7 @@ export const todoWriteTool: ToolDefinition = {
         status: it.status,
       };
       if (it.activeForm !== undefined) item.activeForm = it.activeForm;
+      if (it.metadata !== undefined) item.metadata = it.metadata;
       return item;
     });
     const merge = (input.merge as boolean) ?? false;
@@ -173,9 +216,20 @@ export const todoWriteTool: ToolDefinition = {
     } else {
       current = items;
     }
+
+    // Parity: activeForm is required (non-empty) for any item that ends up
+    // in_progress — checked on the RESOLVED list so a merge can carry a label
+    // stored by an earlier write. Reject without mutating the store.
+    const activeFormError = validateInProgressActiveForm(current);
+    if (activeFormError) return { output: `Error: ${activeFormError}`, isError: true };
+
     sessionTodos.set(key, current);
 
-    let summary = current.map(t => {
+    // Internal bookkeeping tasks are hidden from everything the user/model sees:
+    // the rendered summary, the live-update event, and the completion/clear gate.
+    const visible = current.filter(t => !isInternal(t));
+
+    let summary = visible.map(t => {
       const icon = t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : t.status === 'cancelled' ? '[-]' : '[ ]';
       return `${icon} ${t.id}: ${t.content}`;
     }).join('\n');
@@ -184,26 +238,27 @@ export const todoWriteTool: ToolDefinition = {
     // main thread (not a subagent) finishing a 3+ item list that contains no
     // verification step of its own. Trivial (1-2 item) lists and lists that
     // already include a verify task never trigger it (parity with Claude).
-    const allCompleted = current.length > 0 && current.every(t => t.status === 'completed');
-    const hasVerifyStep = current.some(t => /verif/i.test(t.content));
-    if (allCompleted && current.length >= 3 && !hasVerifyStep && !context?.agentId) {
+    // Internal tasks never count toward the threshold or completion.
+    const allCompleted = visible.length > 0 && visible.every(t => t.status === 'completed');
+    const hasVerifyStep = visible.some(t => /verif/i.test(t.content));
+    if (allCompleted && visible.length >= 3 && !hasVerifyStep && !context?.agentId) {
       // Directive, actionable nudge (parity: Claude's TaskUpdate/TodoWrite
       // close-out note) — name the concrete next action and forbid self-declared
       // success, rather than a vague "consider reviewing".
       summary +=
-        `\n\n[Verification required: you just closed out a ${current.length}-item task list and none of ` +
+        `\n\n[Verification required: you just closed out a ${visible.length}-item task list and none of ` +
         'the items was a verification step. Before writing your final summary, verify the results — ' +
         'run the relevant tests/build or spawn a verification subagent — and do NOT declare success by ' +
         'listing caveats without a real check.]';
     }
 
-    // T1: emit the current list so frontends can render it live.
-    context?._emitChild?.({ type: 'todo_update', todos: current.map(toView) });
+    // T1: emit the (visible) current list so frontends can render it live.
+    context?._emitChild?.({ type: 'todo_update', todos: visible.map(toView) });
 
-    const changed = items.map(i => i.id);
+    const changed = items.filter(i => !isInternal(i)).map(i => i.id);
     // Persistent forward-looking affordance so the model keeps using the list.
     const affordance = '\n\nTodos have been updated. Continue to use the todo list to track progress; proceed with the current tasks.';
-    let output = `Todos updated (${current.length} items, ${changed.length} changed):\n${summary}${affordance}`;
+    let output = `Todos updated (${visible.length} items, ${changed.length} changed):\n${summary}${affordance}`;
     if (output.length > TODO_MAX_RESULT_CHARS) {
       output = output.slice(0, TODO_MAX_RESULT_CHARS) + '\n[... todo result truncated ...]';
     }
@@ -216,5 +271,51 @@ export const todoWriteTool: ToolDefinition = {
     if (allCompleted) sessionTodos.delete(key);
 
     return result;
+  },
+};
+
+/**
+ * Render the current (visible) todo list as a text block, or a "no todos" line
+ * when empty. Shared by {@link todoReadTool}. Internal/hidden tasks are filtered
+ * out (parity: Claude's TaskListTool `t => !t.metadata?._internal`).
+ */
+export function formatTodoReadOutput(key: string = keyFor()): string {
+  const items = getTodos(key).filter(t => !isInternal(t));
+  if (items.length === 0) return 'No todos found. The session todo list is empty.';
+  const lines = items.map(t => {
+    const icon = t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : t.status === 'cancelled' ? '[-]' : '[ ]';
+    const label = t.status === 'in_progress' && t.activeForm ? ` (${t.activeForm})` : '';
+    return `${icon} ${t.id} [${t.status}] ${t.content}${label}`;
+  });
+  return `Current todos (${items.length}):\n${lines.join('\n')}`;
+}
+
+/**
+ * Read-only sibling of {@link todoWriteTool}: re-read the current session's todo
+ * list at any time WITHOUT mutating it (parity: Claude's TaskListTool —
+ * `searchHint 'list all tasks'`, `isReadOnly`, `isConcurrencySafe`). Lets the
+ * model (or an introspection surface) observe progress without a no-op write.
+ */
+export const todoReadTool: ToolDefinition = {
+  name: 'todo_read',
+  searchHint: 'list all tasks read current todo checklist plan progress',
+  description:
+    'Read the current session todo list without modifying it. Use this to re-check ' +
+    'the plan and progress at any time (e.g. after resuming, or before deciding the ' +
+    'next step) instead of issuing a no-op todo_write. Returns each item with its ' +
+    'status; internal/hidden tasks are omitted. To create or update items, use todo_write.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  isReadOnly: true,
+  isConcurrencySafe: true,
+  maxResultSizeChars: TODO_MAX_RESULT_CHARS,
+  async execute(_input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
+    let output = formatTodoReadOutput(keyFor(context));
+    if (output.length > TODO_MAX_RESULT_CHARS) {
+      output = output.slice(0, TODO_MAX_RESULT_CHARS) + '\n[... todo result truncated ...]';
+    }
+    return { output };
   },
 };

@@ -93,7 +93,7 @@ describe('todo-write cluster (T1-T8)', () => {
     const { context } = ctx({ sessionId: 's1' });
     await todoWriteTool.execute({ todos: [{ content: 'first', status: 'pending' }] }, context);
     await todoWriteTool.execute({
-      todos: [{ id: 'todo-1', content: 'first done', status: 'in_progress' }],
+      todos: [{ id: 'todo-1', content: 'first done', status: 'in_progress', activeForm: 'Finishing first' }],
       merge: true,
     }, context);
     const todos = getTodos('s1:');
@@ -112,7 +112,7 @@ describe('todo-write cluster (T1-T8)', () => {
     }, context);
     await todoWriteTool.execute({
       todos: [
-        { id: '2', content: 'two updated', status: 'in_progress' },
+        { id: '2', content: 'two updated', status: 'in_progress', activeForm: 'Updating two' },
         { id: '3', content: 'three', status: 'pending' },
       ],
       merge: true,
@@ -235,7 +235,7 @@ describe('todo-write cluster (T1-T8)', () => {
     await todoWriteTool.execute({
       todos: [
         { id: '1', content: 'a', status: 'completed' },
-        { id: '2', content: 'b', status: 'in_progress' },
+        { id: '2', content: 'b', status: 'in_progress', activeForm: 'Doing b' },
       ],
     }, context);
     assert.equal(getTodos('s1:').length, 2);
