@@ -362,6 +362,29 @@ export function stripIncompleteTrailingMessages(messages: Message[]): Message[] 
 }
 
 /**
+ * Drop assistant messages that carry a tool_call with no matching tool result
+ * (orphaned/incomplete tool_use) before the parent conversation is seeded into a
+ * `fork` child. A fork can be requested mid-turn, so the trailing assistant turn
+ * may hold tool_use blocks whose results have not arrived yet; sending those to the
+ * child's provider would raise an orphaned-tool_use API error. Build the set of
+ * answered tool-call ids (every `tool` message's `tool_call_id`) and drop any
+ * assistant message with an unanswered call, keeping everything else intact.
+ * Mirrors Claude Code's `filterIncompleteToolCalls` (runAgent.ts).
+ */
+export function filterIncompleteToolCalls(messages: Message[]): Message[] {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id);
+  }
+  return messages.filter(m => {
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      return !m.tool_calls.some(tc => !answered.has(tc.id));
+    }
+    return true;
+  });
+}
+
+/**
  * Pick a sub-agent's returned deliverable: the text of its FINAL assistant turn
  * (`lastTurnText`) when one carried text, else the accumulated text fallback.
  * Mirrors Claude Code's `finalizeAgentTool` (agentToolUtils.ts:L297-317), which
@@ -1208,6 +1231,19 @@ export const taskTool: ToolDefinition = {
       tokenBudget: agentTokenBudget || undefined,
     };
 
+    // fork: thread the parent's REAL conversation history into the child engine as
+    // seeded messages (via subConfig.initialMessages), instead of a lossy
+    // assistant-string-only text summary. Done BEFORE the background/foreground
+    // split so a background fork (run_in_background:true) inherits context too —
+    // previously it got ZERO parent context. Drop a trailing interrupted assistant
+    // turn and any assistant message with an unanswered tool_use first so the seeded
+    // transcript is API-valid (the engine re-validates/heals it on construction).
+    // Parity: Claude's buildForkedMessages + filterIncompleteToolCalls.
+    if (mode === 'fork' && context._parentMessages && context._parentMessages.length > 0) {
+      const seeded = filterIncompleteToolCalls(stripIncompleteTrailingMessages(context._parentMessages));
+      if (seeded.length > 0) subConfig.initialMessages = seeded;
+    }
+
     if (!context._engineFactory) {
       return { output: 'Error: engine factory not available in this context.', isError: true };
     }
@@ -1409,21 +1445,6 @@ export const taskTool: ToolDefinition = {
     }
     let resultText = '';
 
-    let effectivePromptForSubmit = effectivePrompt;
-    if (mode === 'fork' && context._parentMessages && context._parentMessages.length > 0) {
-      // Drop a trailing in-progress/interrupted assistant turn before forking so a
-      // corrupt half-answer (the fork can be requested mid-turn) does not leak into
-      // the child's context (mirrors Claude's buildSideQuestionFallbackParams).
-      const contextSummary = stripIncompleteTrailingMessages(context._parentMessages)
-        .filter(m => m.role === 'assistant' && typeof m.content === 'string')
-        .map(m => (m.content as string).slice(0, 500))
-        .join('\n---\n')
-        .slice(0, 3000);
-      if (contextSummary) {
-        effectivePromptForSubmit = `[Parent conversation context]\n${contextSummary}\n\n[New task]\n${effectivePromptForSubmit}`;
-      }
-    }
-
     if (context._hookManager) {
       context._hookManager.executeSubagentStart({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
     }
@@ -1464,7 +1485,7 @@ export const taskTool: ToolDefinition = {
     resetStallTimer();
 
     try {
-      for await (const event of subEngine.submit(effectivePromptForSubmit)) {
+      for await (const event of subEngine.submit(effectivePrompt)) {
         resetStallTimer();
         if (stalled) break;
         const relayed = mapChildToSubagentEvent(event, taskId, relayDepth);

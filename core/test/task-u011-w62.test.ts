@@ -4,6 +4,7 @@ import {
   taskTool,
   resetAgentRegistry,
   stripIncompleteTrailingMessages,
+  filterIncompleteToolCalls,
   isIncompleteAssistantMessage,
   selectFinalAnswer,
 } from '../src/tools/task';
@@ -127,9 +128,9 @@ describe('stripIncompleteTrailingMessages', () => {
     assert.ok(!isIncompleteAssistantMessage({ role: 'assistant', content: 'clean' }));
   });
 
-  it('excludes the interrupted trailing turn from a fork context summary', async () => {
+  it('seeds the forked child with real parent messages, minus the interrupted trailing turn', async () => {
     resetAgentRegistry();
-    let submittedPrompt = '';
+    let seeded: Message[] | undefined;
     const parentMessages: Message[] = [
       { role: 'assistant', content: 'earlier solid reasoning here' },
       { role: 'user', content: 'keep going' },
@@ -140,11 +141,105 @@ describe('stripIncompleteTrailingMessages', () => {
       ctx({
         _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
         _parentMessages: parentMessages,
-        _engineFactory: () => ({ submit: async function* (p: string) { submittedPrompt = p; yield { type: 'text_delta', text: 'ok' } as never; } }),
+        _engineFactory: (c: unknown) => {
+          seeded = (c as { initialMessages?: Message[] }).initialMessages;
+          return { submit: async function* () { yield { type: 'text_delta', text: 'ok' } as never; } };
+        },
       }),
     );
-    assert.ok(submittedPrompt.includes('earlier solid reasoning here'), 'complete turn should be in fork context');
-    assert.ok(!submittedPrompt.includes('half-written thought'), 'interrupted trailing turn must be stripped');
+    assert.ok(seeded, 'fork must seed the child engine with real parent messages');
+    assert.equal(seeded!.length, 2, 'interrupted trailing turn must be stripped from the seed');
+    assert.ok(
+      seeded!.some(m => m.role === 'assistant' && m.content === 'earlier solid reasoning here'),
+      'the complete assistant turn is threaded as a real message, not a text summary',
+    );
+    assert.ok(
+      seeded!.some(m => m.role === 'user' && m.content === 'keep going'),
+      'parent USER turns are preserved (not dropped like the old assistant-string-only summary)',
+    );
+    assert.ok(
+      !seeded!.some(m => typeof m.content === 'string' && m.content.includes('half-written thought')),
+      'interrupted trailing turn must be stripped',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: Thread the parent's REAL conversation into a fork child (not a lossy
+// assistant-string-only text summary), dropping assistant turns whose tool_use
+// has no matching tool_result so the seeded transcript is API-valid, and apply
+// it in the BACKGROUND path too (runAgent.ts:L862-904 / forkSubagent.ts:L91-169)
+// ---------------------------------------------------------------------------
+
+describe('filterIncompleteToolCalls', () => {
+  it('drops an assistant turn whose tool_call has no matching tool result', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'running', tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } }] },
+      // no tool message for tc1 -> the assistant turn is incomplete
+    ];
+    const out = filterIncompleteToolCalls(msgs);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].role, 'user');
+  });
+
+  it('keeps an assistant turn whose tool_call IS answered', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'running', tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'bash', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'tc1', content: 'done' },
+    ];
+    const out = filterIncompleteToolCalls(msgs);
+    assert.equal(out.length, 3);
+  });
+
+  it('drops a turn with ANY unanswered call even if others are answered', () => {
+    const msgs: Message[] = [
+      { role: 'assistant', content: 'two calls', tool_calls: [
+        { id: 'a', type: 'function', function: { name: 'bash', arguments: '{}' } },
+        { id: 'b', type: 'function', function: { name: 'bash', arguments: '{}' } },
+      ] },
+      { role: 'tool', tool_call_id: 'a', content: 'ok' },
+      // 'b' unanswered
+    ];
+    const out = filterIncompleteToolCalls(msgs);
+    assert.ok(!out.some(m => m.role === 'assistant'));
+  });
+
+  it('keeps assistant turns that carry no tool_calls and all non-assistant messages', () => {
+    const msgs: Message[] = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'plain answer' },
+      { role: 'system', content: 'note' },
+    ];
+    assert.deepEqual(filterIncompleteToolCalls(msgs), msgs);
+  });
+});
+
+describe('fork mode — background path inherits parent context too', () => {
+  beforeEach(() => resetAgentRegistry());
+
+  it('a background fork seeds initialMessages (previously it inherited ZERO context)', async () => {
+    let seeded: Message[] | undefined;
+    const parentMessages: Message[] = [
+      { role: 'user', content: 'analyze the repo' },
+      { role: 'assistant', content: 'found three modules' },
+    ];
+    const r = await taskTool.execute(
+      { prompt: 'keep analyzing', mode: 'fork', run_in_background: true },
+      ctx({
+        _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
+        _parentMessages: parentMessages,
+        _engineFactory: (c: unknown) => {
+          seeded = (c as { initialMessages?: Message[] }).initialMessages;
+          return { submit: async function* () { yield { type: 'text_delta', text: 'bg' } as never; }, shutdown() {} };
+        },
+      }),
+    );
+    assert.ok(typeof r.output === 'string' && r.output.includes('Background agent started'));
+    assert.ok(seeded, 'background fork must seed the child with the parent conversation');
+    assert.equal(seeded!.length, 2);
+    assert.ok(seeded!.some(m => m.role === 'assistant' && m.content === 'found three modules'));
   });
 });
 

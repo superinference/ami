@@ -1508,8 +1508,9 @@ describe('taskTool — model aliases', () => {
 });
 
 describe('taskTool — fork mode', () => {
-  it('fork mode includes parent conversation context', async () => {
+  it('fork mode seeds the child with the parent conversation as real messages', async () => {
     let capturedPrompt: string | null = null;
+    let capturedCfg: any = null;
 
     await taskTool.execute(
       { prompt: 'fork task', mode: 'fork' },
@@ -1519,39 +1520,50 @@ describe('taskTool — fork mode', () => {
           { role: 'user', content: 'What is this code?' },
           { role: 'assistant', content: 'This is a utility module for data processing.' },
         ] as any,
-        _engineFactory: (_cfg: any) => ({
-          submit: async function* (prompt: string) {
-            capturedPrompt = prompt;
-            yield { type: 'text_delta', text: 'forked' };
-          },
-        }),
+        _engineFactory: (cfg: any) => {
+          capturedCfg = cfg;
+          return {
+            submit: async function* (prompt: string) {
+              capturedPrompt = prompt;
+              yield { type: 'text_delta', text: 'forked' };
+            },
+          };
+        },
       }),
     );
 
     assert.ok(capturedPrompt);
-    assert.ok(capturedPrompt!.includes('Parent conversation context'));
-    assert.ok(capturedPrompt!.includes('utility module'));
+    // The parent history is threaded as real messages, not a prompt-prefix summary.
+    assert.ok(!capturedPrompt!.includes('Parent conversation context'));
     assert.ok(capturedPrompt!.includes('fork task'));
+    assert.equal(capturedCfg.initialMessages.length, 2);
+    assert.ok(capturedCfg.initialMessages.some((m: any) => m.content === 'What is this code?'));
+    assert.ok(capturedCfg.initialMessages.some((m: any) => m.content === 'This is a utility module for data processing.'));
   });
 
-  it('fork mode without parent messages does not add context section', async () => {
+  it('fork mode without parent messages leaves initialMessages unset', async () => {
     let capturedPrompt: string | null = null;
+    let capturedCfg: any = null;
 
     await taskTool.execute(
       { prompt: 'fork no context', mode: 'fork' },
       ctx({
         _providerConfig: { baseUrl: 'http://test', apiKey: 'k', model: 'm' },
-        _engineFactory: (_cfg: any) => ({
-          submit: async function* (prompt: string) {
-            capturedPrompt = prompt;
-            yield { type: 'text_delta', text: 'done' };
-          },
-        }),
+        _engineFactory: (cfg: any) => {
+          capturedCfg = cfg;
+          return {
+            submit: async function* (prompt: string) {
+              capturedPrompt = prompt;
+              yield { type: 'text_delta', text: 'done' };
+            },
+          };
+        },
       }),
     );
 
     assert.ok(capturedPrompt);
     assert.ok(!capturedPrompt!.includes('Parent conversation'));
+    assert.equal(capturedCfg.initialMessages, undefined);
   });
 });
 

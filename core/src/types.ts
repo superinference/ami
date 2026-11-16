@@ -853,6 +853,17 @@ export interface EngineConfig {
   tokenBudget?: number;
   /** Resume a specific session. When set, the engine loads its messages on init. */
   sessionId?: string;
+  /**
+   * Seed the engine's conversation with these messages at construction (only when
+   * no `sessionId` restore supplied any). Used by a `fork` sub-agent to inherit the
+   * parent's REAL message history (user turns, assistant tool_use/thinking, tool
+   * results) as a context-continuing clone instead of a lossy text summary, which
+   * both preserves full structured context and maximizes prompt-cache prefix
+   * sharing. Routed through the same validation/healing as a session restore so a
+   * trailing/orphaned tool_use cannot produce an API-invalid transcript. Parity:
+   * Claude Code's `buildForkedMessages` + `filterIncompleteToolCalls` (runAgent.ts).
+   */
+  initialMessages?: Message[];
   /** Override the default session directory (~/.ami/projects/<cwd-slug>/sessions/). */
   sessionDir?: string;
   /** Permission mode: 'ask' (default), 'auto-allow', or 'deny-all'. */

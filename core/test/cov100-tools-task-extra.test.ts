@@ -66,55 +66,55 @@ describe('taskTool — universal plan_mode guard (post-branch strip)', () => {
 });
 
 // ===========================================================================
-// task.ts — fork mode: parent messages present but NONE qualify for the
-// context summary (filtered out), so `contextSummary` is empty and the
-// `if (contextSummary)` false branch is taken: no "[Parent conversation
-// context]" section is prepended even though _parentMessages is non-empty.
+// task.ts — fork mode threads the parent's REAL messages into the child engine
+// via subConfig.initialMessages (not a lossy "[Parent conversation context]"
+// text summary prepended to the submitted prompt). The submitted prompt stays
+// the plain return-directive + task; the history rides in initialMessages.
 // ===========================================================================
 
-describe('taskTool — fork mode with no summarizable parent messages', () => {
+describe('taskTool — fork mode seeds the child with real parent messages', () => {
   beforeEach(() => resetAgentRegistry());
 
-  it('fork: non-empty _parentMessages with no assistant-string content adds NO context section', async () => {
+  it('fork: parent messages are threaded as initialMessages, not prepended to the prompt', async () => {
     let submitted = '';
+    let cfg: any = null;
     await taskTool.execute(
       { prompt: 'summarize the module', mode: 'fork' },
       ctx({
         _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
         _parentMessages: [
           { role: 'user', content: 'what does this do?' },
-          // assistant present but content is not a string -> filtered out
-          { role: 'assistant', content: 42 },
+          { role: 'assistant', content: 'it parses the config' },
         ] as any,
-        _engineFactory: (_c: any) => ({
-          submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'done' }])(p); },
-        }),
+        _engineFactory: (c: any) => {
+          cfg = c;
+          return { submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'done' }])(p); } };
+        },
       }),
     );
     assert.ok(
       !submitted.includes('[Parent conversation context]'),
-      'empty summary must not prepend a parent-context section',
+      'parent context must NOT be prepended as a text summary anymore',
     );
     // The mode-only subagent still gets the return-and-stop directive + its task.
     assert.ok(submitted.startsWith(SUBAGENT_RETURN_DIRECTIVE), 'return directive still prepended');
     assert.ok(submitted.includes('summarize the module'), 'original task text preserved');
+    // The real parent messages ride in initialMessages (both USER and ASSISTANT).
+    assert.equal(cfg.initialMessages.length, 2, 'all real parent messages are seeded');
+    assert.ok(cfg.initialMessages.some((m: any) => m.role === 'user' && m.content === 'what does this do?'));
+    assert.ok(cfg.initialMessages.some((m: any) => m.role === 'assistant' && m.content === 'it parses the config'));
   });
 
-  it('fork: an assistant string message DOES produce a parent-context section (contrast)', async () => {
-    let submitted = '';
+  it('fork: empty parent messages leaves initialMessages unset (no seed)', async () => {
+    let cfg: any = null;
     await taskTool.execute(
       { prompt: 'continue', mode: 'fork' },
       ctx({
         _providerConfig: { baseUrl: 'http://x', apiKey: 'k', model: 'm' },
-        _parentMessages: [
-          { role: 'assistant', content: 'earlier assistant insight worth forwarding' },
-        ] as any,
-        _engineFactory: (_c: any) => ({
-          submit: (p: string) => { submitted = p; return gen([{ type: 'text_delta', text: 'done' }])(p); },
-        }),
+        _parentMessages: [] as any,
+        _engineFactory: (c: any) => { cfg = c; return { submit: gen([{ type: 'text_delta', text: 'done' }]) }; },
       }),
     );
-    assert.ok(submitted.includes('[Parent conversation context]'), 'string assistant content is summarized');
-    assert.ok(submitted.includes('earlier assistant insight'), 'the assistant content is forwarded');
+    assert.equal(cfg.initialMessages, undefined, 'no parent history -> no seed');
   });
 });
