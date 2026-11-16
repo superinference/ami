@@ -5,6 +5,7 @@ import { expandPath } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { getManagedConfigPath } from './config';
+import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2156,6 +2157,13 @@ export class PermissionManager {
    *  silent `cat ../../other-project/secret` stays blocked. */
   private allowedReadRoots: Set<string> = new Set();
 
+  /** Active bash isolation policy (threaded from the engine's EngineConfig.sandbox).
+   *  Consulted ONLY to honor {@link SandboxPolicy.autoAllowBashIfSandboxed}: when the
+   *  policy runs every bash command in a container, the container IS the safety
+   *  boundary, so the opt-in knob lets `check()` skip the prompt. Undefined → the
+   *  feature is inert and bash is gated exactly as before. */
+  private sandboxPolicy?: SandboxPolicy;
+
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
   private totalDenials = 0;
@@ -2202,6 +2210,38 @@ export class PermissionManager {
   /** The user-granted read roots (absolute, normalized). For inspection/tests. */
   getAllowedReadRoots(): string[] {
     return [...this.allowedReadRoots];
+  }
+
+  /**
+   * Thread the active bash isolation policy into the permission layer so
+   * {@link SandboxPolicy.autoAllowBashIfSandboxed} can be honored in {@link check}.
+   * The engine calls this once at construction with its `EngineConfig.sandbox`.
+   * Passing `undefined` disables the behavior (bash is gated exactly as before).
+   */
+  setSandboxPolicy(policy: SandboxPolicy | undefined): void {
+    this.sandboxPolicy = policy;
+  }
+
+  /**
+   * Whether a bash command would be auto-approved by the
+   * `autoAllowBashIfSandboxed` knob: the policy runs every command in a container
+   * (`mode === 'container'`) AND the opt-in knob is explicitly enabled. This is an
+   * OPT-IN parity knob (Claude's enterprise `sandbox.autoAllowBashIfSandboxed`): it
+   * is OFF unless set to exactly `true`, so the default bash prompt is unchanged.
+   * The container is the safety boundary (the host FS is not mounted), so a prompt
+   * adds no protection — only friction — once the operator opts in.
+   */
+  private bashAutoAllowedBySandbox(toolName: string, input: Record<string, unknown>): boolean {
+    return (
+      toolName === 'bash' &&
+      typeof input.command === 'string' &&
+      this.sandboxPolicy?.mode === 'container' &&
+      this.sandboxPolicy.autoAllowBashIfSandboxed === true &&
+      // dangerouslyDisableSandbox cannot override enforced container mode, but if the
+      // model asked for it we still prompt (handled earlier in check); the escape
+      // hatch never silently auto-allows here.
+      input.dangerouslyDisableSandbox !== true
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -2268,6 +2308,20 @@ export class PermissionManager {
     if (toolName === 'bash' && input.dangerouslyDisableSandbox === true) {
       if (this.mode === 'deny-all') return 'deny';
       return 'ask';
+    }
+
+    // autoAllowBashIfSandboxed (Claude-parity, OPT-IN): when the policy runs every
+    // bash command inside a container, the container — not the prompt — is the
+    // safety boundary (the host filesystem is not mounted), so an operator who set
+    // sandbox.autoAllowBashIfSandboxed=true wants bash to run without a prompt in
+    // the normally prompt-driven modes (ask / acceptEdits). Hardline blocks and
+    // dangerouslyDisableSandbox (both above) and explicit user deny rules still win;
+    // deny-all/plan keep denying and auto-allow/bypass already allow, so this only
+    // changes behavior in ask/acceptEdits.
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        this.bashAutoAllowedBySandbox(toolName, input) &&
+        !this.anyDenyMatches(toolName, input)) {
+      return 'allow';
     }
 
     // Fast path: mode-level overrides — but in auto-allow mode, explicit

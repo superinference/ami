@@ -294,8 +294,13 @@ export interface SandboxPolicy {
   network?: SandboxNetworkConfig;
   /** Granular filesystem read/write carve-outs. */
   filesystem?: SandboxFilesystemConfig;
-  /** Auto-approve the bash tool (skip the permission prompt) when a command runs
-   *  sandboxed — the isolation is the safety boundary. Default: true. */
+  /** OPT-IN: auto-approve the bash tool (skip the permission prompt) in the
+   *  prompt-driven modes (ask/acceptEdits) when `mode === 'container'`, because the
+   *  container — not the prompt — is the safety boundary (the host filesystem is not
+   *  mounted). Honored by {@link import('./permissions').PermissionManager} only when
+   *  set to exactly `true`; default (unset/false) keeps the normal bash prompt
+   *  (Claude-parity: enterprise `sandbox.autoAllowBashIfSandboxed`). Hardline blocks,
+   *  `dangerouslyDisableSandbox`, and explicit deny rules still win. */
   autoAllowBashIfSandboxed?: boolean;
   /** Hard gate on the `dangerouslyDisableSandbox` escape hatch. When false, the
    *  parameter is ignored entirely and EVERY command must run sandboxed. Default: true. */
