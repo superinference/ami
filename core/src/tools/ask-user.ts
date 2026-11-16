@@ -57,7 +57,14 @@ export const askUserQuestionTool: ToolDefinition = {
                   },
                   preview: {
                     type: 'string',
-                    description: 'Optional preview content rendered when this option is focused. Single-select only. Use for mockups, code snippets, or visual comparisons.',
+                    description:
+                      'Optional preview content rendered when this option is focused. Single-select ' +
+                      'only. Use for concrete artifacts the user must compare visually — ASCII/HTML ' +
+                      'mockups of UI layouts, code snippets of alternative implementations, diagram ' +
+                      'or configuration variations. When any option has a preview the UI switches to ' +
+                      'a side-by-side layout (option list on the left, preview on the right). Do NOT ' +
+                      'use previews for simple preference questions where the label and description ' +
+                      'already suffice.',
                   },
                 },
                 required: ['label', 'description'],
