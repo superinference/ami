@@ -66,6 +66,51 @@ export const MAX_SUBSEQUENCE_SCAN_CHARS = 50000; // per-session searchable-text 
 const SUBSEQUENCE_SCORE = 0.05;
 
 /**
+ * Tie window (ms) for the hybrid recency ordering: two results whose timestamps
+ * are within this window count as "the same time", so relevance score breaks the
+ * tie between them; outside the window the newer one always wins. Mirrors the
+ * reference's `DATE_TIE_THRESHOLD_MS` (LogSelector.tsx L76, _temp3 L1476-1484).
+ */
+export const DATE_TIE_THRESHOLD_MS = 60 * 1000; // 1 minute
+
+/**
+ * Result ordering for {@link searchSessions} / {@link searchSessionsRanked}:
+ * - `'relevance'` (default): best relevance score first, recency breaks ties —
+ *   the existing AMI behavior (zero change for existing callers).
+ * - `'recency'`: newest first (chronological), with relevance score breaking ties
+ *   only WITHIN {@link DATE_TIE_THRESHOLD_MS}. Parity with the reference
+ *   LogSelector deep-search ordering. Exposed via `/search --recent`.
+ */
+export type SearchOrdering = 'relevance' | 'recency';
+
+/** Comparator for {@link SearchOrdering}. `relevance`: score desc, then recency
+ *  desc. `recency`: recency desc, but relevance desc within the tie window. */
+function resultComparator(ordering: SearchOrdering): (a: SearchResult, b: SearchResult) => number {
+  if (ordering === 'recency') {
+    return (a, b) => {
+      const dt = recencyMs(b.timestamp) - recencyMs(a.timestamp);
+      if (Math.abs(dt) > DATE_TIE_THRESHOLD_MS) return dt;
+      return b.score - a.score;
+    };
+  }
+  return (a, b) => b.score - a.score || recencyMs(b.timestamp) - recencyMs(a.timestamp);
+}
+
+/**
+ * Searchable text for a session's PR link (`pr #<number> <owner/repo>`), mirroring
+ * the reference's `pr #${prNumber} ${prRepository}` field (LogSelector.tsx L432) so
+ * a search for a PR number or its repo slug surfaces the linked session. Empty when
+ * no PR (or no numeric PR number) is recorded. @public
+ */
+export function prSearchText(pr: unknown): string {
+  if (!pr || typeof pr !== 'object') return '';
+  const p = pr as { number?: unknown; repository?: unknown };
+  if (typeof p.number !== 'number' || !Number.isFinite(p.number)) return '';
+  const repo = typeof p.repository === 'string' && p.repository ? ` ${p.repository}` : '';
+  return `pr #${p.number}${repo}`;
+}
+
+/**
  * Does `query` appear as a (case-insensitive) subsequence of `text` — its
  * characters in order but not necessarily contiguous? An empty query trivially
  * matches. The single canonical subsequence primitive: the CLI fuzzy filters
@@ -120,6 +165,14 @@ function recencyMs(timestamp?: string): number {
 export function flattenMessageText(msg: unknown): string {
   if (!msg || typeof msg !== 'object') return '';
   const m = msg as Record<string, unknown>;
+  // Engine-injected ephemeral control turns (`isMeta`) render as a component /
+  // nudge, not as their literal text (or are hidden from the user entirely), so
+  // indexing them produces phantom search hits for text the user never saw. A
+  // `task-notification` queued command is likewise machine-owned chrome. Mirror
+  // the reference's isMeta / commandMode==='task-notification' exclusion knobs
+  // (transcriptSearch.ts L82-112) and drop them from the searchable text. (H33)
+  if (m.isMeta === true) return '';
+  if (m.commandMode === 'task-notification' || m.mode === 'task-notification') return '';
   const parts: string[] = [];
   parts.push(flattenContent(m.content));
   // Assistant tool calls — the OpenAI-style shape used across the engine.
@@ -282,7 +335,12 @@ function sessionFilesByRecency(sessionsDir: string): string[] {
   return candidates.slice(0, MAX_SESSIONS_TO_SEARCH).map(c => c.file);
 }
 
-export function searchSessions(cwd: string, query: string, limit: number = 20): SearchResult[] {
+export function searchSessions(
+  cwd: string,
+  query: string,
+  limit: number = 20,
+  ordering: SearchOrdering = 'relevance',
+): SearchResult[] {
   const sessionsDir = projectStateDir(cwd, 'sessions');
   if (!fs.existsSync(sessionsDir)) return [];
 
@@ -313,7 +371,7 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
       // Session-level metadata (user tag + title + git branch) is searchable in
       // /resume, so a labeled session — or one on a named branch — surfaces even
       // when no message body matches the query. (H13)
-      const metaText = [session.tag, session.customTitle, session.aiTitle, session.gitBranch]
+      const metaText = [session.tag, session.customTitle, session.aiTitle, session.gitBranch, prSearchText(session.pr)]
         .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
         .join(' ');
       if (metaText) {
@@ -381,10 +439,9 @@ export function searchSessions(cwd: string, query: string, limit: number = 20): 
     }
   }
 
-  // Rank by score, then break ties by recency so newer sessions surface first.
-  return results
-    .sort((a, b) => b.score - a.score || recencyMs(b.timestamp) - recencyMs(a.timestamp))
-    .slice(0, limit);
+  // Rank per the selected ordering: relevance-first (default) or newest-first with
+  // relevance breaking ties inside the DATE_TIE_THRESHOLD_MS window (`--recent`).
+  return results.sort(resultComparator(ordering)).slice(0, limit);
 }
 
 /**
@@ -421,6 +478,13 @@ export interface RankedSearchOptions {
    * reference's agentic recent-fill (agenticSessionSearch.ts L161-175).
    */
   recentFill?: boolean;
+  /**
+   * Ordering applied to the fast literal pass (see {@link SearchOrdering}). Defaults
+   * to `'relevance'`. `'recency'` orders newest-first with relevance breaking ties
+   * within {@link DATE_TIE_THRESHOLD_MS}. When a `rankFn` reorders the pool this only
+   * affects which candidates fall inside the `limit` before reranking.
+   */
+  ordering?: SearchOrdering;
 }
 
 /**
@@ -472,7 +536,7 @@ function recentSessionResults(cwd: string, count: number, excludeIds: Set<string
       // A context snippet for the reranker: title/tag/branch PLUS a bounded
       // head+tail transcript sample (so a semantic ranker sees the opening ask
       // and the latest state of a long session, char-capped for the payload).
-      const metaPrefix = [session.customTitle, session.aiTitle, session.tag, session.gitBranch]
+      const metaPrefix = [session.customTitle, session.aiTitle, session.tag, session.gitBranch, prSearchText(session.pr)]
         .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
         .join(' ');
       const body = extractRankingTranscript(
@@ -532,8 +596,8 @@ export async function searchSessionsRanked(
   query: string,
   options: RankedSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const { limit = 20, rankFn, signal, recentFill = false } = options;
-  const candidates = searchSessions(cwd, query, limit);
+  const { limit = 20, rankFn, signal, recentFill = false, ordering = 'relevance' } = options;
+  const candidates = searchSessions(cwd, query, limit, ordering);
   if (!rankFn) return candidates;
   // Fallback-to-recent: when enabled and literal matches under-fill the limit,
   // widen the ranker's pool with the most-recent non-matching sessions so a

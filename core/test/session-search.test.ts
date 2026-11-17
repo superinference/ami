@@ -9,6 +9,9 @@ import {
   toolUseSearchText,
   toolResultSearchText,
   extractRankingTranscript,
+  flattenMessageText,
+  prSearchText,
+  DATE_TIE_THRESHOLD_MS,
   MAX_RANKING_TRANSCRIPT_CHARS,
   MAX_RANKING_MESSAGES_TO_SCAN,
 } from '../src/session-search';
@@ -532,5 +535,150 @@ describe('extractRankingTranscript (bounded head+tail sampling)', () => {
     const out = extractRankingTranscript([{ role: 'user', content: 'q'.repeat(MAX_RANKING_TRANSCRIPT_CHARS + 500) }]);
     assert.equal(out.length, MAX_RANKING_TRANSCRIPT_CHARS + 1); // + ellipsis char
     assert.ok(out.endsWith('…'));
+  });
+});
+
+describe('prSearchText (PR searchable field — LogSelector.tsx L432 parity)', () => {
+  it('renders `pr #<number> <repository>` for a full PR link', () => {
+    assert.equal(prSearchText({ number: 42, url: 'x', repository: 'octo/cat' }), 'pr #42 octo/cat');
+  });
+  it('omits a missing/empty repository', () => {
+    assert.equal(prSearchText({ number: 7, url: 'x' }), 'pr #7');
+    assert.equal(prSearchText({ number: 7, url: 'x', repository: '' }), 'pr #7');
+  });
+  it('returns empty for a non-object / non-numeric / non-finite number', () => {
+    assert.equal(prSearchText(undefined), '');
+    assert.equal(prSearchText('nope'), '');
+    assert.equal(prSearchText({ repository: 'octo/cat' }), '');
+    assert.equal(prSearchText({ number: '12' }), '');
+    assert.equal(prSearchText({ number: Number.NaN }), '');
+  });
+});
+
+describe('searchSessions — PR fields are searchable', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-pr-'));
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 'pr-session.json'), JSON.stringify({
+      id: 'pr-session',
+      pr: { number: 1234, url: 'https://github.com/octo/widget/pull/1234', repository: 'octo/widget' },
+      messages: [{ role: 'user', content: 'unrelated body text' }],
+    }));
+  });
+
+  it('surfaces a session by its PR number', () => {
+    const results = searchSessions(tmpDir, '#1234');
+    assert.equal(results.length, 1);
+    assert.equal(results[0].sessionId, 'pr-session');
+    assert.equal(results[0].role, 'meta');
+  });
+
+  it('surfaces a session by its PR repository slug', () => {
+    const results = searchSessions(tmpDir, 'octo/widget');
+    assert.ok(results.some(r => r.sessionId === 'pr-session'));
+  });
+});
+
+describe('flattenMessageText — isMeta / task-notification exclusion (transcriptSearch.ts L82-112 parity)', () => {
+  it('excludes isMeta messages (ephemeral control, rendered as a component)', () => {
+    assert.equal(flattenMessageText({ role: 'user', content: 'injected nudge text', isMeta: true }), '');
+  });
+  it('excludes task-notification queued commands', () => {
+    assert.equal(flattenMessageText({ role: 'user', content: 'task done', commandMode: 'task-notification' }), '');
+    assert.equal(flattenMessageText({ role: 'user', content: 'task done', mode: 'task-notification' }), '');
+  });
+  it('still indexes ordinary (non-meta) messages', () => {
+    assert.equal(flattenMessageText({ role: 'user', content: 'hello world' }), 'hello world');
+  });
+});
+
+describe('searchSessions — isMeta messages do not produce phantom hits', () => {
+  it('does not match text that lives only in an isMeta message', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-meta-'));
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 's.json'), JSON.stringify({
+      id: 's',
+      messages: [
+        { role: 'user', content: 'phantomtoken only here', isMeta: true },
+        { role: 'assistant', content: 'a real reply' },
+      ],
+    }));
+    assert.equal(searchSessions(tmpDir, 'phantomtoken').length, 0);
+    assert.ok(searchSessions(tmpDir, 'reply').length > 0);
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+});
+
+describe('searchSessions — hybrid recency ordering (--recent, DATE_TIE_THRESHOLD_MS parity)', () => {
+  let tmpDir: string;
+  // older session has the STRONGER relevance score; newer session is weaker but recent.
+  const now = Date.now();
+  const makeSession = (id: string, createdAtMs: number, content: string): void => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, `${id}.json`), JSON.stringify({
+      id,
+      createdAt: new Date(createdAtMs).toISOString(),
+      messages: [{ role: 'user', content }],
+    }));
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-order-'));
+    fs.mkdirSync(projectStateDir(tmpDir, 'sessions'), { recursive: true });
+    // Contiguous phrase 'alpha beta' => literal phrase bonus = strongest relevance, OLD.
+    makeSession('old-strong', now - 10 * DATE_TIE_THRESHOLD_MS, 'alpha beta here');
+    // Both terms but scattered (no contiguous phrase) = weaker relevance, but NEW.
+    makeSession('new-weak', now, 'beta then alpha here');
+  });
+
+  it("relevance (default) ranks the stronger-scoring older session first", () => {
+    const r = searchSessions(tmpDir, 'alpha beta', 20, 'relevance');
+    assert.equal(r[0].sessionId, 'old-strong');
+  });
+
+  it("recency ranks the newer session first when outside the tie window", () => {
+    const r = searchSessions(tmpDir, 'alpha beta', 20, 'recency');
+    assert.equal(r[0].sessionId, 'new-weak');
+  });
+
+  it("recency falls back to relevance WITHIN the tie window", () => {
+    // Both effectively same time (< DATE_TIE_THRESHOLD_MS apart) => stronger score wins.
+    const close = fs.mkdtempSync(path.join(os.tmpdir(), 'search-tie-'));
+    fs.mkdirSync(projectStateDir(close, 'sessions'), { recursive: true });
+    const sessDir = projectStateDir(close, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'strong.json'), JSON.stringify({
+      id: 'strong', createdAt: new Date(now).toISOString(),
+      messages: [{ role: 'user', content: 'delta gamma' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'weak.json'), JSON.stringify({
+      id: 'weak', createdAt: new Date(now + DATE_TIE_THRESHOLD_MS - 1).toISOString(),
+      messages: [{ role: 'user', content: 'gamma then delta' }],
+    }));
+    const r = searchSessions(close, 'delta gamma', 20, 'recency');
+    assert.equal(r[0].sessionId, 'strong');
+    fs.rmSync(close, { recursive: true });
+  });
+});
+
+describe('searchSessionsRanked — ordering option threads to the literal pass', () => {
+  it('honors ordering=recency with no rankFn (zero-network)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ranked-order-'));
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    const now = Date.now();
+    fs.writeFileSync(path.join(sessDir, 'old.json'), JSON.stringify({
+      id: 'old', createdAt: new Date(now - 10 * DATE_TIE_THRESHOLD_MS).toISOString(),
+      messages: [{ role: 'user', content: 'gamma delta' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'new.json'), JSON.stringify({
+      id: 'new', createdAt: new Date(now).toISOString(),
+      messages: [{ role: 'user', content: 'delta then gamma' }],
+    }));
+    const r = await searchSessionsRanked(tmpDir, 'gamma delta', { ordering: 'recency' });
+    assert.equal(r[0].sessionId, 'new');
+    fs.rmSync(tmpDir, { recursive: true });
   });
 });
