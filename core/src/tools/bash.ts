@@ -510,13 +510,27 @@ export const GIT_VALUE_OPTS = new Set([
   '--super-prefix', '--config-env',
 ]);
 
-export function detectGitCommit(command: string): boolean {
+/**
+ * Classification of a `git commit` invocation. Parity: Claude Code's
+ * gitOperationTracking `CommitKind` distinguishes an amend (history rewrite)
+ * from a plain commit, so the two can be surfaced/advised differently. A
+ * cherry-pick is a separate git subcommand (not `commit`) and is intentionally
+ * NOT classified here — AMI only gates the `commit` subcommand via bash.
+ */
+export type GitCommitKind = 'amended' | 'committed';
+
+/**
+ * Classify a bash command that runs `git commit`, or `null` when it does not.
+ * Returns `'amended'` when the commit carries `--amend` (or a fused
+ * `--amend=…`), else `'committed'`. Shares one linear, ReDoS-free tokenizer
+ * with {@link detectGitCommit}: it catches `git -C /x commit`, `git -c k=v
+ * commit`, `git --git-dir /x commit`, path-qualified `/usr/bin/git commit`,
+ * etc., and the final subcommand must be exactly `commit` (not
+ * `commit-graph`/`commit-tree`). The `--amend` scan stops at the next `git`
+ * token so a later chained invocation's flags cannot bleed into this one.
+ */
+export function detectGitCommitKind(command: string): GitCommitKind | null {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  // Tokenize (separators → spaces) and look for `git [global-opts…] commit`.
-  // A linear scan avoids the ReDoS risk of a backtracking mega-regex while
-  // still catching `git -C /x commit`, `git -c k=v commit`,
-  // `git --git-dir /x commit`, `git --git-dir=/x commit`, etc. The final
-  // subcommand must be exactly `commit` (not `commit-graph`/`commit-tree`).
   const tokens = stripped.replace(/[;&|()]/g, ' ').split(/\s+/).filter(Boolean);
   for (let i = 0; i < tokens.length; i++) {
     // Strip any path prefix so `/usr/bin/git` and `./git` are still recognized
@@ -529,9 +543,41 @@ export function detectGitCommit(command: string): boolean {
       if (t.startsWith('-')) { j += 1; continue; }            // --opt=val / boolean / short flags
       break;                                                  // first positional = subcommand
     }
-    if (j < tokens.length && tokens[j] === 'commit') return true;
+    if (j < tokens.length && tokens[j] === 'commit') {
+      // Inspect only THIS commit's own flags for --amend; stop at the next git
+      // invocation so `git commit && git log --amend-ish` is not misclassified.
+      for (let k = j + 1; k < tokens.length; k++) {
+        const t = tokens[k];
+        if (t.replace(/^.*\//, '') === 'git') break;
+        if (t === '--amend' || t.startsWith('--amend=')) return 'amended';
+      }
+      return 'committed';
+    }
   }
-  return false;
+  return null;
+}
+
+/**
+ * Whether a bash command runs `git commit` (any kind). Thin predicate over
+ * {@link detectGitCommitKind} — one canonical tokenizer, no duplication.
+ */
+export function detectGitCommit(command: string): boolean {
+  return detectGitCommitKind(command) !== null;
+}
+
+/**
+ * If the first line of a bash command is a `# comment` (not a `#!` shebang),
+ * return the comment text with its leading `#`(s) and surrounding whitespace
+ * stripped; otherwise `undefined`. Parity: Claude Code's
+ * BashTool/commentLabel `extractBashCommentLabel` — the leading comment a model
+ * writes is a human-readable label for the command, used as the tool-use /
+ * background-task description before falling back to the raw command text.
+ */
+export function extractBashCommentLabel(command: string): string | undefined {
+  const nl = command.indexOf('\n');
+  const firstLine = (nl === -1 ? command : command.slice(0, nl)).trim();
+  if (!firstLine.startsWith('#') || firstLine.startsWith('#!')) return undefined;
+  return firstLine.replace(/^#+\s*/, '') || undefined;
 }
 
 const DETACHED_GIT_DISCARD_MSG =
@@ -1167,7 +1213,14 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
           // prompt.ts:L228-L257): prefer the sandbox-writable $TMPDIR for temp
           // files, and never weaken the sandbox to reach credential paths.
           'Prefer $TMPDIR (sandbox-writable) over /tmp for temporary files, and never weaken the sandbox to reach ' +
-          'credential paths such as ~/.bashrc, ~/.zshrc, ~/.ssh/*, or other secret files.',
+          'credential paths such as ~/.bashrc, ~/.zshrc, ~/.ssh/*, or other secret files. ' +
+          // [functional parity] Unsandboxed-override policy gate wording (Claude
+          // sandboxTypes.ts): the flag is NOT a free escape — in enforced
+          // container-sandbox mode it is ignored (the command still runs inside
+          // the container), and whenever it is honoured it always requires
+          // explicit confirmation before the command runs unsandboxed.
+          'This flag is ignored in enforced container-sandbox mode (the command still runs inside the container), and ' +
+          'when it is honoured running unsandboxed always requires explicit confirmation.',
       },
     },
     required: ['command'],
@@ -1271,12 +1324,21 @@ export const bashTool: ToolDefinition = {
       context.cwd = resolvedCwd.dir;
     }
 
-    if (detectGitCommit(command)) {
+    const commitKind = detectGitCommitKind(command);
+    if (commitKind) {
+      // Parity: distinguish an amend (history rewrite) from a plain commit so the
+      // guidance can call it out specifically (Claude gitOperationTracking CommitKind).
+      const amendNote =
+        commitKind === 'amended'
+          ? '\n\nNote: `git commit --amend` rewrites the last commit; amending via bash is especially not allowed. ' +
+            'Make a fresh commit with the git_commit tool instead, and never amend unless the user explicitly asks.'
+          : '';
       return {
         output:
           'Error: Use the git_commit tool instead of running git commit via bash. ' +
           'The git_commit tool ensures proper Co-Authored-By attribution is always included.\n\n' +
-          'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })',
+          'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })' +
+          amendNote,
         isError: true,
       };
     }
@@ -1508,7 +1570,7 @@ export const bashTool: ToolDefinition = {
     }
 
     if (runInBackground && context.processManager) {
-      const desc = (input.description as string) || command.slice(0, 80);
+      const desc = (input.description as string) || extractBashCommentLabel(command) || command.slice(0, 80);
       // [functional parity] coerce a numeric-string timeout, honor the env knob,
       // and reject NaN/non-positive env values (see resolveBackgroundTimeoutMs).
       const bgTimeoutMs = resolveBackgroundTimeoutMs(input.timeout);
@@ -1575,7 +1637,7 @@ export const bashTool: ToolDefinition = {
       if (context.processManager && isAutobackgroundingAllowed(command)) {
         const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
-          description: `[auto-bg] ${command.slice(0, 60)}`,
+          description: `[auto-bg] ${extractBashCommentLabel(command)?.slice(0, 60) ?? command.slice(0, 60)}`,
           env: scrubEnv(context.skillEnv),
           agentId: context.agentId,
         });
