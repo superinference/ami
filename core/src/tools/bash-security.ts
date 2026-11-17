@@ -1044,6 +1044,36 @@ function sedExpressionTooComplex(expr: string): string | null {
   return null;
 }
 
+/**
+ * Approval-affordance clause appended to every SED_DANGEROUS block message.
+ *
+ * AMI's sed messages are more SPECIFIC than Claude Code's generic "sed command
+ * requires approval (contains potentially dangerous operations)" (reference:
+ * BashTool/sedValidation.ts checkSedConstraints), but they historically omitted
+ * the one thing Claude's wording carries: an AFFORDANCE telling the user the
+ * restriction is a gate with a path forward, not a dead end. Claude frames the
+ * block as actionable/overridable ('requires approval'); AMI surfaces these as a
+ * bare `Error: …` (bash.ts) with no hint of how to proceed. This clause closes
+ * that gap WITHOUT losing AMI's specificity — it is appended to every sed block
+ * so the model/user always sees a concrete next step. It is truthful: sed
+ * write/execute operations ARE gated (not silently allowed), and the dedicated
+ * file-editing tool is the real, supported way to perform a file write.
+ */
+const SED_APPROVAL_AFFORDANCE =
+  ' — sed write/execute operations are gated for safety, not permanently blocked:'
+  + ' use the dedicated file-editing tool for file writes, or re-run the sed without the'
+  + ' write/execute operation to proceed.';
+
+/**
+ * Build a SED_DANGEROUS failure whose message carries the approval affordance
+ * ({@link SED_APPROVAL_AFFORDANCE}). Single source for the affordance so every
+ * sed block — current and future — stays consistent and no site can drift back
+ * to a bare, dead-end message.
+ */
+function sedBlock(message: string): SecurityCheckResult {
+  return fail(CHECK_IDS.SED_DANGEROUS, message + SED_APPROVAL_AFFORDANCE);
+}
+
 /** Full dangerous-sed inspection of ONE segment whose base command is sed. */
 function checkSedSegment(seg: string): SecurityCheckResult {
   const trimmed = seg.trim();
@@ -1057,18 +1087,18 @@ function checkSedSegment(seg: string): SecurityCheckResult {
   // tryParseShellCommand throw → deny / hasFileArgs→true-on-parse-failure
   // (sedValidation.ts L247-260).
   if (hasUnbalancedQuotes(sedArgs)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, 'sed command has unbalanced quoting and cannot be statically verified as safe');
+    return sedBlock('sed command has unbalanced quoting and cannot be statically verified as safe');
   }
 
   // Block non-ASCII characters in sed expressions (potential injection)
   if (/[^\x00-\x7F]/.test(sedArgs)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, 'sed expression contains non-ASCII characters');
+    return sedBlock('sed expression contains non-ASCII characters');
   }
 
   // Combined/adjacent dangerous flag forms: -ew, -eW, -ee, -we — the -e script
   // flag fused with a write/execute command, which word-boundary checks miss.
   if (/(?:^|\s)-[a-zA-Z]*e[wWe]/.test(trimmed) || /(?:^|\s)-[a-zA-Z]*w[eE]/.test(trimmed)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, 'sed combines the -e script flag with a write/execute command');
+    return sedBlock('sed combines the -e script flag with a write/execute command');
   }
 
   const expressions = extractSedExpressions(trimmed);
@@ -1077,24 +1107,24 @@ function checkSedSegment(seg: string): SecurityCheckResult {
   const toCheck = expressions.length > 0 ? expressions : [sedArgs];
   for (const expr of toCheck) {
     const reason = checkSedExpression(expr);
-    if (reason) return fail(CHECK_IDS.SED_DANGEROUS, reason);
+    if (reason) return sedBlock(reason);
     const complex = sedExpressionTooComplex(expr);
-    if (complex) return fail(CHECK_IDS.SED_DANGEROUS, complex);
+    if (complex) return sedBlock(complex);
   }
 
   // 'y' (transliterate) with potential follow-up commands
   if (/(?:^|[;'"])y[\/|#]/.test(sedArgs)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, "sed 'y' (transliterate) command can be chained with dangerous operations");
+    return sedBlock("sed 'y' (transliterate) command can be chained with dangerous operations");
   }
 
   // Negation operator '!' which can invert address matching
   if (/!\s*[dewWrRqQ]/.test(sedArgs)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, "sed negation operator '!' with command can bypass address restrictions");
+    return sedBlock("sed negation operator '!' with command can bypass address restrictions");
   }
 
   // Tilde addresses (GNU sed extension)
   if (/~/.test(sedArgs) && !/s[\/|#@,].*~/.test(sedArgs)) {
-    return fail(CHECK_IDS.SED_DANGEROUS, "sed tilde address is a GNU extension with non-obvious semantics");
+    return sedBlock("sed tilde address is a GNU extension with non-obvious semantics");
   }
 
   // In-place editing of sensitive paths
@@ -1105,7 +1135,7 @@ function checkSedSegment(seg: string): SecurityCheckResult {
     ];
     for (const pat of sensitivePatterns) {
       if (pat.test(trimmed)) {
-        return fail(CHECK_IDS.SED_DANGEROUS, `sed in-place edit targets sensitive path matching ${pat.source}`);
+        return sedBlock(`sed in-place edit targets sensitive path matching ${pat.source}`);
       }
     }
   }
@@ -2639,13 +2669,59 @@ const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
  * patterns; a no-op on Linux. Parity: Claude Code normalizes (case-fold + `..`
  * collapse) before protected/sensitive-path matching (utils/memoryFileDetection).
  */
+/**
+ * POSIX filename-glob metacharacters the shell expands against the filesystem:
+ * `*`, `?`, `[`, `]`. Braces are deliberately EXCLUDED — bash brace expansion
+ * (`{a,b}`) is a literal set generated WITHOUT touching the filesystem, not a
+ * path glob, and is handled by the separate redirect/expansion guards. Parity:
+ * Claude Code's GLOB_PATTERN_REGEX (PowerShellTool/pathValidation.ts) is exactly
+ * `/[*?[\]]/` with the same explicit brace exclusion.
+ */
+const GLOB_METACHAR_RE = /[*?[\]]/;
+
+/**
+ * Directory prefix of a glob path — everything up to and including the last path
+ * separator BEFORE the first glob metacharacter. `/etc/[star]/shadow` → `/etc/`;
+ * `[star].log` → `.` (no separator precedes the glob); a glob-free path → itself.
+ * Mirrors Claude Code's getGlobBaseDirectory (PowerShellTool/pathValidation.ts):
+ * the base is the ONLY part of a glob path that can be statically resolved —
+ * anything the glob expands to (matched leaves, and symlinks inside the
+ * expansion) can never be validated without expanding the glob at runtime (which
+ * races with an attacker creating symlinks post-validation).
+ */
+export function getGlobBaseDirectory(filePath: string): string {
+  const m = filePath.match(GLOB_METACHAR_RE);
+  if (!m || m.index === undefined) return filePath;
+  const beforeGlob = filePath.slice(0, m.index);
+  const lastSep = Math.max(beforeGlob.lastIndexOf('/'), beforeGlob.lastIndexOf('\\'));
+  if (lastSep === -1) return '.';
+  return beforeGlob.slice(0, lastSep + 1) || '/';
+}
+
 function protectedPathComparands(p: string): string[] {
   const norm = normalizeCaseForComparison(p.replace(/\\/g, '/'));
-  if (!/(?:^|\/)\.\.?(?:\/|$)/.test(norm)) return [norm];
+  const out = new Set<string>([norm]);
   // posix.normalize collapses `.`/`..` lexically; absolute inputs keep their
-  // leading `/`, relative inputs stay relative.
-  const collapsed = posixPath.normalize(norm);
-  return collapsed === norm ? [norm] : [norm, collapsed];
+  // leading `/`, relative inputs stay relative — so a traversal that
+  // RECONSTRUCTS a protected path is caught.
+  if (/(?:^|\/)\.\.?(?:\/|$)/.test(norm)) out.add(posixPath.normalize(norm));
+  // Glob-aware comparands. A glob metacharacter sitting on a DIRECTORY component
+  // between a sensitive root and a sensitive leaf — `/etc/*/shadow`,
+  // `~/.aws/*/credentials` — breaks a contiguous pattern match even though the
+  // operand still resolves to the protected leaf at runtime (verified gap:
+  // `cat /etc/*/shadow` previously passed unflagged). The leaf a glob matches
+  // (including symlinks inside the expansion) cannot be statically validated
+  // (parity: Claude Code getGlobBaseDirectory, finding #15), so we add two
+  // conservative comparands: the glob BASE directory, and the path with every
+  // glob-bearing SEGMENT dropped (`/etc/*/shadow` → `/etc/shadow`). This only
+  // ADDS matches — it fails safe toward asking and never relaxes an existing
+  // verdict.
+  if (GLOB_METACHAR_RE.test(norm)) {
+    out.add(getGlobBaseDirectory(norm));
+    const deglobbed = norm.split('/').filter((seg) => !GLOB_METACHAR_RE.test(seg)).join('/');
+    if (deglobbed) out.add(deglobbed);
+  }
+  return [...out];
 }
 
 export function isCredentialPath(p: string): boolean {
