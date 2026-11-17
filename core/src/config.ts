@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
@@ -438,6 +439,50 @@ export function getManagedConfigPath(): string {
 }
 
 /**
+ * Build the ORDERED list of candidate managed-config sources, highest-priority
+ * first. {@link loadManagedConfig} reads the first candidate that exists on disk,
+ * so an org pushing BOTH a device-level profile and a per-user override has the
+ * per-user one win — mirroring Claude Code's `getMacOSPlistPaths()` per-user >
+ * device-level ordering (AMI previously resolved exactly ONE managed path with no
+ * precedence).
+ *
+ *   - An explicit `SUPERINFERENCE_MANAGED_CONFIG` env var is authoritative: the
+ *     single candidate (testing / non-standard deployments), unchanged from before.
+ *   - macOS → per-user `/Library/Managed Preferences/<user>/SuperInference/config.json`
+ *     (highest), then device-level `/Library/Managed Preferences/SuperInference/config.json`,
+ *     then the legacy `/Library/Application Support/SuperInference/config.json`
+ *     ({@link getManagedConfigPath}) as a back-compat device fallback. Username
+ *     resolution is wrapped so a failed `os.userInfo()` (some sandboxes throw) still
+ *     yields the device-level candidates. Parity: Claude's per-user > device plist order.
+ *   - Windows / Linux → the single {@link getManagedConfigPath} default (ProgramData /
+ *     `/etc`); there is no second native tier to layer, so the list has one entry.
+ *
+ * {@link getManagedConfigPath} (used for the drop-in dir, the managed `permissions.json`
+ * location, and diagnostics) is unchanged — it remains the device-level default and is
+ * always the LAST candidate, so this function is a pure additive superset.
+ */
+export function getManagedConfigPaths(): string[] {
+  const override = process.env.SUPERINFERENCE_MANAGED_CONFIG;
+  if (override) return [override];
+  const deviceDefault = getManagedConfigPath();
+  if (process.platform !== 'darwin') return [deviceDefault];
+  const candidates: string[] = [];
+  try {
+    const username = os.userInfo().username;
+    if (username) {
+      candidates.push(`/Library/Managed Preferences/${username}/SuperInference/config.json`);
+    }
+  } catch {
+    // os.userInfo() can throw in a uid-less sandbox — fall through to the device paths.
+  }
+  candidates.push('/Library/Managed Preferences/SuperInference/config.json');
+  // Deduplicate: the legacy Application Support default is appended last unless an
+  // earlier candidate already named it (so the list never carries a repeat).
+  if (!candidates.includes(deviceDefault)) candidates.push(deviceDefault);
+  return candidates;
+}
+
+/**
  * The managed drop-in directory (`<managedBase>/config.d`). Admins can layer
  * additional managed policy as individual `*.json` files here instead of editing
  * one monolithic file (parity: Claude's managed-settings.d/ drop-ins).
@@ -532,12 +577,21 @@ function mergeManagedLayer(base: ProjectConfig, next: ProjectConfig): ProjectCon
 }
 
 export function loadManagedConfig(): ProjectConfig | null {
-  const configPath = getManagedConfigPath();
+  const started = Date.now();
+  // Resolve the ACTIVE managed source: the first ordered candidate that exists on
+  // disk (per-user > device-level on macOS), falling back to the device-level
+  // default when none is present. This gives priority-ordered multi-path MDM
+  // resolution instead of reading exactly one fixed path. Parity: Claude's
+  // getMacOSPlistPaths highest-priority-first source selection.
+  const candidates = getManagedConfigPaths();
+  const configPath = candidates.find(p => fsHooks.existsSync(p)) ?? candidates[candidates.length - 1]!;
   let merged: ProjectConfig | null = fsHooks.existsSync(configPath) ? parseManagedFile(configPath) : null;
 
-  // Layer `<managedBase>/config.d/*.json` drop-ins alphabetically (last file
-  // wins) over the base. A broken drop-in fails closed, like the base file.
-  const dropInDir = getManagedDropInDir();
+  // Layer `<activeBase>/config.d/*.json` drop-ins alphabetically (last file
+  // wins) over the base. A broken drop-in fails closed, like the base file. The
+  // drop-in dir is resolved from the ACTIVE source's directory (not the fixed
+  // default) so a per-user managed source carries its own drop-ins.
+  const dropInDir = path.join(path.dirname(configPath), 'config.d');
   let entries: string[] = [];
   try {
     if (fsHooks.existsSync(dropInDir)) {
@@ -556,7 +610,11 @@ export function loadManagedConfig(): ProjectConfig | null {
   // Log the path + contributing key count (no values — the policy may be sensitive)
   // so a managed deployment is diagnosable. Parity: Claude's "MDM settings found: …".
   if (merged !== null) {
-    coreLog('config', `loaded managed config ${configPath} (${Object.keys(merged).length} key(s)${entries.length > 0 ? `, ${entries.length} drop-in(s)` : ''})`);
+    // Introspection: name the ACTIVE path, the contributing key count (no values —
+    // the policy may be sensitive), the drop-in count, AND the elapsed read time so a
+    // slow managed source (e.g. an NFS mount) is diagnosable. Parity: Claude's
+    // "MDM settings load completed in <N>ms" + "MDM settings found: …" breadcrumbs.
+    coreLog('config', `loaded managed config ${configPath} (${Object.keys(merged).length} key(s)${entries.length > 0 ? `, ${entries.length} drop-in(s)` : ''}) in ${Date.now() - started}ms`);
   }
   return merged;
 }
