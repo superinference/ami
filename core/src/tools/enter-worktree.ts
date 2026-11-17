@@ -8,6 +8,34 @@ import { computeDefaultBranch, findRemoteBase, isShallowClone, resolveRef } from
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
 /**
+ * Non-interactive git environment (parity with Claude's centralized
+ * GIT_NO_PROMPT_ENV): applied to EVERY git subprocess so a repo whose remote
+ * needs auth can never block the synchronous call on an interactive credential /
+ * terminal prompt and hang the engine. Merged OVER the caller's env so a provided
+ * env (e.g. a custom GIT_DIR) is preserved while the no-prompt guarantee holds.
+ */
+const GIT_NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' } as const;
+
+/**
+ * Hard upper bound applied to EVERY git subprocess that does not pass a shorter,
+ * explicit timeout (parity with Claude's execFileNoThrow 10-minute default). A
+ * wedged git process (e.g. a hung network fetch) therefore always terminates
+ * instead of hanging the tool — and the engine — indefinitely.
+ */
+const DEFAULT_GIT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Options for a single no-shell git invocation. */
+export interface GitExecOpts {
+  cwd: string;
+  stdio?: 'ignore' | 'pipe';
+  /** Per-call timeout; falls back to {@link DEFAULT_GIT_TIMEOUT_MS} when omitted. */
+  timeout?: number;
+  env?: NodeJS.ProcessEnv;
+  /** Abort signal; a cancelled turn kills the in-flight git process. */
+  signal?: AbortSignal;
+}
+
+/**
  * Human-readable default worktree name (parity with Claude's EnterWorktreeTool
  * `input.name ?? getPlanSlug()` default — when the model omits `name`, derive a
  * memorable word slug like "graceful-unicorn" instead of an opaque random-hex
@@ -30,22 +58,38 @@ function defaultWorktreeName(worktreesBase: string): string {
 const ALLOWED_KEYS = new Set(['name', 'path', 'base_ref', 'pr', 'description']);
 
 /**
- * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
- * ref can never be interpreted as a shell metacharacter (command-injection
- * immune — parity with worktree-manager's gitExec and Claude's
- * execFileNoThrowWithCwd). Returns trimmed stdout.
+ * Build the child_process options for a git invocation with the three hardening
+ * guarantees applied uniformly (so no call site can forget one):
+ *   - a bounded `timeout` (never unbounded) — no git call can hang the engine;
+ *   - the non-interactive {@link GIT_NO_PROMPT_ENV} merged over the caller's env —
+ *     no git call can block on a credential prompt;
+ *   - the caller's abort `signal` — a cancelled turn kills the in-flight process.
+ * Exported for direct unit testing of the hardening defaults.
  */
-function runGit(
-  args: string[],
-  opts: { cwd: string; stdio?: 'ignore' | 'pipe'; timeout?: number; env?: NodeJS.ProcessEnv } = { cwd: process.cwd() },
-): string {
-  const out = child_process.execFileSync('git', args, {
+export function buildGitExecOptions(
+  opts: GitExecOpts,
+): child_process.ExecFileSyncOptionsWithStringEncoding {
+  // `signal` is honored by execFileSync at runtime (Node >= 16) but is absent from
+  // the @types/node ExecFileSyncOptions shape, so attach it through the spread.
+  return {
     cwd: opts.cwd,
     encoding: 'utf-8',
     stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
-    timeout: opts.timeout,
-    env: opts.env,
-  });
+    timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS,
+    env: { ...(opts.env ?? process.env), ...GIT_NO_PROMPT_ENV },
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  } as child_process.ExecFileSyncOptionsWithStringEncoding;
+}
+
+/**
+ * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
+ * ref can never be interpreted as a shell metacharacter (command-injection
+ * immune — parity with worktree-manager's gitExec and Claude's
+ * execFileNoThrowWithCwd). Every call is time-bounded, non-interactive, and
+ * cancellable via {@link buildGitExecOptions}. Returns trimmed stdout.
+ */
+function runGit(args: string[], opts: GitExecOpts = { cwd: process.cwd() }): string {
+  const out = child_process.execFileSync('git', args, buildGitExecOptions(opts));
   return typeof out === 'string' ? out.trim() : '';
 }
 
@@ -139,12 +183,36 @@ function validateSlug(name: string): boolean {
   return true;
 }
 
-function getDefaultBranch(cwd: string): string {
+function getDefaultBranch(cwd: string, signal?: AbortSignal): string {
   // One canonical default-branch algorithm shared with `/commit-push-pr` lives in
   // `computeDefaultBranch`; route it through the mockable `_enterWorktreeHooks.exec`
   // seam so tests keep injecting the symref / rev-parse results they already do.
+  // The abort signal is threaded through so a cancelled turn also interrupts the
+  // default-branch probe's git calls.
   return computeDefaultBranch(cwd, (args, opts) =>
-    _enterWorktreeHooks.exec(args, { cwd: opts.cwd, stdio: opts.stdio }));
+    _enterWorktreeHooks.exec(args, { cwd: opts.cwd, stdio: opts.stdio, signal }));
+}
+
+/**
+ * Resolve the canonical MAIN-repo root for `cwd` (parity with Claude's
+ * findCanonicalGitRoot): the working-tree directory that owns the shared git
+ * common dir. `git rev-parse --path-format=absolute --git-common-dir` resolves to
+ * the MAIN repo's `.git` (shared by every linked worktree), so its parent is the
+ * main working tree. Computing the worktrees base from THIS root means a worktree
+ * created from a SUBDIRECTORY of the repo still lands in the repo root's
+ * `.ami/worktrees/` rather than nested under the subdirectory. Falls back to the
+ * raw `cwd` when the lookup is unavailable (older git without `--path-format`, or a
+ * transient failure) so creation still proceeds.
+ */
+function resolveMainRepoRoot(cwd: string, signal?: AbortSignal): string {
+  try {
+    const commonDir = _enterWorktreeHooks.exec(
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd, stdio: 'pipe', signal },
+    );
+    if (commonDir) return path.dirname(path.resolve(commonDir));
+  } catch { /* unresolvable — fall back to the raw cwd */ }
+  return cwd;
 }
 
 /**
@@ -312,6 +380,15 @@ export const enterWorktreeTool: ToolDefinition = {
       return { output: `Error: unknown parameter(s): ${unknown.join(', ')}.`, isError: true };
     }
 
+    // Honor cancellation (parity with Claude threading abortSignal into every git
+    // exec): short-circuit before doing any git work if the turn is already
+    // aborted, and thread `signal` into every git subprocess below so a
+    // cancellation kills the in-flight process rather than letting it run on.
+    const signal = context.abortSignal;
+    if (signal?.aborted) {
+      return { output: 'Error: operation aborted before the worktree was created.', isError: true };
+    }
+
     // Trim surrounding whitespace on the name (consistency with base_ref, which
     // is already trimmed below). A whitespace-only name collapses to empty and
     // is then treated as "omitted" → a random name is generated.
@@ -372,7 +449,7 @@ export const enterWorktreeTool: ToolDefinition = {
 
     let insideGit = true;
     try {
-      _enterWorktreeHooks.exec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
+      _enterWorktreeHooks.exec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore', signal });
     } catch {
       insideGit = false;
     }
@@ -400,7 +477,7 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000 });
+        const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000, signal });
         // NFC-normalize parsed worktree paths before the identity comparison.
         const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9).normalize('NFC'));
         const resolved = path.resolve(existingPath).normalize('NFC');
@@ -431,7 +508,7 @@ export const enterWorktreeTool: ToolDefinition = {
       let branchLabel = '';
       let enteredBranch: string | undefined;
       try {
-        const head = _enterWorktreeHooks.exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: existingPath, stdio: 'pipe' });
+        const head = _enterWorktreeHooks.exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: existingPath, stdio: 'pipe', signal });
         if (head && head !== 'HEAD') { branchLabel = ` on branch ${head}`; enteredBranch = head; }
       } catch { /* detached / unreadable — omit the branch label */ }
       const enteredMessage = `Entered existing worktree at: ${existingPath}${branchLabel}. Run exit_worktree when done.`;
@@ -444,6 +521,15 @@ export const enterWorktreeTool: ToolDefinition = {
         },
       };
     }
+
+    // Resolve the canonical MAIN-repo root once, up front: all worktree creation
+    // (the worktrees base, the new worktree dir, and every git invocation below)
+    // operates against this root so a worktree created from a SUBDIRECTORY of the
+    // repo still lands in the repo root's .ami/worktrees/ (parity with Claude's
+    // findCanonicalGitRoot). A nested-worktree cwd was already rejected by the
+    // guard above, so this only redirects the subdirectory case; when cwd is
+    // already the repo root, repoRoot === context.cwd (no behavioral change).
+    const repoRoot = resolveMainRepoRoot(context.cwd, signal);
 
     // Descriptive auto-name (parity with Claude's teleport generateTitleAndBranch):
     // when the model supplies a task `description` (and no explicit name/pr) and a
@@ -465,7 +551,7 @@ export const enterWorktreeTool: ToolDefinition = {
     // Default name: an explicit name wins; otherwise a description-derived slug, then
     // a PR reference names the worktree `pr-<N>` (parity with Claude), falling back to
     // a memorable word slug.
-    const slug = name || derivedName || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(context.cwd, '.ami', 'worktrees')));
+    const slug = name || derivedName || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(repoRoot, '.ami', 'worktrees')));
     if (!validateSlug(slug)) {
       return { output: `Error: invalid worktree name "${slug}". Use letters, digits, dots, underscores, dashes (max 64 chars per segment).`, isError: true };
     }
@@ -487,10 +573,10 @@ export const enterWorktreeTool: ToolDefinition = {
     const flatSlug: string = flattenSlug(slug);
 
     // Opportunistically clean up stale worktrees (> 30 days, no uncommitted changes)
-    const worktreesBase = path.join(context.cwd, '.ami', 'worktrees');
+    const worktreesBase = path.join(repoRoot, '.ami', 'worktrees');
     if (fs.existsSync(worktreesBase)) {
       const { cleanupStaleWorktrees } = require('../worktree-manager');
-      try { cleanupStaleWorktrees(context.cwd); } catch { /* non-critical */ }
+      try { cleanupStaleWorktrees(repoRoot); } catch { /* non-critical */ }
     }
 
     // Enforce the concurrent-worktree ceiling (wires the exported MAX_WORKTREES
@@ -512,27 +598,25 @@ export const enterWorktreeTool: ToolDefinition = {
       }
     } catch { /* unreadable worktrees dir — do not block creation */ }
 
-    const worktreeDir = path.join(context.cwd, '.ami', 'worktrees', flatSlug);
+    const worktreeDir = path.join(repoRoot, '.ami', 'worktrees', flatSlug);
     if (fs.existsSync(worktreeDir)) {
       return { output: `Error: worktree "${flatSlug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
     }
 
-    const defaultBranch = getDefaultBranch(context.cwd);
+    const defaultBranch = getDefaultBranch(repoRoot, signal);
     const branchName = `worktree/${flatSlug}`;
-
-    const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' };
 
     const requestedBaseRef = typeof input.base_ref === 'string' ? input.base_ref.trim() : '';
     if (requestedBaseRef) {
       // Explicit base ref: verify it resolves to a commit, else fail loud
       // (do not silently fall back to HEAD and branch from the wrong place).
       try {
-        _enterWorktreeHooks.exec(['rev-parse', '--verify', `${requestedBaseRef}^{commit}`], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['rev-parse', '--verify', `${requestedBaseRef}^{commit}`], { cwd: repoRoot, stdio: 'ignore', signal });
       } catch {
         // A shallow clone has a truncated history, so a legitimate ref can be
         // genuinely absent locally. Surface that as the likely cause with the
         // concrete recovery command instead of a bare "invalid ref".
-        const shallowHint = isShallowClone(context.cwd)
+        const shallowHint = isShallowClone(repoRoot)
           ? ' This repository is a shallow clone (truncated history), so a valid ref may not be present locally — run `git fetch --unshallow` (or `git fetch --depth=<n>`) to retrieve it.'
           : '';
         return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).${shallowHint}`, isError: true };
@@ -545,7 +629,7 @@ export const enterWorktreeTool: ToolDefinition = {
     let prBaseRef: string | undefined;
     if (prNumber != null) {
       try {
-        _enterWorktreeHooks.exec(['fetch', 'origin', `pull/${prNumber}/head`], { cwd: context.cwd, stdio: 'ignore', env: gitEnv, timeout: 60000 });
+        _enterWorktreeHooks.exec(['fetch', 'origin', `pull/${prNumber}/head`], { cwd: repoRoot, stdio: 'ignore', signal, timeout: 60000 });
       } catch {
         return { output: `Error: failed to fetch PR #${prNumber}: the PR may not exist or the repository may not have a remote named "origin".`, isError: true };
       }
@@ -563,7 +647,7 @@ export const enterWorktreeTool: ToolDefinition = {
     } else if (requestedBaseRef) {
       baseRef = requestedBaseRef;
     } else {
-      const localBase = findRemoteBase(context.cwd);
+      const localBase = findRemoteBase(repoRoot);
       if (localBase) {
         baseRef = localBase;
       } else {
@@ -574,9 +658,9 @@ export const enterWorktreeTool: ToolDefinition = {
         // silently basing on HEAD (parity: worktree.ts L283-300 —
         // resolveRef-then-`git fetch origin <default>`). An offline/remoteless
         // fetch failure is swallowed; the rev-parse+HEAD fallback below still fires.
-        if (!resolveRef(context.cwd, `refs/remotes/origin/${defaultBranch}`)) {
+        if (!resolveRef(repoRoot, `refs/remotes/origin/${defaultBranch}`)) {
           try {
-            _enterWorktreeHooks.exec(['fetch', 'origin', defaultBranch], { cwd: context.cwd, stdio: 'ignore', env: gitEnv, timeout: 60000 });
+            _enterWorktreeHooks.exec(['fetch', 'origin', defaultBranch], { cwd: repoRoot, stdio: 'ignore', signal, timeout: 60000 });
           } catch { /* offline / no origin — HEAD fallback below applies */ }
         }
         baseRef = `origin/${defaultBranch}`;
@@ -586,15 +670,24 @@ export const enterWorktreeTool: ToolDefinition = {
     // worktree.ts L321-366). When configured, the worktree is added with
     // `--no-checkout` so NO files land yet; the cone is then narrowed and HEAD
     // checked out below, so only the listed subtrees materialise.
-    const sparsePaths = resolveSparsePaths(context.cwd);
+    const sparsePaths = resolveSparsePaths(repoRoot);
     const addArgs = sparsePaths ? ['worktree', 'add', '--no-checkout'] : ['worktree', 'add'];
+    // Re-check cancellation right before the worktree-add — the on-disk creation
+    // step. A synchronous execFileSync cannot be interrupted mid-call by the
+    // signal (the event loop is blocked for its duration), so an explicit check
+    // here is what actually honors a turn cancelled during the preceding
+    // base-resolution / fetch steps: we refuse to materialise a worktree rather
+    // than pressing on after the user cancelled.
+    if (signal?.aborted) {
+      return { output: 'Error: operation aborted; worktree not created.', isError: true };
+    }
     try {
       try {
-        _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
-        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, baseRef], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['rev-parse', '--verify', baseRef], { cwd: repoRoot, stdio: 'ignore', signal });
+        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, baseRef], { cwd: repoRoot, stdio: 'ignore', signal });
       } catch {
         if (requestedBaseRef) throw new Error(`could not create worktree from base_ref "${requestedBaseRef}"`);
-        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, 'HEAD'], { cwd: context.cwd, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, 'HEAD'], { cwd: repoRoot, stdio: 'ignore', signal });
       }
     } catch (e) {
       return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
@@ -607,18 +700,18 @@ export const enterWorktreeTool: ToolDefinition = {
     // branch, matching the post-setup teardown below) before surfacing the error.
     if (sparsePaths) {
       try {
-        _enterWorktreeHooks.exec(['sparse-checkout', 'set', '--cone', '--', ...sparsePaths], { cwd: worktreeDir, stdio: 'ignore', env: gitEnv });
-        _enterWorktreeHooks.exec(['checkout', 'HEAD'], { cwd: worktreeDir, stdio: 'ignore', env: gitEnv });
+        _enterWorktreeHooks.exec(['sparse-checkout', 'set', '--cone', '--', ...sparsePaths], { cwd: worktreeDir, stdio: 'ignore', signal });
+        _enterWorktreeHooks.exec(['checkout', 'HEAD'], { cwd: worktreeDir, stdio: 'ignore', signal });
       } catch (e) {
-        try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
-        try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+        try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
+        try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
         return { output: `Error: sparse-checkout setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
     }
 
     let commitHash: string;
     try {
-      commitHash = _enterWorktreeHooks.exec(['rev-parse', '--short', 'HEAD'], { cwd: worktreeDir });
+      commitHash = _enterWorktreeHooks.exec(['rev-parse', '--short', 'HEAD'], { cwd: worktreeDir, signal });
     } catch {
       commitHash = 'unknown';
     }
@@ -630,11 +723,11 @@ export const enterWorktreeTool: ToolDefinition = {
     // second worktree).
     let session;
     try {
-      session = createWorktreeSession(context.cwd, flatSlug);
+      session = createWorktreeSession(repoRoot, flatSlug);
       setWorktreeSession(session);
       // Honor the opt-in settings.worktree.symlinkDirectories knob; undefined keeps
       // AMI's default of symlinking node_modules.
-      _enterWorktreeHooks.symlinkLargeDirs(context.cwd, session.worktreePath, resolveSymlinkDirs(context.cwd));
+      _enterWorktreeHooks.symlinkLargeDirs(repoRoot, session.worktreePath, resolveSymlinkDirs(repoRoot));
     } catch (e) {
       // Post-add setup failed: `git worktree add` already registered the worktree
       // on disk and reset the branch, but the session/symlink wiring is broken.
@@ -643,8 +736,8 @@ export const enterWorktreeTool: ToolDefinition = {
       // worktree is never left behind to be mistaken for a healthy one on the
       // next fast-resume. Both teardown steps are best-effort; the clearing of
       // any partially-set session state is not.
-      try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
-      try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: context.cwd, stdio: 'ignore', env: gitEnv }); } catch { /* best-effort cleanup */ }
+      try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
+      try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
       setWorktreeSession(null);
       return { output: `Error: worktree post-setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
     }
