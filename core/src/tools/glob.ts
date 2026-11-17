@@ -88,6 +88,41 @@ export function globRespectsGitignore(env: NodeJS.ProcessEnv = process.env): boo
   return !envFlagDefaultTrue(env[GLOB_NO_IGNORE_ENV]);
 }
 
+/** Top-level keys the glob tool accepts. Any other key is rejected (strict schema,
+ *  parity with Claude Code's `z.strictObject`), so a hallucinated/typo'd parameter
+ *  fails loud instead of being silently ignored. */
+const GLOB_ALLOWED_KEYS = new Set(['pattern', 'path', 'offset', 'limit']);
+
+/**
+ * Split an absolute glob pattern into its static base directory (everything before
+ * the first glob metacharacter `* ? [ {`) and the remaining relative pattern, so the
+ * walk can be rooted at a real directory and the glob applied relative to it. Mirrors
+ * Claude Code's `extractGlobBaseDirectory` (utils/glob.ts), including the filesystem-
+ * root (`/*.txt` → base `/`) and Windows-drive-root (`C:/*.txt` → base `C:\`) special
+ * cases. Returns an empty `baseDir` when the first glob char precedes any path
+ * separator (the pattern is relative to cwd and needs no re-rooting).
+ */
+export function extractGlobBaseDirectory(pattern: string): { baseDir: string; relativePattern: string } {
+  const match = pattern.match(/[*?[{]/);
+  if (!match || match.index === undefined) {
+    // No glob metachar — a literal path: split dir / filename.
+    return { baseDir: path.dirname(pattern), relativePattern: path.basename(pattern) };
+  }
+  const staticPrefix = pattern.slice(0, match.index);
+  const lastSep = Math.max(staticPrefix.lastIndexOf('/'), staticPrefix.lastIndexOf(path.sep));
+  if (lastSep === -1) {
+    // Glob char before any separator — pattern is relative to cwd.
+    return { baseDir: '', relativePattern: pattern };
+  }
+  let baseDir = staticPrefix.slice(0, lastSep);
+  const relativePattern = pattern.slice(lastSep + 1);
+  // Root pattern (e.g. "/*.txt"): lastSep===0 leaves baseDir empty — use the root.
+  if (baseDir === '' && lastSep === 0) baseDir = '/';
+  // Windows drive root ("C:/*.txt"): "C:" is the drive-relative dir, not the root.
+  if (process.platform === 'win32' && /^[A-Za-z]:$/.test(baseDir)) baseDir += path.sep;
+  return { baseDir, relativePattern };
+}
+
 /**
  * List files matching `pattern` under `cwd` via `rg --files`, honoring `ignore` as
  * `-g '!…'` excludes. Resolves to the relative paths, `[]` when rg ran but matched
@@ -146,6 +181,11 @@ async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], sign
   const args = ['--files'];
   if (!globRespectsGitignore()) args.push('--no-ignore');
   if (globIncludesHidden()) args.push('--hidden');
+  // Order the walk newest-first in ripgrep itself (`--sortr=modified`) so the match
+  // set arrives pre-sorted and we skip the per-file `statSync` pass on a potentially
+  // huge result list — a bounded, non-blocking mtime sort (parity: Claude uses rg's
+  // native `--sort=modified`). Keeps AMI's newest-first ordering (`--sortr`, reverse).
+  args.push('--sortr=modified');
   args.push('-g', pattern);
   for (const ig of ignore) { args.push('-g', `!${ig}`); }
   let r = await runRipgrepFiles(args, cwd, signal);
@@ -203,6 +243,10 @@ export const globTool: ToolDefinition = {
       },
     },
     required: ['pattern'],
+    // Strict input object: reject unknown top-level keys (parity with Claude's
+    // z.strictObject) so a hallucinated/typo'd parameter fails loud. Enforced at
+    // runtime in execute() against GLOB_ALLOWED_KEYS.
+    additionalProperties: false,
   },
   isReadOnly: true,
   isConcurrencySafe: true,
@@ -214,12 +258,34 @@ export const globTool: ToolDefinition = {
     if (context.abortSignal?.aborted) {
       return { output: 'Error: glob search was cancelled.', isError: true };
     }
-    // UNC-path guard: short-circuit BEFORE any filesystem access to avoid an
-    // outbound SMB/NTLM credential leak on Windows.
-    if (typeof input.path === 'string' && isUNCPath(input.path)) {
-      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${input.path}`, isError: true };
+    // Strict input object: reject unknown/typo'd top-level keys instead of silently
+    // ignoring them (parity with Claude's z.strictObject — a hallucinated `recursive`
+    // or misspelled `paht` fails loud). Declared on inputSchema.additionalProperties.
+    const unknownKeys = Object.keys(input).filter(k => !GLOB_ALLOWED_KEYS.has(k));
+    if (unknownKeys.length > 0) {
+      return { output: `Error: Unknown parameter(s): ${unknownKeys.join(', ')}. Allowed: pattern, path, offset, limit.`, isError: true };
     }
-    const v = validatePatternAndPath(input.pattern, input.path as string | undefined, context.cwd, context.allowedReadRoots);
+    // Absolute glob pattern: Claude lets `pattern` itself be a fully absolute path.
+    // Extract its static base directory and apply the remainder relative to it, so the
+    // walk is rooted at a real dir (tinyglobby/rg -g both want a relative pattern). The
+    // derived base is confined to the workspace / allowed roots by validatePatternAndPath
+    // below, so an absolute pattern can never escape the sandbox.
+    let patternArg = input.pattern as unknown;
+    let searchPathArg = typeof input.path === 'string' ? input.path : undefined;
+    if (typeof patternArg === 'string' && path.isAbsolute(patternArg)) {
+      const { baseDir, relativePattern } = extractGlobBaseDirectory(patternArg);
+      if (baseDir) {
+        searchPathArg = baseDir;
+        patternArg = relativePattern;
+      }
+    }
+    // UNC-path guard: short-circuit BEFORE any filesystem access to avoid an outbound
+    // SMB/NTLM credential leak on Windows. Covers an explicit `path` AND an absolute
+    // pattern whose extracted base directory resolves to a UNC share.
+    if (typeof searchPathArg === 'string' && isUNCPath(searchPathArg)) {
+      return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${searchPathArg}`, isError: true };
+    }
+    const v = validatePatternAndPath(patternArg, searchPathArg, context.cwd, context.allowedReadRoots);
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     // The glob pattern itself must not traverse above the (already-confined) search root:
@@ -229,7 +295,7 @@ export const globTool: ToolDefinition = {
     if (patternEscape) return patternEscape;
     // Self-correcting error when the given base directory does not exist: name the
     // cwd and the closest sibling so the model can recover from a typo.
-    if (typeof input.path === 'string' && !fs.existsSync(resolved)) {
+    if (typeof searchPathArg === 'string' && !fs.existsSync(resolved)) {
       const suggestions = suggestSimilarPaths(resolved, context.cwd);
       const hint = suggestions.length > 0 ? ` Did you mean ${suggestions[0]}?` : '';
       return { output: `Error: Directory does not exist: ${resolved}. Your current working directory is ${context.cwd}.${hint}`, isError: true };
@@ -246,7 +312,7 @@ export const globTool: ToolDefinition = {
     try {
       if (!fs.statSync(resolved).isDirectory()) {
         return {
-          output: `Error: "${input.path as string}" is not a directory`,
+          output: `Error: "${searchPathArg}" is not a directory`,
           isError: true,
         };
       }
@@ -280,8 +346,12 @@ export const globTool: ToolDefinition = {
       // G5: opt-in ripgrep route (fast parallel walk); falls back to tinyglobby when
       // rg is unavailable/errors so results are always produced.
       let entries: string[] | null = null;
+      // When the rg route produces results it has already ordered them newest-first via
+      // `--sortr=modified`, so the per-file stat sort below is skipped for that path.
+      let sortedByRipgrep = false;
       if (isRipgrepGlobEnabled()) {
         entries = await globHooks.rgFiles(pattern, resolved, ignore, context.abortSignal);
+        if (entries !== null) sortedByRipgrep = true;
       }
       if (entries === null) {
         // Bound the in-process tinyglobby walk: race it against a timeout and the
@@ -326,21 +396,25 @@ export const globTool: ToolDefinition = {
         return { output: `No files found matching pattern: ${pattern}` };
       }
 
-      // Sort by mtime descending (newest first), matching Claude Code. Stat each
-      // entry relative to the search root; a stat failure is treated as mtime 0.
-      // Ties fall back to alphabetical so the ordering stays deterministic.
-      const mtimes = new Map<string, number>();
-      for (const entry of entries) {
-        try {
-          mtimes.set(entry, fs.statSync(path.resolve(resolved, entry)).mtimeMs);
-        } catch {
-          mtimes.set(entry, 0);
-        }
+      // Sort by mtime descending (newest first), matching Claude Code. The ripgrep
+      // route already ordered the walk via `--sortr=modified`, so only the in-process
+      // tinyglobby route needs the per-file stat pass (parallel, non-blocking, bounded
+      // by the match set). Stat each entry relative to the search root; a stat failure
+      // is treated as mtime 0. Ties fall back to alphabetical for a deterministic order.
+      if (!sortedByRipgrep) {
+        const mtimes = new Map<string, number>();
+        await Promise.all(entries.map(async (entry) => {
+          try {
+            mtimes.set(entry, (await fs.promises.stat(path.resolve(resolved, entry))).mtimeMs);
+          } catch {
+            mtimes.set(entry, 0);
+          }
+        }));
+        entries.sort((a, b) => {
+          const diff = (mtimes.get(b) ?? 0) - (mtimes.get(a) ?? 0);
+          return diff !== 0 ? diff : a.localeCompare(b);
+        });
       }
-      entries.sort((a, b) => {
-        const diff = (mtimes.get(b) ?? 0) - (mtimes.get(a) ?? 0);
-        return diff !== 0 ? diff : a.localeCompare(b);
-      });
 
       const total = entries.length;
       // Pagination: skip `offset` matches, then take up to `limit` (capped by the
