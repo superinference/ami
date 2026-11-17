@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
+import { logMcpError as logMcpServerError, logMcpDebug as logMcpServerDebug, getMcpServerLogPath, type McpLogSinkOptions } from './log-sink';
 
 /** Read a positive-int env override, else the default. */
 function envPositiveInt(name: string, fallback: number): number {
@@ -46,6 +47,39 @@ export function getConfiguredOAuthCallbackPort(): number | undefined {
   if (!env) return undefined;
   const n = parseInt(env, 10);
   return !Number.isNaN(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * True when a per-server OAuth `callbackPort` config value is a usable TCP port — a
+ * positive integer within the 1..65535 range (Claude-parity `--callback-port`
+ * validation). A missing / non-integer / out-of-range value is rejected so a
+ * malformed config falls through to the env knob / dynamic port discovery rather than
+ * building an invalid redirect URI.
+ */
+export function isValidCallbackPort(port: number | undefined): port is number {
+  return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
+/**
+ * Resolve the OAuth loopback redirect URI for a server, with Claude-parity precedence
+ * (`mcp add --callback-port` / MCP_OAUTH_CALLBACK_PORT): an explicit per-server
+ * `redirectUri` wins; else a per-server `callbackPort` (validated via
+ * {@link isValidCallbackPort}) wins over the global `envCallbackPort`; else no fixed
+ * port is known and `dynamic` is true so the caller discovers a free loopback port at
+ * consent time. Returns the static `redirectUri` to seed the session plus a `dynamic`
+ * flag indicating whether a dynamic-port resolver should be installed.
+ */
+export function resolveMcpOAuthRedirect(
+  oauthConfig: { redirectUri?: string; callbackPort?: number },
+  envCallbackPort: number | undefined,
+): { redirectUri: string; dynamic: boolean } {
+  const configuredRedirect = oauthConfig.redirectUri;
+  const serverCallbackPort = isValidCallbackPort(oauthConfig.callbackPort) ? oauthConfig.callbackPort : undefined;
+  const effectivePort = serverCallbackPort ?? envCallbackPort;
+  return {
+    redirectUri: configuredRedirect ?? buildRedirectUri(effectivePort ?? DEFAULT_OAUTH_CALLBACK_PORT),
+    dynamic: !configuredRedirect && effectivePort === undefined,
+  };
 }
 
 /**
@@ -396,7 +430,24 @@ export interface McpServerConfig {
   url?: string;
   containerConfig?: ContainerConfig;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
-  oauth?: { redirectUri?: string; clientId?: string; clientSecret?: string; clientMetadataUrl?: string; scope?: string; authServerMetadataUrl?: string; loginHint?: string; refreshBufferMs?: number };
+  oauth?: {
+    redirectUri?: string;
+    clientId?: string;
+    clientSecret?: string;
+    clientMetadataUrl?: string;
+    scope?: string;
+    authServerMetadataUrl?: string;
+    loginHint?: string;
+    refreshBufferMs?: number;
+    /**
+     * Pin the OAuth loopback callback to this fixed port for THIS server (Claude-parity
+     * `mcp add --callback-port`). Per-server override of the global
+     * {@link getConfiguredOAuthCallbackPort} env knob: when set, the redirect URI uses
+     * this port (no dynamic discovery) so a user behind a firewall can allow-list a
+     * stable per-server callback port. An explicit `redirectUri` still wins over it.
+     */
+    callbackPort?: number;
+  };
 }
 
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
@@ -679,6 +730,20 @@ export class McpManager extends EventEmitter {
   /** MCP client factory seam (see {@link McpClientFactory}). */
   _createClient: McpClientFactory = (options) => new McpClient(options);
   /**
+   * Per-server structured log sink seams (Claude-parity `logMCPError`/`logMCPDebug`).
+   * Default to the real on-disk JSONL writers; overridable in tests so the per-server
+   * logging path is observable without touching the real config dir. Production
+   * behavior is identical to calling the imports.
+   */
+  _logMcpError: (serverName: string, error: unknown, opts?: McpLogSinkOptions) => void = logMcpServerError;
+  _logMcpDebug: (serverName: string, message: string, opts?: McpLogSinkOptions) => void = logMcpServerDebug;
+  /**
+   * Session id stamped into each per-server MCP log record (Claude-parity
+   * `getSessionId()` in logMCPError/logMCPDebug). Set by the integrator from the live
+   * session; omitted from records when unset.
+   */
+  private _mcpLogSessionId: string | undefined;
+  /**
    * Host platform used for platform-specific config diagnostics (the Windows
    * npx-wrapper warning). Defaults to `process.platform`; overridable in tests so
    * the win32-only diagnostic path is exercisable on any CI host.
@@ -731,6 +796,32 @@ export class McpManager extends EventEmitter {
 
   setRootPaths(paths: string[]): void {
     this.rootPaths = paths;
+  }
+
+  /**
+   * Set the session id stamped into per-server MCP log records (Claude-parity
+   * `getSessionId()`). The integrator calls this once with the live session id so a
+   * `/mcp` diagnostics reader can correlate a server's log entries with the session
+   * that produced them. Read at log-write time, so it applies to already-registered
+   * servers as well as future ones.
+   */
+  setMcpLogSessionId(sessionId: string | undefined): void {
+    this._mcpLogSessionId = sessionId;
+  }
+
+  /** Build the per-server log-sink options from the live session id (the clock/cwd
+   *  seams default inside the sink). */
+  private mcpLogOpts(): McpLogSinkOptions | undefined {
+    return this._mcpLogSessionId ? { sessionId: this._mcpLogSessionId } : undefined;
+  }
+
+  /**
+   * The dated JSONL log-file path for `name`'s dedicated per-server MCP log
+   * (Claude-parity `getMCPLogsPath`). Lets a `/mcp` diagnostics view / introspection
+   * tell the user exactly which file holds a specific server's error+debug history.
+   */
+  getServerLogPath(name: string): string {
+    return getMcpServerLogPath(name, this.mcpLogOpts());
   }
 
   /**
@@ -911,8 +1002,11 @@ export class McpManager extends EventEmitter {
     // tokens. The interactive consent leg comes from the manager-level authorizer.
     let oauth: McpOAuthProvider | undefined;
     if (config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url) {
-      const configuredRedirect = config.oauth.redirectUri;
-      const envCallbackPort = getConfiguredOAuthCallbackPort();
+      // Resolve the loopback redirect URI + whether a dynamic free-port lookup is
+      // needed, with Claude-parity precedence: explicit config redirectUri > per-server
+      // `callbackPort` (`mcp add --callback-port`) > global MCP_OAUTH_CALLBACK_PORT env
+      // knob > dynamic discovery at consent time.
+      const redirect = resolveMcpOAuthRedirect(config.oauth, getConfiguredOAuthCallbackPort());
       // Persist tokens per server so authentication survives restarts (H22/H45).
       // Key the token file on the server NAME *and* a hash of its connection config
       // (type/url/headers) so a reconfigured server (changed URL/transport/headers)
@@ -952,14 +1046,14 @@ export class McpManager extends EventEmitter {
           this.emit('oauth-authorization-url', name, params.authorizationUrl);
           return this._oauthAuthorizer(params);
         },
-        // Port precedence: an explicit config redirectUri wins; else a pinned
-        // MCP_OAUTH_CALLBACK_PORT env knob (fixed, firewall-friendly); else a
-        // dynamically-discovered free loopback port at consent time so a busy port
-        // never wedges auth.
-        redirectUri: configuredRedirect ?? buildRedirectUri(envCallbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT),
-        resolveRedirectUri: (configuredRedirect || envCallbackPort)
-          ? undefined
-          : async () => buildRedirectUri(await findAvailablePort()),
+        // Port precedence: an explicit config redirectUri wins; else a per-server
+        // callbackPort or the pinned MCP_OAUTH_CALLBACK_PORT env knob (fixed,
+        // firewall-friendly); else a dynamically-discovered free loopback port at
+        // consent time so a busy port never wedges auth (see resolveMcpOAuthRedirect).
+        redirectUri: redirect.redirectUri,
+        resolveRedirectUri: redirect.dynamic
+          ? async () => buildRedirectUri(await findAvailablePort())
+          : undefined,
         clientId: config.oauth.clientId,
         clientSecret: config.oauth.clientSecret,
         // CIMD (SEP-991): when configured (or via MCP_OAUTH_CLIENT_METADATA_URL) and
@@ -983,7 +1077,13 @@ export class McpManager extends EventEmitter {
       oauth,
     });
 
-    client.on('error', (err) => this.emit('server-error', name, err));
+    client.on('error', (err) => {
+      // Persist to the server's dedicated per-server log file (Claude-parity
+      // logMCPError) in addition to the in-memory event, so a flaky server has an
+      // isolated, auditable error trail distinct from every other server's.
+      this._logMcpError(name, err, this.mcpLogOpts());
+      this.emit('server-error', name, err);
+    });
     client.on('close', (code, uptimeMs) => {
       this.emit('server-close', name, code, uptimeMs);
       // Close-triggered auto-reconnect for REMOTE (http/sse) transports: a dropped
@@ -1017,6 +1117,7 @@ export class McpManager extends EventEmitter {
 
     client.on('terminal-error', (classified: McpTerminalError) => {
       coreLog('mcp', `Terminal error for ${name}: [${classified.code}] ${classified.message}`);
+      this._logMcpError(name, `[${classified.code}] ${classified.message}`, this.mcpLogOpts());
       this.emit('terminal-error', name, classified);
     });
 
@@ -1043,7 +1144,16 @@ export class McpManager extends EventEmitter {
       this.emit('prompts-changed', name);
     });
 
-    client.on('log', (msg: McpLogMessage) => this.emit('server-log', name, msg));
+    client.on('log', (msg: McpLogMessage) => {
+      // Route a server-emitted log line to the server's dedicated debug/error file
+      // (Claude-parity logMCPDebug/logMCPError): an `error`-level line is logged as a
+      // per-server error, everything else as per-server debug, so each server's log
+      // is self-contained instead of interleaved in the shared engine log.
+      const text = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data);
+      if (msg.level === 'error') this._logMcpError(name, text, this.mcpLogOpts());
+      else this._logMcpDebug(name, text, this.mcpLogOpts());
+      this.emit('server-log', name, msg);
+    });
     client.on('resource-updated', (uri: string) => this.emit('resource-updated', name, uri));
     // Live per-tool-call progress (server notifications/progress for an in-flight
     // tools/call) surfaced on the manager's public event bus so a frontend can
@@ -1793,7 +1903,11 @@ export class McpManager extends EventEmitter {
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        throw isHandshakeFailure(err) ? handshakeError(name, err) : err;
+        const finalErr = isHandshakeFailure(err) ? handshakeError(name, err) : err;
+        // A connect attempt that has exhausted its retries is a per-server error
+        // worth persisting to the server's dedicated log (Claude-parity logMCPError).
+        this._logMcpError(name, finalErr, this.mcpLogOpts());
+        throw finalErr;
       }
     }
     throw lastErr;
