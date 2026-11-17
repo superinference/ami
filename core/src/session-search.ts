@@ -326,11 +326,38 @@ function computeFlattenedMessageText(m: Record<string, unknown>): string {
 }
 
 /**
+ * Snap a START index so the slice never begins on a lone LOW surrogate — i.e. in
+ * the middle of an astral codepoint (emoji). Advancing past the orphaned low half
+ * drops the broken leading glyph. Mirrors the reference's surrogate-pair accounting
+ * in its code-unit→cell mapping (render-to-screen.ts scanPositions, L163-196),
+ * reduced to what a string snippet needs. @see matchSnippet
+ */
+function surrogateSafeStart(text: string, i: number): number {
+  const c = text.charCodeAt(i);
+  return c >= 0xdc00 && c <= 0xdfff ? i + 1 : i;
+}
+/**
+ * Snap an EXCLUSIVE END index so the slice never ends on a lone HIGH surrogate —
+ * the pair's low half would be excluded, leaving a broken trailing glyph. Retreating
+ * one code unit drops it. @see matchSnippet
+ */
+function surrogateSafeEnd(text: string, i: number): number {
+  const prev = i > 0 ? text.charCodeAt(i - 1) : 0;
+  return prev >= 0xd800 && prev <= 0xdbff ? i - 1 : i;
+}
+
+/**
  * Build a result snippet centered on the earliest match (phrase first, else any
  * term), with leading/trailing ellipsis when the surrounding text is clipped. The
  * total length never exceeds {@link MAX_SNIPPET_CHARS} (ellipses included). Text
  * that already fits is returned verbatim. (match-centered snippet + truncation
  * indicator)
+ *
+ * Every clip boundary is snapped to a UTF-16 codepoint boundary
+ * ({@link surrogateSafeStart} / {@link surrogateSafeEnd}) so an astral character
+ * (emoji) at a snippet edge is never split into a lone surrogate — which would
+ * render as a broken replacement glyph (U+FFFD). Parity with the reference's
+ * surrogate-pair handling in its match positioning (render-to-screen.ts L163-196).
  */
 export function matchSnippet(text: string, terms: string[], phrase: string, max = MAX_SNIPPET_CHARS): string {
   if (text.length <= max) return text;
@@ -342,16 +369,19 @@ export function matchSnippet(text: string, terms: string[], phrase: string, max 
       if (i !== -1 && (idx === -1 || i < idx)) idx = i;
     }
   }
-  if (idx === -1) return text.slice(0, max);
+  if (idx === -1) return text.slice(0, surrogateSafeEnd(text, max));
   const half = Math.floor(max / 2);
   let end = Math.min(text.length, Math.max(0, idx - half) + max);
-  const start = Math.max(0, end - max);
+  let start = Math.max(0, end - max);
   end = Math.min(text.length, start + max);
+  // Snap both clip boundaries off any surrogate pair before slicing.
+  start = surrogateSafeStart(text, start);
+  end = surrogateSafeEnd(text, end);
   const prefix = start > 0 ? '…' : '';
   const suffix = end < text.length ? '…' : '';
   const room = max - prefix.length - suffix.length;
   let snip = text.slice(start, end);
-  if (snip.length > room) snip = snip.slice(0, room);
+  if (snip.length > room) snip = snip.slice(0, surrogateSafeEnd(snip, room));
   return prefix + snip + suffix;
 }
 
