@@ -274,8 +274,25 @@ function computeFlattenedMessageText(m: Record<string, unknown>): string {
   // (transcriptSearch.ts L82-112) and drop them from the searchable text. (H33)
   if (m.isMeta === true) return '';
   if (m.commandMode === 'task-notification' || m.mode === 'task-notification') return '';
+  // AMI's canonical message provenance is {@link MessageOrigin}; a `task-notification`
+  // origin is machine-owned chrome (the model's own task-completion report), rendered
+  // as a notification component — not user-authored text. Mirror the reference's
+  // commandMode==='task-notification' exclusion using AMI's provenance field so a
+  // provenance-tagged notification never produces a phantom search hit. (H33)
+  const origin = m.origin;
+  if (origin && typeof origin === 'object' && (origin as { kind?: unknown }).kind === 'task-notification') return '';
   const parts: string[] = [];
   parts.push(flattenContent(m.content));
+  // Attachment-shaped messages render their text in the transcript (a relevant-memories
+  // recall, a mid-turn queued prompt) but carry it OUTSIDE `content`, so the string/
+  // block flatten above never sees it — a query matching only a recalled memory or a
+  // queued prompt would return nothing. Mirror the reference's `computeSearchText`
+  // attachment arm (transcriptSearch.ts L82-112), honoring the SAME meta/
+  // task-notification exclusion knobs for a queued command.
+  if (m.attachment !== undefined) parts.push(attachmentSearchText(m.attachment));
+  // Collapsed read/search groups absorb relevant-memories attachments; their content
+  // still renders (collapsed_read_search arm), so index it too.
+  if (Array.isArray(m.relevantMemories)) parts.push(memoryListText(m.relevantMemories));
   // Assistant tool calls — the OpenAI-style shape used across the engine.
   const toolCalls = m.tool_calls;
   if (Array.isArray(toolCalls)) {
@@ -391,6 +408,56 @@ export function toolResultSearchText(r: unknown): string {
     if (Array.isArray(v) && v.every(x => typeof x === 'string')) parts.push((v as string[]).join('\n'));
   }
   return parts.join('\n');
+}
+
+/**
+ * Join the user-visible `content` of a relevant-memories list into searchable
+ * text. Each memory entry renders its `content` in the transcript (the reference's
+ * AttachmentMessage `<Ansi>{m.content}</Ansi>`), so that is the indexable field;
+ * non-object / non-string entries contribute nothing. Shared by the `attachment`
+ * and `collapsed_read_search` extraction arms so the memory field-selector lives
+ * in ONE place.
+ */
+function memoryListText(memories: unknown): string {
+  if (!Array.isArray(memories)) return '';
+  const out: string[] = [];
+  for (const m of memories) {
+    if (m && typeof m === 'object' && typeof (m as { content?: unknown }).content === 'string') {
+      out.push((m as { content: string }).content);
+    }
+  }
+  return out.join('\n');
+}
+
+/**
+ * Searchable text for an attachment-shaped message's payload, mirroring the
+ * reference's `computeSearchText` attachment arm (transcriptSearch.ts L82-112):
+ * - `relevant_memories` → the joined `content` of each recalled memory (it renders
+ *   in transcript mode and is otherwise searchable-invisible);
+ * - `queued_command` → the mid-turn queued prompt (a plain string, or the `text`
+ *   blocks of a block array), gated by the SAME exclusion knobs as a live queued
+ *   command — a `task-notification` command (machine-owned chrome) and an `isMeta`
+ *   attachment contribute no searchable text.
+ * Unknown attachment types index empty (under-count beats phantom). @public
+ */
+export function attachmentSearchText(attachment: unknown): string {
+  if (!attachment || typeof attachment !== 'object') return '';
+  const a = attachment as Record<string, unknown>;
+  if (a.type === 'relevant_memories') {
+    return memoryListText(a.memories);
+  }
+  if (
+    a.type === 'queued_command' &&
+    a.commandMode !== 'task-notification' &&
+    a.isMeta !== true
+  ) {
+    const p = a.prompt;
+    // The queued prompt is user-authored content — flatten it with the canonical
+    // content flattener (string or text-block array) rather than re-implementing
+    // the text-block select here.
+    return typeof p === 'string' ? p : flattenContent(p);
+  }
+  return '';
 }
 
 /** Recursively flatten string | block-array content into searchable text. */

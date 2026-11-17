@@ -11,6 +11,7 @@ import {
   extractRankingTranscript,
   flattenMessageText,
   renderableSearchText,
+  attachmentSearchText,
   prSearchText,
   DATE_TIE_THRESHOLD_MS,
   MAX_RANKING_TRANSCRIPT_CHARS,
@@ -594,6 +595,99 @@ describe('flattenMessageText — isMeta / task-notification exclusion (transcrip
   });
   it('still indexes ordinary (non-meta) messages', () => {
     assert.equal(flattenMessageText({ role: 'user', content: 'hello world' }), 'hello world');
+  });
+});
+
+describe('attachmentSearchText — per-attachment-type extraction (transcriptSearch.ts L82-112 parity)', () => {
+  it('extracts joined memory content from a relevant_memories attachment', () => {
+    assert.equal(
+      attachmentSearchText({ type: 'relevant_memories', memories: [{ content: 'alpha recall' }, { content: 'beta recall' }] }),
+      'alpha recall\nbeta recall',
+    );
+  });
+  it('skips non-string / malformed memory entries', () => {
+    assert.equal(
+      attachmentSearchText({ type: 'relevant_memories', memories: [{ content: 'keep' }, { content: 42 }, null, 'nope'] }),
+      'keep',
+    );
+    assert.equal(attachmentSearchText({ type: 'relevant_memories', memories: 'not-an-array' }), '');
+  });
+  it('extracts a string queued_command prompt', () => {
+    assert.equal(attachmentSearchText({ type: 'queued_command', prompt: 'deploy the service' }), 'deploy the service');
+  });
+  it('extracts text blocks from a queued_command block-array prompt', () => {
+    assert.equal(
+      attachmentSearchText({ type: 'queued_command', prompt: [{ type: 'text', text: 'run the' }, { type: 'text', text: 'migration' }] }),
+      'run the migration',
+    );
+  });
+  it('excludes a task-notification queued command (machine-owned chrome)', () => {
+    assert.equal(
+      attachmentSearchText({ type: 'queued_command', prompt: 'task done report', commandMode: 'task-notification' }),
+      '',
+    );
+  });
+  it('excludes an isMeta queued command attachment', () => {
+    assert.equal(attachmentSearchText({ type: 'queued_command', prompt: 'nudge', isMeta: true }), '');
+  });
+  it('indexes empty for unknown / non-object attachments', () => {
+    assert.equal(attachmentSearchText({ type: 'something_else', data: 'x' }), '');
+    assert.equal(attachmentSearchText(null), '');
+    assert.equal(attachmentSearchText('str'), '');
+  });
+});
+
+describe('flattenMessageText — attachment + origin extraction/exclusion', () => {
+  it('indexes a relevant_memories attachment message (renders in transcript, else unsearchable)', () => {
+    assert.equal(
+      flattenMessageText({ role: 'user', attachment: { type: 'relevant_memories', memories: [{ content: 'remembered fact' }] } }),
+      'remembered fact',
+    );
+  });
+  it('indexes a queued_command attachment prompt', () => {
+    assert.equal(
+      flattenMessageText({ role: 'user', attachment: { type: 'queued_command', prompt: 'queued work item' } }),
+      'queued work item',
+    );
+  });
+  it('indexes a collapsed_read_search message relevantMemories', () => {
+    assert.equal(
+      flattenMessageText({ role: 'user', relevantMemories: [{ content: 'collapsed memory' }] }),
+      'collapsed memory',
+    );
+  });
+  it('excludes a message whose provenance origin is task-notification', () => {
+    assert.equal(
+      flattenMessageText({ role: 'user', content: 'auto task report', origin: { kind: 'task-notification' } }),
+      '',
+    );
+  });
+  it('still indexes a user message whose origin is a plain user', () => {
+    assert.equal(
+      flattenMessageText({ role: 'user', content: 'real question', origin: { kind: 'user' } }),
+      'real question',
+    );
+  });
+});
+
+describe('searchSessions — attachment-shaped messages are searchable end-to-end', () => {
+  it('finds a session by relevant-memory / queued-prompt attachment text, and excludes task-notification origin', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-attach-'));
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 's.json'), JSON.stringify({
+      id: 's',
+      messages: [
+        { role: 'user', attachment: { type: 'relevant_memories', memories: [{ content: 'xyzmemneedle lives here' }] } },
+        { role: 'user', attachment: { type: 'queued_command', prompt: 'xyzqueuedneedle queued prompt' } },
+        { role: 'user', content: 'xyznotifyneedle ignore me', origin: { kind: 'task-notification' } },
+        { role: 'assistant', content: 'ordinary reply' },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'xyzmemneedle').length > 0);
+    assert.ok(searchSessions(tmpDir, 'xyzqueuedneedle').length > 0);
+    assert.equal(searchSessions(tmpDir, 'xyznotifyneedle').length, 0);
+    fs.rmSync(tmpDir, { recursive: true });
   });
 });
 
