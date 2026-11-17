@@ -18,7 +18,7 @@ const MAX_OUTPUT_CHARS = 50_000;
 // Default glob timeout. The in-process tinyglobby walk is otherwise unbounded — a
 // pathological pattern over a huge tree could hang the turn forever. Env-configurable
 // (AMI_GLOB_TIMEOUT_SECONDS) to mirror Claude Code's CLAUDE_CODE_GLOB_TIMEOUT_SECONDS.
-const GLOB_TIMEOUT_ENV = 'AMI_GLOB_TIMEOUT_SECONDS';
+export const GLOB_TIMEOUT_ENV = 'AMI_GLOB_TIMEOUT_SECONDS';
 const DEFAULT_GLOB_TIMEOUT_MS = 20_000;
 
 /** Resolve the glob timeout in ms from the env flag (seconds), falling back to the default. */
