@@ -175,6 +175,7 @@ export type {
   ToolCallFunction,
   TextContent,
   ImageContent,
+  DocumentContent,
   ToolInputSchema,
   ToolResult,
   ToolGroupKind,

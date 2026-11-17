@@ -116,6 +116,23 @@ export interface ImageContent {
   };
 }
 
+/**
+ * A document (e.g. PDF) carried natively in a user message so the model reads it
+ * directly rather than through a base64 text blob. Mirrors Claude's third content
+ * block `{ type: 'document', source: { type: 'base64', media_type: 'application/pdf',
+ * data } }` emitted by the Read tool for PDFs (tools/FileReadTool.ts). Distinct from
+ * {@link ImageContent}: a document is a whole-file attachment with its own media type
+ * (`application/pdf`, …), serialized to the provider as an AI-SDK `file` part, and is
+ * gated on {@link modelSupportsDocuments} rather than vision support. */
+export interface DocumentContent {
+  type: 'document';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+}
+
 export interface ToolCallFunction {
   name: string;
   arguments: string;
@@ -172,7 +189,7 @@ export interface TranscriptMeta {
 
 export interface UserMessage extends TranscriptMeta {
   role: 'user';
-  content: string | Array<TextContent | ImageContent>;
+  content: string | Array<TextContent | ImageContent | DocumentContent>;
   /** Engine-injected ephemeral control message (turn-local nudge). Excluded from
    *  the persisted session transcript so --resume is not polluted; still sent to
    *  the model during the live turn. */
@@ -2078,6 +2095,14 @@ export interface EngineSubmitOptions {
    * model supports vision; otherwise ignored with a note.
    */
   images?: ImageContent[];
+  /**
+   * Document attachments (e.g. PDFs) for this user turn. Attached to the user
+   * message as native `document` content blocks when the active model supports
+   * documents ({@link modelSupportsDocuments}); otherwise ignored with a note so
+   * the model can tell the user. Parity: Claude's `document` content block emitted
+   * by the Read tool for PDFs.
+   */
+  documents?: DocumentContent[];
 }
 
 export interface ContextFile {

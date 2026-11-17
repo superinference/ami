@@ -2877,6 +2877,17 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
         if (block.type === 'text') {
           return { type: 'text' as const, text: block.text };
         }
+        // DocumentContent -> AI SDK file part. A PDF (or other document) rides as a
+        // `file` part (base64 data + mediaType), which the Anthropic/Gemini providers
+        // translate into a native `document` block — so the model reads the file
+        // directly instead of a base64 text blob. Parity: Claude's `document` block.
+        if (block.type === 'document') {
+          return {
+            type: 'file' as const,
+            data: block.source.data,
+            mediaType: block.source.media_type,
+          };
+        }
         // ImageContent -> AI SDK image part. The AI SDK v6 ImagePart field is
         // `mediaType` (not `mimeType`); using the wrong name drops the type.
         return {

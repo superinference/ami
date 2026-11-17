@@ -46,6 +46,9 @@ export interface ModelCapabilities {
   maxContextTokens?: number;
   maxOutputTokens?: number;
   supportsVision?: boolean;
+  /** Whether the model accepts native `document` (PDF) content blocks. Checked by
+   *  {@link modelSupportsDocuments}; distinct from {@link supportsVision}. */
+  supportsDocuments?: boolean;
   supportsToolUse?: boolean;
   /**
    * The model defaults to adaptive thinking and REJECTS a request to disable it
@@ -1108,6 +1111,35 @@ export function modelSupportsVision(modelId: string): boolean {
   if (/(o1-mini|o3-mini|o4-mini)/.test(id) || /llama-3\.2-(1b|3b)/.test(id)) return false;
   const candidates = [id, ...id.split('/')];
   return candidates.some(c => VISION_MODEL_PREFIXES.some(p => c.startsWith(p)));
+}
+
+/**
+ * Model families that accept native `document` (PDF) content blocks. Narrower than
+ * {@link VISION_MODEL_PREFIXES}: native PDF ingestion is currently an Anthropic-Claude
+ * and Google-Gemini capability, so a vision-only model (e.g. an open-weight VLM) is NOT
+ * assumed to accept documents. A live /models payload can override this per-model via
+ * `registerModelCapabilities({ supportsDocuments })`.
+ */
+const DOCUMENT_MODEL_PREFIXES: string[] = [
+  // Anthropic — Claude 3+ accept PDF document blocks.
+  'claude-3', 'claude-sonnet-', 'claude-opus-', 'claude-haiku-', 'claude-fable-',
+  // Google — Gemini 1.5+ accept PDF document input.
+  'gemini-1.5', 'gemini-2', 'gemini-3',
+];
+
+/**
+ * Whether the given model can accept native `document` (e.g. PDF) input. Honors an
+ * explicitly registered `supportsDocuments` capability first, then falls back to the
+ * known document-capable family prefix table. Unknown models default to false so a
+ * document is never sent blindly to a model that would reject it. Parity: Claude's
+ * PDF `document` content block (supported on Claude models). */
+export function modelSupportsDocuments(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const explicit = getModelCapabilities(modelId)?.supportsDocuments;
+  if (explicit !== undefined) return explicit;
+  const id = modelId.toLowerCase();
+  const candidates = [id, ...id.split('/')];
+  return candidates.some(c => DOCUMENT_MODEL_PREFIXES.some(p => c.startsWith(p)));
 }
 
 const BUDGET_MAP: Record<ThinkingLevel, number> = {
