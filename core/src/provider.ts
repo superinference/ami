@@ -2494,6 +2494,35 @@ export function extractReasoningTokens(usage: unknown): number {
   return 0;
 }
 
+/**
+ * User-visible placeholder surfaced when the provider returns a REDACTED (encrypted)
+ * thinking block — reasoning the safety systems encrypted so it cannot be displayed.
+ * Without a placeholder the user sees a silent gap (the block carries no readable
+ * text). Parity: Claude Code's `AssistantRedactedThinkingMessage` ("✻ Thinking…").
+ * AMI appends "(redacted)" so the encrypted nature is explicit.
+ */
+export const REDACTED_THINKING_PLACEHOLDER = '✻ Thinking… (redacted)';
+
+/**
+ * Detect a redacted/encrypted reasoning part and return its opaque `redactedData`
+ * blob, or `undefined` for a normal (readable) reasoning part. The `@ai-sdk/anthropic`
+ * provider maps a `redacted_thinking` content block to a `reasoning-start` fullStream
+ * part carrying `providerMetadata.anthropic.redactedData` (the encrypted payload) and
+ * NO subsequent `reasoning-delta` text. A normal thinking block's `reasoning-start`
+ * has no such field (its text arrives via `reasoning-delta`). Isolated here so the
+ * stream loop and tests share one detection rule. A non-object / absent metadata
+ * yields `undefined`.
+ */
+export function extractRedactedThinkingData(part: unknown): string | undefined {
+  if (!part || typeof part !== 'object') return undefined;
+  const meta = (part as { providerMetadata?: unknown }).providerMetadata;
+  if (!meta || typeof meta !== 'object') return undefined;
+  const anthropic = (meta as { anthropic?: unknown }).anthropic;
+  if (!anthropic || typeof anthropic !== 'object') return undefined;
+  const redacted = (anthropic as { redactedData?: unknown }).redactedData;
+  return typeof redacted === 'string' && redacted.length > 0 ? redacted : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Build provider-specific thinking / reasoning options
 // ---------------------------------------------------------------------------
@@ -3000,6 +3029,20 @@ export async function* streamChatCompletion(
           };
           return;
         }
+
+        case 'reasoning-start':
+          // A normal thinking block's reasoning-start carries no text (it arrives via
+          // reasoning-delta) and is ignored here. A REDACTED/encrypted thinking block,
+          // however, arrives as a reasoning-start carrying providerMetadata.anthropic.
+          // redactedData and NEVER emits a reasoning-delta — so without this branch the
+          // user would see a silent gap where the model actually reasoned. Surface a
+          // placeholder once per redacted block (parity: Claude's redacted-thinking
+          // message), reusing the already-wired thinking_delta render path.
+          if (extractRedactedThinkingData(part) !== undefined) {
+            producedOutput = true;
+            yield { type: 'thinking_delta', text: `${REDACTED_THINKING_PLACEHOLDER}\n` };
+          }
+          break;
 
         case 'reasoning-delta':
           producedOutput = true;
