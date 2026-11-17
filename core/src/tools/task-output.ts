@@ -215,6 +215,15 @@ export const taskOutputTool: ToolDefinition = {
       `Elapsed: ${elapsed}`,
     ];
 
+    // Introspection marker (parity: Claude Code's resumeAgent resumed-vs-fresh
+    // distinction): tell the model this agent is a RESUMED continuation of a prior
+    // session, not a first run, so it can interpret the output/stats accordingly.
+    // Defensive typeof guard so a minimal manager stub (tests) is a no-op.
+    const taskMeta = typeof context.processManager.get === 'function'
+      ? context.processManager.get(taskId)
+      : null;
+    if (taskMeta?.resumed) lines.push('Invocation: resumed');
+
     if (filterRe) {
       lines.push(`Filter: ${filterRe} (matching lines only)`);
     }

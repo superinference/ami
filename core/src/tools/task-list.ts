@@ -112,6 +112,21 @@ export function formatKindSummary(counts: { bash: number; monitor: number; agent
   return parts.join(', ');
 }
 
+/**
+ * PARITY (Claude Code's pillLabel `identity.teamName` distinct-team count, rendered
+ * as "N teams"): the number of DISTINCT non-empty team names among the given tasks.
+ * A background agent spawned into a swarm team carries its
+ * {@link BackgroundProcess.teamName}; solo agents / bash / monitor tasks carry none
+ * and are ignored. Pure + exported so the by-type line has ONE counting source.
+ */
+export function countDistinctTeams(tasks: Pick<BackgroundProcess, 'teamName'>[]): number {
+  const teams = new Set<string>();
+  for (const t of tasks) {
+    if (t.teamName) teams.add(t.teamName);
+  }
+  return teams.size;
+}
+
 /** A terminal task will never run again (completed/failed/killed). A `pending`
  *  task is NON-terminal (queued, will run), so it sorts with running tasks at the
  *  top — shared predicate (No-Duplication rule). */
@@ -305,7 +320,14 @@ export const taskListTool: ToolDefinition = {
     const kindCounts = summarizeTaskKinds(tasks);
     kindCounts.monitor = all.filter(t => t.kind === 'monitor' && t.status === 'running').length;
     const kindSummary = formatKindSummary(kindCounts);
-    const typeLine = kindSummary ? `By type: ${kindSummary}\n` : '';
+    // Distinct-team tally (parity: Claude pillLabel "N teams") appended to the
+    // by-type line when any agent carries a team identity.
+    const teamCount = countDistinctTeams(tasks);
+    const teamSuffix = teamCount > 0
+      ? `${kindSummary ? ', ' : ''}${teamCount} ${teamCount === 1 ? 'team' : 'teams'}`
+      : '';
+    const typeLineContent = `${kindSummary}${teamSuffix}`;
+    const typeLine = typeLineContent ? `By type: ${typeLineContent}\n` : '';
 
     const header = tasks.length === visible.length
       ? `Background tasks (${tasks.length}):`

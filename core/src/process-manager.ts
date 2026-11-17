@@ -287,16 +287,30 @@ export function buildCompletionSummary(
 
 /**
  * FUNCTIONAL (parity): the `usage` clause appended to a completion note — a
- * ready-made `Usage: ran 3.2s.` fragment, mirroring Claude Code's completion
- * notification which surfaces a usage section (`duration_ms`) so the model can see
- * how long a finished background task ran. Rendered only when
- * {@link CompletedTaskEvent.durationMs} is a known non-negative value; returns ''
- * otherwise so a legacy event's note is unchanged. Pure + exported so the wording
- * has ONE source (No-Duplication rule) and is unit-testable in isolation.
+ * ready-made `Usage: ran 3.2s, 1500 tokens, 4 tool uses.` fragment, mirroring
+ * Claude Code's LocalAgentTask completion notification which surfaces a usage
+ * section (`duration_ms`, `total_tokens`, `tool_uses`) so the model can see how
+ * long a finished background task ran and how much work it did. Each metric is
+ * rendered only when it is a known, meaningful value: duration when
+ * {@link CompletedTaskEvent.durationMs} is a non-negative number, tokens/tool-uses
+ * when their counts are present and > 0 (a bash shell reports neither, so its clause
+ * stays duration-only). Returns '' when nothing is known so a legacy event's note is
+ * unchanged. Pure + exported so the wording has ONE source (No-Duplication rule) and
+ * is unit-testable in isolation.
  */
 export function formatUsageClause(event: CompletedTaskEvent): string {
-  if (typeof event.durationMs !== 'number' || event.durationMs < 0) return '';
-  return ` Usage: ran ${(event.durationMs / 1000).toFixed(1)}s.`;
+  const parts: string[] = [];
+  if (typeof event.durationMs === 'number' && event.durationMs >= 0) {
+    parts.push(`ran ${(event.durationMs / 1000).toFixed(1)}s`);
+  }
+  if (typeof event.tokenCount === 'number' && event.tokenCount > 0) {
+    parts.push(`${event.tokenCount} ${event.tokenCount === 1 ? 'token' : 'tokens'}`);
+  }
+  if (typeof event.toolCount === 'number' && event.toolCount > 0) {
+    parts.push(`${event.toolCount} ${event.toolCount === 1 ? 'tool use' : 'tool uses'}`);
+  }
+  if (parts.length === 0) return '';
+  return ` Usage: ${parts.join(', ')}.`;
 }
 
 /**
@@ -598,6 +612,24 @@ export interface BackgroundProcess {
    * Claude's task-granular backgrounding (foregroundedTaskId + isBackgrounded).
    */
   isBackgrounded?: boolean;
+  /**
+   * True when this background AGENT was started by RESUMING a prior agent session
+   * rather than a fresh spawn (parity with Claude Code's resumeAgent introspection
+   * marker, resumeAgent.ts:L222-225 — a resumed invocation is tagged so it can be
+   * distinguished from a first run). Set at {@link registerAgent} time from the
+   * caller's resume target; undefined/false for a fresh spawn. Surfaced by
+   * task_output ("Invocation: resumed") so a reader can tell a continuation from a
+   * first run. Only meaningful for `agent` tasks.
+   */
+  resumed?: boolean;
+  /**
+   * The name of the swarm TEAM this background agent belongs to, when it was spawned
+   * into an active team (parity with Claude Code's pillLabel `identity.teamName`,
+   * the basis for its distinct-team count "N teams"). Set at {@link registerAgent}
+   * time from the active team; undefined for a solo agent / bash / monitor task.
+   * Consumed by task_list's distinct-team tally.
+   */
+  teamName?: string;
 }
 
 /**
@@ -633,6 +665,24 @@ export interface CompletedTaskEvent {
    * Undefined on a legacy direct emit that bypassed emitComplete.
    */
   durationMs?: number;
+  /**
+   * Total token usage of a finished background AGENT, surfaced in the completion
+   * note's usage clause (`… 1500 tokens …`) — parity with Claude Code's LocalAgentTask
+   * completion `total_tokens`. Attached by emitComplete from the tracked entry
+   * ({@link BackgroundProcess.resultTokenCount}, falling back to the live
+   * {@link BackgroundProcess.tokenCount}). Undefined/0 for a bash shell (no tokens)
+   * or a legacy direct emit, which then omits the token part of the clause.
+   */
+  tokenCount?: number;
+  /**
+   * Total tool-call count of a finished background AGENT, surfaced in the completion
+   * note's usage clause (`… 4 tool uses`) — parity with Claude Code's LocalAgentTask
+   * completion `tool_uses`. Attached by emitComplete from the tracked entry
+   * ({@link BackgroundProcess.resultToolCount}, falling back to the live
+   * {@link BackgroundProcess.toolCount}). Undefined/0 for a bash shell or a legacy
+   * emit, which then omits the tool-use part of the clause.
+   */
+  toolCount?: number;
 }
 
 /**
@@ -967,12 +1017,42 @@ export class ProcessManager extends EventEmitter {
     if (entry && payload.durationMs === undefined && entry.endTime !== undefined) {
       payload.durationMs = computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0);
     }
+    // Attach the agent's final token / tool-use totals so the completion note's usage
+    // clause can report them (parity with Claude Code's LocalAgentTask completion
+    // `total_tokens` / `tool_uses`). Prefer the authoritative result totals recorded
+    // at the terminal transition, falling back to the last live counter; omitted for
+    // a bash shell (no counts) so its clause stays duration-only. See formatUsageClause.
+    if (entry && payload.tokenCount === undefined) {
+      const tok = entry.resultTokenCount ?? entry.tokenCount;
+      if (typeof tok === 'number' && tok > 0) payload.tokenCount = tok;
+    }
+    if (entry && payload.toolCount === undefined) {
+      const tc = entry.resultToolCount ?? entry.toolCount;
+      if (typeof tc === 'number' && tc > 0) payload.toolCount = tc;
+    }
     // Bounded buffer (parity with Claude Code's sdkEventQueue): evict the oldest
     // entry at the cap so the durable buffer can never grow without bound across a
     // long silent turn with active producers (see MAX_COMPLETED_BUFFER).
     if (this._completedBuffer.length >= MAX_COMPLETED_BUFFER) this._completedBuffer.shift();
     this._completedBuffer.push(payload);
     this.emit('complete', payload);
+  }
+
+  /**
+   * PUBLIC completion entry point for an EXTERNALLY-finalized task — an in-process
+   * background AGENT whose terminal transition happens in its drain loop (task.ts),
+   * not via a child-process 'exit'/'close' event. Routes through the same
+   * {@link emitComplete} path as a bash task so the agent's completion is (a) buffered
+   * for durable drain (the engine surfaces it exactly once, just like a shell), (b)
+   * enriched with the status-aware summary, run duration, and token/tool-use usage
+   * clause, and (c) deduped against a prior task_output read (`notified`). Before this
+   * seam agents fired a bare `emit('complete')` that bypassed the buffer entirely —
+   * with no live listener anywhere, a finished background agent surfaced NO
+   * model-facing completion note at all. Mirrors Claude Code's LocalAgentTask
+   * completion notification.
+   */
+  emitCompletion(payload: CompletedTaskEvent): void {
+    this.emitComplete(payload);
   }
 
   /**
@@ -1699,6 +1779,12 @@ export class ProcessManager extends EventEmitter {
      *  Transition it to running with {@link markRunning} when it actually starts.
      *  Parity with Claude Code's createTaskStateBase defaulting to 'pending'. */
     pending?: boolean;
+    /** True when this agent is a RESUMED continuation of a prior session, not a
+     *  fresh spawn (see {@link BackgroundProcess.resumed}). */
+    resumed?: boolean;
+    /** The active swarm team's name, when the agent joined a team at spawn (see
+     *  {@link BackgroundProcess.teamName}). */
+    teamName?: string;
   }): void {
     this.processes.set(taskId, {
       taskId,
@@ -1713,6 +1799,8 @@ export class ProcessManager extends EventEmitter {
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
       ...(opts.abortSignal ? { _abortSignal: opts.abortSignal } : {}),
+      ...(opts.resumed ? { resumed: true } : {}),
+      ...(opts.teamName ? { teamName: opts.teamName } : {}),
       proc: { pid: process.pid, kill: opts.abortFn } as any,
       outputFd: null,
       bytesWritten: 0,

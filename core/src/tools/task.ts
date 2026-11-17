@@ -1429,7 +1429,15 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       resultToolCount: bgToolUseCount,
       resultTokenCount: bgTotalTokens,
     });
-    context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
+    // Route through the DURABLE buffer (emitCompletion) rather than a bare
+    // emit('complete'): with no live 'complete' listener anywhere, a bare emit
+    // surfaced NO model-facing note for a finished background agent. emitCompletion
+    // buffers it for the engine's per-turn drain and enriches it with the
+    // status-aware summary + usage clause (duration + token/tool totals recorded on
+    // the entry by the updateEntry() above) — parity with Claude's LocalAgentTask
+    // completion notification. Dedup via `notified` still suppresses it when the
+    // model already consumed the result via task_output.
+    context.processManager.emitCompletion({ taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}`, outputPath, status: terminalStatus });
   }
   // Tear down the isolated worktree on the background completion path too
   // (parity: Claude cleans the worktree when an async agent finishes). Done
@@ -2282,6 +2290,11 @@ export const taskTool: ToolDefinition = {
           description: `Background agent: ${label}`,
           outputPath,
           abortFn: () => { subAbort.abort(); },
+          // Introspection markers (parity: Claude resumeAgent / pillLabel): tag a
+          // resumed continuation vs a fresh spawn, and the team the agent joined so
+          // task_list can tally distinct teams.
+          resumed: !!resumeTarget,
+          ...(getCurrentTeam()?.name ? { teamName: getCurrentTeam()!.name } : {}),
         });
         const fm = context.processManager.flowManager;
         if (fm) {
@@ -2494,6 +2507,10 @@ export const taskTool: ToolDefinition = {
             description: `Background agent: ${label}`,
             outputPath,
             abortFn: () => { subAbort.abort(); },
+            // Introspection markers (parity: Claude resumeAgent / pillLabel), same
+            // as the explicit-background path above.
+            resumed: !!resumeTarget,
+            ...(getCurrentTeam()?.name ? { teamName: getCurrentTeam()!.name } : {}),
           });
           const fm = context.processManager.flowManager;
           if (fm) {
