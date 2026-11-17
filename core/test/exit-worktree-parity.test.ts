@@ -32,8 +32,17 @@ const ctx = (over: Partial<ToolContext> = {}) =>
 
 describe('exit_worktree merge-back parity', () => {
   let repo: string;
+  const launchCwd = process.cwd();
   beforeEach(() => { repo = makeRepo(); setWorktreeSession(null); });
-  afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
+  afterEach(() => {
+    // A successful merge/remove now restores the process cwd to the repo root
+    // (parity: restore the session's working directory). Move the process to a
+    // stable dir before deleting the temp repo so a later test's process.cwd()
+    // can't land on a just-removed directory.
+    try { process.chdir(launchCwd); } catch { /* ignore */ }
+    fs.rmSync(repo, { recursive: true, force: true });
+    setWorktreeSession(null);
+  });
 
   // ---- GAP 1: action "merge" is a valid action & merges committed work back ----
   it('merges committed worktree work into the original branch, then removes the worktree + branch', async () => {
