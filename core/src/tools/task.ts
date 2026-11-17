@@ -10,7 +10,7 @@ import { releaseFileCache } from '../file-cache';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
-import { mapChildToSubagentEvent } from './subagent-relay';
+import { mapChildToSubagentEvent, attachSubagentUsage } from './subagent-relay';
 import { collapseReadSearchRun } from './tool-activity-class';
 import { inheritBedrockRegionPrefix } from '../bedrock';
 import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemberActive, teamAllowedPathsToRules, loadTeamFromDisk } from './team';
@@ -2849,7 +2849,13 @@ export const taskTool: ToolDefinition = {
         if (stalled) break;
         const { value: event, done } = evResult;
         if (done) break;
-        const relayed = mapChildToSubagentEvent(event, taskId, relayDepth);
+        // Stamp a live cumulative usage snapshot (tokens / tool-uses / elapsed) onto
+        // the relayed progress so the roster shows running spend + wall-clock as it
+        // happens, not just at the terminal subagent_result (parity: task_progress usage).
+        const relayed = attachSubagentUsage(
+          mapChildToSubagentEvent(event, taskId, relayDepth),
+          { totalTokens, toolUses: toolUseCount, durationMs: Date.now() - startedAt },
+        );
         if (relayed) context._emitChild?.(relayed);
         if (event.type === 'text_delta') {
           resultText += event.text;

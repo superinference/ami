@@ -1,4 +1,4 @@
-import type { EngineEvent } from '../types';
+import type { EngineEvent, TaskUsageSnapshot } from '../types';
 
 /**
  * AMI's synthetic final-output tool. Its calls are internal result-emission, not
@@ -69,13 +69,20 @@ export function mapChildToSubagentEvent(
       // result-emission call, not visible work (parity: Claude's recentActivities skip).
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
       const arg = summarizeToolInput(child.toolName, child.input);
-      return { type: 'subagent_progress', nodeId, depth, activity: 'tool', detail: arg ? `${child.toolName} ${arg}` : child.toolName };
+      // Carry the structured tool name (parity: Claude's progress `last_tool_name`) so the
+      // roster can collapse a read/search burst without re-parsing the free-text detail.
+      return {
+        type: 'subagent_progress', nodeId, depth, activity: 'tool',
+        detail: arg ? `${child.toolName} ${arg}` : child.toolName,
+        lastToolName: child.toolName,
+      };
     }
     case 'tool_use_result':
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
         detail: `${child.toolName} ${child.isError ? '✗' : '✓'}`,
+        lastToolName: child.toolName,
       };
     case 'error':
       // PARITY: surface the sub-agent's error on the live roster the moment it
@@ -89,6 +96,26 @@ export function mapChildToSubagentEvent(
     default:
       return null;
   }
+}
+
+/**
+ * Stamp a live cumulative usage snapshot (tokens / tool-uses / elapsed ms) onto a
+ * relayed `subagent_progress` event so a roster/inspector can show a running
+ * (sub)agent's spend AND wall-clock as it happens — not only in the final
+ * `subagent_result`. Pure: a NEW event is returned (the input is never mutated);
+ * non-progress events (and `null`) pass through untouched so the caller can pipe
+ * `mapChildToSubagentEvent(...)` straight through this. Parity: Claude's
+ * task_progress `usage { total_tokens, tool_uses, duration_ms }` carried live
+ * (utils/task/sdkProgress.ts).
+ */
+export function attachSubagentUsage(
+  event: EngineEvent | null,
+  usage: TaskUsageSnapshot,
+): EngineEvent | null {
+  if (event && event.type === 'subagent_progress') {
+    return { ...event, usage };
+  }
+  return event;
 }
 
 /* ------------------------------------------------------------------------- *

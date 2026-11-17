@@ -16,9 +16,9 @@ describe('mapChildToSubagentEvent', () => {
     assert.equal(r?.type === 'subagent_progress' && r.activity, 'thinking');
   });
 
-  it('maps tool_use_start → subagent_progress(tool) with the tool name', () => {
+  it('maps tool_use_start → subagent_progress(tool) with the tool name + structured lastToolName', () => {
     const r = map({ type: 'tool_use_start', toolName: 'grep', toolCallId: 'c1', input: {} });
-    assert.deepEqual(r, { type: 'subagent_progress', nodeId: 'agent-1', depth: 2, activity: 'tool', detail: 'grep' });
+    assert.deepEqual(r, { type: 'subagent_progress', nodeId: 'agent-1', depth: 2, activity: 'tool', detail: 'grep', lastToolName: 'grep' });
   });
 
   it('maps tool_use_result → subagent_progress(tool) with a status glyph', () => {
