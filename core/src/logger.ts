@@ -649,7 +649,25 @@ function appendErrorRecord(record: Record<string, unknown>): void {
  * Mirrors Claude Code's `extractServerMessage`.
  */
 export function extractServerMessage(data: unknown): string | undefined {
-  if (typeof data === 'string') return data;
+  if (typeof data === 'string') {
+    // Provider SDKs (AI SDK `APICallError.responseBody`) hand back the raw HTTP
+    // body as a JSON STRING, not a parsed object. Parse it opportunistically so
+    // the nested `{ error: { message } }` / `{ message }` is surfaced instead of
+    // the whole JSON blob; a non-JSON body (plain text) falls through unchanged.
+    const trimmed = data.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          const nested = extractServerMessage(parsed);
+          if (nested) return nested;
+        }
+      } catch {
+        // Not JSON — return the raw string body below.
+      }
+    }
+    return data;
+  }
   if (data && typeof data === 'object') {
     const obj = data as Record<string, unknown>;
     if (typeof obj.message === 'string') return obj.message;
@@ -663,11 +681,16 @@ export function extractServerMessage(data: unknown): string | undefined {
 
 /**
  * Build a bracketed `[url=…,status=…,body=…] ` prefix from an HTTP/network error
- * object for inclusion in the persisted error log. Duck-types both axios-style
- * (`error.config.url`, `error.response.status`, `error.response.data`) and
- * fetch-style (`error.url`, `error.status`, `error.body`) shapes so no HTTP
- * client dependency is required. Returns `''` when no request context is found.
- * Mirrors the axios-error enrichment in Claude Code's `errorLogSink`.
+ * object for inclusion in the persisted error log. Duck-types three shapes so no
+ * HTTP client dependency is required:
+ *   - axios-style (`error.config.url`, `error.response.status`, `error.response.data`),
+ *   - fetch-style (`error.url`, `error.status`, `error.body`), and
+ *   - AI SDK `APICallError` (`error.url`, `error.statusCode`, `error.responseBody`) —
+ *     the shape every provider API failure actually arrives in on AMI's streaming
+ *     path, so a logged provider error now names the endpoint and the server's own
+ *     message instead of a bare `HTTP <status>`.
+ * Returns `''` when no request context is found. Mirrors the axios-error
+ * enrichment in Claude Code's `errorLogSink`.
  */
 export function httpErrorContext(error: unknown): string {
   if (!error || typeof error !== 'object') return '';
@@ -678,9 +701,9 @@ export function httpErrorContext(error: unknown): string {
   if (typeof url !== 'string' || url === '') return '';
 
   const parts = [`url=${url}`];
-  const status = (response?.status ?? err.status) as unknown;
+  const status = (response?.status ?? err.status ?? err.statusCode) as unknown;
   if (typeof status === 'number') parts.push(`status=${status}`);
-  const body = extractServerMessage(response?.data ?? err.body ?? err.data);
+  const body = extractServerMessage(response?.data ?? err.body ?? err.data ?? err.responseBody);
   if (body) parts.push(`body=${body}`);
   return `[${parts.join(',')}] `;
 }

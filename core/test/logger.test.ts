@@ -813,6 +813,42 @@ describe('httpErrorContext', () => {
   it('omits status/body when absent', () => {
     assert.equal(httpErrorContext({ url: 'https://api/z' }), '[url=https://api/z] ');
   });
+  it('enriches an AI SDK APICallError (url + statusCode + responseBody JSON string)', () => {
+    // The AI SDK hands back `statusCode` (not `status`) and the raw HTTP body as a
+    // JSON STRING in `responseBody` — the exact shape every provider API failure
+    // arrives in on the streaming path.
+    const err = {
+      url: 'https://api.anthropic.com/v1/messages',
+      statusCode: 529,
+      responseBody: '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    };
+    assert.equal(
+      httpErrorContext(err),
+      '[url=https://api.anthropic.com/v1/messages,status=529,body=Overloaded] ',
+    );
+  });
+  it('falls back to the raw body when responseBody is non-JSON text', () => {
+    const err = { url: 'https://api/p', statusCode: 502, responseBody: 'Bad Gateway' };
+    assert.equal(httpErrorContext(err), '[url=https://api/p,status=502,body=Bad Gateway] ');
+  });
+});
+
+describe('extractServerMessage — JSON-string bodies', () => {
+  it('parses a JSON-string body and surfaces the nested error.message', () => {
+    assert.equal(
+      extractServerMessage('{"error":{"message":"rate limit"}}'),
+      'rate limit',
+    );
+  });
+  it('parses a JSON-string body and surfaces a top-level message', () => {
+    assert.equal(extractServerMessage('{"message":"bad input"}'), 'bad input');
+  });
+  it('returns the raw string when it is not JSON', () => {
+    assert.equal(extractServerMessage('plain text error'), 'plain text error');
+  });
+  it('returns the raw string when the JSON has no recognizable message', () => {
+    assert.equal(extractServerMessage('{"foo":"bar"}'), '{"foo":"bar"}');
+  });
 });
 
 // ---------------------------------------------------------------------------

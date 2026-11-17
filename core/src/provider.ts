@@ -36,7 +36,7 @@ import {
 } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
-import { log, recordDiagnostic } from './logger';
+import { log, logError, recordDiagnostic } from './logger';
 import { partitionAndSortTools } from './tools/tool-utils';
 
 /**
@@ -3233,6 +3233,13 @@ export async function* streamChatCompletion(
             ? `HTTP ${errStatusCode}: ${errObj?.message ?? String(part.error)}`
             : errObj?.message ?? (typeof part.error === 'string' ? part.error : String(part.error));
 
+          // Persist the failure to the error log enriched with the request URL and
+          // the server's own message body (AI SDK APICallError carries `url`/
+          // `responseBody`). API failures surface here as a stream `error` PART (not
+          // a thrown error), so without this the primary provider-error source was
+          // never logged with its url/body context. Mirrors Claude Code's errorLogSink.
+          logError('provider', errMsg, { httpError: part.error });
+
           // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
           const errRetryAfter = extractRetryAfterSeconds(errObj?.responseHeaders);
 
@@ -3300,6 +3307,14 @@ export async function* streamChatCompletion(
 
       // Format error with HTTP status prefix so extractStatusCode() can find it
       const errorMsg = statusCode ? `HTTP ${statusCode}: ${baseMsg}` : baseMsg;
+
+      // Persist the failure to the error log enriched with the request URL and the
+      // server's own message body (AI SDK APICallError carries `url`/`responseBody`),
+      // so a logged provider error is self-explanatory — which endpoint, what the
+      // server actually said — instead of a bare `HTTP <status>`. `logError` extracts
+      // the `[url=…,status=…,body=…]` prefix via `httpErrorContext`; it never writes
+      // the raw error object. Mirrors Claude Code's errorLogSink enrichment.
+      logError('provider', errorMsg, { httpError: err });
 
       // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
       const retryAfter = extractRetryAfterSeconds(responseHeaders);
