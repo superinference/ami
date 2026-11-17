@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult } from '../types';
 import { gitExec, stashToCleanState } from '../worktree-manager';
+import { isPathWithin } from '../utils/path';
 
 /**
  * Every git call in the exit path — reads AND the destructive teardown — runs
@@ -148,6 +149,23 @@ export const exitWorktreeTool: ToolDefinition = {
       return { output: 'No active worktree session (not inside a .ami/worktrees/ path). No filesystem changes made.', isError: false };
     }
 
+    // Concurrency-safe cwd restore (parity: Claude only restores the working dir it
+    // actually changed — restoreSessionToOriginalCwd's `projectRootIsWorktree`
+    // guard, utils/cwd.ts). AMI runs subagents concurrently in ONE process
+    // (task.ts), so an UNCONDITIONAL `process.chdir(originalCwd)` here would yank
+    // the single GLOBAL process cwd out from under every other concurrently-running
+    // agent whenever ANY agent exits a worktree — any path/permission resolution
+    // that falls back to `process.cwd()` would then resolve against the wrong dir.
+    // Only touch the global process cwd when it is actually stranded INSIDE this
+    // worktree (the foreground/owning session that cd'd in); a sibling agent whose
+    // global cwd is elsewhere is left untouched. The per-call `context.cwd` is
+    // restored regardless, so the owning session always returns correctly. Captured
+    // BEFORE any destructive teardown so `process.cwd()` cannot throw ENOENT after
+    // the worktree dir is deleted. [FUNCTIONAL CHANGE: additive concurrency guard.]
+    let processCwdAtStart: string | null;
+    try { processCwdAtStart = process.cwd(); } catch { processCwdAtStart = null; }
+    const globalCwdInWorktree = processCwdAtStart !== null && isPathWithin(processCwdAtStart, worktreePath);
+
     const { setWorktreeSession, getCurrentWorktreeSession, countWorktreeChanges } = require('../worktree-manager');
 
     // Session-identity scope guard: if a session exists and points at a DIFFERENT
@@ -197,7 +215,9 @@ export const exitWorktreeTool: ToolDefinition = {
       if (session) {
         if (session.originalCwd) {
           context.cwd = session.originalCwd;
-          process.chdir(session.originalCwd);
+          // Only restore the GLOBAL process cwd when it was actually inside this
+          // worktree (owning session); never move it for a concurrent agent.
+          if (globalCwdInWorktree) { try { process.chdir(session.originalCwd); } catch { /* best effort */ } }
           returned = `\nReturned to ${session.originalCwd}`;
           // Mirror enter_worktree: fire executeCwdChanged so CWD-dependent caches
           // (system-prompt env sections, session-env cache) are invalidated for the
@@ -437,8 +457,9 @@ export const exitWorktreeTool: ToolDefinition = {
         // subsequent relative-path git/fs operation. The keep branch already
         // chdir'd back; the remove branch previously only reassigned context.cwd.
         // Skip when cleanup failed (the dir may still exist, and we never want to
-        // throw here).
-        if (!cleanupFailed) { try { process.chdir(activeSession.originalCwd); } catch { /* best effort */ } }
+        // throw here) OR when the global cwd was not inside this worktree (a
+        // concurrent sibling agent — moving the shared process cwd would strand it).
+        if (!cleanupFailed && globalCwdInWorktree) { try { process.chdir(activeSession.originalCwd); } catch { /* best effort */ } }
         returned = `\nReturned to ${activeSession.originalCwd}`;
         // Mirror enter_worktree + the keep branch: invalidate CWD-dependent caches
         // for the restored directory on exit (system-prompt env sections,
