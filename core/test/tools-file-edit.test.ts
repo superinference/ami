@@ -242,7 +242,7 @@ describe('fileEditTool – fuzzy matching', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – read-before-write enforcement', () => {
-  it('auto-reads file when filesRead is set but file was not read', async () => {
+  it('errors on a replace edit when filesRead is set but file was not read', async () => {
     const file = path.join(tmpDir, 'unread.ts');
     fs.writeFileSync(file, 'const x = 1;\n');
     const filesRead = new Set<string>();
@@ -251,9 +251,12 @@ describe('fileEditTool – read-before-write enforcement', () => {
       { file_path: file, old_string: 'const x = 1;', new_string: 'const x = 2;' },
       ctx({ filesRead }),
     );
-    assert.ok(!result.isError, 'auto-read must allow edit without prior file_read');
-    assert.ok(result.output.includes('Successfully edited'));
-    assert.ok(filesRead.has(file), 'auto-read must add file to filesRead');
+    // Read-before-edit guard: a string-replace on an unread file must error and
+    // leave the file untouched (parity with Claude Code's FileEditTool).
+    assert.ok(result.isError, 'editing an unread file must error');
+    assert.ok(result.output.includes('must file_read'));
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'const x = 1;\n', 'file must be untouched');
+    assert.ok(!filesRead.has(file), 'a blocked edit must not silently mark the file as read');
   });
 
   it('allows edit when file was previously read', async () => {
@@ -292,15 +295,31 @@ describe('fileEditTool – read-before-write enforcement', () => {
     assert.ok(!result.isError);
   });
 
-  it('auto-reads and modifies file even without prior read', async () => {
+  it('blocks a blind replace and leaves the file unmodified without a prior read', async () => {
     const file = path.join(tmpDir, 'protected.ts');
     fs.writeFileSync(file, 'original\n');
 
-    await fileEditTool.execute(
+    const result = await fileEditTool.execute(
       { file_path: file, old_string: 'original', new_string: 'modified' },
       ctx({ filesRead: new Set() }),
     );
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'modified\n');
+    assert.ok(result.isError);
+    // The guard must prevent the mutation entirely.
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'original\n');
+  });
+
+  it('allows a replace edit on an empty file without a prior read (nothing unseen)', async () => {
+    const file = path.join(tmpDir, 'empty-edit.ts');
+    fs.writeFileSync(file, '');
+
+    // An empty file is exempt from the read-before-edit guard; the replace then
+    // fails on its own merits (old_string not found) rather than on the guard.
+    const result = await fileEditTool.execute(
+      { file_path: file, old_string: 'x', new_string: 'y' },
+      ctx({ filesRead: new Set() }),
+    );
+    assert.ok(result.isError);
+    assert.ok(!result.output.includes('must file_read'), 'empty file must bypass the read guard');
   });
 });
 

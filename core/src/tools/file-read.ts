@@ -1339,6 +1339,12 @@ export const fileReadTool: ToolDefinition = {
       ? fileCache.getCachedRead(resolved, stat.mtimeMs)
       : null;
     if (cached) {
+      // Register the read even on a cache hit: the read-before-edit guard keys off
+      // context.filesRead, which is per-context, so a cloned-on-fork cache entry
+      // (e.g. a sub-agent inheriting the parent's read) must still mark THIS
+      // context as having read the file — otherwise a legitimate read→edit is
+      // wrongly blocked. Matches the range-unchanged short-circuit below.
+      context.filesRead?.add(resolved);
       const lineCount = cached.content.split('\n').length;
       return { output: `${FILE_UNCHANGED_STUB} (${resolved}, ${lineCount} lines)` };
     }
