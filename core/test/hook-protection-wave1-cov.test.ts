@@ -142,7 +142,7 @@ describe('HookChainGuard — accumulation, snapshot, and reason integrity', () =
       assert.equal(entry.tier, 'user');
       assert.ok(PROTECTED_EVENTS.has(entry.event));
       assert.ok(entry.reason.includes(entry.event), 'reason must name the event');
-      assert.ok(entry.reason.includes('User-tier'), 'reason must identify user tier');
+      assert.ok(entry.reason.includes('user-tier'), 'reason must identify user tier');
     }
     assert.equal(guard.getBlockedCount(), PROTECTED_EVENTS.size);
   });

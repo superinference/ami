@@ -17,26 +17,153 @@ const TIER_PRIORITY: Record<HookTier, number> = {
   core: 4,
 };
 
-export const PROTECTED_EVENTS = new Set([
-  'session.compact',
-  'prompt.compose',
-  'prompt.section',
-  'prompt.context',
-  'prompt.attachment',
-  'settings.read',
-]);
+/**
+ * Human-readable metadata for every internal hook event the protection layer
+ * governs. Replaces the former bare `PROTECTED_EVENTS` / `PASSTHROUGH_EVENTS`
+ * string Sets with a single source of truth that ALSO carries a `summary` and
+ * `description` — so the blocked-registration reason and any `/hooks`-style
+ * introspection surface can explain WHAT each event does and WHY some are
+ * protected, instead of just gating on an opaque name.
+ *
+ * Mirrors Claude Code's `getHookEventMetadata` (summary + description per event),
+ * but scoped to AMI's internal prompt-assembly / protection events, which live in
+ * a different namespace from the public lifecycle hook events documented in
+ * `hooks.ts` (`getHookEventMetadata`). The two catalogs are disjoint by design.
+ */
+export interface HookEventInfo {
+  /** One-line label for the event. */
+  summary: string;
+  /** What the event does and, for protected events, why user hooks are barred. */
+  description: string;
+  /**
+   * `protected` events cannot be intercepted by user-tier hooks (they drive core
+   * prompt/compaction/settings behavior); `passthrough` events are safe for any
+   * tier to observe and transform.
+   */
+  category: 'protected' | 'passthrough';
+}
 
-export const PASSTHROUGH_EVENTS = new Set([
-  'prompt.submit',
-  'turn.start',
-  'turn.end',
-  'tool.call',
-  'command.run',
-  'command.register',
-]);
+export const HOOK_EVENT_INFO: Record<string, HookEventInfo> = {
+  'session.compact': {
+    summary: 'Context compaction',
+    description:
+      'Fires when the engine compacts or truncates the conversation to fit the context window. Protected so a user-tier hook cannot rewrite, reorder, or suppress core context-management behavior.',
+    category: 'protected',
+  },
+  'prompt.compose': {
+    summary: 'System-prompt assembly',
+    description:
+      'Fires while the system prompt is assembled. Protected so a user-tier hook cannot inject or strip core prompt sections.',
+    category: 'protected',
+  },
+  'prompt.section': {
+    summary: 'Prompt section emitted',
+    description:
+      'Fires for each section appended to the system prompt. Protected so a user-tier hook cannot tamper with individual core prompt sections.',
+    category: 'protected',
+  },
+  'prompt.context': {
+    summary: 'Prompt context assembled',
+    description:
+      'Fires when conversation/context material is assembled for the model. Protected so a user-tier hook cannot smuggle in or remove core context.',
+    category: 'protected',
+  },
+  'prompt.attachment': {
+    summary: 'Prompt attachment resolved',
+    description:
+      'Fires when an attachment is resolved into the prompt. Protected so a user-tier hook cannot inject or drop attachment content.',
+    category: 'protected',
+  },
+  'settings.read': {
+    summary: 'Settings read',
+    description:
+      'Fires when settings/configuration are read. Protected so a user-tier hook cannot tamper with how trusted configuration is loaded.',
+    category: 'protected',
+  },
+  'prompt.submit': {
+    summary: 'User prompt submitted',
+    description: 'Fires when a user prompt is submitted; safe for any tier to observe or transform.',
+    category: 'passthrough',
+  },
+  'turn.start': {
+    summary: 'Turn started',
+    description: 'Fires at the start of an agent turn; safe for any tier to observe.',
+    category: 'passthrough',
+  },
+  'turn.end': {
+    summary: 'Turn ended',
+    description: 'Fires at the end of an agent turn; safe for any tier to observe.',
+    category: 'passthrough',
+  },
+  'tool.call': {
+    summary: 'Tool call',
+    description: 'Fires around a tool invocation; safe for any tier to observe or gate.',
+    category: 'passthrough',
+  },
+  'command.run': {
+    summary: 'Command run',
+    description: 'Fires when a slash command runs; safe for any tier to observe.',
+    category: 'passthrough',
+  },
+  'command.register': {
+    summary: 'Command registered',
+    description: 'Fires when a slash command is registered; safe for any tier to observe.',
+    category: 'passthrough',
+  },
+};
+
+/** Human-readable metadata for an internal hook event, or `undefined` if unknown. */
+export function getHookEventInfo(event: string): HookEventInfo | undefined {
+  return HOOK_EVENT_INFO[event];
+}
+
+export const PROTECTED_EVENTS = new Set(
+  Object.entries(HOOK_EVENT_INFO)
+    .filter(([, info]) => info.category === 'protected')
+    .map(([event]) => event),
+);
+
+export const PASSTHROUGH_EVENTS = new Set(
+  Object.entries(HOOK_EVENT_INFO)
+    .filter(([, info]) => info.category === 'passthrough')
+    .map(([event]) => event),
+);
 
 export function isProtectedEvent(event: string): boolean {
   return PROTECTED_EVENTS.has(event);
+}
+
+/**
+ * The hook tiers permitted to register a protected event: every tier except the
+ * untrusted `user` tier (see {@link canHookEvent}). Used by
+ * {@link describeProtectedEventBlock} to tell a blocked author which tiers IS
+ * allowed — mirroring Claude Code's "what-is-allowed + what-to-do" phrasing.
+ */
+export function tiersAllowedForProtectedEvent(): HookTier[] {
+  return HOOK_TIERS.filter((t) => t !== 'user');
+}
+
+/**
+ * Build an actionable reason for a refused protected-event hook registration.
+ *
+ * Unlike the former terse `User-tier hook cannot intercept protected event "x"`,
+ * this NAMES the offending hook (when a name/command is available), EXPLAINS why
+ * the event is protected (from {@link HOOK_EVENT_INFO}), and STATES which tiers
+ * may register it and how to proceed — matching Claude Code's richer blocked
+ * messaging (which always tells the user what is allowed and what to do).
+ */
+export function describeProtectedEventBlock(event: string, tier: HookTier, name?: string): string {
+  const subject = name ? `Hook "${name}" (${tier}-tier)` : `A ${tier}-tier hook`;
+  const info = getHookEventInfo(event);
+  const why = info
+    ? `${info.summary}: ${info.description}`
+    : `"${event}" is a protected core event.`;
+  const allowed = tiersAllowedForProtectedEvent();
+  return (
+    `${subject} cannot intercept protected event "${event}". ${why} ` +
+    `Only these tiers may register it: ${allowed.join(', ')}. ` +
+    `To proceed, register the hook from a ${allowed[0]}/builtin source (e.g. a plugin or core settings) instead of a user-tier config.`
+  );
 }
 
 export function canHookEvent(event: string, tier: HookTier): boolean {
@@ -145,6 +272,76 @@ export interface HookVerdictCheck {
   hookTier: HookTier;
   verdict: HookVerdict;
   isStricter: boolean;
+  /**
+   * Human-readable explanation of WHY this verdict fired — Claude Code pairs every
+   * hook decision with `reason` / `permissionDecisionReason` so a deny/ask is not
+   * opaque in the transcript or to the user. Optional: a `passthrough`/abstain
+   * verdict needs no reason.
+   */
+  reason?: string;
+  /**
+   * Flow control (Claude Code `continue`): when `false`, halt the agentic loop
+   * after this hook. `undefined`/`true` = keep going.
+   */
+  continue?: boolean;
+  /** Suppress the hook's stdout from the transcript (Claude Code `suppressOutput`). */
+  suppressOutput?: boolean;
+  /** Reason shown to the user when {@link HookVerdictCheck.continue} is `false` (Claude Code `stopReason`). */
+  stopReason?: string;
+  /** System message to surface after the hook (Claude Code `systemMessage`). */
+  systemMessage?: string;
+}
+
+/** Optional flow-control / messaging fields a hook verdict may carry. */
+export interface HookVerdictFlow {
+  reason?: string;
+  continue?: boolean;
+  suppressOutput?: boolean;
+  stopReason?: string;
+  systemMessage?: string;
+}
+
+/**
+ * Construct a {@link HookVerdictCheck}, computing `isStricter` against the prior
+ * accumulated verdict and attaching any flow-control/messaging fields the hook
+ * supplied. Centralizes the `isStricterVerdict` call so callers never hand-roll
+ * the lattice comparison.
+ */
+export function buildHookVerdictCheck(
+  event: string,
+  hookTier: HookTier,
+  verdict: HookVerdict,
+  previous: HookVerdict = 'passthrough',
+  flow: HookVerdictFlow = {},
+): HookVerdictCheck {
+  return {
+    event,
+    hookTier,
+    verdict,
+    isStricter: isStricterVerdict(verdict, previous),
+    ...(flow.reason !== undefined ? { reason: flow.reason } : {}),
+    ...(flow.continue !== undefined ? { continue: flow.continue } : {}),
+    ...(flow.suppressOutput !== undefined ? { suppressOutput: flow.suppressOutput } : {}),
+    ...(flow.stopReason !== undefined ? { stopReason: flow.stopReason } : {}),
+    ...(flow.systemMessage !== undefined ? { systemMessage: flow.systemMessage } : {}),
+  };
+}
+
+/**
+ * Merge a sequence of hook verdict checks under the strictest-wins lattice,
+ * returning the winning check (carrying its own reason/flow fields) or
+ * `undefined` for an empty list. A later check only wins when it is strictly
+ * stricter than the current winner, so the FIRST strictest verdict — and its
+ * reason — is preserved (a stable merge).
+ */
+export function mergeHookVerdictChecks(
+  checks: readonly HookVerdictCheck[],
+): HookVerdictCheck | undefined {
+  let winner: HookVerdictCheck | undefined;
+  for (const check of checks) {
+    if (!winner || isStricterVerdict(check.verdict, winner.verdict)) winner = check;
+  }
+  return winner;
 }
 
 /**
@@ -174,20 +371,35 @@ export function isStricterVerdict(current: string, previous: string): boolean {
   return currentRank > previousRank;
 }
 
-export class HookChainGuard {
-  private _blocked: Array<{ event: string; tier: HookTier; reason: string }> = [];
+export interface BlockedHookRegistration {
+  event: string;
+  tier: HookTier;
+  /** The blocked hook's name/command, when the caller supplied one. */
+  name?: string;
+  /** Actionable explanation (see {@link describeProtectedEventBlock}). */
+  reason: string;
+}
 
-  checkRegistration(event: string, tier: HookTier): boolean {
+export class HookChainGuard {
+  private _blocked: BlockedHookRegistration[] = [];
+
+  /**
+   * Record and reject a protected-event registration by an insufficiently
+   * trusted tier. `name` (the hook's name/command) is optional but, when given,
+   * is woven into the actionable reason so the audit view names the blocked hook.
+   */
+  checkRegistration(event: string, tier: HookTier, name?: string): boolean {
     if (canHookEvent(event, tier)) return true;
     this._blocked.push({
       event,
       tier,
-      reason: `User-tier hook cannot intercept protected event "${event}"`,
+      ...(name ? { name } : {}),
+      reason: describeProtectedEventBlock(event, tier, name),
     });
     return false;
   }
 
-  getBlocked(): ReadonlyArray<{ event: string; tier: HookTier; reason: string }> {
+  getBlocked(): ReadonlyArray<BlockedHookRegistration> {
     return this._blocked;
   }
 
@@ -198,4 +410,60 @@ export class HookChainGuard {
   clear(): void {
     this._blocked = [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hidden-hook-modification defense (startup config snapshot)
+// ---------------------------------------------------------------------------
+
+/**
+ * The provenance-bearing shape a hook entry must expose to be fingerprinted for
+ * the startup snapshot. A {@link HookDescriptor}-like record satisfies it.
+ */
+export interface HookSignatureInput {
+  event: string;
+  /** Settings tier / provenance that contributed the hook. */
+  source?: string;
+  /** Matcher scoping the hook ('' / absent = all targets). */
+  matcher?: string;
+  /** The hook's command / prompt / URL. */
+  content: string;
+}
+
+/**
+ * Stable fingerprint of a hook entry: event + source + matcher + content. Two
+ * entries collide iff they would run the same command from the same source on
+ * the same matcher, so a snapshot of signatures captures exactly the executable
+ * surface of a hook configuration. `\u0000` is used as a field separator because
+ * it cannot occur in any of the component strings.
+ */
+export function hookEntrySignature(h: HookSignatureInput): string {
+  return [h.event, h.source ?? '', h.matcher ?? '', h.content].join('\u0000');
+}
+
+/**
+ * Capture a startup baseline of hook signatures.
+ *
+ * Mirrors Claude Code's `captureHooksConfigSnapshot` (taken after `setCwd`,
+ * re-captured after a worktree chdir) whose explicit purpose is "to avoid hidden
+ * hook modifications": a settings file edited mid-session — e.g. by a
+ * prompt-injected file edit or a tool call — must not silently introduce new
+ * command-executing hooks; the session is audited against the startup baseline.
+ */
+export function captureHookSnapshot(hooks: readonly HookSignatureInput[]): Set<string> {
+  return new Set(hooks.map(hookEntrySignature));
+}
+
+/**
+ * Return the subset of `current` hook entries whose signature was NOT in the
+ * `baseline` snapshot — i.e. hooks that appeared (or were mutated) since startup.
+ * A non-empty result means the on-disk hook config changed mid-session and is a
+ * hidden-hook-modification signal (surface it via a diagnostic/introspection).
+ * Identity-preserving (returns the original entry objects).
+ */
+export function detectHiddenHookAdditions<T extends HookSignatureInput>(
+  baseline: ReadonlySet<string>,
+  current: readonly T[],
+): T[] {
+  return current.filter((h) => !baseline.has(hookEntrySignature(h)));
 }

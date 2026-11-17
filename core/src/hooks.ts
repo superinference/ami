@@ -11,7 +11,11 @@ import {
   shouldSkipHookDueToTrust,
   canRunHookUnderManagedOnly,
   filterManagedOnlyHooks,
+  describeProtectedEventBlock,
+  captureHookSnapshot,
+  detectHiddenHookAdditions,
   type HookSourceKind,
+  type HookTier,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass, categorizeLoadFailure } from './error-classifier';
@@ -2391,6 +2395,18 @@ export class HookManager extends EventEmitter {
    *  loadFromFile so a reload reflects the current on-disk config. */
   private _descriptors: HookDescriptor[] = [];
 
+  /** Startup fingerprint of the executable hook surface (event+source+matcher+
+   *  content signatures), captured on the first {@link loadFromFile} and
+   *  re-captured on a cwd change. Used to detect hidden hook modifications made
+   *  mid-session. `undefined` until the first load. */
+  private _hookSnapshotBaseline?: Set<string>;
+  /** The cwd the {@link _hookSnapshotBaseline} was captured for; a change
+   *  re-baselines rather than flagging the new workspace's hooks. */
+  private _hookSnapshotCwd?: string;
+  /** Hook entries that appeared or were mutated since the startup snapshot,
+   *  surfaced via {@link getHiddenHookModifications}. */
+  private _hiddenHookModifications: HookDescriptor[] = [];
+
   /** Settings/hooks/config files that failed to parse during the last
    *  {@link loadFromFile}. Reset at the start of each load so it reflects the
    *  current on-disk state. Surfaced via {@link getConfigErrors} + the
@@ -2959,6 +2975,52 @@ export class HookManager extends EventEmitter {
         this.recordConfigError(configPath, err);
       }
     }
+
+    // Hidden-hook-modification defense: fingerprint the executable hook surface
+    // just loaded and compare it against the startup baseline. See
+    // {@link updateHookConfigSnapshot}.
+    this.updateHookConfigSnapshot(cwd);
+  }
+
+  /**
+   * Capture (or re-capture) the startup hook-config snapshot and, on a reload at
+   * the SAME cwd, record any hook entries that appeared or were mutated since the
+   * baseline. Mirrors Claude Code's captureHooksConfigSnapshot /
+   * updateHooksConfigSnapshot, whose purpose is "to avoid hidden hook
+   * modifications": a settings file edited mid-session (e.g. via a
+   * prompt-injected file edit or a tool call) cannot silently slip new
+   * command-executing hooks past the startup audit baseline.
+   *
+   * Detection is non-blocking (the hooks still load) but surfaces via a `coreLog`
+   * diagnostic and {@link getHiddenHookModifications} so an operator/`/hooks`
+   * audit can see exactly which hooks changed after startup. A cwd change (worktree
+   * chdir) re-baselines rather than flagging the new workspace's hooks.
+   */
+  private updateHookConfigSnapshot(cwd: string): void {
+    if (this._hookSnapshotBaseline === undefined || this._hookSnapshotCwd !== cwd) {
+      this._hookSnapshotBaseline = captureHookSnapshot(this._descriptors);
+      this._hookSnapshotCwd = cwd;
+      this._hiddenHookModifications = [];
+      return;
+    }
+    const added = detectHiddenHookAdditions(this._hookSnapshotBaseline, this._descriptors);
+    this._hiddenHookModifications = added.map((d) => ({ ...d }));
+    for (const d of added) {
+      coreLog(
+        'hooks',
+        `Hidden hook modification detected after startup: "${d.event}" hook from ${d.source} ` +
+          `was not present in the startup snapshot (possible mid-session config tampering)`,
+      );
+    }
+  }
+
+  /**
+   * Introspection: hook entries that appeared or were mutated since the startup
+   * config snapshot (empty on a clean session). Returns copies. See
+   * {@link updateHookConfigSnapshot}.
+   */
+  getHiddenHookModifications(): HookDescriptor[] {
+    return this._hiddenHookModifications.map((d) => ({ ...d }));
   }
 
   /**
@@ -3055,9 +3117,11 @@ export class HookManager extends EventEmitter {
         const matcher = entry.matcher;
         const tier = entry._source || 'user';
 
-        // Gap 15: Block user-tier hooks on protected events
-        if (!canHookEvent(entry.event, tier as import('./hook-protection').HookTier)) {
-          coreLog('hooks', `Blocked ${tier}-tier hook on protected event "${entry.event}"`);
+        // Gap 15: Block user-tier hooks on protected events. Log the ACTIONABLE
+        // reason (names the event, explains why it is protected, states which
+        // tiers may register it) rather than a terse one-liner.
+        if (!canHookEvent(entry.event, tier as HookTier)) {
+          coreLog('hooks', describeProtectedEventBlock(entry.event, tier as HookTier, describeHookContent(hookConfig)));
           return;
         }
 
