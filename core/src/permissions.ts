@@ -1930,6 +1930,14 @@ export function commandHasDangerousRemoval(command: string, cwd: string = proces
  */
 const SHELL_WRAPPERS = new Set([
   'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh',
+  // Windows shells + `.exe` variants. Like the Unix shells above, each execs its
+  // `-Command`/`-c` (powershell/pwsh) or `/c`,`/k` (cmd) argument as a command,
+  // so it must be unwrapped during decomposition — otherwise a denied inner
+  // command hides behind `powershell -Command "<denied>"` / `pwsh -c …` /
+  // `cmd /c …` / `bash.exe -c …` and the deny/allow rule never sees it. This is
+  // the decomposition half of the protection BARE_SHELL_PREFIXES already gives
+  // at the prefix-suggestion boundary (Claude's DANGEROUS_SHELL_PREFIXES).
+  'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe',
   'env', 'sudo', 'su', 'doas', 'nohup', 'nice', 'timeout',
   'xargs', 'exec', 'eval',
   // `time <cmd>` measures the inner command's runtime — the SAFETY of the line is
@@ -2085,12 +2093,19 @@ function extractBaseCommands(command: string, depth = 0): string[] {
       const wrapper = cmd;
       commands.push(cmd);
       i++;
-      // Skip flags (e.g., sudo -u root, bash -c)
-      while (i < tokens.length && tokens[i]!.startsWith('-')) {
+      // Skip flags (e.g., sudo -u root, bash -c). Windows shells use `/`-prefixed
+      // single-letter switches (`cmd /c`, `cmd /k`, and inert ones like `/q`), so
+      // treat an exact `/x` (optionally `/x:value`) token as a flag too — without
+      // this the loop would stop at `/c` and mis-read it as the wrapped command.
+      // A real path operand (`/usr/bin`) is >1 char after the slash and is left
+      // untouched (the switch pattern is anchored to a single letter).
+      while (i < tokens.length && (tokens[i]!.startsWith('-') || /^\/[a-zA-Z]$/.test(tokens[i]!))) {
         const flag = tokens[i]!;
         i++;
-        // -c takes the next arg as a command string — parse it
-        if ((flag === '-c') && i < tokens.length) {
+        // Command-payload flags take the rest of the tokens as a command string —
+        // parse it: `-c` (bash/zsh/pwsh), `-Command` (powershell/pwsh), and the
+        // cmd-style `/c` / `/k`.
+        if ((flag === '-c' || /^-command$/i.test(flag) || /^\/[ck]$/i.test(flag)) && i < tokens.length) {
           const innerCmd = tokens.slice(i).join(' ').replace(/^["']|["']$/g, '');
           commands.push(...extractBaseCommands(innerCmd, depth + 1));
           i = tokens.length;
@@ -2705,7 +2720,10 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
     let i = 0;
     while (i < tokens.length && SHELL_WRAPPERS.has(tokens[i]!)) {
       i++;
-      while (i < tokens.length && tokens[i]!.startsWith('-')) i++;
+      // Skip flags — including Windows cmd-style `/c`, `/k`, `/q` switches (an
+      // exact `/x` or `/x:value` token), so `cmd /c <denied>` reduces to the
+      // inner command. A path operand (`/usr/bin`) is >1 char and is preserved.
+      while (i < tokens.length && (tokens[i]!.startsWith('-') || /^\/[a-zA-Z]$/.test(tokens[i]!))) i++;
       while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
       // A numeric operand belongs to the wrapper, not the wrapped command:
       // `timeout 5 CMD` / `timeout 1m CMD` (duration), `nice 10 CMD` /
