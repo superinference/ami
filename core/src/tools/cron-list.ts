@@ -2,12 +2,31 @@ import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler } from '../cron';
 import type { CronJob } from '../cron';
 import { isCronEnabled } from './tool-gates';
+import { getTimeZone } from '../rate-limit-parser';
 
-/** Single-line, ellipsis-marked truncation of a prompt for list display. */
+/** Split a string into grapheme clusters so a cut never splits a multi-code-unit
+ *  character (emoji / surrogate pair / combining mark) in half — which would
+ *  otherwise emit a lone surrogate and corrupt the terminal line. Uses
+ *  Intl.Segmenter for full grapheme-cluster awareness (always present under the
+ *  full-ICU Node runtime AMI ships on). */
+function graphemes(s: string): string[] {
+  const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  return Array.from(seg.segment(s), (g) => g.segment);
+}
+
+/** Single-line, ellipsis-marked, grapheme-safe truncation of a prompt for list
+ *  display. Collapses a multi-line prompt to its first line (appending an ellipsis
+ *  marker so the collapse is visible) and caps the width at `max` grapheme clusters,
+ *  replacing the tail with a single ellipsis. Counting by grapheme — not code unit —
+ *  keeps emoji/CJK/combining-mark prompts from being cut mid-character. */
 function truncatePrompt(prompt: string, max = 100): string {
   const firstLine = prompt.split('\n')[0];
-  const single = firstLine.length < prompt.length ? `${firstLine} …` : firstLine;
-  return single.length > max ? `${single.slice(0, max - 1)}…` : single;
+  const collapsed = firstLine.length < prompt.length;
+  const cells = graphemes(firstLine);
+  if (cells.length > max) {
+    return `${cells.slice(0, max - 1).join('')}…`;
+  }
+  return collapsed ? `${firstLine} …` : firstLine;
 }
 
 /** Optional status filter accepted by cron_list. */
@@ -67,6 +86,18 @@ export const cronListTool: ToolDefinition = {
   description:
     'List scheduled cron jobs (durable and session-only). A teammate sees only its own jobs; the lead sees all. ' +
     'Jobs are ordered by soonest next fire; an optional "status" filter (all|active|inactive) narrows the list.',
+  // PARITY (additive): a rich tool prompt (appended to the model-facing
+  // description, like Claude's buildCronListPrompt) that names the durable
+  // persistence path so the model can tell persisted jobs from session-only ones.
+  prompt:
+    'Jobs come from two stores: the durable store (scheduled_tasks.json under the ' +
+    'project state dir, persisted across restarts) when durable persistence is enabled, ' +
+    'and the in-memory session store (lost on exit). Fire times are shown in the host ' +
+    'local timezone.',
+  // PARITY (additive): bound the serialized result so a very large job list cannot
+  // blow the context window — the engine (tool-executor spill) honors this cap,
+  // mirroring Claude's `maxResultSizeChars: 100_000` on CronListTool.
+  maxResultSizeChars: 100_000,
   inputSchema: {
     type: 'object',
     properties: {
@@ -115,6 +146,10 @@ export const cronListTool: ToolDefinition = {
       return { output: `No ${scope}scheduled jobs.` };
     }
 
+    // Name the actual host timezone (e.g. "America/New_York") rather than a bare
+    // "(local)" tag so a fire time read off a remote/CI host is unambiguous —
+    // parity with Claude labelling its schedule output with the user's timezone.
+    const tz = getTimeZone();
     const lines = sortJobsForDisplay(jobs).map(j => {
       // A UTC-defined job renders its schedule in the host's local time with a TZ
       // label so a server/remote schedule reads as "when it fires here".
@@ -125,9 +160,9 @@ export const cronListTool: ToolDefinition = {
       // Surface the last fire so a user can tell a job that has run from one that
       // never has; omitted entirely for jobs that have not yet fired.
       const lastLine = typeof j.lastRun === 'number'
-        ? `\n    Last: ${new Date(j.lastRun).toLocaleString()} (local)`
+        ? `\n    Last: ${new Date(j.lastRun).toLocaleString()} (${tz})`
         : '';
-      return `  ${j.id}: ${schedule} (${flags})\n    Next: ${next} (local)${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
+      return `  ${j.id}: ${schedule} (${flags})\n    Next: ${next} (${tz})${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
     });
 
     return { output: `${jobs.length} scheduled job(s):\n${lines.join('\n')}` };

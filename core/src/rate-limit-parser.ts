@@ -144,8 +144,9 @@ export function suggestedWaitMs(info: RateLimitInfo, defaultMs: number = 1000): 
   return defaultMs;
 }
 
-/** Local IANA timezone abbreviation/name for reset-time display. */
-function getTimeZone(): string {
+/** Local IANA timezone abbreviation/name for display (canonical helper; shared
+ *  with cron_list so timestamp labelling stays consistent). */
+export function getTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
   } catch {
