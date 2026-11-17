@@ -785,8 +785,14 @@ export interface ProviderConfig {
    * bucketing. Mirrors Claude Code's `getAPIMetadata().user_id` (services/api/claude.ts).
    * Populated from this field or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID
    * env knob ({@link resolveMetadataUserId}); unset ⇒ no metadata is sent.
+   *
+   * `extra` carries arbitrary correlation fields (device/session ids, deployment
+   * tags) merged into the forwarded metadata value, mirroring Claude Code's
+   * `CLAUDE_CODE_EXTRA_METADATA` JSON knob (also populatable via AMI_EXTRA_METADATA /
+   * CLAUDE_CODE_EXTRA_METADATA). When present, the value becomes a JSON object
+   * `{ ...extra, user_id? }` so a gateway can parse every field.
    */
-  metadata?: { userId?: string };
+  metadata?: { userId?: string; extra?: Record<string, unknown> };
   /**
    * Suppress prompt-cache WRITES for this one request. Set on fire-and-forget /
    * one-off auxiliary model calls (compaction summaries, insight extraction) whose

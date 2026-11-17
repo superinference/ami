@@ -1167,6 +1167,60 @@ export function resolveMetadataUserId(
 }
 
 /**
+ * Env vars carrying arbitrary extra request metadata as a JSON object, merged into
+ * the forwarded metadata value for provider/gateway-side correlation. Parity:
+ * Claude Code's `CLAUDE_CODE_EXTRA_METADATA` (getAPIMetadata, services/api/claude.ts).
+ * AMI-native spelling first, the Claude name accepted as a drop-in alias.
+ */
+export const EXTRA_METADATA_ENV_VARS = ['AMI_EXTRA_METADATA', 'CLAUDE_CODE_EXTRA_METADATA'] as const;
+
+/**
+ * Resolve the extra-metadata object: `config.metadata.extra` wins, otherwise the
+ * first env knob that parses to a plain JSON object. A set-but-invalid value (non
+ * JSON, or JSON that is not a plain object) is logged and ignored — never thrown —
+ * so a malformed knob can never fail a request. `undefined` ⇒ no extra metadata.
+ */
+export function resolveExtraMetadata(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> | undefined {
+  const explicit = config.metadata?.extra;
+  if (isPlainRecord(explicit)) return explicit;
+  for (const name of EXTRA_METADATA_ENV_VARS) {
+    const raw = env[name];
+    if (!raw || raw.trim() === '') continue;
+    try {
+      const parsed = JSON.parse(raw);
+      if (isPlainRecord(parsed)) return parsed;
+      log('api', `${name} must be a JSON object; ignoring`, undefined, 'error');
+    } catch {
+      log('api', `${name} is not valid JSON; ignoring`, undefined, 'error');
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Compute the final request-metadata user-id VALUE forwarded to the provider. When
+ * extra metadata is present the value becomes a JSON object string
+ * `{ ...extra, user_id? }` (parity: Claude Code folds extra fields + the id into one
+ * JSON `user_id` blob); with no extra metadata it is the plain user id (unchanged
+ * behavior). `undefined` ⇒ nothing is attached.
+ */
+export function resolveMetadataUserIdValue(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const userId = resolveMetadataUserId(config, env);
+  const extra = resolveExtraMetadata(config, env);
+  if (extra) {
+    return JSON.stringify({ ...extra, ...(userId ? { user_id: userId } : {}) });
+  }
+  return userId;
+}
+
+/**
  * Build the AI SDK `providerOptions` fragment that forwards the metadata user id to
  * the active provider: Anthropic expects `providerOptions.anthropic.metadata.userId`,
  * every OpenAI-compatible provider expects `providerOptions.openai.user`. Returns an
@@ -2553,10 +2607,46 @@ export function alwaysEnableEffort(env: NodeJS.ProcessEnv = process.env): boolea
 /** Map a thinking level onto an OpenAI-compatible `reasoning_effort` value (max→high). */
 const OPENAI_EFFORT_BY_LEVEL: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'high' };
 
+/**
+ * Env knobs that FORCE reasoning off for every request, regardless of the
+ * per-session `--thinking` / `/thinking` config. AMI-native name first, Claude
+ * Code's name as a drop-in alias. Mirrors Claude Code's `CLAUDE_CODE_DISABLE_THINKING`
+ * gate (`hasThinking = … && !isEnvTruthy(CLAUDE_CODE_DISABLE_THINKING)`,
+ * services/api/claude.ts). Routed through the standard not-enabled path so an
+ * always-on-thinking model still receives the minimal config it requires (sending
+ * none would 400) while every other model omits thinking entirely.
+ */
+export const DISABLE_THINKING_ENV_VARS = ['AMI_DISABLE_THINKING', 'CLAUDE_CODE_DISABLE_THINKING'] as const;
+
+/** True when any {@link DISABLE_THINKING_ENV_VARS} knob is set truthy. */
+export function thinkingDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return DISABLE_THINKING_ENV_VARS.some(name => isEnvTruthy(env[name]));
+}
+
+/**
+ * Env knobs that FORCE the legacy fixed-budget thinking shape
+ * (`{ type:'enabled', budget_tokens }`) even on models AMI would otherwise drive
+ * with adaptive thinking. AMI-native name first, Claude Code's name as a drop-in
+ * alias. Mirrors Claude Code's `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` gate
+ * (`!isEnvTruthy(CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING) && modelSupportsAdaptiveThinking(...)`,
+ * services/api/claude.ts) — for gateways/proxies that reject the adaptive shape.
+ */
+export const DISABLE_ADAPTIVE_THINKING_ENV_VARS = ['AMI_DISABLE_ADAPTIVE_THINKING', 'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'] as const;
+
+/** True when any {@link DISABLE_ADAPTIVE_THINKING_ENV_VARS} knob is set truthy. */
+export function adaptiveThinkingDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return DISABLE_ADAPTIVE_THINKING_ENV_VARS.some(name => isEnvTruthy(env[name]));
+}
+
 export function buildThinkingOptions(
   modelId: string,
-  thinking: ThinkingConfig | undefined,
+  thinkingConfig: ThinkingConfig | undefined,
 ): Record<string, unknown> {
+  // CLAUDE_CODE_DISABLE_THINKING / AMI_DISABLE_THINKING: force reasoning off for
+  // this request regardless of the per-session config, by dropping the thinking
+  // config so the standard not-enabled path below runs (which still emits the
+  // minimal config an always-on model requires).
+  const thinking = thinkingDisabledByEnv() ? undefined : thinkingConfig;
   if (!thinking?.enabled) {
     // An always-on-thinking model (the 5.x Claude line) REJECTS a disabled-thinking
     // request and reasons regardless — so even when the user turned thinking off we
@@ -2576,7 +2666,7 @@ export function buildThinkingOptions(
   // on the 5.x family), which made thinking requests fail outright — ui#17. Adaptive
   // thinking lets the model decide depth; `effort` (mapped from the thinking level) is
   // the supported depth control that replaces the fixed token budget.
-  if (caps?.supportsAdaptiveThinking) {
+  if (caps?.supportsAdaptiveThinking && !adaptiveThinkingDisabledByEnv()) {
     // The top 'max' effort tier is Opus-4.6+-class only; the API rejects
     // effort:'max' on every other adaptive model (e.g. sonnet-4-6). Downgrade
     // max→high per model before mapping so the request never 400s — mirrors
@@ -2918,13 +3008,14 @@ export async function* streamChatCompletion(
       : {};
 
     // Request metadata user id (Anthropic metadata.user_id / OpenAI user) from
-    // config or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID env knob.
+    // config or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID env knob,
+    // folded together with any AMI_EXTRA_METADATA / CLAUDE_CODE_EXTRA_METADATA JSON.
     // Combine the prompt-cache, metadata, and thinking fragments into ONE
     // providerOptions object so later spreads cannot clobber an earlier one (all
     // three can target providerOptions.{anthropic|openai}).
     const providerOptionsOpt = mergeProviderOptionFragments(
       openAICacheOpts,
-      buildMetadataProviderOptions(resolveMetadataUserId(config), isAnthropic),
+      buildMetadataProviderOptions(resolveMetadataUserIdValue(config), isAnthropic),
       buildThinkingOptions(modelId, options?.thinking),
     );
 
@@ -3348,6 +3439,15 @@ export function isStaleConnectionError(err: unknown): boolean {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 
 /**
+ * Inter-stream-event gap (ms) above which a stream is counted as having STALLED —
+ * slow but still alive — distinct from the hard idle-abort. Mirrors Claude Code's
+ * `STALL_THRESHOLD_MS` (30s, services/api/claude.ts streaming-stall telemetry).
+ * A gap past this is logged as a diagnostic breadcrumb and summarized at stream
+ * end; it never aborts the stream (only the idle watchdog does that).
+ */
+export const STREAM_STALL_THRESHOLD_MS = 30_000;
+
+/**
  * Resolve the per-request timeout (ms) from the environment. Prefers AMI's own
  * SUPERINFERENCE_API_TIMEOUT_MS and falls back to Claude Code's API_TIMEOUT_MS
  * name for parity. Returns a non-positive value (0 / NaN-coerced) when neither
@@ -3394,7 +3494,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the underlying single-attempt stream. Defaults to the real
   // streamChatCompletion so production behavior is unchanged; tests inject a
@@ -3460,15 +3560,44 @@ export async function* streamChatCompletionWithRetry(
     // bytes) far sooner than the total request timeout. Reset on every chunk.
     const idleMs = options?.idleTimeoutMs;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    // Soft-stall telemetry: distinguish a slow-but-alive stream from a dead one.
+    // (1) A half-idle WARNING fires at idleMs/2 — a progress breadcrumb that the
+    // stream has gone quiet — BEFORE the hard idle-abort kills it. (2) Inter-chunk
+    // gaps past STREAM_STALL_THRESHOLD_MS are counted/summed and logged, so a stream
+    // that is slow yet still delivering chunks is diagnosable, separate from the
+    // abort. Neither aborts the stream (parity: Claude Code's streaming idle warning
+    // + tengu_streaming_stall / tengu_streaming_stall_summary telemetry).
+    let idleWarnTimer: ReturnType<typeof setTimeout> | undefined;
+    // Clock seam: defaults to Date.now so production timing is unchanged; tests
+    // inject a controllable clock to exercise the stall counter deterministically.
+    const now = options?.nowFn ?? Date.now;
+    let lastChunkAt = now();
+    let stallCount = 0;
+    let totalStallMs = 0;
     const resetIdle = () => {
       if (!idleMs) return;
       if (idleTimer) clearTimeout(idleTimer);
+      if (idleWarnTimer) clearTimeout(idleWarnTimer);
+      idleWarnTimer = setTimeout(() => {
+        log('api', `Streaming idle warning: no chunks received for ${Math.round(idleMs / 2 / 1000)}s`, undefined, 'warn');
+      }, idleMs / 2);
       idleTimer = setTimeout(() => requestAbort.abort(), idleMs);
+    };
+    const trackStall = () => {
+      const at = now();
+      const gap = at - lastChunkAt;
+      lastChunkAt = at;
+      if (gap >= STREAM_STALL_THRESHOLD_MS) {
+        stallCount += 1;
+        totalStallMs += gap;
+        log('api', `Streaming stall: ${Math.round(gap / 1000)}s gap between stream events (stall #${stallCount})`, undefined, 'warn');
+      }
     };
 
     try {
     resetIdle();
     for await (const chunk of streamImpl(config, messages, tools, requestAbort.signal, options)) {
+      trackStall();
       resetIdle();
       if (chunk.type === 'error' && !contentStarted) {
         const statusCode = extractStatusCode(chunk.error ?? '');
@@ -3642,6 +3771,13 @@ export async function* streamChatCompletionWithRetry(
     } finally {
       clearTimeout(timeoutId);
       if (idleTimer) clearTimeout(idleTimer);
+      if (idleWarnTimer) clearTimeout(idleWarnTimer);
+      // Completion summary when the stream stalled at least once while still alive
+      // (parity: Claude Code's tengu_streaming_stall_summary) — explains why a turn
+      // felt slow without conflating it with the hard idle-abort.
+      if (stallCount > 0) {
+        log('api', `Streaming stall summary: ${stallCount} stall(s), ${Math.round(totalStallMs / 1000)}s total stalled`, undefined, 'warn');
+      }
       abortSignal.removeEventListener('abort', onCallerAbort);
     }
 
