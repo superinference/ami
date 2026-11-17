@@ -1953,6 +1953,44 @@ export function scopedToolAllowRules(
 }
 
 // ---------------------------------------------------------------------------
+// Bash-granting tool-allowlist detection — recognize when a skill/command's tool
+// allowlist pre-grants the bash tool (parity with Claude Code's TrustDialog
+// `hasSkillsBash` / `hasSlashCommandBash`, which treat a project-shipped skill or
+// slash command whose `allowedTools` include Bash as a workspace-trust signal: such
+// a capability can auto-execute shell the moment the folder is trusted). The single
+// canonical bash-grant matcher the safe-mode settings scanner AND the per-file
+// workspace trust audit both delegate to, so "does this allow a shell" is decided
+// in exactly one place (replacing two diverged ad-hoc matchers).
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a single tool-allowlist / permission `allow` entry GRANTS the bash tool
+ * (parity with Claude Code's bash-permission detectors). Matches the bare tool name
+ * (`bash` / `Bash`), a scoped rule (`Bash(git:*)` / `bash(npm:*)`), and the
+ * space-prefixed `bash <...>` form — all case-insensitively. A non-string entry, a
+ * category token (`read-only`, `edit`, …), or any non-bash tool yields `false`.
+ * Canonical: the safe-mode settings scanner and the workspace trust audit both
+ * delegate here so the bash-grant definition never diverges between them.
+ */
+export function isBashToolAllowRule(rule: unknown): boolean {
+  if (typeof rule !== 'string') return false;
+  return /^bash(\s|\(|$)/i.test(rule.trim());
+}
+
+/**
+ * True when a skill/command's `allowedTools` list pre-grants the bash tool — i.e.
+ * ANY entry satisfies {@link isBashToolAllowRule} (parity with Claude Code's
+ * `hasSkillsBash` / `hasSlashCommandBash` trust signals, which flag a project-shipped
+ * capability whose allowlist includes Bash). An absent/empty allowlist declares no
+ * explicit skill-scoped bash grant and yields `false` (bash availability is then
+ * governed by the normal tool set, not a capability-authored allowlist).
+ */
+export function allowlistGrantsBash(allowedTools: readonly string[] | undefined): boolean {
+  if (!allowedTools || allowedTools.length === 0) return false;
+  return allowedTools.some(isBashToolAllowRule);
+}
+
+// ---------------------------------------------------------------------------
 // MCP-derived tool allowlists — compute a skill/command's allowed MCP tool names
 // from a connected server's ADVERTISED tool set instead of hand-listing them
 // (parity with Claude Code's bundled claude-in-chrome skill, whose allowlist is

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SAFE_ENV_VARS } from './permissions';
+import { isBashToolAllowRule } from './skills';
 
 export interface SafeModeConfig {
   enabled: boolean;
@@ -29,11 +30,12 @@ function stringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
-/** Does a permission `allow` rule pre-grant the bash tool? Matches both the
- *  Claude-Code `Bash` / `Bash(…)` form and AMI's lowercase `bash` tool name. */
+/** Does a permission `allow` rule pre-grant the bash tool? Delegates to the single
+ *  canonical {@link isBashToolAllowRule} matcher (Claude-Code `Bash`/`Bash(…)` +
+ *  AMI's lowercase `bash`) so the safe-mode scanner and the workspace trust audit
+ *  never diverge on what counts as a shell grant. */
 function isBashAllowRule(rule: string): boolean {
-  const r = rule.trim().toLowerCase();
-  return r === 'bash' || r.startsWith('bash(') || r.startsWith('bash ');
+  return isBashToolAllowRule(rule);
 }
 
 /**
