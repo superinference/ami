@@ -2,7 +2,6 @@ import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler, localTimeZoneLabel } from '../cron';
 import type { CronJob } from '../cron';
 import { isCronEnabled } from './tool-gates';
-import { getTimeZone } from '../rate-limit-parser';
 
 /** Split a string into grapheme clusters so a cut never splits a multi-code-unit
  *  character (emoji / surrogate pair / combining mark) in half — which would
@@ -149,10 +148,6 @@ export const cronListTool: ToolDefinition = {
       return { output: `No ${scope}scheduled jobs.` };
     }
 
-    // Name the actual host timezone (e.g. "America/New_York") rather than a bare
-    // "(local)" tag so a fire time read off a remote/CI host is unambiguous —
-    // parity with Claude labelling its schedule output with the user's timezone.
-    const tz = getTimeZone();
     const lines = sortJobsForDisplay(jobs).map(j => {
       // A UTC-defined job renders its schedule in the host's local time with a TZ
       // label so a server/remote schedule reads as "when it fires here".
