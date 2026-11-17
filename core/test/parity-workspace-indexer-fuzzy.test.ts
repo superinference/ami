@@ -199,12 +199,12 @@ describe('getGitTrackedFiles — bounded git subprocess', () => {
     let capturedTimeout: number | undefined;
     const execMock = mock.method(
       indexerHooks,
-      'execFileAsync',
+      'execFileNoThrow',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (_cmd: string, _args: string[], opts: any) => {
         capturedTimeout = opts?.timeout;
-        return { stdout: 'a.ts\0', stderr: '' };
-      }) as unknown as typeof indexerHooks.execFileAsync,
+        return { stdout: 'a.ts\0', stderr: '', code: 0 };
+      }) as unknown as typeof indexerHooks.execFileNoThrow,
     );
     try {
       const idx = new WorkspaceIndexer(dir);
@@ -220,12 +220,12 @@ describe('getGitTrackedFiles — bounded git subprocess', () => {
   it('falls back to the glob scan when the git subprocess fails', async () => {
     const dir = makeProjectDir();
     write(dir, 'b.ts', 'export function fromGlob() {}\n');
+    // The never-throw wrapper resolves a failure as a non-zero `code` (it does
+    // not throw); getGitTrackedFiles treats that as "no git listing".
     const execMock = mock.method(
       indexerHooks,
-      'execFileAsync',
-      (async () => {
-        throw new Error('simulated git timeout');
-      }) as unknown as typeof indexerHooks.execFileAsync,
+      'execFileNoThrow',
+      (async () => ({ stdout: '', stderr: 'simulated git timeout', code: 1, error: 'simulated git timeout' })) as unknown as typeof indexerHooks.execFileNoThrow,
     );
     try {
       const idx = new WorkspaceIndexer(dir);

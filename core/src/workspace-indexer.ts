@@ -3,9 +3,8 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { glob } from 'tinyglobby';
+import { execFileNoThrow } from './utils/shell';
 import { isGeneratedFile } from './generated-files';
 import {
   SCORE_MATCH,
@@ -18,26 +17,26 @@ import {
 } from './fuzzy-score';
 import { FileIndex, type SearchResult } from './file-index';
 
-const execFileAsync = promisify(execFile);
-
 /**
  * File-system hooks for the indexer. Defaults to the real implementations;
  * the `glob` entry is overridable in tests purely as a dependency-injection
  * seam so the glob-failure fallback can be exercised without a pathological
- * filesystem. The `execFileAsync` seam exists so the git-subprocess timeout /
- * failure fallback in getGitTrackedFiles can be exercised deterministically.
- * The `yieldToEventLoop` seam exists so the cooperative-yield path in the
- * chunked async build can be observed deterministically in tests.
- * Production behavior is identical to calling `tinyglobby.glob` /
- * `child_process.execFile` / `setImmediate`.
+ * filesystem. The `execFileNoThrow` seam routes the `git ls-files` discovery
+ * through the shared never-throw file+args wrapper ({@link execFileNoThrow}) so
+ * the git-subprocess timeout / failure fallback in getGitTrackedFiles can be
+ * exercised deterministically AND a missing/failed `git` never throws. The
+ * `yieldToEventLoop` seam exists so the cooperative-yield path in the chunked
+ * async build can be observed deterministically in tests. Production behavior is
+ * identical to calling the shared `execFileNoThrow` / `tinyglobby.glob` /
+ * `setImmediate`.
  */
 export const indexerHooks: {
   glob: typeof glob;
-  execFileAsync: typeof execFileAsync;
+  execFileNoThrow: typeof execFileNoThrow;
   yieldToEventLoop: () => Promise<void>;
 } = {
   glob,
-  execFileAsync,
+  execFileNoThrow,
   yieldToEventLoop: () => new Promise<void>(resolve => { setImmediate(resolve); }),
 };
 
@@ -334,16 +333,16 @@ function fileListSignature(paths: string[]): string {
 }
 
 async function getGitTrackedFiles(cwd: string): Promise<string[] | null> {
-  try {
-    const { stdout } = await indexerHooks.execFileAsync('git', ['ls-files', '-z'], {
-      cwd,
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: GIT_LS_FILES_TIMEOUT_MS,
-    });
-    return stdout.split('\0').filter(Boolean);
-  } catch {
-    return null;
-  }
+  // Routed through the shared never-throw wrapper: a non-git tree, a missing
+  // `git`, or a timeout resolves with a non-zero `code` (never throws), which we
+  // treat as "no git listing" and fall back to the glob walk.
+  const { stdout, code } = await indexerHooks.execFileNoThrow('git', ['ls-files', '-z'], {
+    cwd,
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: GIT_LS_FILES_TIMEOUT_MS,
+  });
+  if (code !== 0) return null;
+  return stdout.split('\0').filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------

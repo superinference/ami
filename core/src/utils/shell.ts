@@ -17,6 +17,7 @@ export const shellHooks = {
   platform: ((): NodeJS.Platform => os.platform()) as () => NodeJS.Platform,
   spawn: child_process.spawn as typeof child_process.spawn,
   execSync: child_process.execSync as typeof child_process.execSync,
+  execFile: child_process.execFile as typeof child_process.execFile,
   execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
   accessSync: fs.accessSync as typeof fs.accessSync,
   existsSync: fs.existsSync as typeof fs.existsSync,
@@ -137,6 +138,187 @@ export const execFileSyncWatched = ((file: string, args?: readonly string[], opt
     reportSlowExecIfSlow(label, startedAt);
   }
 }) as typeof child_process.execFileSync;
+
+// ---------------------------------------------------------------------------
+// Shared never-throw file+args exec wrapper (execFileNoThrow)
+//
+// Parity with Claude Code's `execFileNoThrow` / `execFileNoThrowWithCwd`
+// (execFileNoThrow.ts): ONE canonical wrapper over `child_process.execFile`
+// (argv form, NO shell by default → injection-safe) that:
+//   - ALWAYS resolves, never throws — a non-zero exit, a spawn ENOENT, a
+//     timeout, or an abort all come back as a structured result;
+//   - gives cross-platform `.bat`/`.cmd` handling + argument escaping when run
+//     through a shell (the exact value the reference centralizes via execa):
+//     on Windows a `.bat`/`.cmd` target is auto-run through a shell because Node
+//     refuses to spawn it directly (CVE-2024-27980 hardening);
+//   - exposes a per-call `shell?: boolean | string` toggle so a caller can opt
+//     into/out of shell execution (or name a specific shell) for one call
+//     (reference `ExecFileWithCwdOptions.shell`);
+//   - honors `preserveOutputOnError` (drop output on a genuine non-zero exit for
+//     noisy probe commands) exactly like the reference.
+// It shares the SAME slow-command diagnostic boundary ({@link reportSlowExecIfSlow})
+// as {@link execCommand} / {@link execSyncWatched}, so there is ONE slow-exec sink.
+// AMI implements it on Node's own `child_process` (no execa dependency) to keep
+// core/ dependency-free; the contract (shape + never-throw + Windows shell
+// handling) matches the reference.
+// ---------------------------------------------------------------------------
+
+/** Default per-call timeout for {@link execFileNoThrow} (parity: reference 10 min). */
+export const DEFAULT_EXEC_FILE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Default captured-output ceiling (bytes) for {@link execFileNoThrow}. */
+export const DEFAULT_EXEC_FILE_MAX_BUFFER = 10 * 1024 * 1024;
+
+/** Options for {@link execFileNoThrow}. Mirrors the reference `ExecFileWithCwdOptions`. */
+export interface ExecFileNoThrowOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Per-call timeout (ms); defaults to {@link DEFAULT_EXEC_FILE_TIMEOUT_MS}. */
+  timeout?: number;
+  /** Abort signal; an aborted turn kills the in-flight process (result `code: 1`). */
+  abortSignal?: AbortSignal;
+  /** Captured stdout/stderr ceiling (bytes); defaults to {@link DEFAULT_EXEC_FILE_MAX_BUFFER}. */
+  maxBuffer?: number;
+  /**
+   * When `false`, a non-zero exit resolves with empty `stdout`/`stderr` (only the
+   * `code` is kept) — for noisy probe commands. Defaults to `true`. Parity with
+   * the reference `preserveOutputOnError`.
+   */
+  preserveOutputOnError?: boolean;
+  /**
+   * Run through a shell (`true`), a specific shell (string path), or not at all
+   * (`false`/omitted → direct argv execFile). Parity with the reference
+   * `shell?: boolean | string`. On Windows a `.bat`/`.cmd` target is run through a
+   * shell automatically even when this is omitted (Node cannot spawn it directly).
+   */
+  shell?: boolean | string;
+  /** Payload fed to the child's stdin, then closed. */
+  input?: string;
+}
+
+/** Structured result of {@link execFileNoThrow}. Mirrors the reference shape. */
+export interface ExecFileNoThrowResult {
+  stdout: string;
+  stderr: string;
+  /** Exit code: `0` on success, the process exit code on a non-zero exit, else `1`. */
+  code: number;
+  /** Human-readable failure reason (message / signal / code). Absent on success. */
+  error?: string;
+}
+
+/** True when `file` names a Windows batch script Node cannot `execFile` directly. */
+function isWindowsBatchFile(file: string): boolean {
+  return /\.(bat|cmd)$/i.test(file);
+}
+
+/**
+ * Quote one argument for a Windows `cmd.exe` command line: wrap in double quotes
+ * (doubling backslashes before a quote and escaping embedded quotes) only when it
+ * contains whitespace or a cmd metacharacter, so a plain token stays untouched.
+ * Used when {@link execFileNoThrow} assembles a shell command string on Windows —
+ * the automatic argument escaping the reference gets from execa.
+ */
+export function quoteWindowsShellArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\s"&|<>^()%!]/.test(arg)) return arg;
+  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  return `"${escaped}"`;
+}
+
+/**
+ * Never-throw file+args exec. Runs `file` with `args` via {@link shellHooks.execFile}
+ * (no shell by default — argv form, injection-safe) and ALWAYS resolves with an
+ * {@link ExecFileNoThrowResult}: a non-zero exit, spawn error (ENOENT/EACCES), a
+ * timeout, or an abort are mapped to the result instead of throwing. When a shell
+ * is used (explicit `shell`, or an auto-detected Windows `.bat`/`.cmd`), the file
+ * and args are assembled into a single escaped command string so arguments can't
+ * be reinterpreted as shell metacharacters. Parity with Claude Code's
+ * `execFileNoThrowWithCwd` (execFileNoThrow.ts), implemented on Node's own
+ * `child_process` so core/ stays dependency-free.
+ */
+export function execFileNoThrow(
+  file: string,
+  args: string[],
+  options: ExecFileNoThrowOptions = {},
+): Promise<ExecFileNoThrowResult> {
+  const {
+    cwd,
+    env,
+    timeout = DEFAULT_EXEC_FILE_TIMEOUT_MS,
+    abortSignal,
+    maxBuffer = DEFAULT_EXEC_FILE_MAX_BUFFER,
+    preserveOutputOnError = true,
+    shell,
+    input,
+  } = options;
+  const startedAt = Date.now();
+  const label = args.length ? `${file} ${args.join(' ')}` : file;
+
+  return new Promise<ExecFileNoThrowResult>((resolve) => {
+    const settle = (res: ExecFileNoThrowResult): void => {
+      reportSlowExecIfSlow(label, startedAt);
+      resolve(res);
+    };
+    if (abortSignal?.aborted) {
+      settle({ stdout: '', stderr: '', code: 1, error: 'Aborted' });
+      return;
+    }
+    const isWindows = shellHooks.platform() === 'win32';
+    // On Windows, Node refuses to spawn a .bat/.cmd via execFile without a shell
+    // (CVE-2024-27980). Auto-enable the shell for those — mirroring execa's
+    // BAT/CMD handling — unless the caller set `shell` explicitly.
+    const effectiveShell = shell ?? (isWindows && isWindowsBatchFile(file) ? true : undefined);
+
+    // Through a shell: assemble a single escaped command string so args are not
+    // reinterpreted as metacharacters (the automatic escaping the reference gets
+    // from execa). Direct (no-shell) execFile passes the argv array verbatim.
+    let execTarget = file;
+    let execArgs: string[] = args;
+    if (effectiveShell !== undefined && effectiveShell !== false) {
+      const quote = isWindows ? quoteWindowsShellArg : shQuote;
+      execTarget = [file, ...args].map(quote).join(' ');
+      execArgs = [];
+    }
+
+    const child = shellHooks.execFile(
+      execTarget,
+      execArgs,
+      {
+        cwd,
+        timeout,
+        maxBuffer,
+        encoding: 'utf8',
+        windowsHide: true,
+        ...(env ? { env } : {}),
+        ...(effectiveShell !== undefined ? { shell: effectiveShell } : {}),
+        ...(abortSignal ? { signal: abortSignal } : {}),
+      },
+      (err: child_process.ExecFileException | null, stdout: string | Buffer, stderr: string | Buffer) => {
+        const out = typeof stdout === 'string' ? stdout : stdout.toString();
+        const errOut = typeof stderr === 'string' ? stderr : stderr.toString();
+        if (!err) {
+          settle({ stdout: out, stderr: errOut, code: 0 });
+          return;
+        }
+        // Never-throw: map the error. Node sets a numeric `code` for a non-zero
+        // exit and a string errno (e.g. 'ENOENT') / signal for a launch/kill.
+        const e = err as NodeJS.ErrnoException & { signal?: NodeJS.Signals };
+        const code = typeof e.code === 'number' ? e.code : 1;
+        if (preserveOutputOnError) {
+          const error = e.message || (e.signal ? String(e.signal) : String(code));
+          settle({ stdout: out, stderr: errOut, code, error });
+        } else {
+          settle({ stdout: '', stderr: '', code });
+        }
+      },
+    );
+    if (input != null && child.stdin) {
+      // A child that exits before reading triggers EPIPE on end; swallow it.
+      child.stdin.on('error', () => { /* EPIPE: child closed stdin early */ });
+      child.stdin.end(input);
+    }
+  });
+}
 
 /**
  * Base directory for AMI's internal temp files, honoring an operator override.
@@ -455,10 +637,17 @@ const shellResolutionCache = new Map<string, string | null>();
 
 function resolveShell(override: string, envShell: string): string | null {
   // 1. Explicit override (AMI_SHELL / CLAUDE_CODE_SHELL) wins when it names a
-  //    supported shell type and is actually executable.
+  //    supported shell type and is actually executable. Emit introspective
+  //    feedback on both outcomes (parity with Claude Code's Shell.ts override
+  //    logging) through the opt-in {@link shellHooks.onShellDebug} surface so a
+  //    user can see which shell ran — or that their override was rejected and why.
   if (override) {
     const supported = override.includes('bash') || override.includes('zsh');
-    if (supported && isExecutable(override)) return override;
+    if (supported && isExecutable(override)) {
+      shellHooks.onShellDebug(`Using shell override: ${override}`);
+      return override;
+    }
+    shellHooks.onShellDebug(`Shell override "${override}" is not a valid bash/zsh path, falling back to detection`);
   }
   // 2. Prefer the user's login shell type; probe standard install locations.
   //    Classify via the canonical {@link getShellType} so the bash-vs-zsh
