@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand, resolveTmpBase } from '../utils/shell';
 import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
+import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
@@ -211,7 +212,9 @@ export function resolveCommitAttribution(cwd: string): string | null {
     const trimmed = custom.trim();
     return trimmed.length === 0 ? null : trimmed;
   }
-  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') return null;
+  // FUNCTIONAL CHANGE (additive): tolerant parse so `=true`/`yes`/`on` (not only
+  // the strict `'1'`) suppress the co-author trailer, matching the shared convention.
+  if (parseEnvBool(process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR)) return null;
   // Opt-in repo-class gate (parity: Claude Code's undercover auto-default). When
   // `attribution.auto` is enabled, keep the trailer ONLY when the origin remote
   // is positively classified as owned; external / unknown / no-remote all

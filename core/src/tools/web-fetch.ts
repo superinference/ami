@@ -8,6 +8,7 @@ import { validateUrlSafety, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, Egre
 import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
+import { parseEnvBool } from '../utils/env';
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
@@ -400,7 +401,9 @@ export const webFetchTool: ToolDefinition = {
     const doHttpGet = (context._webFetchHttpGet as typeof httpGet | undefined) ?? httpGetWithRetry;
 
     // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
-    if (process.env.CLAUDE_CODE_DISABLE_WEB_FETCH === '1' || process.env.SUPERINFERENCE_DISABLE_WEB_FETCH === '1') {
+    // FUNCTIONAL CHANGE (additive): read through the shared tolerant parseEnvBool
+    // so `=true`/`yes`/`on`/`ON` (not just the strict `'1'`) honour the kill-switch.
+    if (parseEnvBool(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH) || parseEnvBool(process.env.SUPERINFERENCE_DISABLE_WEB_FETCH)) {
       return { output: 'Error: web_fetch is disabled (CLAUDE_CODE_DISABLE_WEB_FETCH / SUPERINFERENCE_DISABLE_WEB_FETCH).', isError: true };
     }
 

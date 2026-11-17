@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { projectStateDir } from './reference-journal';
 import * as path from 'path';
 import { log as coreLog } from './logger';
+import { parseEnvBool } from './utils/env';
 
 export interface CronJob {
   id: string;
@@ -275,13 +276,16 @@ export class CronScheduler {
     this.loadDurable();
   }
 
-  /** True when the cron subsystem is disabled by operator kill-switch env var. */
+  /** True when the cron subsystem is disabled by operator kill-switch env var.
+   *  FUNCTIONAL CHANGE (additive): the toggle is now read through the shared
+   *  tolerant {@link parseEnvBool} instead of exact `=== '1'`/`=== 'true'`
+   *  string compares, so the full case/whitespace-insensitive truthy vocabulary
+   *  (`yes`/`on`/`y`/`t`/`enable`/`ON`/` 1 ` …) is honoured — matching every
+   *  other boolean env toggle instead of silently ignoring a reasonable value. */
   static isDisabled(): boolean {
     return (
-      process.env.AMI_DISABLE_CRON === '1' ||
-      process.env.AMI_DISABLE_CRON === 'true' ||
-      process.env.CLAUDE_CODE_DISABLE_CRON === '1' ||
-      process.env.CLAUDE_CODE_DISABLE_CRON === 'true'
+      parseEnvBool(process.env.AMI_DISABLE_CRON) ||
+      parseEnvBool(process.env.CLAUDE_CODE_DISABLE_CRON)
     );
   }
 
@@ -293,10 +297,8 @@ export class CronScheduler {
    *  gate and reuses the same truthy-env convention as isDisabled(). */
   static isDurableEnabled(): boolean {
     return !(
-      process.env.AMI_DISABLE_DURABLE_CRON === '1' ||
-      process.env.AMI_DISABLE_DURABLE_CRON === 'true' ||
-      process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON === '1' ||
-      process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON === 'true'
+      parseEnvBool(process.env.AMI_DISABLE_DURABLE_CRON) ||
+      parseEnvBool(process.env.CLAUDE_CODE_DISABLE_DURABLE_CRON)
     );
   }
 
@@ -316,11 +318,7 @@ export class CronScheduler {
    *  each tick so it can be flipped without a restart). Introspection surface so a
    *  diagnostic can report whether the idle gate is currently bypassed. */
   isAssistantMode(): boolean {
-    return (
-      this.assistantMode ||
-      process.env.AMI_CRON_ASSISTANT_MODE === '1' ||
-      process.env.AMI_CRON_ASSISTANT_MODE === 'true'
-    );
+    return this.assistantMode || parseEnvBool(process.env.AMI_CRON_ASSISTANT_MODE);
   }
 
   /** The jitter config in effect for the most recent tick (baseline merged with any
