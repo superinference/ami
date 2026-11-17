@@ -207,6 +207,7 @@ export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
 export { collectAncestorPids, readParentPidMap, ANCESTOR_WALK_TIMEOUT_MS } from './utils/shell';
+export { getProcessCommand, collectChildPids, collectAncestorCommands, PROCESS_COMMAND_TIMEOUT_MS } from './utils/process-utils';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
 export {
   atomicWriteFileSync,
