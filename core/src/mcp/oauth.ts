@@ -32,6 +32,29 @@ export type FetchLike = (url: string, init?: {
 export const OAUTH_HTTP_TIMEOUT_MS = 30_000;
 
 /**
+ * Default overall timeout (ms) for the INTERACTIVE consent leg of the authorization
+ * flow. The per-request timeout ({@link OAUTH_HTTP_TIMEOUT_MS}) bounds each HTTP
+ * call, but the browser-consent leg is an out-of-band human step with no HTTP
+ * request to time out — if the user never completes it (closes the tab, loses the
+ * redirect) the `authorize()` promise would hang forever. This 5-minute cap
+ * (parity with Claude's `Authentication timeout`) tears down a stuck consent leg.
+ */
+export const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Thrown when the interactive consent leg exceeds {@link OAUTH_FLOW_TIMEOUT_MS}
+ * (or a configured `flowTimeoutMs`). Distinct from a user cancellation
+ * (signal-abort) and from a generic flow failure so a frontend can attribute a
+ * hung consent leg precisely rather than rendering an opaque error.
+ */
+export class OAuthFlowTimeoutError extends Error {
+  constructor(readonly ms: number) {
+    super(`OAuth authorization flow timed out after ${ms}ms (interactive consent not completed)`);
+    this.name = 'OAuthFlowTimeoutError';
+  }
+}
+
+/**
  * Fallback access-token lifetime (seconds) when a token response omits
  * `expires_in` AND the access token is not a JWT carrying an `exp` claim. Without
  * this a tokenless-of-expiry grant would be treated as never-expiring and only a
@@ -123,8 +146,16 @@ export function extractOAuthErrorBody(doc: Record<string, unknown>): {
   return { code, description, uri, suffix };
 }
 
-/** Non-standard error codes some servers return that mean the grant is dead. */
-const INVALID_GRANT_ALIASES = new Set(['invalid_grant', 'invalid_refresh_token', 'expired_token', 'token_expired']);
+/**
+ * Non-standard error codes some servers return that mean the grant is dead. RFC
+ * 6749 specifies `invalid_grant`, but real servers (notably Slack's token-rotation
+ * endpoints) emit aliases — `invalid_refresh_token`, `expired_refresh_token`,
+ * `token_expired`, `expired_token` — that must map onto the canonical code so the
+ * dead-grant invalidation path fires instead of treating them as transient.
+ */
+const INVALID_GRANT_ALIASES = new Set([
+  'invalid_grant', 'invalid_refresh_token', 'expired_refresh_token', 'expired_token', 'token_expired',
+]);
 
 /**
  * Build an OAuthError from a token-endpoint response, normalising both the
@@ -385,6 +416,76 @@ export interface OAuthTokens {
    * grant (the old client's tokens/secret would fail with opaque `invalid_client`).
    */
   clientId?: string;
+}
+
+/**
+ * Persisted authorization-server discovery result for one MCP server: the RFC 8707
+ * `resource` the tokens are bound to plus the discovered RFC 8414 authorization-server
+ * metadata. Caching this across sessions lets a cold process refresh an existing
+ * (file-persisted) token WITHOUT first re-running the RFC 9728 → RFC 8414 discovery
+ * chain — which otherwise requires provoking a fresh 401 before a refresh can even
+ * reach the token endpoint. Parity with Claude Code's persisted `discoveryState`.
+ */
+export interface DiscoveryState {
+  resource: string;
+  authServer: AuthServerMetadata;
+}
+
+/**
+ * A pluggable store for {@link DiscoveryState}, injected into {@link McpOAuthSession}
+ * so discovery survives process restarts. All methods are best-effort (a backing
+ * failure degrades to live re-discovery, never throws). {@link FileDiscoveryStateStore}
+ * is the on-disk implementation; a test may inject an in-memory fake.
+ */
+export interface DiscoveryStateStore {
+  load(): DiscoveryState | null;
+  save(state: DiscoveryState): void;
+  clear(): void;
+}
+
+/**
+ * File-backed {@link DiscoveryStateStore}. Discovery metadata is NOT secret (it is
+ * public well-known data), but it is written 0600 under a 0700 dir for consistency
+ * with the token file it sits beside. All disk I/O is best-effort: a failed
+ * read/write degrades to live re-discovery rather than throwing.
+ */
+export class FileDiscoveryStateStore implements DiscoveryStateStore {
+  constructor(private readonly filePath: string) {}
+
+  load(): DiscoveryState | null {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as DiscoveryState;
+      if (parsed && typeof parsed.resource === 'string' && parsed.authServer
+        && typeof parsed.authServer.issuer === 'string'
+        && typeof parsed.authServer.authorizationEndpoint === 'string'
+        && typeof parsed.authServer.tokenEndpoint === 'string') {
+        return parsed;
+      }
+    } catch { /* no cached discovery (or unreadable) — fall back to live discovery */ }
+    return null;
+  }
+
+  save(state: DiscoveryState): void {
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.filePath, JSON.stringify(state), { mode: 0o600 });
+    } catch { /* best-effort — in-memory discovery is still live for this session */ }
+  }
+
+  clear(): void {
+    try { fs.rmSync(this.filePath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Filesystem-safe discovery-state filename for a credential-store key, co-located
+ * with the token file ({@link mcpTokenFileName}) but suffixed so the two never
+ * collide. Pass a {@link mcpCredentialKey}.
+ */
+export function mcpDiscoveryFileName(credentialKey: string): string {
+  const safe = credentialKey.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const hash = createHash('sha256').update(credentialKey).digest('hex').slice(0, 8);
+  return `${safe}.${hash}.discovery.json`;
 }
 
 /**
@@ -1538,8 +1639,24 @@ export interface McpOAuthSessionOptions {
    */
   refreshBufferMs?: number;
   store?: OAuthTokenStore;
+  /**
+   * Persisted authorization-server discovery cache ({@link DiscoveryStateStore}).
+   * When supplied, a successful RFC 9728 → RFC 8414 discovery is saved and reloaded
+   * on construction, so a cold process holding a still-refreshable (file-persisted)
+   * token can refresh it WITHOUT first provoking a 401 to re-run discovery. Dropped
+   * on `invalidateCredentials('discovery'|'all')`. Off by default (in-memory only).
+   */
+  discoveryStore?: DiscoveryStateStore;
   /** Per-request HTTP timeout (ms). Defaults to OAUTH_HTTP_TIMEOUT_MS; 0 disables. */
   timeoutMs?: number;
+  /**
+   * Overall timeout (ms) for the INTERACTIVE consent leg. Bounds the out-of-band
+   * `authorize()` call so a never-completed browser consent cannot wedge the flow
+   * forever; on expiry the flow rejects with {@link OAuthFlowTimeoutError} and
+   * resolves to a non-fatal `false`. Defaults to {@link OAUTH_FLOW_TIMEOUT_MS};
+   * 0 disables (unbounded, relying solely on `signal`).
+   */
+  flowTimeoutMs?: number;
   /** Retry policy for transient token-refresh failures. */
   retry?: RetryOptions;
   /**
@@ -1612,6 +1729,23 @@ export class McpOAuthSession implements McpOAuthProvider {
     const stored = this.store.get();
     if (opts.clientId && stored?.clientId && stored.clientId !== opts.clientId) {
       this.store.clear();
+    }
+    // Cross-session discovery reuse: a cold process holding a still-refreshable
+    // persisted token would otherwise have to provoke a 401 and re-run RFC 9728 →
+    // RFC 8414 discovery before it could refresh. Reload the persisted discovery
+    // (authMeta + resource) AND restore the client id the token was minted under,
+    // so a silent refresh can proceed immediately on the first request. Skipped
+    // when a static clientId change already invalidated the stored tokens above.
+    const liveStored = this.store.get();
+    if (opts.discoveryStore && liveStored) {
+      const cached = opts.discoveryStore.load();
+      if (cached) {
+        this.authMeta = cached.authServer;
+        this.resource = cached.resource;
+      }
+      if (!this.effectiveClientId && liveStored.clientId) {
+        this.effectiveClientId = liveStored.clientId;
+      }
     }
     // Proactive refresh scheduler (opt-in): fires a silent refresh shortly before
     // expiry. onRefresh returns the fresh token's expiry so the next proactive
@@ -1837,6 +1971,9 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (scope === 'discovery' || scope === 'all') {
       this.authMeta = null;
       this.resource = this.opts.serverUrl;
+      // Also drop any persisted discovery so the next flow re-runs RFC 9728/8414
+      // (e.g. after the AS rotated endpoints) rather than reloading stale metadata.
+      this.opts.discoveryStore?.clear();
     }
     this.log({ step: 'revoke', message: `invalidated local credentials (scope: ${scope})`, ok: true });
   }
@@ -1893,6 +2030,7 @@ export class McpOAuthSession implements McpOAuthProvider {
           const meta = await discoverAuthServer(this.fetch, issuer, this.opts.authServerMetadataUrl);
           this.assertGrantCapable(meta);
           this.authMeta = meta;
+          this.persistDiscovery();
           this.log({ step: 'discover-as', message: `authorization server resolved: ${redactOAuthUrl(issuer)}`, ok: true });
           return { prmScopes: prm.scopesSupported };
         } catch (asError) {
@@ -1907,6 +2045,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         this.assertGrantCapable(meta);
         this.authMeta = meta;
         this.resource = this.opts.serverUrl;
+        this.persistDiscovery();
         return {};
       }
       throw prmError;
@@ -1922,6 +2061,38 @@ export class McpOAuthSession implements McpOAuthProvider {
   private assertGrantCapable(meta: AuthServerMetadata): void {
     if (meta.grantTypesSupported && !meta.grantTypesSupported.includes('authorization_code')) {
       throw new Error('authorization server does not advertise the authorization_code grant');
+    }
+  }
+
+  /**
+   * Persist the freshly-discovered authorization-server metadata + resource to the
+   * injected {@link DiscoveryStateStore} (best-effort, no-op when none is configured)
+   * so a later cold process can refresh an existing token without re-discovering.
+   */
+  private persistDiscovery(): void {
+    if (this.opts.discoveryStore && this.authMeta) {
+      this.opts.discoveryStore.save({ resource: this.resource, authServer: this.authMeta });
+    }
+  }
+
+  /**
+   * Race the interactive consent leg against the overall flow timeout
+   * ({@link OAuthFlowTimeoutError}). A `flowTimeoutMs` of 0 disables the cap (relying
+   * solely on the caller's abort signal). The timer is unref'd so it never keeps the
+   * event loop alive, and always cleared when consent settles first.
+   */
+  private async awaitConsent(consent: Promise<{ code: string; state?: string }>): Promise<{ code: string; state?: string }> {
+    const ms = this.opts.flowTimeoutMs ?? OAUTH_FLOW_TIMEOUT_MS;
+    if (!ms || ms <= 0) return consent;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new OAuthFlowTimeoutError(ms)), ms);
+      if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
+    });
+    try {
+      return await Promise.race([consent, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -1992,7 +2163,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         loginHint: this.opts.loginHint,
       });
       this.log({ step: 'authorize', message: `awaiting interactive consent at ${redactOAuthUrl(authorizationUrl)}` });
-      const authResult = await this.opts.authorize({ authorizationUrl, redirectUri, state });
+      const authResult = await this.awaitConsent(this.opts.authorize({ authorizationUrl, redirectUri, state }));
       // RFC 6749 §10.12 CSRF protection: if the consent leg echoes the callback
       // `state`, it MUST match the one we generated. A mismatch means the redirect
       // did not originate from our request — reject before spending the code.
@@ -2020,10 +2191,13 @@ export class McpOAuthSession implements McpOAuthProvider {
       this.log({ step: 'token-stored', message: 'access token obtained and stored', ok: true });
       return true;
     } catch (error) {
-      // A user cancellation (caller signal aborted) is NOT a failure — surface it
-      // as a distinct 'cancelled' event so a frontend does not render it as an
-      // error. Any other failure is attributed with its redacted reason.
-      if (this.isCancelled()) {
+      // A user cancellation (caller signal aborted) and an overall-flow timeout are
+      // NOT generic failures — surface each as a distinct 'cancelled' event so a
+      // frontend can attribute a hung/aborted consent leg precisely rather than
+      // rendering it as an opaque error. Any other failure keeps its redacted reason.
+      if (error instanceof OAuthFlowTimeoutError) {
+        this.log({ step: 'cancelled', message: error.message, ok: false });
+      } else if (this.isCancelled()) {
         this.log({ step: 'cancelled', message: 'OAuth flow cancelled by the user', ok: false });
       } else {
         this.log({ step: 'authorize', message: 'OAuth flow failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
@@ -2045,9 +2219,11 @@ export class McpOAuthSession implements McpOAuthProvider {
     try {
       const result = await performCrossAppAccess(this.fetch, this.opts.serverUrl, xaa, this.now());
       // Carry discovery state so refresh/revocation locate the AS token/revocation
-      // endpoints (the MCP URL is not the AS URL in a typical XAA setup).
+      // endpoints (the MCP URL is not the AS URL in a typical XAA setup). Persist it
+      // too so a cold process can refresh the XAA grant without re-discovering.
       this.authMeta = result.authServer;
       this.resource = result.resource;
+      this.persistDiscovery();
       this.effectiveClientId = xaa.clientId;
       this.effectiveClientSecret = xaa.clientSecret;
       const tokens = result.tokens;
