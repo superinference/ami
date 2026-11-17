@@ -980,6 +980,24 @@ interface InternalProcess extends BackgroundProcess {
    *  set it takes precedence over the manager-level {@link ProcessManager.maxOutputBytes}
    *  in writeChunk; undefined ⇒ use the manager-level cap. */
   _maxOutputBytes?: number;
+  /**
+   * FILE MODE (parity with Claude Code's TaskOutput `stdoutToFile`): true when this
+   * task's stdout AND stderr were wired STRAIGHT to the output-file fd
+   * (`stdio: ['ignore', fd, fd]`) at spawn — so neither stream enters the JS heap/
+   * event loop (no per-chunk 'data' listener, no `writeChunk`). On very large/fast
+   * output this keeps the firehose out of V8 (lower CPU/GC, no pipe backpressure),
+   * matching Claude Code's "neither enters JS" path. The trade-offs mirror Claude's:
+   *   - progress/size is derived by POLLING the file ({@link getOutputSize} stats the
+   *     file in this mode instead of reading {@link bytesWritten}, which stays 0);
+   *   - the runaway byte-cap is enforced by the poll ({@link enforceFileModeOutputCap})
+   *     rather than per-chunk in writeChunk;
+   *   - stderr is INTERLEAVED in the merged file, so the separable in-memory stderr
+   *     tail ({@link _stderrTail}) is NOT captured and {@link getStderr} returns ''
+   *     (parity with Claude's `getStderr() returns '' in file mode`).
+   * Undefined/false ⇒ the default PIPE mode (stream through JS; keeps the separable
+   * stderr tail). Opt-in per spawn via spawn()'s `fileMode` option.
+   */
+  _fileMode?: boolean;
   /** Liveness-poll handle for a task RE-ADOPTED across a restart (see
    *  {@link ProcessManager.rescanTasks}). We have no ChildProcess 'exit' event for a
    *  re-attached detached pid, so a polled watchdog finalizes it when the pid dies.
@@ -1146,7 +1164,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal; maxOutputBytes?: number }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal; maxOutputBytes?: number; fileMode?: boolean }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -1203,11 +1221,19 @@ export class ProcessManager extends EventEmitter {
     // diagnostic into the output file, and record a terminal 'failed' task with the
     // standard exec-error exit code (126) so the caller ALWAYS gets a trackable
     // taskId and a model-facing completion — mirroring Claude's createFailedCommand.
+    // FILE MODE (parity with Claude Code's TaskOutput stdoutToFile, L21-36): when the
+    // caller opts in, wire the child's stdout AND stderr STRAIGHT to the already-open
+    // output fd (`stdio: ['ignore', fd, fd]`) so the kernel streams every byte to the
+    // file and NEITHER stream enters JS — no 'data' listener, no writeChunk, no pipe
+    // backpressure on a very large/fast firehose. Progress/size and the runaway cap are
+    // then derived by polling the file (see getOutputSize / enforceFileModeOutputCap).
+    // Default (opt-out) stays the PIPE path so the separable stderr tail is preserved.
+    const fileMode = opts.fileMode === true;
     let proc: child_process.ChildProcess;
     try {
       proc = spawnHooks.spawn(shell, shellArgs, {
         cwd: resolvedCwd.cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: fileMode ? ['ignore', fd, fd] : ['ignore', 'pipe', 'pipe'],
         detached: !isWindows,
         ...(opts.env ? { env: opts.env } : {}),
       });
@@ -1243,10 +1269,13 @@ export class ProcessManager extends EventEmitter {
       // maxOutputBytes it pins THIS task's disk-buffer ceiling; absent, writeChunk
       // falls back to the manager-level this.maxOutputBytes (which stays runtime-tunable).
       ...(typeof opts.maxOutputBytes === 'number' && opts.maxOutputBytes > 0 ? { _maxOutputBytes: opts.maxOutputBytes } : {}),
+      // Record the stdio routing so getOutputSize / the cap poll / getStderr branch
+      // on it (file mode ⇒ output never entered JS; size is read from disk).
+      ...(fileMode ? { _fileMode: true } : {}),
     };
 
     this.processes.set(taskId, entry);
-    this.traceLifecycle('spawn', taskId, { kind: entry.kind, pid: entry.pid });
+    this.traceLifecycle('spawn', taskId, { kind: entry.kind, pid: entry.pid, ...(fileMode ? { fileMode: true } : {}) });
 
     const writeChunk = (data: Buffer) => {
       const cap = entry._maxOutputBytes ?? this.maxOutputBytes;
@@ -1269,26 +1298,33 @@ export class ProcessManager extends EventEmitter {
       }
     };
 
-    proc.stdout?.on('data', writeChunk);
-    // STDERR is captured TWICE: into the merged output file (via writeChunk — the
-    // existing behavior task_output reads) AND into a bounded, separable in-memory
-    // tail so a consumer can surface stderr DISTINCTLY from stdout (parity with
-    // Claude Code's command-output renderer keeping stderr its own block). See
-    // {@link ProcessManager.getStderr} + the task_output stderr section.
-    proc.stderr?.on('data', (data: Buffer) => {
-      const prev = entry._stderrTail ?? '';
-      const next = prev + data.toString('utf-8');
-      entry._stderrTail = next.length > STDERR_TAIL_CAP ? next.slice(next.length - STDERR_TAIL_CAP) : next;
-      writeChunk(data);
-    });
-    // Swallow EBADF errors on pipe streams. When a process is killed, the OS
-    // may close the pipe fds before Node.js finishes reading, emitting an
-    // EBADF error event. Without this handler, the error becomes uncaught.
-    const swallowEBADF = (err: NodeJS.ErrnoException) => {
-      if (err.code !== 'EBADF') { this.emit('error', err); }
-    };
-    proc.stdout?.on('error', swallowEBADF);
-    proc.stderr?.on('error', swallowEBADF);
+    // PIPE MODE ONLY: in file mode the child's stdout/stderr are the raw output fd
+    // (proc.stdout/proc.stderr are null) — there is no JS-side stream to listen on,
+    // which is the whole point (the firehose bypasses V8). The per-chunk writeChunk
+    // path, the separable stderr tail, and the pipe EBADF handler are therefore pipe-
+    // mode-exclusive; file mode derives size by polling and enforces the cap there.
+    if (!fileMode) {
+      proc.stdout?.on('data', writeChunk);
+      // STDERR is captured TWICE: into the merged output file (via writeChunk — the
+      // existing behavior task_output reads) AND into a bounded, separable in-memory
+      // tail so a consumer can surface stderr DISTINCTLY from stdout (parity with
+      // Claude Code's command-output renderer keeping stderr its own block). See
+      // {@link ProcessManager.getStderr} + the task_output stderr section.
+      proc.stderr?.on('data', (data: Buffer) => {
+        const prev = entry._stderrTail ?? '';
+        const next = prev + data.toString('utf-8');
+        entry._stderrTail = next.length > STDERR_TAIL_CAP ? next.slice(next.length - STDERR_TAIL_CAP) : next;
+        writeChunk(data);
+      });
+      // Swallow EBADF errors on pipe streams. When a process is killed, the OS
+      // may close the pipe fds before Node.js finishes reading, emitting an
+      // EBADF error event. Without this handler, the error becomes uncaught.
+      const swallowEBADF = (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'EBADF') { this.emit('error', err); }
+      };
+      proc.stdout?.on('error', swallowEBADF);
+      proc.stderr?.on('error', swallowEBADF);
+    }
 
     // Stall detection for background processes. Delegated to stallTick() so the
     // logic is unit-testable without waiting out the poll interval. The cadence
@@ -1296,6 +1332,11 @@ export class ProcessManager extends EventEmitter {
     // (STALL_THRESHOLD_MS, enforced inside stallTick) — see the knob JSDoc.
     let lastOutputSize = 0;
     const stallCheck = setInterval(() => {
+      // FILE MODE: writeChunk never runs (output bypasses JS), so the runaway byte-cap
+      // is enforced HERE by polling the on-disk size — the task is killed once the file
+      // reaches the cap, mirroring Claude Code's ShellCommand file-size watchdog. If it
+      // was killed this tick, skip the stall check (the entry is no longer running).
+      if (fileMode && this.enforceFileModeOutputCap(taskId)) return;
       lastOutputSize = this.stallTick(taskId, lastOutputSize);
     }, STALL_CHECK_INTERVAL_MS);
     // Observation-only timer: unref() so a still-registered task's poller can never
@@ -2124,13 +2165,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
     return rest;
   }
 
@@ -2388,7 +2429,39 @@ export class ProcessManager extends EventEmitter {
   getOutputSize(taskId: string): number {
     const entry = this.processes.get(taskId);
     if (!entry) return 0;
+    // FILE MODE: the child wrote STRAIGHT to the fd, so bytesWritten (the writeChunk
+    // counter) was never advanced — read the real size from disk instead so the stall
+    // watchdog's growth detection and the runaway cap still see output progress. A stat
+    // failure (file deleted / path blanked by deleteRedundantOutput) falls back to the
+    // counter (0), matching the pipe-mode "no output" reading.
+    if (entry._fileMode && entry.outputPath) {
+      try { return fs.statSync(entry.outputPath).size; } catch { return entry.bytesWritten; }
+    }
     return entry.bytesWritten;
+  }
+
+  /**
+   * FILE MODE runaway-output watchdog (parity with Claude Code's ShellCommand size
+   * watchdog). In file mode the child streams straight to the fd, so the per-chunk
+   * byte-cap kill in writeChunk never fires; this polled check — driven by the spawn
+   * stall interval — kills a task whose ON-DISK output has reached the cap (the
+   * per-spawn {@link InternalProcess._maxOutputBytes} override, else the manager-level
+   * {@link maxOutputBytes}), writing the same `[output exceeded <cap> cap — task killed]`
+   * diagnostic the pipe path writes. Returns true when it killed the task this tick
+   * (so the caller skips the subsequent stall check), false otherwise. No-op for a
+   * pipe-mode / non-running / untracked task.
+   */
+  private enforceFileModeOutputCap(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || !entry._fileMode) return false;
+    const cap = entry._maxOutputBytes ?? this.maxOutputBytes;
+    if (this.getOutputSize(taskId) < cap) return false;
+    const label = formatByteCap(cap);
+    if (entry.outputFd !== null) {
+      this.safeWrite(entry.outputFd, Buffer.from(`\n[output exceeded ${label} cap — task killed]\n`));
+    }
+    this.kill(taskId, { reason: `output exceeded ${label} cap` });
+    return true;
   }
 
   private looksLikePrompt(text: string): boolean {

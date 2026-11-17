@@ -473,6 +473,23 @@ export function isPluginHintsEnabled(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 /**
+ * The env gate `AMI_BASH_OUTPUT_FILE_MODE` that opts a BACKGROUND bash command into
+ * "file mode": its stdout+stderr are wired STRAIGHT to the task output-file fd so
+ * neither stream enters the JS heap/event loop (parity with Claude Code's TaskOutput
+ * `stdoutToFile`, which routes a bash command's output to a file fd so "neither enters
+ * JS"). On a very large/fast firehose this keeps V8 out of the hot path — lower CPU/GC
+ * and no pipe backpressure — at the cost of the separable in-memory stderr tail (stderr
+ * is interleaved in the merged file, exactly as Claude's file mode does). Default OFF
+ * (truthy = `1`/`true`/`yes`/`on`) so the normal pipe path — which keeps the distinct
+ * `--- stderr ---` task_output section — is unchanged unless an operator opts in.
+ */
+export const BASH_OUTPUT_FILE_MODE_ENV = 'AMI_BASH_OUTPUT_FILE_MODE';
+export function isBashOutputFileModeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[BASH_OUTPUT_FILE_MODE_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
  * Resolve the official-marketplace allowlist (`AMI_PLUGIN_HINT_MARKETPLACES`, a
  * comma list) for the plugin-hint sync gate (parity: Claude's official-marketplace
  * filter). Returns `undefined` when unset — no marketplace restriction is applied.
@@ -1847,6 +1864,10 @@ export const bashTool: ToolDefinition = {
         // turn abort kills the background shell; an abort whose reason is 'interrupt'
         // is a soft interrupt that leaves the shell running to be backgrounded.
         ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+        // File mode (AMI_BASH_OUTPUT_FILE_MODE): route stdout+stderr straight to the
+        // output fd so the firehose bypasses the JS heap (parity: Claude TaskOutput
+        // stdoutToFile). Opt-in; default pipe mode keeps the separable stderr tail.
+        ...(isBashOutputFileModeEnabled() ? { fileMode: true } : {}),
       });
       const task = context.processManager.get(taskId);
       return {
@@ -1909,6 +1930,9 @@ export const bashTool: ToolDefinition = {
           description: `[auto-bg] ${extractBashCommentLabel(command)?.slice(0, 60) ?? command.slice(0, 60)}`,
           env: buildSubprocessEnv(context),
           agentId: context.agentId,
+          // Honor file mode for auto-backgrounded foreground commands too, so the
+          // routing is consistent regardless of how a task entered the background.
+          ...(isBashOutputFileModeEnabled() ? { fileMode: true } : {}),
         });
         const bgTask = context.processManager.get(taskId);
         return {
