@@ -448,6 +448,118 @@ export interface SessionListEntry {
   parentSessionId?: SessionId;
 }
 
+/**
+ * Parse a PR identifier the way the resume/session picker's PR filter accepts it:
+ * either a bare positive integer (`"42"`) or a GitHub pull-request URL
+ * (`https://github.com/owner/repo/pull/42`), returning the numeric PR number, or
+ * `null` when the input is neither. A non-positive or non-numeric direct value
+ * falls through to the URL probe; an unmatched URL yields `null`. Parity: Claude's
+ * `parsePrIdentifier` in the resume screen — the single acceptance boundary behind
+ * {@link filterSessionsByPr} so a `--pr <n|url>` resume filter and any picker share
+ * one parser (no duplicated regex).
+ */
+export function parsePrIdentifier(value: string): number | null {
+  const directNumber = parseInt(value, 10);
+  if (!isNaN(directNumber) && directNumber > 0) {
+    return directNumber;
+  }
+  const urlMatch = value.match(/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/);
+  if (urlMatch?.[1]) {
+    return parseInt(urlMatch[1], 10);
+  }
+  return null;
+}
+
+/**
+ * The PR filter accepted by {@link SessionManager.list}'s `filterByPr` option and
+ * {@link filterSessionsByPr}:
+ *  - `true` — keep only sessions that are linked to ANY PR;
+ *  - `false` — no PR constraint (keep everything, same as omitting the filter);
+ *  - a `number` — keep only sessions linked to exactly that PR number;
+ *  - a `string` — parse it ({@link parsePrIdentifier}: integer or GitHub PR URL)
+ *    and keep only sessions linked to the resolved number (an unparseable string
+ *    matches nothing).
+ */
+export type PrFilter = boolean | number | string;
+
+/**
+ * Filter a list of session entries by their linked PR (parity: Claude's
+ * `filteredLogs` PR filter in the resume screen). Shared by
+ * {@link SessionManager.list} and any caller that already holds entries, so the
+ * `true`/number/string semantics live in ONE place. An entry matches by its
+ * `pr.number` ({@link SessionListEntry.pr}); entries with no linked PR are dropped
+ * whenever a filter is active.
+ */
+export function filterSessionsByPr<T extends { pr?: { number: number } }>(
+  entries: T[],
+  filter: PrFilter,
+): T[] {
+  if (typeof filter === 'boolean') {
+    return filter ? entries.filter(e => e.pr?.number !== undefined) : entries;
+  }
+  if (typeof filter === 'number') {
+    return entries.filter(e => e.pr?.number === filter);
+  }
+  const prNumber = parsePrIdentifier(filter);
+  if (prNumber === null) return [];
+  return entries.filter(e => e.pr?.number === prNumber);
+}
+
+/** Single-quote a string for safe embedding in a POSIX shell command: wrap in
+ *  single quotes and escape any embedded single quote as `'\''`. Used to build the
+ *  copyable cross-project resume command in {@link checkCrossProjectResume}. */
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Three-way classification of resuming a session that lives in a DIFFERENT project
+ * directory than the current cwd (parity: Claude's `checkCrossProjectResume`):
+ *  - not cross-project (scope off, no recorded path, or same cwd) → resume in place;
+ *  - cross-project but a sibling git worktree of the SAME repo → resume directly
+ *    (no `cd` needed, the worktree shares the repo);
+ *  - a genuinely different project → surface a copyable `command` the user can run
+ *    to switch directories and resume there.
+ */
+export type CrossProjectResumeResult =
+  | { isCrossProject: false }
+  | { isCrossProject: true; isSameRepoWorktree: true; projectPath: string }
+  | { isCrossProject: true; isSameRepoWorktree: false; command: string; projectPath: string };
+
+/**
+ * Classify whether resuming `log` crosses a project boundary relative to
+ * `currentCwd`, and (for a genuinely different project) produce a copyable
+ * `cd … && ami --resume <id>` command. Pure: all environment (the current cwd and
+ * the set of same-repo git worktree paths) is passed in, so this core primitive has
+ * no process/git dependency and the CLI picker can render the result however it
+ * likes (inline badge for a same-repo worktree, clipboard-copy affordance for a
+ * different project).
+ *
+ * FUNCTIONAL (intentional parity divergence): AMI does NOT gate worktree detection
+ * behind Claude's internal `USER_TYPE === 'ant'` staged-rollout flag — the same-repo
+ * worktree shortcut is always available. Parity: Claude's `checkCrossProjectResume`
+ * (same discriminated result + longest-literal `startsWith(wt + sep)` containment).
+ */
+export function checkCrossProjectResume(
+  log: { id: SessionId | string; projectPath?: string },
+  currentCwd: string,
+  worktreePaths: string[],
+  showAllProjects: boolean,
+): CrossProjectResumeResult {
+  if (!showAllProjects || !log.projectPath || log.projectPath === currentCwd) {
+    return { isCrossProject: false };
+  }
+  const projectPath = log.projectPath;
+  const isSameRepoWorktree = worktreePaths.some(
+    wt => projectPath === wt || projectPath.startsWith(wt + path.sep),
+  );
+  if (isSameRepoWorktree) {
+    return { isCrossProject: true, isSameRepoWorktree: true, projectPath };
+  }
+  const command = `cd ${shellSingleQuote(projectPath)} && ami --resume ${shellSingleQuote(String(log.id))}`;
+  return { isCrossProject: true, isSameRepoWorktree: false, command, projectPath };
+}
+
 export function safeCharSlice(s: string, start: number, end?: number): string {
   let result = s.slice(start, end);
   if (result.length === 0) return result;
@@ -775,7 +887,19 @@ export class SessionManager {
    * sorted by recorded date descending so callers see a stable order regardless
    * of the mtime pre-sort.
    */
-  list(opts: { limit?: number; offset?: number; includeSidechain?: boolean; dropEmpty?: boolean } = {}): SessionListEntry[] {
+  list(opts: {
+    limit?: number;
+    offset?: number;
+    includeSidechain?: boolean;
+    dropEmpty?: boolean;
+    /** Drop a specific session id from the listing — used to exclude the LIVE
+     *  current session from its own resume picker so a user can't "resume" the
+     *  session they're already in (parity: Claude excludes the current log). */
+    excludeId?: string;
+    /** Keep only sessions linked to a PR, per {@link PrFilter} (true = any PR, a
+     *  number = that PR, a string = parsed via {@link parsePrIdentifier}). */
+    filterByPr?: PrFilter;
+  } = {}): SessionListEntry[] {
     const files = this.listFiles();
 
     // Cheap stat-only pass: carry mtime (for candidate ordering) + size (reused
@@ -816,6 +940,8 @@ export class SessionManager {
       if (session.isSidechain && !opts.includeSidechain) continue;
 
       const idKey = String(session.id);
+      // Exclude the live current session so it can't appear in its own picker.
+      if (opts.excludeId !== undefined && idKey === String(opts.excludeId)) continue;
       if (seenIds.has(idKey)) continue;
       seenIds.add(idKey);
 
@@ -850,20 +976,26 @@ export class SessionManager {
       });
     }
 
+    // PR scope filter (parity: Claude's filteredLogs PR filter) — applied after the
+    // read pass so the single {@link filterSessionsByPr} acceptance boundary is reused.
+    const filtered = opts.filterByPr !== undefined
+      ? filterSessionsByPr(entries, opts.filterByPr)
+      : entries;
+
     // Sort by date descending (most recent first). FUNCTIONAL: break ties on the
     // session id so a paginated list() (limit/offset) over sessions sharing a
     // timestamp returns a stable, deterministic window across calls instead of
     // one that reflects the underlying readdir/stat order. Session ids embed a
     // monotonic timestamp+sequence, so the newer id sorts first — matching the
     // recency ordering callers expect.
-    entries.sort((a, b) => {
+    filtered.sort((a, b) => {
       const bTime = b.date ? new Date(b.date).getTime() : 0;
       const aTime = a.date ? new Date(a.date).getTime() : 0;
       const byTime = (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
       if (byTime !== 0) return byTime;
       return String(b.id).localeCompare(String(a.id));
     });
-    return entries;
+    return filtered;
   }
 
   /**
@@ -916,6 +1048,16 @@ export class SessionManager {
       }
       if (mtimeMs >= cutoff) continue; // still within the retention window
       const safeId = path.basename(file).replace(/\.json$/, '');
+      // Strict content guard before deleting (parity: Claude's `/^\d+\.json$/`
+      // filename check before its parseInt stale sweep — adapted to AMI's non-numeric
+      // ids): only remove a file whose stem is a valid session id AND whose contents
+      // actually parse as a session (an `id` + `messages` array). This guarantees a
+      // foreign/user `.json` that happens to sit in the session dir past the retention
+      // window is NEVER deleted by cleanup. The parse is paid only for already-expired
+      // files (rare), so the sweep stays cheap in the common case.
+      if (!isValidSessionId(safeId)) continue;
+      const parsed = this.readSessionFile(file, false);
+      if (!parsed || typeof parsed.id !== 'string' || !Array.isArray(parsed.messages)) continue;
       try {
         this.delete(safeId);
         removed++;
