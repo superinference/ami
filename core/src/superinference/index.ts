@@ -16,7 +16,11 @@ export class SuperInferenceEngine {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.belief = new BeliefTracker(this.config);
     this.critic = new Critic(this.config.criticAlpha, this.config.criticBeta);
-    this.memoryGate = new MemoryGate();
+    this.memoryGate = new MemoryGate({
+      maxEntries: this.config.memoryMaxEntries,
+      maxEmitEntries: this.config.memoryMaxEmitEntries,
+      stalenessDays: this.config.memoryStalenessDays,
+    });
     this.retriever = new Retriever(this.config.noiseLevel);
   }
 
@@ -48,7 +52,7 @@ export class SuperInferenceEngine {
 // Re-export everything
 export { BeliefTracker } from './belief';
 export { Critic } from './critic';
-export { MemoryGate, type GatedMemoryEntry, type ConsolidationStatus } from './memory-gate';
+export { MemoryGate, type GatedMemoryEntry, type ConsolidationStatus, type MemoryGateOptions } from './memory-gate';
 export { Retriever } from './retriever';
 export type { SuperInferenceConfig, BeliefState, CriticDecision, StopReason } from './types';
 export { DEFAULT_CONFIG } from './types';

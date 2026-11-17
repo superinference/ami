@@ -1291,12 +1291,16 @@ export function normalizeFrontmatterPaths(globs: string[]): string[] | null {
 
 const STALE_MEMORY_DAYS = 30;
 
-export function memoryAgeDays(mtimeMs: number): number {
+export function memoryAgeDays(mtimeMs: number, now: number = Date.now()): number {
   // Clamp to 0: a memory is never "from the future". A file mtime slightly ahead
-  // of Date.now() (clock skew, NTP correction, or coarse filesystem mtime
+  // of `now` (clock skew, NTP correction, or coarse filesystem mtime
   // granularity) would otherwise yield a negative age and render as the
   // nonsensical "-1 days ago" instead of "today".
-  return Math.max(0, Math.floor((Date.now() - mtimeMs) / (1000 * 60 * 60 * 24)));
+  //
+  // `now` is injectable so callers that already hold a reference instant (e.g.
+  // the SuperInference memory gate computing per-entry staleness against a single
+  // snapshot) can compute age deterministically; it defaults to Date.now().
+  return Math.max(0, Math.floor((now - mtimeMs) / (1000 * 60 * 60 * 24)));
 }
 
 /**

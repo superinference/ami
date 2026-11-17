@@ -22,6 +22,15 @@ export interface SuperInferenceConfig {
    *  experiment/managed policy (false). When false, UI/config surfaces must treat the
    *  critic model as fixed. Default true. Parity: Claude's advisor `canUserConfigure`. */
   canUserConfigureCriticModel?: boolean;
+  /** Max critic-approved entries retained in the memory gate's ring (oldest/lowest-scored
+   *  evicted past this). Promotes the gate's hardcoded cap to a config knob. Default 100. */
+  memoryMaxEntries?: number;
+  /** Max entries the gate emits (top-N by critic score) into retriever/persisted context.
+   *  Default: inherits {@link memoryMaxEntries}. Parity: Claude's top-N memory selection. */
+  memoryMaxEmitEntries?: number;
+  /** Age (days) past which a gate entry carries an inline staleness caveat when emitted.
+   *  Default 7. Parity: Claude's memoryFreshnessText staleness threshold. */
+  memoryStalenessDays?: number;
 }
 
 export interface CriticDecision {
@@ -75,4 +84,7 @@ export const DEFAULT_CONFIG: Required<SuperInferenceConfig> = {
   enforcing: false,
   criticModel: '',
   canUserConfigureCriticModel: true,
+  memoryMaxEntries: 100,
+  memoryMaxEmitEntries: 100,
+  memoryStalenessDays: 7,
 };
