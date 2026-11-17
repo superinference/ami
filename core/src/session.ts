@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
 import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage } from './types';
 import { asSessionId } from './types';
-import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDir } from './reference-journal';
+import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDir, projectSlug, MAX_SLUG_LENGTH } from './reference-journal';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
@@ -798,6 +798,39 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Decide whether a project-slug directory NAME under the global projects root
+ * belongs to one of `worktreeCwds`, using the reference's longest-prefix,
+ * truncation-aware match (parity: listSessionsImpl's worktree-aware gathering):
+ *  - each worktree cwd is reduced to its {@link projectSlug} (the exact slug a
+ *    store dir is named after) and the candidates are tried LONGEST slug first so
+ *    the most specific worktree wins over a shorter ancestor;
+ *  - a dir matches by EXACT equality, or — ONLY when the slug was truncated to
+ *    {@link MAX_SLUG_LENGTH} (a `-<hash>` suffix follows) — by `startsWith(slug + '-')`,
+ *    so a short `…-project` dir never matches a `…-project-foo` slug;
+ *  - on win32 the comparison is case-insensitive.
+ * Returns the matched worktree cwd, or `null`. Pure (no fs/git): the caller passes
+ * already-canonical cwds, so the matching boundary is unit-testable in isolation.
+ */
+export function matchWorktreeForProjectDir(
+  dirName: string,
+  worktreeCwds: string[],
+): string | null {
+  const caseInsensitive = process.platform === 'win32';
+  const norm = (s: string): string => (caseInsensitive ? s.toLowerCase() : s);
+  const target = norm(dirName);
+  const indexed = worktreeCwds
+    .map(cwd => ({ cwd, slug: norm(projectSlug(cwd)) }))
+    .sort((a, b) => b.slug.length - a.slug.length);
+  for (const { cwd, slug } of indexed) {
+    const truncated = slug.length >= MAX_SLUG_LENGTH;
+    if (target === slug || (truncated && target.startsWith(slug + '-'))) {
+      return cwd;
+    }
+  }
+  return null;
+}
+
 export class SessionManager {
   private sessionDir: string;
   private cwd: string;
@@ -899,7 +932,7 @@ export class SessionManager {
       const full = msg.content;
       const preview = safeCharSlice(full, 0, MAX_CONTENT_LENGTH);
       try {
-        const sha = crypto.createHash('sha256').update(full, 'utf-8').digest('hex');
+        const sha = sha256Hex(full);
         secureMkdirSync(blobDir);
         const blobPath = path.join(blobDir, `${sha}.blob`);
         // Content-addressed: identical content across saves dedupes to one file.
@@ -1429,6 +1462,33 @@ export class SessionManager {
     return this.sessionDir;
   }
 
+  /**
+   * Mark this store's session resumable after an unclean exit: write/refresh the
+   * crash-recovery pointer ({@link writeResumePointer}) so a hard crash leaves a
+   * fresh pointer the next startup can detect. Call on session start and
+   * periodically during a run (a refresh just bumps the mtime clock).
+   */
+  markResumable(sessionId: SessionId | string, surface?: string): void {
+    writeResumePointer(this.sessionDir, { sessionId: String(sessionId), surface });
+  }
+
+  /**
+   * Read this store's crash-recovery pointer with the same read-time staleness GC
+   * as {@link readResumePointer}; `null` when there is no fresh pointer (clean exit
+   * last time, or a stale/corrupt one just GC'd).
+   */
+  resumePointer(): (ResumePointer & { ageMs: number }) | null {
+    return readResumePointer(this.sessionDir);
+  }
+
+  /**
+   * Clear this store's crash-recovery pointer on CLEAN exit ({@link clearResumePointer}),
+   * so the next startup does not offer to resume a session that ended normally.
+   */
+  clearResumable(): void {
+    clearResumePointer(this.sessionDir);
+  }
+
   /** The GLOBAL projects root — `<configDir>/projects` — holding one per-cwd-slug
    *  subdir of project state. Static so cross-project listing can enumerate every
    *  project's session store without a cwd-bound manager (parity: Claude's
@@ -1463,6 +1523,44 @@ export class SessionManager {
   }
 
   /**
+   * The session-store dirs for a set of worktree/project cwds (parity: Claude's
+   * worktree-aware gathering): reads the global projects root and returns the
+   * `sessions` dir of every slug subdir that matches one of `worktreeCwds` via
+   * {@link matchWorktreeForProjectDir} (longest-prefix, truncation-aware). The
+   * caller supplies the full candidate set (including the current cwd), so a
+   * subdirectory whose slug matches no worktree root is included simply by being in
+   * the list. Deduped; a slug subdir with no `sessions` subfolder (or an unreadable
+   * projects root) is skipped. Scopes {@link listAcrossProjects} to worktrees
+   * instead of EVERY project.
+   */
+  static listWorktreeSessionDirs(
+    worktreeCwds: string[],
+    env: NodeJS.ProcessEnv = process.env,
+  ): string[] {
+    const root = SessionManager.projectsRoot(env);
+    let names: string[];
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      return [];
+    }
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const name of names) {
+      if (matchWorktreeForProjectDir(name, worktreeCwds) === null) continue;
+      const dir = path.join(root, name, 'sessions');
+      if (seen.has(dir)) continue;
+      try {
+        if (fs.statSync(dir).isDirectory()) {
+          seen.add(dir);
+          out.push(dir);
+        }
+      } catch { /* no sessions subdir / stat race — skip */ }
+    }
+    return out;
+  }
+
+  /**
    * List sessions across MULTIPLE project session stores (parity: Claude's
    * all-projects / cross-project resume listing — `listSessionsImpl` with `dir`
    * omitted, and the picker's `showAllProjects` scope).
@@ -1480,6 +1578,12 @@ export class SessionManager {
    */
   static listAcrossProjects(opts: {
     dirs?: string[];
+    /** Scope the aggregation to the session stores of these worktree/project cwds
+     *  (via {@link listWorktreeSessionDirs}) instead of EVERY project under the
+     *  global root. Ignored when an explicit `dirs` set is passed; when both are
+     *  omitted every project is scanned (unchanged behaviour). Parity: Claude's
+     *  `--continue` worktree fan-out. */
+    worktreePaths?: string[];
     env?: NodeJS.ProcessEnv;
     limit?: number;
     offset?: number;
@@ -1491,7 +1595,10 @@ export class SessionManager {
     filterByTag?: string;
   } = {}): SessionListEntry[] {
     const env = opts.env ?? process.env;
-    const dirs = opts.dirs ?? SessionManager.listProjectSessionDirs(env);
+    const dirs = opts.dirs
+      ?? (opts.worktreePaths
+        ? SessionManager.listWorktreeSessionDirs(opts.worktreePaths, env)
+        : SessionManager.listProjectSessionDirs(env));
     const perStore = {
       includeSidechain: opts.includeSidechain,
       dropEmpty: opts.dropEmpty,
@@ -1862,6 +1969,105 @@ export function appendResumeSentinel(messages: Message[]): Message[] {
   const sentinel: AssistantMessage = { role: 'assistant', content: NO_RESPONSE_REQUESTED };
   out.splice(idx + 1, 0, sentinel);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Per-file agent-attribution snapshots
+// ---------------------------------------------------------------------------
+
+/** SHA-256 (hex) of a UTF-8 string — the ONE content-hash primitive shared by the
+ *  blob offload ({@link SessionManager.offloadMessage}) and attribution snapshots,
+ *  so the two can never diverge in how they hash content (§0b.6 — no duplicated
+ *  hashing). */
+export function sha256Hex(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+}
+
+/**
+ * Per-file record of how much of a file's CURRENT content the agent authored
+ * (parity: Claude's FileAttributionState). `contentHash` pins the content the
+ * contribution was measured against (so a later external edit is detectable by a
+ * hash mismatch), `agentContribution` is the running count of characters the agent
+ * authored across edits, and `mtime` is the file's modification time at snapshot.
+ * AMI names the field `agentContribution` (vendor-neutral) but the shape is 1:1
+ * with the reference's `claudeContribution`.
+ */
+export interface FileAttributionState {
+  /** SHA-256 (hex) of the file content this contribution was measured against. */
+  contentHash: string;
+  /** Running count of characters authored by the agent in this file. */
+  agentContribution: number;
+  /** File modification time (ms epoch) at the moment of this snapshot. */
+  mtime: number;
+}
+
+/**
+ * A transcript entry capturing per-file agent attribution plus session-level
+ * prompt / permission-prompt / escape counters, persisted so commit attribution
+ * can report how much of a diff the agent authored (parity: Claude's
+ * AttributionSnapshotMessage). Each `*AtLastCommit` counter snapshots the matching
+ * total AS OF the previous commit, so a "since last commit" delta is derivable.
+ */
+export interface AttributionSnapshot {
+  type: 'attribution-snapshot';
+  /** Id of the message this snapshot is anchored to. */
+  messageId: string;
+  /** Client surface that produced it (e.g. `'cli'`, `'detached'`, `'sdk'`). */
+  surface: string;
+  /** Per-file attribution keyed by file path. */
+  fileStates: Record<string, FileAttributionState>;
+  /** Total user prompts in the session so far. */
+  promptCount?: number;
+  /** {@link promptCount} as of the last commit. */
+  promptCountAtLastCommit?: number;
+  /** Total permission prompts shown so far. */
+  permissionPromptCount?: number;
+  /** {@link permissionPromptCount} as of the last commit. */
+  permissionPromptCountAtLastCommit?: number;
+  /** Total ESC presses (cancelled permission prompts) so far. */
+  escapeCount?: number;
+  /** {@link escapeCount} as of the last commit. */
+  escapeCountAtLastCommit?: number;
+}
+
+/**
+ * Record that the agent authored `contributedChars` characters of `filePath`, whose
+ * new full content is `content` (last modified at `mtime`), returning the UPDATED
+ * attribution map (input not mutated — pure). The file's `agentContribution`
+ * ACCUMULATES across edits; `contentHash`/`mtime` are refreshed to the latest
+ * content so a later external edit (different hash) is detectable. A non-positive
+ * `contributedChars` still refreshes the hash/mtime without inflating the count
+ * (an edit that only deletes text contributes no authored characters). Parity:
+ * Claude's per-edit FileAttributionState update.
+ */
+export function recordFileContribution(
+  states: Record<string, FileAttributionState>,
+  filePath: string,
+  content: string,
+  contributedChars: number,
+  mtime: number,
+): Record<string, FileAttributionState> {
+  const prev = states[filePath];
+  const added = contributedChars > 0 ? contributedChars : 0;
+  return {
+    ...states,
+    [filePath]: {
+      contentHash: sha256Hex(content),
+      agentContribution: (prev?.agentContribution ?? 0) + added,
+      mtime,
+    },
+  };
+}
+
+/**
+ * Fraction (0..1) of a file's current size the agent authored, per its
+ * {@link FileAttributionState} — `agentContribution / totalChars`, clamped to
+ * [0,1] and `0` for an empty/zero-size file. Lets a commit surface report an
+ * "N% agent-authored" figure from a snapshot without re-reading the file.
+ */
+export function agentContributionRatio(state: FileAttributionState, totalChars: number): number {
+  if (totalChars <= 0) return 0;
+  return Math.min(1, Math.max(0, state.agentContribution / totalChars));
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,6 +2552,109 @@ export function cleanupStaleLocks(
     } catch { /* per-dir error isolated — never abort the sweep */ }
   }
   return cleaned;
+}
+
+// ---------------------------------------------------------------------------
+// Crash-recovery resume pointer — "the process died unclean last run → offer to
+// resume". Written on session start, refreshed during a run (an mtime bump), and
+// cleared on clean exit. If the process dies hard (crash / kill -9 / terminal
+// closed) the pointer survives so the next startup can detect it and offer resume.
+// ---------------------------------------------------------------------------
+
+/** Filename of the per-session-store crash-recovery pointer. */
+export const RESUME_POINTER_FILE = '.resume-pointer.json';
+
+/** A resume pointer older than this (measured by the file MTIME — NOT an embedded
+ *  timestamp — so a periodic no-content-change re-write serves as a liveness
+ *  refresh) is treated as stale and GC'd on read, so a crash-recovery offer never
+ *  keeps re-firing after a session is long abandoned (parity: Claude's bridge
+ *  pointer 4h rolling TTL). */
+export const RESUME_POINTER_TTL_MS = 4 * 60 * 60 * 1000; // 4h
+
+/** On-disk crash-recovery pointer payload. */
+export interface ResumePointer {
+  /** The session id to offer resuming. */
+  sessionId: string;
+  /** The invocation surface that wrote it (e.g. `'cli'`, `'detached'`). */
+  surface?: string;
+}
+
+function resumePointerPath(sessionDir: string): string {
+  return path.join(sessionDir, RESUME_POINTER_FILE);
+}
+
+/**
+ * Write (or REFRESH) the crash-recovery resume pointer for a session store. Called
+ * on session start and periodically during a run: re-writing with the same
+ * sessionId is a cheap no-content-change write whose only job is to bump the file
+ * MTIME — the rolling-staleness clock {@link readResumePointer} checks (parity:
+ * Claude's writeBridgePointer mtime-refresh idiom). A malformed sessionId is
+ * rejected (never persist garbage). Best-effort: a crash-recovery aid must never
+ * itself crash the session, so a write failure is swallowed.
+ */
+export function writeResumePointer(sessionDir: string, pointer: ResumePointer): void {
+  if (!isValidSessionId(pointer.sessionId)) return;
+  const payload: ResumePointer = {
+    sessionId: pointer.sessionId,
+    ...(typeof pointer.surface === 'string' && pointer.surface ? { surface: pointer.surface } : {}),
+  };
+  try {
+    secureMkdirSync(sessionDir);
+    atomicWriteFileSync(resumePointerPath(sessionDir), JSON.stringify(payload));
+  } catch { /* best effort — never crash on a recovery-aid write */ }
+}
+
+/**
+ * Clear the crash-recovery resume pointer (clean shutdown, or GC of a stale/corrupt
+ * pointer during a read). Best-effort — a missing file is a no-op. Parity: Claude's
+ * clearBridgePointer on clean exit.
+ */
+export function clearResumePointer(sessionDir: string): void {
+  try { fs.unlinkSync(resumePointerPath(sessionDir)); } catch { /* already gone */ }
+}
+
+/**
+ * Read the crash-recovery resume pointer for a session store, returning the pointer
+ * plus its `ageMs` (ms since last write, derived from the file MTIME — the rolling
+ * staleness anchor) or `null`. A missing / unreadable / schema-invalid / STALE
+ * (older than {@link RESUME_POINTER_TTL_MS}) pointer yields `null`; an invalid or
+ * stale pointer is additionally DELETED on read so a crashed session's offer
+ * self-heals and never re-fires forever (parity: Claude's readBridgePointer
+ * read-time GC). `now` is injectable for deterministic TTL tests.
+ */
+export function readResumePointer(
+  sessionDir: string,
+  now: () => number = Date.now,
+): (ResumePointer & { ageMs: number }) | null {
+  const file = resumePointerPath(sessionDir);
+  let mtimeMs: number;
+  let raw: string;
+  try {
+    // stat for mtime (the staleness anchor) then read; mtime IS returned data, not
+    // a TOCTOU guard — a vanished/unreadable file simply yields null below.
+    mtimeMs = fs.statSync(file).mtimeMs;
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return null; // missing / unreadable
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  const sessionId = (parsed as { sessionId?: unknown } | null)?.sessionId;
+  if (typeof sessionId !== 'string' || !isValidSessionId(sessionId)) {
+    clearResumePointer(sessionDir); // corrupt / foreign — GC so it can't wedge
+    return null;
+  }
+  const ageMs = Math.max(0, now() - mtimeMs);
+  if (ageMs > RESUME_POINTER_TTL_MS) {
+    clearResumePointer(sessionDir); // stale — GC and decline the offer
+    return null;
+  }
+  const surface = (parsed as { surface?: unknown }).surface;
+  return {
+    sessionId,
+    ...(typeof surface === 'string' ? { surface } : {}),
+    ageMs,
+  };
 }
 
 // ---------------------------------------------------------------------------
