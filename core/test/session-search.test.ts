@@ -9,6 +9,7 @@ import {
   toolUseSearchText,
   toolResultSearchText,
   extractRankingTranscript,
+  searchTranscript,
   flattenMessageText,
   renderableSearchText,
   attachmentSearchText,
@@ -1025,5 +1026,102 @@ describe('searchSessions / searchSessionsRanked — diagnostic trace', () => {
     assert.equal(searchSessions(tmpDir, 'needle').length, 1);
     const ranked = await searchSessionsRanked(tmpDir, 'needle', {});
     assert.equal(ranked.length, 1);
+  });
+});
+
+describe('searchTranscript — live in-memory transcript search (transcriptSearch.ts parity)', () => {
+  const transcript = [
+    { role: 'user', content: 'fix the typescript error' },
+    { role: 'assistant', content: 'I looked at the type definition' },
+    { role: 'user', content: 'now add a unit test' },
+    { role: 'assistant', content: 'done, the test passes now' },
+  ];
+
+  it('returns matching messages with index / role / snippet / score', () => {
+    const hits = searchTranscript(transcript, 'test');
+    // messages 2 and 3 contain "test"
+    assert.deepEqual(hits.map(h => h.index).sort(), [2, 3]);
+    const first = hits.find(h => h.index === 2)!;
+    assert.equal(first.role, 'user');
+    assert.ok(first.content.includes('test'));
+    assert.equal(first.score, 1); // single term, full coverage
+  });
+
+  it('empty query or empty transcript returns no matches', () => {
+    assert.deepEqual(searchTranscript(transcript, ''), []);
+    assert.deepEqual(searchTranscript(transcript, '   '), []);
+    assert.deepEqual(searchTranscript([], 'test'), []);
+    // non-array input is tolerated
+    assert.deepEqual(searchTranscript(undefined as unknown as unknown[], 'x'), []);
+  });
+
+  it('relevance ordering (default) puts the best score first, position breaks ties', () => {
+    const msgs = [
+      { role: 'user', content: 'alpha beta' },          // 1 of 2 terms
+      { role: 'assistant', content: 'alpha beta gamma' }, // 2 of 2 + phrase
+    ];
+    const hits = searchTranscript(msgs, 'alpha gamma');
+    assert.equal(hits[0].index, 1); // higher coverage ranks first
+  });
+
+  it('position ordering preserves transcript order regardless of score', () => {
+    const hits = searchTranscript(transcript, 'test', { ordering: 'position' });
+    assert.deepEqual(hits.map(h => h.index), [2, 3]);
+  });
+
+  it('respects the limit', () => {
+    const hits = searchTranscript(transcript, 'test', { limit: 1 });
+    assert.equal(hits.length, 1);
+  });
+
+  it('matches user-visible tool_use arguments via the shared cached extractor', () => {
+    const msgs = [
+      { role: 'assistant', content: [{ type: 'tool_use', input: { command: 'rg needle src' } }] },
+    ];
+    const hits = searchTranscript(msgs, 'needle');
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].index, 0);
+  });
+
+  it('does not match model-only system-reminder chrome (no phantom hits)', () => {
+    const msgs = [
+      { role: 'user', content: 'hello <system-reminder>secretphantom</system-reminder> world' },
+    ];
+    assert.deepEqual(searchTranscript(msgs, 'secretphantom'), []);
+    // the user-visible text around it still matches
+    assert.equal(searchTranscript(msgs, 'world').length, 1);
+  });
+
+  it('skips meta messages (rendered as chrome, not text)', () => {
+    const msgs = [
+      { role: 'user', isMeta: true, content: 'ephemeral control nudge' },
+      { role: 'user', content: 'real content here' },
+    ];
+    assert.deepEqual(searchTranscript(msgs, 'ephemeral'), []);
+    assert.equal(searchTranscript(msgs, 'real').length, 1);
+  });
+
+  it('fuzzy fallback: a short single-token typo surfaces a subsequence match below exact', () => {
+    const msgs = [{ role: 'user', content: 'test stop handler' }];
+    // "tststp" is a subsequence of "test stop" but not a substring
+    const hits = searchTranscript(msgs, 'tststp');
+    assert.equal(hits.length, 1);
+    assert.ok(hits[0].score < 1); // fuzzy tier scores strictly below a substring hit
+  });
+
+  it('fuzzy fallback does NOT fire when any substring hit exists', () => {
+    const msgs = [
+      { role: 'user', content: 'exact test match' },
+      { role: 'assistant', content: 'txe scattered letters' }, // subsequence of "test"? no — guard anyway
+    ];
+    const hits = searchTranscript(msgs, 'test');
+    // only the substring message matches; fuzzy tier is suppressed
+    assert.deepEqual(hits.map(h => h.index), [0]);
+  });
+
+  it('honors snippetChars for the result snippet', () => {
+    const long = 'x'.repeat(50) + ' needle ' + 'y'.repeat(50);
+    const hits = searchTranscript([{ role: 'user', content: long }], 'needle', { snippetChars: 20 });
+    assert.ok(hits[0].content.length <= 20);
   });
 });

@@ -648,6 +648,117 @@ export function searchSessions(
 }
 
 /**
+ * Result ordering for {@link searchTranscript}:
+ * - `'relevance'` (default): best relevance score first, earliest position breaks ties.
+ * - `'position'`: transcript order (earliest message first) — the ordering a live
+ *   find overlay navigates with next/prev (`n`/`N`), where a match's place in the
+ *   conversation, not its score, is what the user steps through.
+ */
+export type TranscriptOrdering = 'relevance' | 'position';
+
+/**
+ * @public One hit from {@link searchTranscript}: the matched message's position in
+ * the in-memory transcript (`index`), its `role`, a match-centered `content`
+ * snippet, and the relevance `score` (term coverage + literal/phrase bonus, or
+ * {@link SUBSEQUENCE_SCORE} for a fuzzy-tier hit).
+ */
+export interface TranscriptMatch {
+  /** Position of the matched message in the input array (0-based). */
+  index: number;
+  role: string;
+  /** Match-centered snippet (…before <match> after…), capped at `snippetChars`. */
+  content: string;
+  score: number;
+}
+
+/** @public Options for {@link searchTranscript}. */
+export interface TranscriptSearchOptions {
+  /** Max matches to return (default: all). */
+  limit?: number;
+  /** Max chars per result snippet (default {@link MAX_SNIPPET_CHARS}). */
+  snippetChars?: number;
+  /** Result ordering (default `'relevance'`; see {@link TranscriptOrdering}). */
+  ordering?: TranscriptOrdering;
+}
+
+/**
+ * @public Live, in-memory transcript search — the model-space counterpart to the
+ * disk-backed {@link searchSessions}. Given the CURRENT conversation's messages (as
+ * the engine holds them, including turns not yet flushed to disk) and a query, it
+ * returns the matching messages with a match-centered snippet, scored and ordered.
+ *
+ * It matches ONLY user-visible rendered text via the WeakMap-cached
+ * {@link renderableSearchText} (so a tool_use argument, tool_result body, recalled
+ * memory, or queued prompt is searchable while system-reminders / meta chrome /
+ * interrupt sentinels are not), and reuses that per-message cache so re-searching
+ * the same transcript on every keystroke does not re-flatten ~1.5MB of text (the
+ * "backspace hang") — mirroring the reference's `renderableSearchText`
+ * (transcriptSearch.ts L23-29). Shares every extraction/snippet/scoring helper with
+ * {@link searchSessions}, so there is one canonical searchable-text definition.
+ *
+ * Fuzzy tier: identical gating to {@link searchSessions} — only a single short
+ * token with NO substring hit anywhere in the transcript falls back to a
+ * subsequence match, scored strictly below every substring hit.
+ */
+export function searchTranscript(
+  messages: unknown[],
+  query: string,
+  options: TranscriptSearchOptions = {},
+): TranscriptMatch[] {
+  const { limit, snippetChars = MAX_SNIPPET_CHARS, ordering = 'relevance' } = options;
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  const phrase = query.toLowerCase().trim();
+  const terms = phrase.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+
+  const matches: TranscriptMatch[] = [];
+  let hadSubstringHit = false;
+  for (let index = 0; index < messages.length; index++) {
+    const msg = messages[index];
+    // Flatten once (cached) for the snippet; match against the cached lowered text.
+    const content = flattenMessageText(msg);
+    if (!content) continue;
+    const lower = renderableSearchText(msg);
+    const matchCount = terms.filter(t => lower.includes(t)).length;
+    if (matchCount > 0) {
+      hadSubstringHit = true;
+      const literalBonus = terms.length > 1 && lower.includes(phrase) ? 1 : 0;
+      matches.push({
+        index,
+        role: typeof (msg as { role?: unknown }).role === 'string' ? (msg as { role: string }).role : 'unknown',
+        content: matchSnippet(content, terms, phrase, snippetChars),
+        score: matchCount / terms.length + literalBonus,
+      });
+    }
+  }
+
+  // Fuzzy fallback: a short single-token query with NO substring hit anywhere in
+  // the transcript still surfaces messages by subsequence, ranked strictly below
+  // every substring hit (parity with searchSessions' fuzzy tier).
+  if (!hadSubstringHit && terms.length === 1 && phrase.length <= SUBSEQUENCE_MAX_QUERY_LEN) {
+    for (let index = 0; index < messages.length; index++) {
+      const msg = messages[index];
+      const content = flattenMessageText(msg);
+      if (!content) continue;
+      if (isSubsequence(renderableSearchText(msg), phrase)) {
+        matches.push({
+          index,
+          role: typeof (msg as { role?: unknown }).role === 'string' ? (msg as { role: string }).role : 'unknown',
+          content: matchSnippet(content, terms, phrase, snippetChars),
+          score: SUBSEQUENCE_SCORE,
+        });
+      }
+    }
+  }
+
+  const ordered =
+    ordering === 'position'
+      ? matches // already in transcript order
+      : matches.slice().sort((a, b) => b.score - a.score || a.index - b.index);
+  return typeof limit === 'number' ? ordered.slice(0, Math.max(0, limit)) : ordered;
+}
+
+/**
  * @public Optional re-ranker injected by the caller. Given the query and the
  * substring candidates, it returns the candidate `sessionId`s in the desired
  * order (best first). Core NEVER performs a provider/LLM call itself — a real
