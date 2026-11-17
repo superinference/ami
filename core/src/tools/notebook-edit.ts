@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import { trackFileHistory } from './file-history';
+import { captureLspBaseline } from './file-edit';
 import {
   validateFilePath,
   validateFileWritePath,
@@ -484,6 +485,16 @@ export const notebookEditTool: ToolDefinition = {
     // JSON.stringify cannot throw for this plain notebook object (no cycles / BigInt),
     // so it is computed outside the try to avoid an uncoverable catch arm.
     const updatedJson = JSON.stringify(notebook, null, 1);
+
+    // PARITY (additive, LSPDiagnosticRegistry.ts L51-56,L290-312,L372-379):
+    // snapshot the file's diagnostics into the LSP baseline BEFORE the destructive
+    // write — the per-file invalidation that makes cross-turn diagnostic dedup
+    // correct for notebook edits. Without it a notebook edit never rolled its
+    // per-file baseline, so a later `diagnostics` query would mis-dedup (surface
+    // pre-existing noise, or wrongly suppress the edit's own new issues). Reuses
+    // file_edit's shared, detached-aware, fire-and-forget helper (bounded-LRU
+    // retention lives in DiagnosticTracker) — no duplicate LSP-baseline logic.
+    captureLspBaseline(resolved, context);
 
     // Pre-edit history snapshot (recovery/undo fallback), mirroring file-edit.ts:
     // persist the ORIGINAL notebook bytes under <cwd>/.ami/file-history/ BEFORE the
