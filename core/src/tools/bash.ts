@@ -29,15 +29,33 @@ const MAX_OUTPUT_LENGTH = 200_000;
 // the "[truncated …]" banner, so an absurdly small BASH_MAX_OUTPUT_LENGTH is
 // clamped up to this minimum rather than producing a degenerate slice.
 const MIN_OUTPUT_LENGTH = 1_000;
+// Absolute ceiling for the resolved output cap. A mistaken or hostile
+// BASH_MAX_OUTPUT_LENGTH=999999999 would otherwise force the tool to buffer and
+// serialize ~1GB of command output per call (memory-exhaustion DoS). Parity with
+// Claude Code's validateBoundedIntEnvVar upper-limit cap: a value above this is
+// clamped down to it (and the capped status is debug-logged) rather than honored.
+const ABSOLUTE_MAX_OUTPUT_LENGTH = 50_000_000; // 50M chars
 const DEFAULT_TIMEOUT_MS = 120000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
 const _bashCache = new BashResultCache();
 
-function parseEnvMs(name: string): number | undefined {
+/**
+ * Resolve a millisecond env knob to a bounded positive integer, or `undefined`
+ * when absent/blank/invalid so the caller applies its own default. Routed through
+ * the single canonical {@link validateBoundedIntEnvVar} so every bash timeout
+ * knob gets the SAME defensive treatment the rest of the tree uses: NaN /
+ * non-positive values are rejected AND a value above `maxMs` is CAPPED (with the
+ * capped/invalid status debug-logged) rather than flowing through verbatim — a
+ * mistaken or hostile `BASH_MAX_TIMEOUT_MS=999999999` can no longer hang the
+ * agent for ~11 days. Parity: Claude Code's `validateBoundedIntEnvVar`
+ * upper-limit cap + invalid/capped reporting (envValidation.ts).
+ */
+function parseEnvMs(name: string, maxMs: number): number | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  const r = validateBoundedIntEnvVar(name, raw, { default: 0, min: 1, max: maxMs });
+  // 'default' (blank) and 'invalid' (NaN / < 1) both mean "let the caller decide".
+  return r.status === 'default' || r.status === 'invalid' ? undefined : r.effective;
 }
 
 /**
@@ -50,11 +68,16 @@ function parseEnvMs(name: string): number | undefined {
  * truncation math stays valid. Mirrors resolveBashTimeout's env-override pattern.
  */
 export function resolveBashMaxOutput(): number {
-  const raw = process.env.BASH_MAX_OUTPUT_LENGTH;
-  if (!raw) return MAX_OUTPUT_LENGTH;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return MAX_OUTPUT_LENGTH;
-  return Math.max(MIN_OUTPUT_LENGTH, n);
+  // Routed through the canonical bounded-int helper so an absent/non-positive
+  // value falls back to the default AND an out-of-range value is capped to
+  // ABSOLUTE_MAX_OUTPUT_LENGTH (memory-exhaustion guard) instead of forcing the
+  // tool to buffer gigabytes — parity with Claude Code's upper-limit cap.
+  const r = validateBoundedIntEnvVar('BASH_MAX_OUTPUT_LENGTH', process.env.BASH_MAX_OUTPUT_LENGTH, {
+    default: MAX_OUTPUT_LENGTH,
+    min: 1,
+    max: ABSOLUTE_MAX_OUTPUT_LENGTH,
+  });
+  return Math.max(MIN_OUTPUT_LENGTH, r.effective);
 }
 
 /**
@@ -63,13 +86,13 @@ export function resolveBashMaxOutput(): number {
  * Code. A per-call `timeout` still wins but is clamped to the max.
  */
 export function resolveBashTimeout(inputTimeout?: unknown): number {
-  const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS;
+  const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS', HARD_MAX_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
   // [functional parity] The effective ceiling must never be below the configured
   // default. Mirror Claude Code's getMaxBashTimeoutMs, which floors the max UP to
   // the default via Math.max — a BASH_MAX_TIMEOUT_MS misconfigured below the
   // default is raised to the default rather than silently shrinking every
   // command's timeout below the operator's chosen default.
-  const max = Math.max(parseEnvMs('BASH_MAX_TIMEOUT_MS') ?? HARD_MAX_TIMEOUT_MS, def);
+  const max = Math.max(parseEnvMs('BASH_MAX_TIMEOUT_MS', HARD_MAX_TIMEOUT_MS) ?? HARD_MAX_TIMEOUT_MS, def);
   // [functional parity] semanticNumber coercion: providers routinely serialize a
   // numeric `timeout` as a STRING ("5000"). Coerce it so a numeric string is
   // honored and any non-numeric/garbage shape falls back to the default.
@@ -88,7 +111,7 @@ export function resolveBashTimeout(inputTimeout?: unknown): number {
  * timeout is a no-op (the timeout already bounds the run).
  */
 export function resolveAssistantBlockingBudget(): number | undefined {
-  return parseEnvMs('BASH_ASSISTANT_BLOCKING_BUDGET_MS');
+  return parseEnvMs('BASH_ASSISTANT_BLOCKING_BUDGET_MS', HARD_MAX_TIMEOUT_MS);
 }
 
 /** Ceiling / default for a backgrounded (run_in_background) command's own timeout. */
@@ -108,7 +131,7 @@ const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
 export function resolveBackgroundTimeoutMs(inputTimeout: unknown): number {
   const coerced = coerceNumber(inputTimeout, 0);
   const requested = coerced > 0 ? coerced : undefined;
-  const envMs = parseEnvMs('SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS');
+  const envMs = parseEnvMs('SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS', MAX_BG_TIMEOUT_MS);
   return Math.min(requested ?? envMs ?? DEFAULT_BG_TIMEOUT_MS, MAX_BG_TIMEOUT_MS);
 }
 
