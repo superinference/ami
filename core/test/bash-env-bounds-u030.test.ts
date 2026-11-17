@@ -5,6 +5,7 @@ import {
   resolveBashTimeout,
   resolveAssistantBlockingBudget,
   resolveBackgroundTimeoutMs,
+  BASH_MAX_OUTPUT_UPPER_LIMIT,
 } from '../src/tools/bash';
 
 /**
@@ -17,7 +18,6 @@ import {
  */
 
 // Mirrors the module-private ceilings in bash.ts.
-const ABSOLUTE_MAX_OUTPUT_LENGTH = 50_000_000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
 const MAX_BG_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -41,11 +41,14 @@ describe('U030: bounded-int capping of bash env knobs', () => {
     restore('SUPERINFERENCE_BACKGROUND_COMMAND_TIMEOUT_MS', saved.bg);
   });
 
-  it('caps an out-of-range BASH_MAX_OUTPUT_LENGTH to the absolute ceiling', () => {
+  it('caps an out-of-range BASH_MAX_OUTPUT_LENGTH to the enforced upper bound', () => {
     // RED on revert: the old read returned Math.max(MIN, 999_999_999) verbatim,
     // forcing the tool to buffer ~1GB of output per call.
-    process.env.BASH_MAX_OUTPUT_LENGTH = String(ABSOLUTE_MAX_OUTPUT_LENGTH + 1);
-    assert.equal(resolveBashMaxOutput(), ABSOLUTE_MAX_OUTPUT_LENGTH);
+    // U208 tightened the ceiling from the earlier 50M "absolute" bound to the
+    // generous 200k default (BASH_MAX_OUTPUT_UPPER_LIMIT): even 50M would let a
+    // single call exhaust the context, so the enforced cap IS the default.
+    process.env.BASH_MAX_OUTPUT_LENGTH = String(BASH_MAX_OUTPUT_UPPER_LIMIT + 1);
+    assert.equal(resolveBashMaxOutput(), BASH_MAX_OUTPUT_UPPER_LIMIT);
   });
 
   it('still honors an in-range BASH_MAX_OUTPUT_LENGTH verbatim', () => {

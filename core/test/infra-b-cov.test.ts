@@ -865,9 +865,10 @@ describe('hooks — command/http decision return shapes', () => {
     assert.equal(r.action, 'modify');
     assert.deepEqual((r as any).updatedInput, { command: 'safe' });
 
-    // ask output -> runHookByType returns 'ASK:' which the preToolUse closure treats as allow
+    // ask output -> the preToolUse hook surfaces a distinct 'ask' action (Claude parity:
+    // permissionDecision 'ask' forces a permission prompt instead of silently allowing).
     const ask = load([{ event: 'preToolUse', hook: { type: 'command', command: `echo '{"decision":"ask"}'` } }]);
-    assert.equal((await ask.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {} } as any)).action, 'allow');
+    assert.equal((await ask.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {} } as any)).action, 'ask');
   });
 });
 

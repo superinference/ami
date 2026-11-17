@@ -34,7 +34,6 @@ const MIN_OUTPUT_LENGTH = 1_000;
 // serialize ~1GB of command output per call (memory-exhaustion DoS). Parity with
 // Claude Code's validateBoundedIntEnvVar upper-limit cap: a value above this is
 // clamped down to it (and the capped status is debug-logged) rather than honored.
-const ABSOLUTE_MAX_OUTPUT_LENGTH = 50_000_000; // 50M chars
 const DEFAULT_TIMEOUT_MS = 120000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
 const _bashCache = new BashResultCache();
@@ -78,14 +77,20 @@ export const BASH_MAX_OUTPUT_UPPER_LIMIT = MAX_OUTPUT_LENGTH;
  * implementation of "parse a bounded output limit", shared with the task cap.
  */
 export function resolveBashMaxOutput(): number {
-  // Routed through the canonical bounded-int helper so an absent/non-positive
-  // value falls back to the default AND an out-of-range value is capped to
-  // ABSOLUTE_MAX_OUTPUT_LENGTH (memory-exhaustion guard) instead of forcing the
-  // tool to buffer gigabytes — parity with Claude Code's upper-limit cap.
+  // Routed through the canonical bounded-int helper so an absent/non-positive value
+  // falls back to the default AND an out-of-range value is capped to
+  // BASH_MAX_OUTPUT_UPPER_LIMIT (DoS/memory-exhaustion guard) instead of forcing the
+  // tool to buffer gigabytes — parity with Claude Code's upper-limit cap (U208).
+  // min:1 (not MIN_OUTPUT_LENGTH) so a small-but-positive value is accepted and then
+  // clamped UP to the floor via Math.max — whereas 0 / negative / NaN are rejected as
+  // invalid and fall back to the default. An over-large value is capped to the upper
+  // limit; Math.max then re-asserts the floor (UPPER_LIMIT >= MIN_OUTPUT_LENGTH, so it
+  // is a no-op for the cap path). One expression satisfies both the 1000-char floor
+  // (bash-tool-parity) and the enforced upper bound (U208).
   const r = validateBoundedIntEnvVar('BASH_MAX_OUTPUT_LENGTH', process.env.BASH_MAX_OUTPUT_LENGTH, {
     default: MAX_OUTPUT_LENGTH,
     min: 1,
-    max: ABSOLUTE_MAX_OUTPUT_LENGTH,
+    max: BASH_MAX_OUTPUT_UPPER_LIMIT,
   });
   return Math.max(MIN_OUTPUT_LENGTH, r.effective);
 }
