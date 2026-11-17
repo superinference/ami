@@ -195,7 +195,8 @@ export {
   stripTrailingSep,
   validatePathExpansionSafety,
 } from './utils/path';
-export { generateTitle, sanitizeTitle, truncateTitle, generateBranchName, sanitizeBranchSlug } from './title-generator';
+export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug } from './title-generator';
+export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult } from './title-generator';
 export { stripDisplayTags } from './utils/display-tags';
 export { ProcessManager, TASK_STATUS, TASK_KINDS, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
 export type { BackgroundProcess, TaskKind, TaskStatus, ProgressDelta } from './process-manager';

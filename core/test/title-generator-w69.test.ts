@@ -43,11 +43,13 @@ function seam(text: string): typeof streamChatCompletion {
   }) as unknown as typeof streamChatCompletion;
 }
 
-/** Seam that records the messages it was handed, then emits `text`. */
+/** Seam that records the messages it was handed, then emits `text`. The title
+ *  request is split into a system (instruction) + user (conversation) message for
+ *  prompt-injection isolation, so capture the JOINED content of every message. */
 function capturingSeam(text: string, sink: { prompt?: string }): typeof streamChatCompletion {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (async function* (_p: any, messages: any[]) {
-    sink.prompt = messages[0]?.content as string;
+    sink.prompt = messages.map((m) => m?.content as string).join('\n');
     yield { type: 'content_delta', text } as any;
     yield { type: 'done' } as any;
   }) as unknown as typeof streamChatCompletion;

@@ -126,7 +126,17 @@ export const _enterWorktreeHooks = {
     provider: import('../types').ProviderConfig,
     signal?: AbortSignal,
   ): Promise<string> =>
-    require('../title-generator').generateBranchName(description, provider, undefined, undefined, signal),
+    require('../title-generator').generateBranchName(
+      description, provider, undefined, undefined, signal,
+      // Introspection sink (parity: Claude's logResult): record the structured
+      // outcome of the branch-name background query so a failed/aborted/unparseable
+      // slug generation is observable instead of silently collapsing to the fallback.
+      (r: import('../title-generator').AuxQueryResult) => {
+        if (r.type === 'error') {
+          require('../logger').log('worktree', `branch-name query ${r.reason}${r.error ? `: ${r.error}` : ''}`, { source: r.source, model: r.model }, 'warning');
+        }
+      },
+    ),
 };
 
 /**

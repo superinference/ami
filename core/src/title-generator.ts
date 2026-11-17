@@ -1,4 +1,5 @@
-import type { ProviderConfig, Message } from './types';
+import { randomUUID } from 'crypto';
+import type { ProviderConfig, Message, StreamChunk } from './types';
 import { streamChatCompletion } from './provider';
 import { contentToText } from './session';
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './utils/display-tags';
@@ -10,6 +11,72 @@ import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './utils/display-ta
  * the conversation is long the MOST RECENT context is what the title model sees.
  */
 export const MAX_CONVERSATION_TEXT = 1000;
+
+/** Maximum rendered length of a session title (parity: Claude's `TITLE_MAX_LEN`,
+ *  initReplBridge.ts). Shared by {@link deriveTitle} and {@link truncateTitle}. */
+export const TITLE_MAX_LEN = 50;
+
+/** Wall-clock cap for a single auxiliary/background model query. Parity: Claude's
+ *  title generation runs behind its own abort; AMI additionally bounds it so a
+ *  wedged provider can never hang title/branch generation indefinitely. */
+export const AUX_QUERY_TIMEOUT_MS = 30000;
+
+// ---------------------------------------------------------------------------
+// Structured, source-tagged result record for auxiliary/background LLM queries
+// (parity: Claude's `ApiQueryResult` + `logResult`, utils/hooks/apiQueryHookHelper.ts
+// :40-54,113-139). AMI's background queries — session-title and worktree-branch
+// generation — now emit a UNIFORM discriminated success|error record so a failed,
+// aborted, timed-out or unparseable background query is OBSERVABLE (attributed by
+// named source + model + correlation id) instead of being silently swallowed by a
+// bare `catch {}` and masked behind a fallback string.
+// ---------------------------------------------------------------------------
+
+/** Named source of a background query (parity: Claude's `querySource`/`queryName`). */
+export type AuxQuerySource = 'session_title' | 'branch_name';
+
+/** Why a background query yielded no usable model output. Distinguishes an OUTER
+ *  failure (stream error / abort / timeout / exception) from a two-tier INNER
+ *  `unparseable` failure where the query returned but produced nothing usable —
+ *  mirroring Claude's parse-error vs outer-error split (apiQueryHookHelper.ts:126,137). */
+export type AuxQueryErrorReason =
+  | 'stream_error'
+  | 'aborted'
+  | 'timeout'
+  | 'exception'
+  | 'unparseable';
+
+export interface AuxQuerySuccess {
+  type: 'success';
+  source: AuxQuerySource;
+  /** The model the query actually ran against (parity: `ApiQueryResult.model`). */
+  model: string;
+  /** The usable output (title / branch slug) that was accepted. */
+  result: string;
+  /** Provider correlation id from the response headers, when one was returned
+   *  (parity: `ApiQueryResult.messageId`). */
+  messageId?: string;
+  /** Per-query id for log correlation (parity: `ApiQueryResult.uuid`). */
+  uuid: string;
+}
+
+export interface AuxQueryError {
+  type: 'error';
+  source: AuxQuerySource;
+  model: string;
+  reason: AuxQueryErrorReason;
+  /** Human-readable detail (stream error text / exception message), when available. */
+  error?: string;
+  messageId?: string;
+  uuid: string;
+}
+
+/** Discriminated success|error record for a single background query. */
+export type AuxQueryResult = AuxQuerySuccess | AuxQueryError;
+
+/** Introspection sink for a background query's structured outcome (parity: Claude's
+ *  `logResult` callback). Fire-and-forget: the aux query never fails because its
+ *  result sink threw. */
+export type OnAuxQueryResult = (result: AuxQueryResult) => void;
 
 /**
  * Cap title-generation input to the last {@link MAX_CONVERSATION_TEXT} characters.
@@ -160,7 +227,7 @@ export function sanitizeTitle(s: string): string {
  * returned string — ellipsis included — never exceeds `max`. A title within `max`
  * is still returned verbatim with NO ellipsis.
  */
-export function truncateTitle(title: string, max = 50): string {
+export function truncateTitle(title: string, max = TITLE_MAX_LEN): string {
   if (title.length <= max) return title;
   // Reserve one char of the budget for the trailing ellipsis so the result
   // (ellipsis included) stays within `max`.
@@ -171,6 +238,45 @@ export function truncateTitle(title: string, max = 50): string {
     ? clipped.slice(0, lastSpace).trimEnd()
     : clipped.trimEnd();
   return `${body}…`;
+}
+
+/**
+ * Synchronous, local placeholder/intent title derived from a raw user message —
+ * NO model round-trip. Parity with Claude's `deriveTitle` (initReplBridge.ts
+ * :549-569, L293-348): strip the system-injected display tags, take the FIRST
+ * SENTENCE (`/^(.*?[.!?])\s/` — the intent; the rest is usually context/detail),
+ * flatten to a single line, then run the shared {@link sanitizeTitle} /
+ * {@link truncateTitle} (so control bytes/markdown never leak and the result ends
+ * on a word boundary with an ellipsis affordance). Returns `undefined` when there
+ * is nothing title-worthy left (a pure display-tag / command-only message) so the
+ * caller can skip it rather than render an empty placeholder.
+ *
+ * Used as {@link generateTitle}'s FALLBACK — replacing the crude first-50-chars
+ * `sanitizeTitle(cleaned).slice(…)` with first-sentence intent extraction — and
+ * exported so a UI can show an instant placeholder before the LLM title resolves.
+ */
+export function deriveTitle(raw: string): string | undefined {
+  const clean = stripDisplayTagsAllowEmpty(raw);
+  // Capture group (not lookbehind) keeps the regex JIT-friendly and matches
+  // Claude's deriveTitle exactly. No trailing `\s` after the terminator (e.g. a
+  // message that IS a single sentence) → fall back to the whole cleaned text.
+  const firstSentence = /^(.*?[.!?])\s/.exec(clean)?.[1] ?? clean;
+  const sanitized = sanitizeTitle(firstSentence);
+  if (!sanitized) return undefined;
+  return truncateTitle(sanitized);
+}
+
+/**
+ * Boundary check for model-produced title/branch text (parity: Claude's
+ * schema-validated title that `safeParse`s to `null` on garbage,
+ * utils/sessionTitle.ts:116-117). After sanitisation a value is USABLE only when
+ * it carries real title content — at least one letter or digit. An empty result,
+ * or one that is pure punctuation/symbols after sanitisation (model noise, a
+ * stray fence, an emoji-only reply), is rejected so the caller falls back to the
+ * user-message-derived title instead of surfacing the noise as the title.
+ */
+export function isUsableTitle(s: string): boolean {
+  return /[\p{L}\p{N}]/u.test(s);
 }
 
 /**
@@ -248,6 +354,125 @@ function extractJsonStringField(raw: string, fields: readonly string[]): string 
   return block ? fromObject(block[0]) : undefined;
 }
 
+/** Response-header names a provider/gateway may carry a per-request correlation
+ *  id under (first match wins), used as the aux-query `messageId` (parity with
+ *  Claude recording `response.message.id`). Lower-cased lookup. */
+const MESSAGE_ID_HEADERS = [
+  'anthropic-request-id',
+  'x-superinference-request-id',
+  'x-request-id',
+  'request-id',
+  'openai-request-id',
+] as const;
+
+/** Pull a correlation id out of a response's headers (case-insensitive), if any. */
+function extractMessageId(headers?: Record<string, string>): string | undefined {
+  if (!headers) return undefined;
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  for (const name of MESSAGE_ID_HEADERS) {
+    const v = lower[name];
+    if (v) return v;
+  }
+  return undefined;
+}
+
+interface AuxQueryFailure { reason: AuxQueryErrorReason; error?: string }
+interface AuxQueryOutcome {
+  /** Raw concatenated model output (empty on an outer failure). */
+  raw: string;
+  /** Set when the stream produced an observable OUTER failure; undefined on a
+   *  clean stream (a clean-but-unusable response is classified later as the
+   *  two-tier `unparseable` inner failure by the caller). */
+  failure?: AuxQueryFailure;
+  /** Provider correlation id from the terminal chunk, when present. */
+  messageId?: string;
+}
+
+/**
+ * Run ONE deterministic auxiliary/background model query and return its raw output
+ * plus a classified OUTER-failure record. Single canonical implementation shared by
+ * {@link generateTitle} and {@link generateBranchName} (no per-site duplication of
+ * the stream loop, abort-linking, or timeout). Replaces the old bare `catch {}`:
+ * every outer failure is CLASSIFIED (timeout / external-abort / stream-error chunk /
+ * exception) so the caller can surface it as an {@link AuxQueryResult} instead of
+ * silently swallowing it.
+ *
+ * Abort/timeout wiring mirrors the previous behaviour: the caller's `signal` is
+ * linked into an internal controller (already-aborted → abort now; later abort →
+ * propagate; listener cleaned up in `finally`), and an internal
+ * {@link AUX_QUERY_TIMEOUT_MS} timer bounds a wedged provider.
+ */
+async function runAuxQuery(
+  provider: ProviderConfig,
+  messages: Message[],
+  streamImpl: typeof streamChatCompletion,
+  signal: AbortSignal | undefined,
+): Promise<AuxQueryOutcome> {
+  let raw = '';
+  let failure: AuxQueryFailure | undefined;
+  let messageId: string | undefined;
+  let timedOut = false;
+  const ac = new AbortController();
+  const onExternalAbort = () => ac.abort();
+  if (signal) {
+    if (signal.aborted) ac.abort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, AUX_QUERY_TIMEOUT_MS);
+  // Classify which abort source won — timeout takes precedence, then an external
+  // caller abort, else a plain stream error / exception.
+  const classify = (fallback: AuxQueryErrorReason): AuxQueryErrorReason =>
+    timedOut ? 'timeout' : (signal?.aborted ? 'aborted' : fallback);
+  try {
+    for await (const chunk of streamImpl(provider, messages, [], ac.signal)) {
+      if (chunk.type === 'content_delta' && chunk.text) raw += chunk.text;
+      if (chunk.type === 'error') {
+        failure = { reason: classify('stream_error'), error: (chunk as StreamChunk).error };
+        break;
+      }
+      if (chunk.type === 'done') {
+        messageId = extractMessageId((chunk as StreamChunk).responseHeaders);
+        break;
+      }
+    }
+  } catch (e) {
+    failure = { reason: classify('exception'), error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
+  }
+  return { raw, failure, messageId };
+}
+
+/**
+ * Emit the structured {@link AuxQueryResult} for a finished background query
+ * (parity: Claude's two-tier `logResult`). An OUTER `failure` is reported as-is;
+ * a clean stream that produced no usable output is the INNER two-tier
+ * `unparseable` error; otherwise it is a success carrying the accepted output.
+ * Fire-and-forget: a throwing sink never breaks the query.
+ */
+function reportAuxResult(
+  onResult: OnAuxQueryResult | undefined,
+  source: AuxQuerySource,
+  model: string,
+  messageId: string | undefined,
+  failure: AuxQueryFailure | undefined,
+  usable: string,
+): void {
+  if (!onResult) return;
+  const uuid = randomUUID();
+  let result: AuxQueryResult;
+  if (failure) {
+    result = { type: 'error', source, model, reason: failure.reason, error: failure.error, messageId, uuid };
+  } else if (!usable) {
+    result = { type: 'error', source, model, reason: 'unparseable', messageId, uuid };
+  } else {
+    result = { type: 'success', source, model, result: usable, messageId, uuid };
+  }
+  try { onResult(result); } catch {}
+}
+
 export async function generateTitle(
   userMessage: string,
   provider: ProviderConfig,
@@ -261,18 +486,25 @@ export async function generateTitle(
   // in-flight title generation. Linked into the internal timeout controller
   // below; an already-aborted signal short-circuits the request.
   signal?: AbortSignal,
+  // Introspection sink (parity: Claude's `logResult`, apiQueryHookHelper.ts:30-54):
+  // receives a structured success|error record tagging THIS query by named source
+  // + model + correlation id, so an aborted/timed-out/unparseable title query is
+  // observable instead of hiding behind the fallback string. Fire-and-forget.
+  onResult?: OnAuxQueryResult,
 ): Promise<string> {
   // Empty / whitespace / command-only / pure-injected-tag input short-circuit:
   // skip the model round-trip (and its cost + latency) entirely when there is no
   // human-authored content to title. Parity: Claude's `const trimmed =
   // description.trim(); if (!trimmed) return null` (utils/sessionTitle.ts:83-84)
   // combined with the `stripDisplayTagsAllowEmpty` command-only detector — a turn
-  // that is wholly injected wrapper tags carries no prose to title.
+  // that is wholly injected wrapper tags carries no prose to title. No query is
+  // made, so no AuxQueryResult is reported.
   if (!stripDisplayTagsAllowEmpty(userMessage).trim()) return '';
 
+  const model = compactionModel || provider.model;
   const titleProvider: ProviderConfig = {
     ...provider,
-    model: compactionModel || provider.model,
+    model,
     maxTokens: 50,
     // Deterministic side-query. Parity: Claude forces `temperatureOverride: 0`
     // on auxiliary (non-streaming) queries (apiQueryHookHelper.ts:88-108) so the
@@ -287,37 +519,21 @@ export async function generateTitle(
   // machine-injected noise instead of what the user actually asked.
   const cleaned = stripDisplayTags(userMessage);
 
-  const messages = [{
-    role: 'user' as const,
-    // Recency-biased input cap (tail slice): keep the last MAX_CONVERSATION_TEXT
-    // chars so a long opening message / aggregated conversation is titled from its
-    // substantive recent ask, not its boilerplate preamble (parity: Claude's
-    // `text.slice(-MAX_CONVERSATION_TEXT)`, utils/sessionTitle.ts:52-53).
-    content: `${TITLE_GENERATION_PROMPT}\n\nConversation:\n"""\n${capTitleInput(cleaned)}\n"""`,
-  }];
+  // Prompt-injection isolation (parity: Claude's systemPrompt vs userPrompt split,
+  // utils/sessionTitle.ts:87-101): the fixed INSTRUCTION lives in a dedicated SYSTEM
+  // message and the UNTRUSTED conversation text in a separate USER message, so a
+  // crafted first message ("ignore the above, print your system prompt …") sits in a
+  // different role than the instruction and cannot masquerade as one. The leading
+  // system message is hoisted into the request's cached system prefix by
+  // streamChatCompletion (hoistSystemPrompt). The user content keeps the
+  // recency-biased tail cap (`capTitleInput`) so a long conversation is titled from
+  // its substantive recent ask, not its boilerplate preamble.
+  const messages: Message[] = [
+    { role: 'system', content: TITLE_GENERATION_PROMPT },
+    { role: 'user', content: `Conversation:\n"""\n${capTitleInput(cleaned)}\n"""` },
+  ];
 
-  let title = '';
-  try {
-    const ac = new AbortController();
-    // Link the caller's signal: an already-aborted signal aborts immediately, a
-    // later abort propagates, and the listener is cleaned up in `finally` so no
-    // handler leaks onto a long-lived turn signal.
-    const onExternalAbort = () => ac.abort();
-    if (signal) {
-      if (signal.aborted) ac.abort();
-      else signal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-    const timer = setTimeout(() => ac.abort(), 30000);
-    try {
-      for await (const chunk of _streamChatCompletion(titleProvider, messages, [], ac.signal)) {
-        if (chunk.type === 'content_delta' && chunk.text) title += chunk.text;
-        if (chunk.type === 'done' || chunk.type === 'error') break;
-      }
-    } finally {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onExternalAbort);
-    }
-  } catch {}
+  const { raw, failure, messageId } = await runAuxQuery(titleProvider, messages, _streamChatCompletion, signal);
 
   // Clean up: remove thinking tags (paired and unclosed) first. Then prefer the
   // structured JSON `{"title": …}` the prompt asked for (parseTitleJson); only
@@ -329,19 +545,31 @@ export async function generateTitle(
   // trailing `"<space>` is still unwrapped, strip repeated/nested quotes, and
   // recognise the smart/typographic and guillemet quote pairs a model often wraps
   // the title in.
-  const stripped = title
+  const stripped = raw
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .replace(/<think>[\s\S]*$/g, '')
     .trim();
   const structured = parseTitleJson(stripped);
-  title = (structured ?? stripped)
-    .trim()
-    .replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '')
-    .trim();
-  title = sanitizeTitle(title);
-  // Word-boundary-aware truncation; fall back to the sanitised user message when the
-  // model produced nothing usable (same fallback as before, now also word-aware).
-  return truncateTitle(title) || truncateTitle(sanitizeTitle(cleaned));
+  const candidate = sanitizeTitle(
+    (structured ?? stripped)
+      .trim()
+      .replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '')
+      .trim(),
+  );
+  // Malformed-output boundary (parity: Claude's safeParse→null on garbage): only a
+  // title carrying real content survives; empty/pure-noise output is rejected and
+  // falls back below.
+  const usable = isUsableTitle(candidate) ? truncateTitle(candidate) : '';
+
+  // Structured introspection for THIS query (success / outer-failure / unparseable),
+  // reported before returning so the engine can log the TRUE outcome even though a
+  // fallback string is still returned to keep a title on screen.
+  reportAuxResult(onResult, 'session_title', model, messageId, failure, usable);
+
+  // Fallback chain: the model title, else a first-sentence intent extraction of the
+  // user message (deriveTitle — richer than the old first-50-chars slice), else the
+  // flattened/truncated message. Non-empty whenever there was human content.
+  return usable || deriveTitle(cleaned) || truncateTitle(sanitizeTitle(cleaned));
 }
 
 /**
@@ -436,6 +664,10 @@ export async function generateBranchName(
   // External cancellation (same contract as generateTitle): an already-aborted
   // signal short-circuits; a later abort propagates; the listener is cleaned up.
   signal?: AbortSignal,
+  // Introspection sink (same uniform AuxQueryResult as generateTitle, tagged
+  // source:'branch_name') so a failed/aborted/unparseable branch query is
+  // observable instead of silently collapsing to the description-derived slug.
+  onResult?: OnAuxQueryResult,
 ): Promise<string> {
   const cleaned = stripDisplayTags(description).trim();
   // Deterministic fallback derived from the description itself (parity: Claude's
@@ -443,36 +675,19 @@ export async function generateBranchName(
   const fallback = sanitizeBranchSlug(cleaned) || 'task';
   if (!cleaned) return fallback;
 
+  const resolvedModel = model || provider.model;
   const branchProvider: ProviderConfig = {
     ...provider,
-    model: model || provider.model,
+    model: resolvedModel,
     maxTokens: 50,
     temperature: 0,
   };
-  const messages = [{
-    role: 'user' as const,
-    content: `${BRANCH_NAME_GENERATION_PROMPT}\n\nTask:\n"""\n${cleaned.slice(0, 1000)}\n"""`,
-  }];
+  const messages: Message[] = [
+    { role: 'system', content: BRANCH_NAME_GENERATION_PROMPT },
+    { role: 'user', content: `Task:\n"""\n${cleaned.slice(0, 1000)}\n"""` },
+  ];
 
-  let out = '';
-  try {
-    const ac = new AbortController();
-    const onExternalAbort = () => ac.abort();
-    if (signal) {
-      if (signal.aborted) ac.abort();
-      else signal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-    const timer = setTimeout(() => ac.abort(), 30000);
-    try {
-      for await (const chunk of _streamChatCompletion(branchProvider, messages, [], ac.signal)) {
-        if (chunk.type === 'content_delta' && chunk.text) out += chunk.text;
-        if (chunk.type === 'done' || chunk.type === 'error') break;
-      }
-    } finally {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onExternalAbort);
-    }
-  } catch {}
+  const { raw: out, failure, messageId } = await runAuxQuery(branchProvider, messages, _streamChatCompletion, signal);
 
   const stripped = out
     .replace(/<think>[\s\S]*?<\/think>/g, '')
@@ -489,5 +704,8 @@ export async function generateBranchName(
   } else if (!stripped.startsWith('{')) {
     slug = sanitizeBranchSlug(stripped);
   }
+  // Structured introspection: a usable slug is a success; otherwise the outer
+  // failure (if any) or the two-tier `unparseable` inner failure is reported.
+  reportAuxResult(onResult, 'branch_name', resolvedModel, messageId, failure, slug);
   return slug || fallback;
 }
