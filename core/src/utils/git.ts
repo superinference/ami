@@ -230,6 +230,39 @@ export function resolveRef(cwd: string, ref: string): string | null {
   return readRefFrom(gitDir, ref, 0);
 }
 
+/**
+ * In-progress (transient) multi-step git operations, keyed by the on-disk marker
+ * the operation leaves in the git dir, in the priority order git itself resolves
+ * them. Mirrors Claude Code's `isGitTransientState` indicator set
+ * (utils/commitAttribution.ts) plus `REVERT_HEAD` for an in-progress revert.
+ */
+const GIT_TRANSIENT_MARKERS: ReadonlyArray<readonly [marker: string, label: string]> = [
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+  ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['REVERT_HEAD', 'revert'],
+  ['BISECT_LOG', 'bisect'],
+];
+
+/**
+ * Detect whether the repository at `cwd` is mid-way through a transient multi-step
+ * git operation — an in-progress rebase, merge, cherry-pick, revert, or bisect.
+ * Returns the operation label (e.g. `'rebase'`, `'merge'`) or `null` when the tree
+ * is in a normal state (or `cwd` is not a git working tree). Pure fs — reads the
+ * marker files git drops in the git dir; no git subprocess. Resolves the real git
+ * dir first (follows a worktree/submodule `.git` file + `commondir`) so a linked
+ * worktree's in-progress operation is detected correctly.
+ */
+export function detectGitTransientState(cwd: string): string | null {
+  const gitDir = resolveGitDir(cwd);
+  if (!gitDir) return null;
+  for (const [marker, label] of GIT_TRANSIENT_MARKERS) {
+    if (fs.existsSync(path.join(gitDir, marker))) return label;
+  }
+  return null;
+}
+
 /** Common default-branch names, in the order git itself tends to prefer them. */
 const DEFAULT_REMOTE_BASE_CANDIDATES = ['origin/main', 'origin/staging', 'origin/master'] as const;
 

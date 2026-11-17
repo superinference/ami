@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand, resolveTmpBase } from '../utils/shell';
+import { detectGitTransientState } from '../utils/git';
 import { scanForSecrets } from './tool-utils';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
@@ -63,27 +64,46 @@ export const _gitCommitFs = {
   execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
 };
 
-function buildCommitEnv(): NodeJS.ProcessEnv {
+/**
+ * Resolve the client-surface identifier that originated this commit, so git
+ * hooks / downstream tooling can see which frontend drove it. Parity with Claude
+ * Code's `getClientSurface()` (`CLAUDE_CODE_ENTRYPOINT ?? 'cli'`): AMI prefers its
+ * own `AMI_ENTRYPOINT`, then honors `CLAUDE_CODE_ENTRYPOINT` for cross-tool
+ * compatibility, and defaults to `'cli'`. A blank/whitespace value falls back to
+ * the default rather than stamping an empty surface.
+ */
+export function resolveClientSurface(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.AMI_ENTRYPOINT ?? env.CLAUDE_CODE_ENTRYPOINT;
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : 'cli';
+}
+
+export function buildCommitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   env.GIT_EDITOR = 'false';
   env.GIT_PAGER = 'cat';
   env.GIT_TERMINAL_PROMPT = '0';
   env.AI_AGENT = 'superinference';
+  env.AI_SURFACE = resolveClientSurface(env);
   return env;
 }
 
 /**
  * Resolve the commit trailer to append for a repo at `cwd`, honoring (in order):
- *  1. `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` — suppress the trailer (→ `null`).
- *  2. The merged config's `attribution.commit` (parity: Claude Code's
+ *  1. The merged config's `attribution.commit` (parity: Claude Code's
  *     `attribution.commit` setting): a non-empty string REPLACES the default AMI
- *     trailer; the empty string `""` suppresses it (→ `null`); absent → default.
+ *     trailer; the empty string `""` suppresses it (→ `null`). When explicitly set
+ *     it takes PRECEDENCE over the deprecated binary env opt-out below — matching
+ *     Claude Code, whose `attribution` setting overrides the legacy
+ *     `includeCoAuthoredBy` toggle.
+ *  2. `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` — the deprecated binary opt-out:
+ *     suppress the trailer (→ `null`) only when no explicit config override exists.
+ *  3. Absent → the default AMI trailer.
  * All config layers participate via {@link mergeConfigs} (managed > cli > … > global),
  * so an enterprise/global/project policy can set the custom trailer. A broken config
- * never blocks a commit — it falls back to the default AMI trailer.
+ * never blocks a commit — it falls back to the env opt-out / default AMI trailer.
  */
 export function resolveCommitAttribution(cwd: string): string | null {
-  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') return null;
   let custom: string | undefined;
   try {
     const merged = mergeConfigs(
@@ -97,10 +117,12 @@ export function resolveCommitAttribution(cwd: string): string | null {
   } catch {
     custom = undefined;
   }
+  // Explicit config attribution takes precedence over the deprecated env opt-out.
   if (custom !== undefined) {
     const trimmed = custom.trim();
     return trimmed.length === 0 ? null : trimmed;
   }
+  if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') return null;
   return CO_AUTHOR_TRAILER;
 }
 
@@ -158,6 +180,24 @@ export const gitCommitTool: ToolDefinition = {
 
     if (!message || message.trim().length === 0) {
       return { output: 'Error: commit message must not be empty.', isError: true };
+    }
+
+    // Transient git-state guard: refuse to create a fresh commit while the repo
+    // is mid-way through a rebase / merge / cherry-pick / revert / bisect. The
+    // git_commit tool is for authoring new agent commits, not for continuing a
+    // multi-step operation (which needs the original message/author). Committing
+    // here would hijack the in-progress operation with the drafted message. The
+    // user should finish or abort it with git, or use bash `git commit` to
+    // deliberately continue the operation.
+    const transient = detectGitTransientState(context.cwd);
+    if (transient) {
+      return {
+        output:
+          `Error: a git ${transient} is in progress; refusing to create a new commit. ` +
+          `Finish or abort the ${transient} with git first, ` +
+          'or use bash `git commit` if you intend to continue that operation.',
+        isError: true,
+      };
     }
 
     // Guard against flag injection via files array
