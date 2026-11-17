@@ -74,6 +74,23 @@ export function isSessionPersistenceDisabled(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * Whether the session picker's DEFAULT scope is "all projects" — every project's
+ * session store under the global projects root ({@link SessionManager.listAcrossProjects}
+ * / {@link SessionManager.loadAcrossProjects}) — instead of only the current cwd.
+ * Opt in via `AMI_RESUME_ALL_PROJECTS` (Claude-compat: `CLAUDE_CODE_SHOW_ALL_PROJECTS`).
+ *
+ * Parity: Claude Code's resume picker `showAllProjects` scope toggle — the default
+ * (unset/falsy) keeps `/sessions` + `/resume` scoped to the current project; truthy
+ * flips them to the cross-project aggregation so a session recorded under another
+ * directory is browsable/resumable without first `cd`-ing there. A per-invocation
+ * `all` keyword (`/sessions all`, `/resume all <arg>`) overrides this default for a
+ * single call regardless of the env knob.
+ */
+export function isResumeAllProjectsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.AMI_RESUME_ALL_PROJECTS) || isEnvTruthy(env.CLAUDE_CODE_SHOW_ALL_PROJECTS);
+}
+
+/**
  * Content longer than this is offloaded to a content-addressed blob sidecar
  * rather than truncated in place. The value also caps the inline on-screen
  * preview stored next to the blob reference.
