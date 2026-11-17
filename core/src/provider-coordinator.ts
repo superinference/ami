@@ -14,6 +14,19 @@ export interface CoordinatorState {
   errorCount: number;
 }
 
+/** A recovery transition emitted when sustained success on a fallback model
+ *  lets the coordinator step the active model all the way back to the primary.
+ *  Returned by {@link ProviderCoordinator.recordSuccess} so the engine can
+ *  announce "returned to <primary> after recovery" — the mirror of the
+ *  user-visible fallback notification (parity: Claude Code announces both the
+ *  demotion to and the recovery from a degraded-capacity model). */
+export interface ModelRecovery {
+  /** The fallback model that was active when recovery completed. */
+  from: string;
+  /** The primary model the coordinator reverted to. */
+  to: string;
+}
+
 const FALLBACK_COOLDOWN = 3;
 
 export class ProviderCoordinator {
@@ -119,15 +132,27 @@ export class ProviderCoordinator {
     return false;
   }
 
-  recordSuccess(): void {
+  /**
+   * Record a successful request. When the active model is a fallback (and the
+   * fallback is not sticky), a run of {@link FALLBACK_COOLDOWN} consecutive
+   * successes reverts the coordinator to the primary model. In that event a
+   * {@link ModelRecovery} describing the `fallback → primary` transition is
+   * returned so the engine can surface a user-visible recovery notification
+   * (mirror of the fallback notification); otherwise `null`.
+   */
+  recordSuccess(): ModelRecovery | null {
     if (this.fallbackIndex > 0 && !this.stickyFallback) {
       this.fallbackSuccessCount++;
       if (this.fallbackSuccessCount >= FALLBACK_COOLDOWN) {
+        const from = this.state.currentModel;
+        const to = this.subsystem.primary.model || 'unknown';
         this.fallbackIndex = 0;
         this.fallbackSuccessCount = 0;
-        this.state.currentModel = this.subsystem.primary.model || 'unknown';
+        this.state.currentModel = to;
+        return { from, to };
       }
     }
+    return null;
   }
 
   setStickyFallback(sticky: boolean): void {

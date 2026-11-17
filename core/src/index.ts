@@ -148,7 +148,7 @@ export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, FormatTimelineOpt
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { isGeneratedFile, filterGeneratedFiles } from './generated-files';
 export { ProviderCoordinator } from './provider-coordinator';
-export type { CoordinatorState } from './provider-coordinator';
+export type { CoordinatorState, ModelRecovery } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites } from './logger';
