@@ -3,6 +3,41 @@ import { MemoryManager, MEMORY_TYPES, MEMORY_SCOPES, type MemoryType, type Memor
 import { findCredentials } from '../credential-guard';
 
 /**
+ * Hard upper bounds on the body a single memory write may persist, mirroring
+ * Claude Code's memdir caps (memdir/memdir.ts:36-39 MAX_ENTRYPOINT_LINES /
+ * MAX_ENTRYPOINT_BYTES). A memory file is injected into context on load, so an
+ * unbounded body bloats every future turn; reject an over-large write up front
+ * (naming WHICH cap fired) so the model splits it into focused memories instead
+ * of silently persisting a dump. These bound the memory BODY on write — distinct
+ * from the always-loaded MEMORY.md index cap enforced by truncateEntrypointContent.
+ */
+export const MAX_MEMORY_BODY_LINES = 200;
+export const MAX_MEMORY_BODY_BYTES = 25_000;
+
+/**
+ * Map a Node filesystem error to an actionable, human-readable hint instead of
+ * leaking a raw errno string. Mirrors Claude Code's FileWriteTool typed error
+ * classes (perms/space/path-is-a-dir) so the model gets a result it can act on.
+ */
+function describeFsError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  const base = err instanceof Error ? err.message : String(err);
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+      return `${base} — permission denied writing the memory directory; check its ownership/permissions.`;
+    case 'EROFS':
+      return `${base} — the memory directory is on a read-only filesystem.`;
+    case 'ENOSPC':
+      return `${base} — no space left on device to persist the memory.`;
+    case 'EISDIR':
+      return `${base} — the target memory path is a directory, not a file.`;
+    default:
+      return base;
+  }
+}
+
+/**
  * write_memory — persist a durable memory for future sessions. The read side
  * (read_memory) and the engine could already surface memories, but the model had
  * no way to AUTHOR one, so "remember X" was unfulfillable. This wraps
@@ -18,6 +53,7 @@ export const writeMemoryTool: ToolDefinition = {
     'NEVER save secrets or user credentials in a team memory — team memories are visible to all collaborators.\n' +
     'Body structure: for feedback and project memories, lead with the rule/fact, then a `**Why:**` line (the originating reason) and a `**How to apply:**` line (when/where it applies). ' +
     'For project memories, convert relative dates to absolute (e.g. "Thursday" -> "2026-03-05") so the memory stays interpretable later.\n' +
+    'Keep each memory focused — an over-large body (more than ~200 lines or ~25KB) is rejected; split big detail across several smaller memories. ' +
     'Before writing, check the existing memory index and UPDATE an existing entry rather than creating a near-duplicate. ' +
     'Do NOT store secrets (API keys, tokens, passwords), or anything already obvious from the code/git history; these exclusions apply even when the user explicitly asks you to save them.',
   inputSchema: {
@@ -55,6 +91,23 @@ export const writeMemoryTool: ToolDefinition = {
     }
     if (!content.trim()) {
       return { output: 'Error: content must not be empty.', isError: true };
+    }
+
+    // Size-cap guard: a memory body is injected into context on load, so reject an
+    // over-large write naming WHICH cap fired (lines or bytes) rather than silently
+    // persisting an unbounded dump. Parity with Claude's memdir MAX_ENTRYPOINT caps.
+    const lineCount = content.split('\n').length;
+    const byteCount = Buffer.byteLength(content, 'utf-8');
+    if (lineCount > MAX_MEMORY_BODY_LINES || byteCount > MAX_MEMORY_BODY_BYTES) {
+      const cap = lineCount > MAX_MEMORY_BODY_LINES
+        ? `${lineCount} lines exceeds the ${MAX_MEMORY_BODY_LINES}-line cap`
+        : `${byteCount} bytes exceeds the ${MAX_MEMORY_BODY_BYTES}-byte cap`;
+      return {
+        output:
+          `Error: refusing to store this memory — its body is too large (${cap}). ` +
+          'Keep a memory focused: shorten it or split the detail across several smaller memories.',
+        isError: true,
+      };
     }
 
     // Scope defaults to 'private'; an unrecognized value falls back to private
@@ -103,12 +156,33 @@ export const writeMemoryTool: ToolDefinition = {
     // branch (teamMemPrompts.ts L29-58).
     const skipIndex = input.skipIndex === true;
     const mgr = new MemoryManager(context.cwd);
-    const savedPath = mgr.saveMemory(name, content, description, type, scope, !skipIndex);
 
-    // Count-bearing confirmation (teamMemSaved.ts): after the save, report how
-    // many memories now exist, split by scope, with singular/plural agreement and
-    // zero-suppression of the team segment (parity with Claude's teamCount split).
-    const counts = mgr.countMemoriesByScope();
+    // Clobber visibility: snapshot the total count BEFORE the write so we can tell
+    // an in-place UPDATE (same name — total unchanged) from a brand-new save or a
+    // slug-disambiguated distinct memory (total grows by one). saveMemory already
+    // avoids destroying an unrelated memory via resolveNonClobberingPath; this just
+    // reports WHICH happened so the model is not silently told "Saved" when it in
+    // fact replaced a prior memory's body (Claude's create path special-cases an
+    // existing file; AMI updates-in-place, so surface the distinction).
+    const before = mgr.countMemoriesByScope();
+
+    let savedPath: string;
+    let counts: { private: number; team: number };
+    try {
+      savedPath = mgr.saveMemory(name, content, description, type, scope, !skipIndex);
+      // Count-bearing confirmation (teamMemSaved.ts): after the save, report how
+      // many memories now exist, split by scope, with singular/plural agreement and
+      // zero-suppression of the team segment (parity with Claude's teamCount split).
+      counts = mgr.countMemoriesByScope();
+    } catch (err) {
+      // Typed, actionable I/O-boundary error instead of leaking a raw errno to the
+      // model — parity with Claude's structured FileWriteTool error classes.
+      return { output: `Error: could not save memory "${name}": ${describeFsError(err)}`, isError: true };
+    }
+
+    const updatedInPlace = counts.private + counts.team === before.private + before.team;
+    const verb = updatedInPlace ? 'Updated' : 'Saved';
+
     const pluralMem = (n: number) => (n === 1 ? 'memory' : 'memories');
     const countParts = [`${counts.private} private ${pluralMem(counts.private)}`];
     if (counts.team > 0) countParts.push(`${counts.team} team ${pluralMem(counts.team)}`);
@@ -117,7 +191,7 @@ export const writeMemoryTool: ToolDefinition = {
     const indexNote = skipIndex ? '' : ' and indexed it in MEMORY.md';
     return {
       output:
-        `Saved memory "${name}" (${meta}) to ${savedPath}${indexNote}. ` +
+        `${verb} memory "${name}" (${meta}) to ${savedPath}${indexNote}. ` +
         `You now have ${countParts.join(' and ')}. View with /memory.`,
     };
   },
