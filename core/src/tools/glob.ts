@@ -216,7 +216,9 @@ export const globHooks: {
 export const globTool: ToolDefinition = {
   name: 'glob',
   description:
-    'Find files matching a glob pattern. Returns matching file paths relative to the working directory, ' +
+    'Find files matching a glob pattern. Works with any codebase size. ' +
+    'Supports glob patterns like "**/*.ts" or "src/**/*.json". ' +
+    'Returns matching file paths relative to the working directory, ' +
     'sorted by modification time (most recently modified first). ' +
     'When you are doing an open-ended search that may require multiple rounds of globbing and grepping, ' +
     'use the `task` tool to delegate it to a sub-agent instead.',
