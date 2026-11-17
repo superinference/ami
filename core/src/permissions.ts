@@ -331,10 +331,44 @@ export interface PermissionPromptHandler {
  */
 export type PermissionDecisionReason =
   | { type: 'hardline'; description: string }
-  | { type: 'rule'; action: 'allow' | 'deny' | 'ask'; ruleValue?: string; source?: string }
+  | {
+      type: 'rule';
+      action: 'allow' | 'deny' | 'ask';
+      ruleValue?: string;
+      /** Free-text attribution shown inline ("from <source>") — the rule's own
+       *  reason/label, NOT the tier it came from. */
+      source?: string;
+      /**
+       * The originating settings TIER of the matched rule ({@link PermissionRuleSource}).
+       * Distinct from the free-text {@link source}: this is the machine-readable
+       * provenance used to decide whether a remediation hint applies — a rule from the
+       * enterprise-managed `policySettings` tier is admin-owned and cannot be changed by
+       * the user, so the "update your rules" hint is suppressed for it (parity with
+       * Claude's `decisionReason.rule.source === 'policySettings'` branch in
+       * PermissionRuleExplanation.tsx).
+       */
+      ruleSource?: PermissionRuleSource;
+    }
   | { type: 'mode'; mode: PermissionMode }
   | { type: 'safetyCheck'; check: SafetyCheckKind; message: string }
   | { type: 'classifier'; name?: string; reason?: string }
+  /**
+   * The action targets a path OUTSIDE the agent's workspace (launch cwd + granted
+   * read roots), so it needs explicit consent. Mirrors Claude's `workingDir`
+   * decisionReason. `path` is the offending target; `reason` is the human sentence.
+   */
+  | { type: 'workingDir'; path: string; reason: string }
+  /**
+   * A hook (PreToolUse / PermissionRequest) asked for or denied confirmation.
+   * Mirrors Claude's `hook` decisionReason (hookName + optional reason + source tag).
+   */
+  | { type: 'hook'; hookName: string; reason?: string; hookSource?: string }
+  /**
+   * The call opted out of the sandbox (`dangerouslyDisableSandbox`), so it must be
+   * explicitly authorized to run unsandboxed. Mirrors Claude's `sandboxOverride`
+   * decisionReason ("Requires permission to bypass sandbox").
+   */
+  | { type: 'sandboxOverride' }
   | { type: 'other'; message?: string };
 
 export const SAFETY_CHECK_KINDS = [
@@ -358,6 +392,12 @@ export function createPermissionRequestMessage(reason: PermissionDecisionReason)
       return reason.message;
     case 'classifier':
       return `The safety classifier${reason.name ? ` (${reason.name})` : ''} flagged this action${reason.reason ? `: ${reason.reason}` : ''}`;
+    case 'workingDir':
+      return reason.reason;
+    case 'hook':
+      return `Hook "${reason.hookName}" requires approval for this action${reason.reason ? `: ${reason.reason}` : ''}`;
+    case 'sandboxOverride':
+      return 'This action requires permission to bypass the sandbox';
     case 'other':
       return reason.message ?? 'This action requires approval';
   }
@@ -3296,6 +3336,14 @@ export class PermissionManager {
       const hardline = detectHardlineCommand(command);
       if (hardline.blocked) return { type: 'hardline', description: hardline.description ?? 'blocked command' };
     }
+    // Sandbox opt-out: a bash call that set `dangerouslyDisableSandbox` is gated
+    // because it wants to run UNSANDBOXED, not because of the mode — attribute the
+    // ask to `sandboxOverride` so the prompt explains it needs to bypass the sandbox
+    // (parity with Claude's sandboxOverride decisionReason). Only on an `ask`; a
+    // deny-all deny stays attributed to the mode below.
+    if (decision === 'ask' && toolName === 'bash' && input.dangerouslyDisableSandbox === true) {
+      return { type: 'sandboxOverride' };
+    }
     // An explicit matching rule.
     for (const rule of this.rules) {
       if (!this.toolNameMatches(rule.tool, toolName)) continue;
@@ -3306,7 +3354,15 @@ export class PermissionManager {
             : matchPattern(rule.pattern, this.inputToString(toolName, input)))
         : true;
       if (matches && (rule.action === decision)) {
-        return { type: 'rule', action: rule.action, ruleValue: rule.pattern ? `${rule.tool}(${rule.pattern})` : rule.tool, source: rule.reason };
+        return {
+          type: 'rule',
+          action: rule.action,
+          ruleValue: rule.pattern ? `${rule.tool}(${rule.pattern})` : rule.tool,
+          source: rule.reason,
+          // Machine-readable provenance so a managed (policySettings) rule can
+          // suppress the "update your rules" remediation hint downstream.
+          ...(rule.source ? { ruleSource: rule.source } : {}),
+        };
       }
     }
     // Safety checks (credential / system-dir / suspicious-path / config files).
@@ -3341,6 +3397,18 @@ export class PermissionManager {
       if (isBuildConfigFile(filePath)) return { type: 'safetyCheck', check: 'buildConfig', message: 'Edit targets a build/CI config file and requires approval' };
       if (isAgentConfigPath(filePath)) return { type: 'safetyCheck', check: 'agentConfig', message: "Edit targets the agent's own config and requires approval" };
       if (hasSuspiciousPathPattern(filePath)) return { type: 'safetyCheck', check: 'suspiciousPath', message: 'Path uses a canonicalization-bypass pattern and requires approval' };
+      // Out-of-workspace target: the path is outside the launch cwd and every
+      // user-granted read root, so it needs explicit consent regardless of the
+      // mode — attribute the ask to `workingDir` (parity with Claude's workingDir
+      // decisionReason) so the prompt can explain WHERE the boundary is and offer
+      // /add-dir, instead of a generic "mode requires approval".
+      if (decision === 'ask' && this.classifyReadAccess(filePath, process.cwd()) === 'prompt') {
+        return {
+          type: 'workingDir',
+          path: filePath,
+          reason: `"${filePath}" is outside the workspace and requires approval to access`,
+        };
+      }
     }
     // Fall back to the mode.
     return { type: 'mode', mode: this.mode };
