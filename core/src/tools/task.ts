@@ -3598,6 +3598,16 @@ export const taskTool: ToolDefinition = {
       taskType: subagentType || mode,
     });
 
+    // Make THIS foreground subagent individually abortable from the UI (parity:
+    // InProcessTeammateDetailDialog 'x' → onKill for a running teammate). A foreground
+    // subagent blocks the parent turn and is not a tracked background row, so without
+    // this the only way to stop it was Ctrl+C aborting the whole turn. The registration
+    // is cleared on teardown (finally) or when the subagent is promoted to a tracked
+    // background task (which then owns cancellation via processManager.kill).
+    context.processManager?.registerForegroundAbort(taskId, () => {
+      subAbort.abort('aborted foreground subagent');
+    });
+
     let toolUseCount = 0;
     let totalTokens = 0;
     // Prompt-cache introspection carried into the completion footer (parity: Claude's
@@ -3745,6 +3755,9 @@ export const taskTool: ToolDefinition = {
         fs.closeSync(fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS));
         const label = taskDescription || `${prompt.slice(0, 80)}`;
         if (context.processManager) {
+          // The subagent becomes a tracked background task now; its cancellation is
+          // owned by processManager.kill from here, so drop the foreground-abort entry.
+          context.processManager.unregisterForegroundAbort(taskId);
           context.processManager.registerAgent(taskId, {
             command: `[agent] ${label}`,
             description: `Background agent: ${label}`,
@@ -3811,6 +3824,9 @@ export const taskTool: ToolDefinition = {
       // (sub-engine shutdown, shell reaping, file-cache release, teammate-idle, worktree
       // cleanup) — running any of it here would kill the still-live background run.
       if (!promotedToBackground) {
+        // The foreground run is over — drop its individual-abort registration so a
+        // stale callback can never fire against a finished subagent.
+        context.processManager?.unregisterForegroundAbort(taskId);
         subEngine.shutdown?.();
         // Reap any background shells this agent left running so they don't outlive
         // the agent (zombie prevention — killShellTasksForAgent parity).

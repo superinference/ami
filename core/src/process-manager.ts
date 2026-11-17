@@ -1066,6 +1066,21 @@ export class ProcessManager extends EventEmitter {
   private _foregroundedTaskId: string | undefined;
 
   /**
+   * Abort callbacks for RUNNING FOREGROUND in-process subagents, keyed by taskId
+   * (parity with Claude Code's InProcessTeammateDetailDialog 'x' → onKill, which can
+   * abort ANY running teammate — foreground OR background). A foreground subagent
+   * BLOCKS the parent turn and is deliberately NOT a tracked background row (it is
+   * shown live in the roster tree, not the background task list), so {@link kill} —
+   * which only targets `processes` entries — can never reach it. Without this registry
+   * the only way to stop one was Ctrl+C aborting the WHOLE turn (every sibling
+   * subagent with it). The task tool populates this while a foreground subagent runs
+   * ({@link registerForegroundAbort}) and clears it on teardown or on promotion to a
+   * tracked background task ({@link unregisterForegroundAbort}); a frontend aborts ONE
+   * individually via {@link abortForeground}.
+   */
+  private _foregroundAborts = new Map<string, () => void>();
+
+  /**
    * Per-session cap on concurrently RUNNING background processes (parity with
    * Claude Code's background-shell limit). Defaults to MAX_BACKGROUND_PROCESSES;
    * exposed as a mutable field so callers/tests can tune the ceiling without
@@ -2173,6 +2188,56 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
+   * Register the abort callback of a RUNNING FOREGROUND subagent so a frontend can
+   * cancel THIS one subagent individually (parity: InProcessTeammateDetailDialog's
+   * onKill for a running in-process teammate). The callback is this subagent's own
+   * AbortController.abort — invoking it stops just this subagent's sub-engine, not the
+   * parent turn. Called by the task tool right after it begins running a foreground
+   * subagent; paired with {@link unregisterForegroundAbort} on teardown. Re-registering
+   * the same id replaces the prior callback (a resumed subagent reuses its taskId).
+   */
+  registerForegroundAbort(taskId: string, abortFn: () => void): void {
+    this._foregroundAborts.set(taskId, abortFn);
+  }
+
+  /**
+   * Whether a running foreground subagent is individually abortable right now — i.e.
+   * {@link abortForeground} would deliver an abort for this id. A frontend (e.g. the
+   * TUI inspector) uses this to decide whether a running foreground roster row can be
+   * killed in place or only dismissed once terminal.
+   */
+  hasForegroundAbort(taskId: string): boolean {
+    return this._foregroundAborts.has(taskId);
+  }
+
+  /**
+   * Abort ONE running foreground subagent by id (parity: onKill). Invokes its stored
+   * abort callback and removes the registration (one-shot: a second press is a no-op).
+   * Removal happens BEFORE the callback fires so a re-entrant abort during teardown
+   * cannot double-invoke it. A throwing callback (the AbortController already fired) is
+   * swallowed so a stop never crashes the caller. Returns true when an abort was
+   * delivered, false for an unknown / already-aborted id. Records a 'kill' lifecycle
+   * trace (foreground:true) for the same introspection sink background kills use.
+   */
+  abortForeground(taskId: string): boolean {
+    const abortFn = this._foregroundAborts.get(taskId);
+    if (!abortFn) return false;
+    this._foregroundAborts.delete(taskId);
+    this.traceLifecycle('kill', taskId, { foreground: true });
+    try { abortFn(); } catch { /* best-effort — the controller may already be aborted */ }
+    return true;
+  }
+
+  /**
+   * Remove a foreground subagent's abort registration (its run ended, or it was
+   * promoted to a tracked background task so {@link kill} now owns cancellation). No-op
+   * when the id is not registered, so teardown is safe to call unconditionally.
+   */
+  unregisterForegroundAbort(taskId: string): void {
+    this._foregroundAborts.delete(taskId);
+  }
+
+  /**
    * FUNCTIONAL (parity with the reference `retryWorkflowAgent(workflowId, agentId)` /
    * `onRetryAgent`): RETRY a single wedged workflow agent — abandon its stuck
    * attempt and re-run it — without aborting the whole workflow. Delegates to the
@@ -2888,6 +2953,10 @@ export class ProcessManager extends EventEmitter {
         this.kill(entry.taskId, { reason: 'session exiting' });
       }
     }
+    // Drop any lingering foreground-abort registrations — the parent turn's own
+    // abort tears those subagents down at session end; the callbacks must not outlive
+    // the manager.
+    this._foregroundAborts.clear();
     this.removeAllListeners();
   }
 }
