@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import { ToolContext, ToolDefinition, ToolResult } from '../types';
-import { findRemoteBase, isShallowClone, resolveRef } from '../utils/git';
+import { computeDefaultBranch, findRemoteBase, isShallowClone, resolveRef } from '../utils/git';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -140,25 +140,11 @@ function validateSlug(name: string): boolean {
 }
 
 function getDefaultBranch(cwd: string): string {
-  // Offline-friendly, NO shell pipe: read the origin/HEAD symref directly
-  // instead of `git remote show origin | grep` (a network + shell-pipe call).
-  try {
-    const sym = _enterWorktreeHooks.exec(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
-    const match = sym.match(/^origin\/(.+)$/);
-    if (match) return match[1];
-  } catch { /* fallback */ }
-  // Offline candidate probe: check the conventional default branches in order
-  // and return the first that actually exists as a local ref. Only when NONE
-  // exist do we fall back to 'main' (parity with Claude's computeDefaultBranch,
-  // whose final fallback is 'main' — never a 'master' guess for a ref that is
-  // not present).
-  for (const candidate of ['main', 'master']) {
-    try {
-      _enterWorktreeHooks.exec(['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd, stdio: 'ignore' });
-      return candidate;
-    } catch { /* try next candidate */ }
-  }
-  return 'main';
+  // One canonical default-branch algorithm shared with `/commit-push-pr` lives in
+  // `computeDefaultBranch`; route it through the mockable `_enterWorktreeHooks.exec`
+  // seam so tests keep injecting the symref / rev-parse results they already do.
+  return computeDefaultBranch(cwd, (args, opts) =>
+    _enterWorktreeHooks.exec(args, { cwd: opts.cwd, stdio: opts.stdio }));
 }
 
 /**
@@ -272,7 +258,8 @@ export const enterWorktreeTool: ToolDefinition = {
     'Create or enter a git worktree for isolated file modifications, on a new branch under .ami/worktrees/. ' +
     'WHEN TO USE: isolating risky or parallel changes from the main working tree (a large refactor you may want to throw away, work you want on its own branch). ' +
     'WHEN NOT TO USE: ordinary edits in the current tree, or when the user did not ask for isolation — a worktree adds branch/cwd bookkeeping overhead. ' +
-    'Use exit_worktree (action "keep" or "remove") to leave. ' +
+    'Use exit_worktree (action "keep" or "remove") to leave. '
+    + 'On session exit while still inside the worktree, the user is prompted to keep or remove it (with a data-loss warning for any uncommitted files / unpushed commits). ' +
     'Requires a git repository; outside one, configure WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation. ' +
     'Pass pr (a PR URL or #N) to base the worktree on a pull request. ' +
     'Pass description (a short task summary) instead of name to auto-derive a readable branch name (e.g. "fix-mobile-login-button").',

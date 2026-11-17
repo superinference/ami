@@ -295,3 +295,38 @@ export function getIsClean(cwd: string, options?: { ignoreUntracked?: boolean })
   const res = runGit(cwd, args);
   return !!res && res.code === 0 && res.stdout.length === 0;
 }
+
+/**
+ * Injectable no-shell git runner for {@link computeDefaultBranch}: takes an argv
+ * array, returns trimmed stdout, and THROWS when the invocation fails. The seam
+ * lets each call site supply its own runner (e.g. the mockable `enter_worktree`
+ * exec hook, or a slash-command's `execFileSync` wrapper) while the default-branch
+ * algorithm itself lives in exactly one place.
+ */
+export type GitRefExec = (args: string[], opts: { cwd: string; stdio?: 'ignore' | 'pipe' }) => string;
+
+/**
+ * Resolve a repository's default branch, offline-friendly and with NO network
+ * call (parity with Claude Code's `computeDefaultBranch`). One canonical
+ * algorithm, consumed by both `enter_worktree` (worktree base selection) and the
+ * `/commit-push-pr` branch-creation guard so the two never drift:
+ *   1. read the `origin/HEAD` symref directly (`git symbolic-ref` — no `git remote
+ *      show` network/shell-pipe call);
+ *   2. otherwise probe the conventional candidates `main` then `master` and return
+ *      the first that exists as a local ref;
+ *   3. fall back to `main` (never a bare `master` guess for a ref that is absent).
+ */
+export function computeDefaultBranch(cwd: string, exec: GitRefExec): string {
+  try {
+    const sym = exec(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
+    const match = sym.match(/^origin\/(.+)$/);
+    if (match) return match[1];
+  } catch { /* fall through to the candidate probe */ }
+  for (const candidate of ['main', 'master']) {
+    try {
+      exec(['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd, stdio: 'ignore' });
+      return candidate;
+    } catch { /* try the next candidate */ }
+  }
+  return 'main';
+}

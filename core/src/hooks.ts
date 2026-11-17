@@ -3173,6 +3173,12 @@ export class HookManager extends EventEmitter {
   }
 
   async executeCwdChanged(ctx: CwdChangedContext): Promise<void> {
+    // No-op short-circuit (Claude Code `onCwdChangedForHooks`: `if (oldCwd ===
+    // newCwd) return`). When the "change" lands on the same directory the cwd did
+    // not actually move, so clearing the session-env cache and firing CwdChanged
+    // hooks would be wasted work with observable side effects (a spurious env
+    // re-read, a redundant hook run). Bail before any of it.
+    if (ctx.oldCwd === ctx.newCwd) return;
     // The cwd changed: drop stale directory-scoped env fragments and invalidate
     // the persisted session-environment cache so the next bash command re-reads
     // it (Claude Code `clearCwdEnvFiles` / `invalidateSessionEnvCache` parity).
