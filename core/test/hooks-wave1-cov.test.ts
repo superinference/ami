@@ -296,7 +296,7 @@ describe('command hook decision output — continue:false', () => {
     assert.equal((decision as any).reason, 'halt here');
   });
 
-  it('denies with the default reason when continue:false carries no stopReason', async () => {
+  it('denies with the event-specific default reason when continue:false carries no stopReason', async () => {
     const hm = new HookManager();
     const dir = writeHooks([
       { event: 'preToolUse', hook: { type: 'command', command: 'printf \'{"continue": false}\'' } },
@@ -305,7 +305,9 @@ describe('command hook decision output — continue:false', () => {
     hm.loadFromFile(dir);
     const decision = await hm.executePreToolUse(makeCtx());
     assert.equal(decision.action, 'deny');
-    assert.equal((decision as any).reason, 'Hook requested stop');
+    // Phase-specific default wording (formatHookDenyReason) replaces the old
+    // generic 'Hook requested stop' — the message now names the PreToolUse phase.
+    assert.equal((decision as any).reason, 'PreToolUse hook blocked this tool call');
   });
 });
 

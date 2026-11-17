@@ -858,7 +858,7 @@ describe('hooks — command/http decision return shapes', () => {
 
   it('preToolUse command JSON: block without reason, ask, and updatedInput', async () => {
     const block = load([{ event: 'preToolUse', hook: { type: 'command', command: `echo '{"decision":"block"}'` } }]);
-    assert.deepEqual(await block.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {} } as any), { action: 'deny', reason: 'Hook blocked' });
+    assert.deepEqual(await block.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {} } as any), { action: 'deny', reason: 'PreToolUse hook blocked this tool call' });
 
     const upd = load([{ event: 'preToolUse', hook: { type: 'command', command: `echo '{"updatedInput":{"command":"safe"}}'` } }]);
     const r = await upd.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: { command: 'rm' } } as any);

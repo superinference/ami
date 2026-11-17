@@ -19,6 +19,7 @@ import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from '
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 import { getSmallFastModel } from './model-capabilities';
+import { isEnvTruthy } from './privacy-level';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -1000,6 +1001,88 @@ export function unknownHookDecisionError(
 }
 
 /**
+ * Strict shape/type validation of a parsed hook JSON output before any field is
+ * acted on (Claude Code's parseHookOutput / hookJSONOutputSchema safeParse): a
+ * hook that declares a KNOWN decision field with a wrong-typed value (e.g.
+ * `continue: "yes"`, `updatedInput: []`, `asyncTimeout: "15"`) is malformed and
+ * must be surfaced as a validation error rather than silently mis-interpreted
+ * (`"yes"` is truthy, `continue:false` would never fire). Reuses
+ * {@link unknownHookDecisionError} for the decision/permissionDecision enums (no
+ * duplicate), then checks the remaining typed fields. Returns a human-readable
+ * message for the first offending field, else undefined.
+ *
+ * Unknown/extra properties are intentionally NOT rejected (no
+ * `additionalProperties:false`): AMI's forging defense already STRIPS unrecognized
+ * fields (hook-forging-attack.test.ts), so a hook carrying extra keys is cleaned,
+ * not errored — matching AMI's superset behavior while still type-gating every
+ * recognized field.
+ */
+export function validateHookDecisionOutput(
+  parsed: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!parsed) return undefined;
+  const enumErr = unknownHookDecisionError(parsed);
+  if (enumErr) return enumErr;
+  for (const k of ['reason', 'stopReason', 'systemMessage', 'additionalContext'] as const) {
+    if (parsed[k] !== undefined && typeof parsed[k] !== 'string') {
+      return `Hook output field "${k}" must be a string.`;
+    }
+  }
+  for (const k of ['continue', 'suppressOutput', 'async'] as const) {
+    if (parsed[k] !== undefined && typeof parsed[k] !== 'boolean') {
+      return `Hook output field "${k}" must be a boolean.`;
+    }
+  }
+  if (
+    parsed.asyncTimeout !== undefined &&
+    (typeof parsed.asyncTimeout !== 'number' || !Number.isFinite(parsed.asyncTimeout))
+  ) {
+    return `Hook output field "asyncTimeout" must be a number.`;
+  }
+  if (
+    parsed.updatedInput !== undefined &&
+    (typeof parsed.updatedInput !== 'object' ||
+      parsed.updatedInput === null ||
+      Array.isArray(parsed.updatedInput))
+  ) {
+    return `Hook output field "updatedInput" must be an object.`;
+  }
+  return undefined;
+}
+
+/**
+ * Event-specific default deny/feedback wording (Claude Code's phase-specific
+ * block messages): when a hook blocks WITHOUT supplying its own reason, the
+ * surfaced text names the lifecycle phase instead of a bare 'Hook blocked', so a
+ * user/model can tell WHICH guard fired. A hook-supplied `reason` always wins.
+ */
+export function formatHookDenyReason(event: string | undefined, reason?: string): string {
+  const r = reason?.trim();
+  if (r) return r;
+  switch (event) {
+    case 'PreToolUse':
+    case 'preToolUse': return 'PreToolUse hook blocked this tool call';
+    case 'PostToolUse':
+    case 'postToolUse': return 'PostToolUse hook blocked the result';
+    case 'UserPromptSubmit':
+    case 'userPromptSubmit': return 'UserPromptSubmit hook blocked this prompt';
+    case 'Stop':
+    case 'stop': return 'Stop hook prevented the turn from ending';
+    default: return event ? `${event} hook blocked this action` : 'Hook blocked this action';
+  }
+}
+
+/** Global hook kill-switch via environment (Claude Code's `CLAUDE_CODE_SIMPLE`):
+ *  when set truthy, EVERY hook source is skipped at load time — a fast,
+ *  config-file-free escape hatch for a user who wants a hook-free session. The
+ *  AMI-native aliases `AMI_SIMPLE` / `AMI_DISABLE_HOOKS` are honored too. Pure;
+ *  consulted by {@link HookManager.isAllHooksDisabled} alongside the managed
+ *  `disableAllHooks` policy. */
+export function isHookKillSwitchEnv(env: Record<string, string | undefined> = process.env): boolean {
+  return isEnvTruthy(env.CLAUDE_CODE_SIMPLE) || isEnvTruthy(env.AMI_SIMPLE) || isEnvTruthy(env.AMI_DISABLE_HOOKS);
+}
+
+/**
  * Canonical best-effort JSON decode of a hook's raw stdout. Returns the parsed
  * object (for reading structured fields like watchPaths / additionalContexts /
  * newCustomInstructions / elicitation action) or undefined when the output is
@@ -1135,12 +1218,17 @@ export function parseHookVerification(output: string): { ok: boolean; reason?: s
 
 /** Pull an array of absolute watch paths from a hook's JSON output (watchPaths),
  *  filtering to non-empty strings. Shared by sessionStart / cwdChanged /
- *  fileChanged which can register dynamic FileChanged watches. */
+ *  fileChanged which can register dynamic FileChanged watches.
+ *
+ *  Path scoping (Claude Code's FileChanged `watchPaths` contract): each entry MUST
+ *  be ABSOLUTE. A relative path from untrusted hook output is ambiguous (resolved
+ *  against whose cwd?) and is dropped rather than silently resolved — the host only
+ *  ever watches absolute, hook-declared locations. */
 export function parseWatchPaths(result: string): string[] {
   const obj = tryParseHookJson(result);
   const raw = obj?.watchPaths;
   if (!Array.isArray(raw)) return [];
-  return raw.filter((p): p is string => typeof p === 'string' && p.length > 0);
+  return raw.filter((p): p is string => typeof p === 'string' && p.length > 0 && path.isAbsolute(p));
 }
 
 /**
@@ -1507,6 +1595,14 @@ export interface HookDecisionOutput {
   systemMessage?: string;
   suppressOutput?: boolean;
   reason?: string;
+  /** A hook that emits `{ "async": true }` on stdout self-declares that it should
+   *  be treated as a background/async hook (Claude Code's AsyncHookJSONOutput).
+   *  Validated by {@link validateHookDecisionOutput}; carried so a consumer can
+   *  detect the runtime async-declaration channel. */
+  async?: boolean;
+  /** Background-hook lifetime budget (ms) a hook may self-declare alongside
+   *  `async:true` (Claude Code's `asyncTimeout`). */
+  asyncTimeout?: number;
 }
 
 export type HookCallback = (event: string, data: unknown) => Promise<HookDecisionOutput | string | void>;
@@ -1667,12 +1763,22 @@ function describeHookContent(
  *  the single canonical alias map with the permission-rule parser (no duplicate). */
 const CLAUDE_TO_AMI_TOOL: Record<string, string> = PERMISSION_TOOL_ALIASES;
 
+/** Hook-matcher-only tool-name aliases layered OVER the shared permission alias
+ *  map. The plan-exit tool is named `ExitPlanMode`/`ExitPlanModeV2` in Claude Code
+ *  but `plan_mode` in AMI, so a Claude-Code-format hook matcher of `ExitPlanMode`
+ *  must gate AMI's plan-mode tool. Kept hook-local (not in PERMISSION_TOOL_ALIASES)
+ *  because the permission layer does not expose a plan-exit tool name. */
+const HOOK_MATCHER_EXTRA_ALIASES: Record<string, string> = {
+  ExitPlanMode: 'plan_mode',
+  ExitPlanModeV2: 'plan_mode',
+};
+
 /** Translate the tool-name tokens in a hook matcher ('Edit|Write' → 'file_edit|
  *  file_edit'). Unknown tokens (already-AMI names, custom regex) pass through. */
 export function translateHookMatcher(matcher: string): string {
   return matcher.split('|').map(tok => {
     const t = tok.trim();
-    return CLAUDE_TO_AMI_TOOL[t] ?? t;
+    return HOOK_MATCHER_EXTRA_ALIASES[t] ?? CLAUDE_TO_AMI_TOOL[t] ?? t;
   }).join('|');
 }
 
@@ -1879,8 +1985,11 @@ export class HookManager extends EventEmitter {
     if (managed) this._disableAllHooks = disabled;
     else if (disabled) this._allowManagedHooksOnly = true;
   }
-  /** True when the managed kill-switch has disabled every hook. */
-  isAllHooksDisabled(): boolean { return this._disableAllHooks; }
+  /** True when every hook is disabled — either the managed `disableAllHooks`
+   *  policy OR the `CLAUDE_CODE_SIMPLE` (AMI_SIMPLE / AMI_DISABLE_HOOKS) env
+   *  kill-switch. The env switch is evaluated live so a hook-free session needs
+   *  no settings file. */
+  isAllHooksDisabled(): boolean { return this._disableAllHooks || isHookKillSwitchEnv(); }
 
   /** Override the HTTP-hook SSRF validator (tests only; defaults to the shared
    *  web-utils validateUrlSafety). */
@@ -2129,10 +2238,11 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', 'Skipping ALL hooks: workspace not trusted (interactive)');
       return;
     }
-    // Managed-policy kill-switch: a managed `disableAllHooks` skips EVERY hook,
-    // including managed ones (Claude Code's shouldDisableAllHooksIncludingManaged).
-    if (this._disableAllHooks) {
-      coreLog('hooks', "Skipping ALL hooks: 'disableAllHooks' managed policy is set");
+    // Kill-switch: a managed `disableAllHooks` policy OR the CLAUDE_CODE_SIMPLE
+    // (AMI_SIMPLE / AMI_DISABLE_HOOKS) env switch skips EVERY hook, including
+    // managed ones (Claude Code's shouldDisableAllHooksIncludingManaged).
+    if (this.isAllHooksDisabled()) {
+      coreLog('hooks', "Skipping ALL hooks: 'disableAllHooks' policy / CLAUDE_CODE_SIMPLE env is set");
       return;
     }
     const filePath = path.join(cwd, '.ami', 'hooks.json');
@@ -3492,22 +3602,34 @@ export class HookManager extends EventEmitter {
           const trimmed = stdout.trim();
           try {
             const rawParsed = JSON.parse(trimmed);
+            const firedEvent: string | undefined =
+              (() => { try { return JSON.parse(eventData).hook_event_name; } catch { return undefined; } })();
             // hookEventName spoof check: a hook whose hookSpecificOutput names a
             // DIFFERENT event than the one it fired for is rejected (not acted
             // on) and surfaced as a validation error — a failed run, so a `once`
             // hook retries (Claude Code parity).
-            const spoof = hookEventNameMismatch(
-              rawParsed,
-              (() => { try { return JSON.parse(eventData).hook_event_name; } catch { return undefined; } })(),
-            );
+            const spoof = hookEventNameMismatch(rawParsed, firedEvent);
             if (spoof) {
               if (outcome) outcome.success = false;
               return `SYSTEM:${sanitizeHookOutput(spoof)}`;
             }
             const parsed: HookDecisionOutput = unwrapHookSpecificOutput(rawParsed);
-            if (parsed.decision === 'block' || parsed.decision === 'deny') return `DENY:${parsed.reason ?? 'Hook blocked'}`;
+            // Strict shape validation (Claude Code parseHookOutput): a KNOWN
+            // decision field with a wrong-typed value is malformed output, not a
+            // silent no-op. Surface it as a validation error + failed run so a
+            // `once` hook retries instead of mis-acting on e.g. continue:"yes".
+            // An unknown-decision ENUM error is deliberately NOT short-circuited
+            // here — the specialized permission/decision executors handle it
+            // fail-closed downstream (unknownHookDecisionError), so only TYPE
+            // errors on the remaining fields block at this layer.
+            const typeErr = validateHookDecisionOutput(parsed as Record<string, unknown>);
+            if (typeErr && !unknownHookDecisionError(parsed as Record<string, unknown>)) {
+              if (outcome) outcome.success = false;
+              return `SYSTEM:${sanitizeHookOutput(typeErr)}`;
+            }
+            if (parsed.decision === 'block' || parsed.decision === 'deny') return `DENY:${formatHookDenyReason(firedEvent, parsed.reason)}`;
             if (parsed.decision === 'ask' || parsed.permissionDecision === 'ask') return `ASK:${parsed.reason ?? ''}`;
-            if (parsed.continue === false) return `DENY:${parsed.stopReason ?? 'Hook requested stop'}`;
+            if (parsed.continue === false) return `DENY:${formatHookDenyReason(firedEvent, parsed.stopReason)}`;
             if (parsed.updatedInput) return `MODIFY:${JSON.stringify(parsed.updatedInput)}`;
             if (parsed.additionalContext) return `MODIFY:${JSON.stringify({ additionalContext: parsed.additionalContext })}`;
             if (parsed.systemMessage) return `SYSTEM:${parsed.systemMessage}`;
