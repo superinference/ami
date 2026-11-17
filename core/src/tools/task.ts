@@ -887,6 +887,37 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
 }
 
 /**
+ * Resolve the PERSISTED `subagentDefaultModel` config knob (EngineConfig →
+ * ToolContext._subagentDefaultModel) into a concrete model id. Applied ONLY when a
+ * spawn names no model from any higher-priority source (operator env override →
+ * per-call `model` → agent-definition model → explore fast default). Tri-state,
+ * parity with Claude Code's getDefaultTeammateModel (tools/shared/spawnMultiAgent.ts:L72-82):
+ *   - `null`      → user picked "Default (follow leader)" in /config → inherit the
+ *                   PARENT's exact model (`parentModel`), so a config choice never
+ *                   downgrades an otherwise-inheriting subagent;
+ *   - a string    → that configured model becomes the default (the `inherit` sentinel
+ *                   and family aliases resolve through {@link resolveSubagentModel}, so
+ *                   this path reuses the one canonical alias/anti-downgrade table —
+ *                   no second resolver);
+ *   - `undefined` → knob never set → return undefined so the existing provider-aware
+ *                   fallback chain ({@link defaultSubagentModelFallback}) stays in charge.
+ * This WIRES the previously-inert EngineConfig.subagentDefaultModel into real spawn
+ * behavior without duplicating the hardcoded provider-aware fallback (that stays in
+ * {@link getDefaultSubagentModel}).
+ */
+export function resolveSubagentDefaultModel(
+  configured: string | null | undefined,
+  parentModel: string | undefined,
+): string | undefined {
+  if (configured === undefined) return undefined;
+  if (configured === null) return parentModel;
+  // A blank/whitespace-only knob is treated as unset (fall through to the fallback),
+  // never dispatched as an empty model id.
+  if (configured.trim() === '') return undefined;
+  return resolveSubagentModel(configured, parentModel);
+}
+
+/**
  * Final subagent-model fallback: return `currentModel` when it names a model, else
  * the provider-aware default from {@link getDefaultSubagentModel}. Used after every
  * higher-priority source (env override → per-call model → agent-def model → explore
@@ -2853,6 +2884,15 @@ export const taskTool: ToolDefinition = {
       // for a named subagent_type, whose own identity/model governs.
       const fastModel = defaultExploreModel(parentModel);
       if (fastModel) providerConfig.model = fastModel;
+    } else {
+      // No per-spawn model from any higher-priority source → consult the PERSISTED
+      // `subagentDefaultModel` config knob (parity: Claude's getDefaultTeammateModel).
+      // A configured string sets this spawn's default; `null` means "follow the leader"
+      // (keep the inherited parent model); `undefined` leaves the inherited parent model
+      // in place for the provider-aware final fallback below. This is the ONLY site that
+      // reads the knob, so it never fights the env/per-call/agent-def overrides above.
+      const configuredModel = resolveSubagentDefaultModel(context._subagentDefaultModel, parentModel);
+      if (configuredModel) providerConfig.model = configuredModel;
     }
 
     // Final fallback: if NO model was resolvable from any source above and the

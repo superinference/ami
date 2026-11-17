@@ -119,6 +119,15 @@ export interface ProjectConfig {
    * cleanup (keep everything). Parity: Claude Code's `cleanupPeriodDays`.
    */
   cleanupPeriodDays?: number;
+  /**
+   * Persisted default model for spawned subagents/teammates, consulted ONLY when a
+   * spawn names no model from a higher-priority source (operator env override →
+   * per-call `model` → agent-definition model → explore fast default). A model id or
+   * family alias forces that default; the `inherit` sentinel keeps the parent's exact
+   * model ("follow the leader"); omitted falls through to the provider-aware hardcoded
+   * fallback. Parity: Claude Code's `teammateDefaultModel` / getDefaultTeammateModel.
+   */
+  subagentDefaultModel?: string;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on. */
@@ -1186,7 +1195,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['model', 'string'], ['provider', 'string'], ['baseUrl', 'string'],
   ['thinkingLevel', 'string'], ['maxEffortLevel', 'string'], ['fallbackModel', 'string'],
   ['compactionModel', 'string'], ['skill', 'string'],
-  ['language', 'string'],
+  ['language', 'string'], ['subagentDefaultModel', 'string'],
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
   ['toolOutputMaxChars', 'number'],
@@ -2583,6 +2592,7 @@ export function mergeConfigs(
     if (layer.trustedProjectPaths !== undefined) merged.trustedProjectPaths = mergeConfigArray(merged.trustedProjectPaths, layer.trustedProjectPaths);
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.cleanupPeriodDays !== undefined) merged.cleanupPeriodDays = layer.cleanupPeriodDays;
+    if (layer.subagentDefaultModel !== undefined) merged.subagentDefaultModel = layer.subagentDefaultModel;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
     // Array-valued settings ACCUMULATE across layers (concat + dedupe), so a
     // higher layer augments rather than clobbers a lower one — parity with

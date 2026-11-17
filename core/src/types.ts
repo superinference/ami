@@ -629,6 +629,10 @@ export interface ToolContext {
   sandboxExcludedCommands?: string[];
   processManager?: import('./process-manager').ProcessManager;
   _providerConfig?: ProviderConfig;
+  /** The engine's persisted {@link EngineConfig.subagentDefaultModel} knob, forwarded so
+   *  the task tool can apply it as the default model for a spawn that names none (tri-state:
+   *  string = force that model, `null` = follow the leader, absent = provider-aware fallback). */
+  _subagentDefaultModel?: string | null;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;
   _engineFactory?: (config: EngineConfig) => { submit(prompt: string): AsyncIterable<EngineEvent>; shutdown?(): void };
@@ -1685,8 +1689,12 @@ export interface EngineConfig {
   /** Backend that runs teammates/subagents; 'auto' resolves against the live
    *  environment. Parity: `teammateMode`. */
   teammateMode?: 'auto' | 'tmux' | 'in-process';
-  /** Persisted default model for spawned teammates/subagents. Parity: `teammateDefaultModel`. */
-  subagentDefaultModel?: string;
+  /** Persisted default model for spawned teammates/subagents, consulted only when a
+   *  spawn names no model from a higher-priority source. Tri-state (parity:
+   *  `teammateDefaultModel` / getDefaultTeammateModel): a model id/alias string forces
+   *  that default; `null` means "Default → follow the leader" (keep the parent's exact
+   *  model); omitted falls through to the provider-aware hardcoded fallback. */
+  subagentDefaultModel?: string | null;
   /** Map of canonical model id → provider-specific model string (e.g. a Bedrock
    *  inference-profile ARN), layered on top of the resolved model. Parity: `modelOverrides`. */
   modelOverrides?: Record<string, string>;
