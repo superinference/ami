@@ -995,3 +995,14 @@ export function getLSPClient(): LSPClient {
   if (!_lspClient) _lspClient = new LSPClient();
   return _lspClient;
 }
+
+/**
+ * Non-creating accessor for the singleton: returns the live client if one has
+ * already been instantiated, else `null`. Unlike {@link getLSPClient} this never
+ * constructs a client, so a cheap health probe (e.g. the LSP tools' `isEnabled`
+ * gate checking whether every started server has errored) can inspect server
+ * state WITHOUT eagerly spinning up the subsystem just to ask the question.
+ */
+export function peekLSPClient(): LSPClient | null {
+  return _lspClient;
+}

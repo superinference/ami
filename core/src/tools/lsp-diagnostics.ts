@@ -1,16 +1,20 @@
-import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { ToolDefinition, ToolResult, ToolContext, ToolInputSchema } from '../types';
 import {
-  capDiagnosticVolume,
+  capDiagnosticVolumeReport,
   formatDiagnosticsDetail,
+  formatLspDisplayPath,
   formatNewDiagnosticsSummary,
   isUncPath,
   lspFileSizeBytes,
   MAX_LSP_FILE_SIZE_BYTES,
+  MAX_DIAGNOSTICS_PER_FILE,
+  MAX_TOTAL_DIAGNOSTICS,
   DIAGNOSTIC_SEVERITY_NAMES,
   type DiagnosticFile,
   type DiagnosticSeverityName,
 } from '../lsp/diagnostic-tracking';
 import { isLspEnabled } from './tool-gates';
+import * as path from 'path';
 
 /**
  * Minimal view of the LSP client the diagnostics tool relies on. The real
@@ -137,12 +141,97 @@ export function summarizeDiagnosticSeverities(files: DiagnosticFile[]): string {
   return parts.join(', ');
 }
 
+/**
+ * PARITY (additive): health gate backing the LSP tools' `isEnabled`, mirroring
+ * Claude Code's `isLspConnected()` → `LSPTool.isEnabled()` (manager.ts L96-110).
+ *
+ * Resolution: the env subsystem toggle ({@link isLspEnabled}) is the floor. On
+ * top of it we detect the one connectivity edge case Claude also guards — every
+ * language server that has been started is in the `'error'` state — and drop the
+ * tools so the model is not advertised a capability that is wholly non-functional.
+ *
+ * Superset divergence (intentional, labelled): when NO server has been started
+ * yet (`serverStates()` is undefined/empty) AMI keeps the tools advertised rather
+ * than hiding them like Claude's zero-server case. AMI starts language servers
+ * lazily on the first edit, so the tools must stay visible to bootstrap the
+ * subsystem; hiding them pre-start would make LSP undiscoverable. We only gate on
+ * the genuine all-servers-errored failure, which Claude says is "never detected"
+ * in AMI today.
+ */
+export function lspDiagToolsEnabled(): boolean {
+  if (!isLspEnabled()) return false;
+  const states = _lspDiagHooks.serverStates();
+  if (states && states.length > 0 && states.every((s) => s.state === 'error')) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * PARITY (additive): Claude Code's explicit volume-limit affordance
+ * (LSPDiagnosticRegistry L256-288). Returns the "Volume limiting removed N …"
+ * notice when capping dropped diagnostics, else the empty string, so the model
+ * knows its diagnostics view was truncated and why rather than silently losing
+ * entries.
+ */
+export function volumeLimitNote(removed: number): string {
+  if (removed <= 0) return '';
+  const word = removed === 1 ? 'diagnostic' : 'diagnostics';
+  return `Volume limiting removed ${removed} ${word} (max ${MAX_DIAGNOSTICS_PER_FILE}/file, ${MAX_TOTAL_DIAGNOSTICS} total).`;
+}
+
+/** Append a non-empty note to `body` on its own line; return `body` unchanged otherwise. */
+function withNote(body: string, note: string): string {
+  return note ? `${body}\n${note}` : body;
+}
+
+/** Total diagnostics across the given files. */
+function totalDiagnostics(files: DiagnosticFile[]): number {
+  return files.reduce((sum, f) => sum + f.diagnostics.length, 0);
+}
+
+/**
+ * PARITY (additive): structured result metadata mirroring Claude's LSPTool
+ * `outputSchema` (operation / resultCount / fileCount), carried on
+ * {@link ToolResult.metadata} so a programmatic caller can read counts without
+ * re-parsing the text output.
+ */
+function diagMetadata(operation: string, files: DiagnosticFile[]): Record<string, unknown> {
+  return { operation, resultCount: totalDiagnostics(files), fileCount: files.length };
+}
+
+/** JSON-schema fragment shared by both LSP tools' structured-output contract. */
+const LSP_OUTPUT_SCHEMA: ToolInputSchema = {
+  type: 'object',
+  properties: {
+    operation: { type: 'string', description: 'The LSP operation that was performed.' },
+    resultCount: { type: 'number', description: 'Number of results (diagnostics / references).' },
+    fileCount: { type: 'number', description: 'Number of files containing results.' },
+  },
+};
+
 export const _lspDiagHooks = {
   /** Per-call async-fetch budget (ms); mutable so tests can shrink it. */
   diagnosticsTimeoutMs: DEFAULT_LSP_DIAGNOSTICS_TIMEOUT_MS,
   getLSPClient(): LspDiagClient {
     const { getLSPClient } = require('../lsp') as { getLSPClient: () => LspDiagClient };
     return getLSPClient();
+  },
+  /**
+   * Snapshot of every language-server lifecycle state, or `undefined` when no
+   * client has been instantiated yet. Non-creating (uses `peekLSPClient`) so the
+   * `isEnabled` health gate never spins up the subsystem just to probe it.
+   */
+  serverStates(): Array<{ state: string }> | undefined {
+    try {
+      const { peekLSPClient } = require('../lsp') as {
+        peekLSPClient: () => { getAllServerStatus(): Array<{ state: string }> } | null;
+      };
+      const client = peekLSPClient();
+      return client ? client.getAllServerStatus() : undefined;
+    } catch {
+      return undefined;
+    }
   },
   searchSymbols(
     cwd: string,
@@ -162,8 +251,12 @@ export const _lspDiagHooks = {
 
 export const lspDiagnosticsTool: ToolDefinition = {
   name: 'diagnostics',
-  // PARITY (additive): declarative per-tool gate for the LSP subsystem.
-  isEnabled: () => isLspEnabled(),
+  // PARITY (additive): per-tool gate = env subsystem toggle + live health check
+  // (dropped only when every started language server has errored).
+  isEnabled: () => lspDiagToolsEnabled(),
+  // PARITY (additive): synonyms for tool_search / introspection discovery of the
+  // code-intelligence surface (Claude's LSPTool searchHint).
+  searchHint: 'code intelligence errors warnings problems type-check lint',
   description: 'Get LSP diagnostics (errors, warnings) for a file or the workspace. Useful for finding issues after edits.',
   inputSchema: {
     type: 'object',
@@ -173,8 +266,13 @@ export const lspDiagnosticsTool: ToolDefinition = {
         type: 'string',
         description: 'Optional minimum severity floor (error | warning | info | hint). Keeps that level and anything more severe.',
       },
+      verbose: {
+        type: 'boolean',
+        description: 'When false, return only a count summary (and severity breakdown) instead of the full per-diagnostic listing. Defaults to true (full detail).',
+      },
     },
   },
+  outputSchema: LSP_OUTPUT_SCHEMA,
   isReadOnly: true,
   isConcurrencySafe: true,
   async execute(input: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -185,7 +283,16 @@ export const lspDiagnosticsTool: ToolDefinition = {
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
     }
 
+    // PARITY (additive): runtime input validation before any work, mirroring
+    // Claude's LSPTool.validateInput — reject a non-string file_path instead of
+    // coercing garbage into a bogus URI.
+    if (input.file_path !== undefined && typeof input.file_path !== 'string') {
+      return { output: 'Invalid file_path: expected a string path.', isError: true };
+    }
     const filePath = input.file_path as string | undefined;
+    // PARITY (additive): `verbose` toggle — full per-diagnostic listing (default)
+    // vs a one-line count summary. Mirrors Claude's DiagnosticsDisplay verbose prop.
+    const verbose = input.verbose !== false;
     // PARITY (additive): optional severity floor. Validate up front and, on an
     // unrecognized value, echo the valid set so the caller can self-correct.
     const severityRaw = input.severity as string | undefined;
@@ -220,8 +327,8 @@ export const lspDiagnosticsTool: ToolDefinition = {
           if (raw === LSP_TIMEOUT) {
             return { output: lspTimeoutMessage(filePath, timeoutMs) };
           }
-          let fresh = minSeverity ? filterDiagnosticsBySeverity(raw, minSeverity) : raw;
-          fresh = capDiagnosticVolume(fresh);
+          const filtered = minSeverity ? filterDiagnosticsBySeverity(raw, minSeverity) : raw;
+          const { files: fresh, removed } = capDiagnosticVolumeReport(filtered);
           if (fresh.length === 0) {
             return {
               output: minSeverity
@@ -229,33 +336,48 @@ export const lspDiagnosticsTool: ToolDefinition = {
                 : `No new diagnostics introduced in ${filePath}.`,
             };
           }
-          return { output: `${formatNewDiagnosticsSummary(fresh)}\n${formatDiagnosticsDetail(fresh)}` };
+          const summary = formatNewDiagnosticsSummary(fresh);
+          // PARITY (additive): verbose=false → summary line only (+ expand hint).
+          const body = verbose
+            ? withNote(`${summary}\n${formatDiagnosticsDetail(fresh)}`, volumeLimitNote(removed))
+            : withNote(`${summary} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
+          return { output: body, metadata: diagMetadata('diagnostics', fresh) };
         }
         const current = await raceDiagnosticsTimeout(client.getDiagnostics(filePath), timeoutMs);
         if (current === LSP_TIMEOUT) {
           return { output: lspTimeoutMessage(filePath, timeoutMs) };
         }
         if (!current) {
-          return { output: `No LSP server available for ${filePath}. Run the relevant linter/compiler manually.` };
+          // PARITY (additive): name the exact file type so the caller knows which
+          // language has no server (Claude's "No LSP server available for file
+          // type: .rb"), while keeping the "No LSP server available" affordance.
+          const ext = path.extname(filePath);
+          const forType = ext ? ` for file type: ${ext}` : '';
+          return { output: `No LSP server available${forType} (${filePath}). Run the relevant linter/compiler manually.` };
         }
         if (current.diagnostics.length === 0) {
           return { output: `No diagnostics for ${filePath}.` };
         }
         // PARITY (additive): apply the severity floor before capping/formatting.
         const filtered = minSeverity ? filterDiagnosticsBySeverity([current], minSeverity) : [current];
-        const capped = capDiagnosticVolume(filtered);
+        const { files: capped, removed } = capDiagnosticVolumeReport(filtered);
         if (capped.length === 0) {
           // Reachable only when a severity floor removed every diagnostic.
           return {
             output: `No ${minSeverity}-level (or higher) diagnostics for ${filePath} (${current.diagnostics.length} lower-severity diagnostic(s) present).`,
           };
         }
-        return { output: formatDiagnosticsDetail(capped) };
+        const breakdown = summarizeDiagnosticSeverities(capped);
+        const fileSummary = `${totalDiagnostics(capped)} diagnostic issue(s) in ${filePath}${breakdown ? ` (${breakdown})` : ''}`;
+        const body = verbose
+          ? withNote(formatDiagnosticsDetail(capped), volumeLimitNote(removed))
+          : withNote(`${fileSummary} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
+        return { output: body, metadata: diagMetadata('diagnostics', capped) };
       }
 
       let workspace = client.getAllDiagnostics();
       if (minSeverity) workspace = filterDiagnosticsBySeverity(workspace, minSeverity);
-      const all = capDiagnosticVolume(workspace);
+      const { files: all, removed } = capDiagnosticVolumeReport(workspace);
       if (all.length === 0) {
         if (!client.isConnected()) {
           return { output: 'No LSP server is currently connected; diagnostics appear once a server indexes an opened file.' };
@@ -266,13 +388,16 @@ export const lspDiagnosticsTool: ToolDefinition = {
             : 'No diagnostics reported in the workspace.',
         };
       }
-      const total = all.reduce((sum, f) => sum + f.diagnostics.length, 0);
+      const total = totalDiagnostics(all);
       // PARITY (additive): append a per-severity breakdown to the flat total.
       const breakdown = summarizeDiagnosticSeverities(all);
       const breakdownSuffix = breakdown ? ` (${breakdown})` : '';
-      return {
-        output: `${total} diagnostic issue(s) across ${all.length} file(s)${breakdownSuffix}:\n${formatDiagnosticsDetail(all)}`,
-      };
+      const header = `${total} diagnostic issue(s) across ${all.length} file(s)${breakdownSuffix}`;
+      // PARITY (additive): verbose=false → header (counts) only, no per-file detail.
+      const body = verbose
+        ? withNote(`${header}:\n${formatDiagnosticsDetail(all)}`, volumeLimitNote(removed))
+        : withNote(`${header} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
+      return { output: body, metadata: diagMetadata('diagnostics', all) };
     } catch {
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
     }
@@ -281,8 +406,10 @@ export const lspDiagnosticsTool: ToolDefinition = {
 
 export const lspReferencesTool: ToolDefinition = {
   name: 'find_references',
-  // PARITY (additive): declarative per-tool gate for the LSP subsystem.
-  isEnabled: () => isLspEnabled(),
+  // PARITY (additive): per-tool gate = env subsystem toggle + live health check.
+  isEnabled: () => lspDiagToolsEnabled(),
+  // PARITY (additive): code-intelligence synonyms for tool_search discovery.
+  searchHint: 'code intelligence symbol usages callers definitions navigate',
   description: 'Find all references to a symbol in the codebase using the workspace indexer.',
   inputSchema: {
     type: 'object',
@@ -292,24 +419,37 @@ export const lspReferencesTool: ToolDefinition = {
     },
     required: ['symbol'],
   },
+  outputSchema: LSP_OUTPUT_SCHEMA,
   isReadOnly: true,
   isConcurrencySafe: true,
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const symbol = input.symbol as string;
+    // PARITY (additive): runtime input validation before touching the indexer —
+    // reject a missing / non-string / empty-after-trim symbol instead of
+    // searching with garbage (Claude's LSPTool.validateInput contract).
+    if (typeof input.symbol !== 'string' || input.symbol.trim() === '') {
+      return { output: 'Invalid symbol: expected a non-empty string.', isError: true };
+    }
+    if (input.file_path !== undefined && typeof input.file_path !== 'string') {
+      return { output: 'Invalid file_path: expected a string path.', isError: true };
+    }
+    const symbol = input.symbol.trim();
     try {
       const results = _lspDiagHooks.searchSymbols(context.cwd, symbol);
       if (results.length === 0) {
         return {
           output: `No references found for "${symbol}". This may occur if the symbol has no usages in the workspace, or if the indexer has not scanned the relevant files.`,
+          metadata: { operation: 'find_references', resultCount: 0, fileCount: 0 },
         };
       }
-      // Group by file with a count/file summary header (singular/plural), so a
-      // result spanning many files is scannable and the model sees its magnitude.
+      // Group by file (cwd-relative, shortened display path — Claude's formatUri
+      // contract) with a count/file summary header, so a result spanning many
+      // files is scannable and the model sees its magnitude.
       const byFile = new Map<string, typeof results>();
       for (const r of results) {
-        const list = byFile.get(r.filePath);
+        const display = formatLspDisplayPath(r.filePath, context.cwd);
+        const list = byFile.get(display);
         if (list) list.push(r);
-        else byFile.set(r.filePath, [r]);
+        else byFile.set(display, [r]);
       }
       const refWord = results.length === 1 ? 'reference' : 'references';
       const fileWord = byFile.size === 1 ? 'file' : 'files';
@@ -323,7 +463,10 @@ export const lspReferencesTool: ToolDefinition = {
       if (results.length >= SEARCH_SYMBOL_CAP) {
         lines.push(`\n(showing first ${SEARCH_SYMBOL_CAP} matches — refine your query to narrow)`);
       }
-      return { output: lines.join('\n') };
+      return {
+        output: lines.join('\n'),
+        metadata: { operation: 'find_references', resultCount: results.length, fileCount: byFile.size },
+      };
     } catch {
       return { output: `Error searching for "${symbol}". Use grep as fallback.`, isError: true };
     }

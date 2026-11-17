@@ -1,4 +1,4 @@
-export { LSPClient, getLSPClient } from './client';
+export { LSPClient, getLSPClient, peekLSPClient } from './client';
 export type {
   NotificationHandler,
   RequestHandler,
@@ -27,10 +27,12 @@ export {
   normalizeDiagnosticPath,
   diagnosticPathsEqual,
   uriToPath,
+  formatLspDisplayPath,
   diagnosticSeveritySymbol,
   formatNewDiagnosticsSummary,
   formatDiagnosticsDetail,
   capDiagnosticVolume,
+  capDiagnosticVolumeReport,
   isUncPath,
   lspFileSizeBytes,
   DIAGNOSTIC_SEVERITY_NAMES,

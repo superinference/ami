@@ -162,6 +162,30 @@ export function diagnosticPathsEqual(a: string, b: string): boolean {
   return normalizeDiagnosticPath(a) === normalizeDiagnosticPath(b);
 }
 
+/**
+ * PARITY (additive): display-oriented path formatter mirroring Claude Code's
+ * `formatUri` (tools/LSPTool/formatters.ts). Strips the `file://` protocol
+ * (Windows drive-letter aware) and percent-decodes via {@link uriToPath}, then —
+ * when `cwd` is given — prefers a cwd-relative path ONLY if it is strictly
+ * shorter than the absolute path AND does not escape upward past `../..`;
+ * otherwise the absolute path is kept. Backslashes are normalized to `/` for
+ * stable cross-platform display. A missing/empty URI degrades to
+ * `<unknown location>` rather than throwing. Used by the LSP-backed tools so
+ * their path output is consistent and concise (no verbose absolute paths when a
+ * short relative one exists).
+ */
+export function formatLspDisplayPath(uriOrPath: string | undefined, cwd?: string): string {
+  if (!uriOrPath) return '<unknown location>';
+  const filePath = uriToPath(uriOrPath);
+  if (cwd) {
+    const relativePath = path.relative(cwd, filePath).replace(/\\/g, '/');
+    if (relativePath.length < filePath.length && !relativePath.startsWith('../../')) {
+      return relativePath;
+    }
+  }
+  return filePath.replace(/\\/g, '/');
+}
+
 /** Structural equality for two diagnostics (message/severity/source/code/range). */
 export function areDiagnosticsEqual(a: Diagnostic, b: Diagnostic): boolean {
   return (
@@ -340,9 +364,30 @@ function severityRank(severity: DiagnosticSeverityName): number {
  * mutated. Mirrors Claude's LSPDiagnosticRegistry volume limiting.
  */
 export function capDiagnosticVolume(files: DiagnosticFile[]): DiagnosticFile[] {
+  return capDiagnosticVolumeReport(files).files;
+}
+
+/** Result of {@link capDiagnosticVolumeReport}: the capped files plus how many
+ *  diagnostics volume limiting dropped (for the truncation affordance message). */
+export interface CappedDiagnostics {
+  files: DiagnosticFile[];
+  /** Count of diagnostics removed by per-file / total volume limiting. */
+  removed: number;
+}
+
+/**
+ * PARITY (additive): {@link capDiagnosticVolume} that also reports how many
+ * diagnostics were dropped, so a caller can surface Claude Code's explicit
+ * "Volume limiting removed N diagnostic(s)" affordance (LSPDiagnosticRegistry
+ * L256-288) instead of silently truncating. `capDiagnosticVolume` delegates here
+ * for its files-only view — one canonical capping implementation, no duplication.
+ */
+export function capDiagnosticVolumeReport(files: DiagnosticFile[]): CappedDiagnostics {
   const out: DiagnosticFile[] = [];
   let total = 0;
+  let original = 0;
   for (const file of files) {
+    original += file.diagnostics.length;
     const sorted = [...file.diagnostics].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
     let capped = sorted.slice(0, MAX_DIAGNOSTICS_PER_FILE);
     const remaining = MAX_TOTAL_DIAGNOSTICS - total;
@@ -354,7 +399,7 @@ export function capDiagnosticVolume(files: DiagnosticFile[]): DiagnosticFile[] {
       total += capped.length;
     }
   }
-  return out;
+  return { files: out, removed: original - total };
 }
 
 /**
