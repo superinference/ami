@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { projectStateDir } from './reference-journal';
+import { isValidSessionId } from './session';
 
 /** @public Search result returned by session search for library consumers. */
 export interface SearchResult {
@@ -495,6 +496,17 @@ function sessionFilesByRecency(sessionsDir: string, maxSessions: number = MAX_SE
   const candidates: { file: string; mtimeMs: number }[] = [];
   for (const file of fs.readdirSync(sessionsDir)) {
     if (!file.endsWith('.json')) continue;
+    // Session-id filename validation before enumeration (parity with the
+    // reference's `listSessionsImpl` UUID-filename check): a stray `*.json` file
+    // whose stem is not a format-valid session id (an empty stem `.json`, or a
+    // crafted traversal stem `...json` → `..`, or one carrying a separator /
+    // control byte) is NOT a managed session and must not be scanned — indexing
+    // it yields phantom hits from non-session JSON a user never saved as a
+    // conversation. AMI ids are `session-…` (not UUIDs), so the stem is validated
+    // with the SAME canonical {@link isValidSessionId} boundary `SessionManager`
+    // uses — no second, divergent id grammar.
+    const stem = file.slice(0, -'.json'.length);
+    if (!isValidSessionId(stem)) continue;
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(path.join(sessionsDir, file)).mtimeMs; } catch { /* stat race */ }
     candidates.push({ file, mtimeMs });
