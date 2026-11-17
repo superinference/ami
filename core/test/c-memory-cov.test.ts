@@ -223,7 +223,9 @@ describe('memory getMemoryContext sparse entries', () => {
       mtimeMs: 0,
     };
     // Instance-level override (not a namespace import) to inject sparse entries.
-    mm.loadMemories = () => [sparse];
+    // getMemoryContext single-sources stored memories (entries + pre-cap total)
+    // from loadMemoriesWithMeta, so stub that method.
+    mm.loadMemoriesWithMeta = () => ({ entries: [sparse], totalFound: 1 });
     const ctx = mm.getMemoryContext();
     assert.ok(ctx.includes('Untitled'));
     assert.ok(ctx.includes('remember this detail'));

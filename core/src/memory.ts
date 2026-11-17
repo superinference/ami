@@ -503,6 +503,17 @@ const MAX_INSTRUCTION_FILE_SIZE = 10_240;
 export const MAX_ENTRYPOINT_LINES = 200;
 export const MAX_ENTRYPOINT_BYTES = 25_000;
 
+/**
+ * Hard cap on how many stored-memory topic files are loaded into context in a
+ * single turn (parity: Claude Code's memory-scan cap). Beyond this the newest
+ * files win (loaded AFTER the recency sort); the overflow is SURFACED in the
+ * generated memory context (see {@link MemoryManager.getMemoryContext}) rather
+ * than silently dropped, so the model learns its index outgrew the budget and
+ * can consolidate. Single-sourced here so {@link MemoryManager.loadMemories},
+ * {@link MemoryManager.scanMemoryHeaders}, and the context-warning share ONE cap.
+ */
+export const MAX_MEMORY_FILES = 200;
+
 /** The MEMORY.md index is a table of contents, not a memory body — it is loaded
  *  separately (readMemoryIndex) and must be excluded from the memory-body scan.
  *  Exported so the single-source entrypoint filename is reused by the
@@ -2497,6 +2508,17 @@ export class MemoryManager {
    * MemoryEntry objects sorted by modification time (newest first).
    */
   loadMemories(): MemoryEntry[] {
+    return this.loadMemoriesWithMeta().entries;
+  }
+
+  /**
+   * Like {@link loadMemories}, but also reports `totalFound` — the number of
+   * valid memory entries discovered BEFORE the {@link MAX_MEMORY_FILES} cap is
+   * applied. When `totalFound > entries.length` the index was clipped (the oldest
+   * memories were dropped); {@link getMemoryContext} uses this to surface a
+   * visible truncation note so the clipping is never silent.
+   */
+  loadMemoriesWithMeta(): { entries: MemoryEntry[]; totalFound: number } {
     const memoryDir = this.getMemoryDir();
     let files: string[];
 
@@ -2519,10 +2541,8 @@ export class MemoryManager {
       // ENOENT (dir not created yet) is the expected empty case; a real error
       // (permissions, I/O) is logged rather than silently treated as "no memories".
       logUnexpectedReadError(err, memoryDir);
-      return [];
+      return { entries: [], totalFound: 0 };
     }
-
-    const MAX_MEMORY_FILES = 200;
 
     const entries: MemoryEntry[] = [];
 
@@ -2563,7 +2583,9 @@ export class MemoryManager {
 
     // Cap AFTER the recency sort so the newest memories are kept, not an
     // arbitrary alphabetical (chronological-ascending) prefix of the dir.
-    return entries.slice(0, MAX_MEMORY_FILES);
+    // `totalFound` is the pre-cap count so the caller can tell the model when
+    // the index was clipped (the oldest memories are not in context).
+    return { entries: entries.slice(0, MAX_MEMORY_FILES), totalFound: entries.length };
   }
 
   /**
@@ -2591,7 +2613,6 @@ export class MemoryManager {
       return [];
     }
 
-    const MAX_MEMORY_FILES = 200;
     const headers: MemoryHeader[] = [];
     for (const file of files) {
       const filePath = path.join(memoryDir, file);
@@ -3052,7 +3073,7 @@ export class MemoryManager {
     // getMemoryContext's "no content ⇒ empty string" contract is preserved.
     const hasInstructionContent = sections.length > 0;
 
-    const memories = this.loadMemories();
+    const { entries: memories, totalFound: totalMemoryFiles } = this.loadMemoriesWithMeta();
     if (memories.length > 0) {
       // When the combined stored-memory bodies exceed the caller's inline budget,
       // emit a compact INDEX (name + description + size) instead of every body;
@@ -3112,6 +3133,20 @@ export class MemoryManager {
       sections.push(
         `## ${MEMORY_INDEX_FILENAME}\n\n` +
         `Your ${MEMORY_INDEX_FILENAME} is currently empty. When you save new memories, they will appear here.`,
+      );
+    }
+
+    // Index-clipped diagnostic: when more memory topic files exist than the
+    // per-turn cap, only the newest MAX_MEMORY_FILES are loaded and the rest are
+    // dropped from context. Surface this (never silently) so the model knows its
+    // index outgrew the budget and can consolidate — mirrors Claude Code's
+    // visible entrypoint truncation warning (truncateEntrypointContent).
+    if (totalMemoryFiles > memories.length) {
+      sections.push(
+        `## Memory Health Warning\n` +
+        `Only the ${MAX_MEMORY_FILES} most recent memories are loaded (${totalMemoryFiles} topic files exist); ` +
+        `the oldest ${totalMemoryFiles - memories.length} are NOT in context. ` +
+        `Consolidate or remove stale topic files (use /memory to edit) to keep the index within the limit.`,
       );
     }
 
@@ -3876,7 +3911,13 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
           }
         } catch { /* skip unreadable files */ }
       }
-    } catch { /* rules dir may not exist */ }
+    } catch (err) {
+      // Distinguish the EXPECTED "no rules dir" case (ENOENT/ENOTDIR — silent
+      // fallback) from an UNEXPECTED IO failure (EACCES/EMFILE/EIO — the dir
+      // exists but could not be read), which is surfaced via the memory logger so
+      // a transient error is never silently equated with "zero managed rules".
+      logUnexpectedReadError(err, rulesDir);
+    }
 
     return rules;
   }
@@ -3920,7 +3961,12 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
           }
         } catch { /* skip unreadable files */ }
       }
-    } catch { /* rules dir may not exist */ }
+    } catch (err) {
+      // Same errno discrimination as loadRulesDirectory: ENOENT/ENOTDIR is the
+      // silent "no rules dir" fallback; any other code (EACCES/EMFILE/EIO) is a
+      // real failure and is logged rather than masked as "no file-scoped rules".
+      logUnexpectedReadError(err, rulesDir);
+    }
 
     return sources;
   }

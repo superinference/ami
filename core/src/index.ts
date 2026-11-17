@@ -6,7 +6,7 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
 export type { SkillResolution } from './tools/skill';
-export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, MEMORY_SOURCE_LEVELS, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
+export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, MEMORY_SOURCE_LEVELS, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES, MAX_MEMORY_FILES } from './memory';
 export type { MemoryEntry, MemoryType, MemorySourceLevel, InstructionSource, MemoryPathScope, MemoryLoadSummary } from './memory';
 export { AUTO_DREAM_DEFAULTS, resolveAutoDreamConfig, consolidationLockPath, readLastConsolidatedAt, tryAcquireConsolidationLock, rollbackConsolidationLock, recordConsolidation, isConsolidationDue, buildConsolidationPrompt, CONSOLIDATION_TASK_TYPE, CONSOLIDATION_DEBUG_COMPONENT, isDreamTask, beginConsolidationRun, abortConsolidationRun } from './memory-consolidation';
 export type { AutoDreamConfig, ConsolidationGate, ConsolidationDebug, ConsolidationRunParams } from './memory-consolidation';
