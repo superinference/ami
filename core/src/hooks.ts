@@ -306,6 +306,28 @@ export interface SubagentContext {
   /** Whether this boundary is a fresh `spawn` or a `resume` of an existing agent
    *  session (Claude Code parity: invocationKind). Absent in bare/test contexts. */
   invocationKind?: 'spawn' | 'resume';
+  /** Whether the spawned agent is a BUILT-IN identity (a bare mode like
+   *  explore/general/coordinator/fork, or a bundled roster agent) vs a USER-DEFINED
+   *  custom project/plugin agent (Claude Code parity: agentContext `isBuiltIn`). */
+  isBuiltIn?: boolean;
+  /** Privacy-safe agent-type label for analytics: the real type for built-in agents,
+   *  collapsed to `'user-defined'` for custom agents so a private repo's agent names
+   *  never leak into telemetry (Claude Code parity: agentContext name collapse). */
+  analyticsAgentType?: string;
+  /** The INVOKING agent's identity — the immediate parent subagent id when nested,
+   *  else the invoking session id. Roots this invocation's edge in the cross-agent
+   *  attribution tree (Claude Code parity: invokingRequestId). */
+  invokingRequestId?: string;
+  /** Fresh per-invocation correlation id for the query-tracking lineage so nested
+   *  fork/subagent chains can be correlated (Claude Code parity: chainId). */
+  chainId?: string;
+  /** This agent's depth in the spawn tree (parent.depth + 1; 0 = top level). Paired
+   *  with chainId for lineage correlation (Claude Code parity: query-tracking depth). */
+  depth?: number;
+  /** Discriminated-union agent-context kind: a named spawn joined to a team is a
+   *  `'teammate'`; every other spawn is a plain `'subagent'` (Claude Code parity:
+   *  subagent-vs-teammate agent-context discriminator). */
+  agentContextKind?: 'subagent' | 'teammate';
 }
 
 export interface CompactContext {

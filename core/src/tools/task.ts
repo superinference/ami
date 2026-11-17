@@ -594,6 +594,47 @@ export function clampPermissionMode(requested: string, parentMode: string | unde
 }
 
 /**
+ * The sentinel permission-mode value a FORK child inherits (parity: Claude Code's
+ * `FORK_AGENT.permissionMode = 'bubble'`, forkSubagent.ts:L67). `'bubble'` is NOT a
+ * real engine permission mode — it means "do not pin a mode of my own; bubble every
+ * permission decision up to the parent's live stance". A fork is an in-context clone,
+ * so it must behave with EXACTLY the parent's permissions, not a fixed snapshot.
+ */
+export const FORK_BUBBLE_PERMISSION_MODE = 'bubble';
+
+/**
+ * Resolve the `'bubble'` fork-child sentinel to the parent's live permission mode.
+ * Any other value (including undefined) passes through unchanged, so this is purely
+ * additive: only an explicit `'bubble'` is rewritten. When the parent mode is not
+ * threaded (bare/test contexts) `'bubble'` falls back to the interactive `'ask'`
+ * baseline rather than an invalid mode. Applied BEFORE {@link PERMISSION_MODES}
+ * validation so a caller/agent-def may legitimately pass `permission_mode: 'bubble'`.
+ */
+export function resolveBubblePermissionMode(
+  mode: string | undefined,
+  parentMode: string | undefined,
+): string | undefined {
+  if (mode === FORK_BUBBLE_PERMISSION_MODE) return parentMode ?? 'ask';
+  return mode;
+}
+
+/**
+ * Privacy-safe agent-type label for analytics/attribution (parity: Claude Code's
+ * subagent-context `isBuiltIn` collapse, agentContext.ts:L41-42). A BUILT-IN agent
+ * type (explore/general/coordinator/fork or a bundled roster agent) is a public,
+ * non-sensitive identifier and is reported verbatim. A USER-DEFINED (custom
+ * project/plugin) agent name may leak a private repo's naming, so it is collapsed to
+ * the opaque `'user-defined'` bucket before it ever reaches telemetry.
+ */
+export function collapseAgentTypeForAnalytics(
+  agentType: string | undefined,
+  isBuiltIn: boolean,
+): string {
+  if (!isBuiltIn) return 'user-defined';
+  return agentType && agentType.length > 0 ? agentType : 'unknown';
+}
+
+/**
  * Explicit allowlist (SOURCE OF TRUTH) of the tools an ASYNC / background
  * sub-agent (`run_in_background: true`) may use — mirrors Claude Code's
  * ASYNC_AGENT_ALLOWED_TOOLS (`constants/tools.ts`). A detached background agent
@@ -2114,7 +2155,13 @@ export const taskTool: ToolDefinition = {
     const subagentType = (input.subagent_type as string | undefined) ?? resumeMeta?.agentType;
     const taskDescription = (input.description as string | undefined) ?? resumeMeta?.description;
     const effortOverride = input.effort as string | undefined;
-    const requestedPermissionMode = (input.permission_mode as string | undefined) ?? resumeMeta?.permissionMode;
+    // A fork child may request `permission_mode: 'bubble'` — the sentinel that means
+    // "run with the parent's live stance" (parity: Claude's FORK_AGENT 'bubble'). Resolve
+    // it to the parent mode BEFORE the PERMISSION_MODES enum check so 'bubble' is accepted.
+    const requestedPermissionMode = resolveBubblePermissionMode(
+      (input.permission_mode as string | undefined) ?? resumeMeta?.permissionMode,
+      context._parentPermissionMode,
+    );
     const customSystemPromptRaw = input.system_prompt as string | undefined;
     const customSystemPrompt = customSystemPromptRaw && customSystemPromptRaw.trim().length > 0
       ? customSystemPromptRaw
@@ -2314,6 +2361,12 @@ export const taskTool: ToolDefinition = {
     // (stripped at load), so this is always author-trusted.
     let agentFrontmatterHooks: import('../hooks').HookConfigEntry[] | undefined;
     let effectiveMode = mode;
+    // Whether this subagent runs a BUILT-IN identity (a bare mode like explore/general/
+    // coordinator/fork, or a bundled roster agent) vs a USER-DEFINED custom agent.
+    // A mode-only spawn (no subagent_type) is always a built-in mode; a named agent is
+    // resolved below. Threaded into the subagent hook/attribution context (parity:
+    // Claude's agentContext isBuiltIn) and used to collapse analytics names privacy-safely.
+    let subagentIsBuiltIn = true;
     // Whether a named agent definition narrowed the toolset with an explicit,
     // non-wildcard `tools` allowlist. Drives the teammate-coordination-tools floor
     // ({@link ensureTeammateCoordinationTools}) so a restricted teammate still keeps
@@ -2345,7 +2398,8 @@ export const taskTool: ToolDefinition = {
       // the parent session is in `ask` / detached `deny-all`. Built-in agents are trusted
       // and keep their declared mode. The clamp is a no-op when the parent mode is not
       // threaded (bare/test contexts), so it never regresses existing behavior.
-      agentPermissionMode = agentDef.permissionMode && !isBuiltInAgent(agentDef)
+      subagentIsBuiltIn = isBuiltInAgent(agentDef);
+      agentPermissionMode = agentDef.permissionMode && !subagentIsBuiltIn
         ? clampPermissionMode(agentDef.permissionMode, context._parentPermissionMode)
         : agentDef.permissionMode;
       agentTokenBudget = agentDef.autoCompactWindow;
@@ -3102,12 +3156,35 @@ export const taskTool: ToolDefinition = {
     // discriminates a fresh `spawn` from a `resume` of an existing agent session (parity:
     // Claude's invocationKind). Falls back to taskId only in bare/test contexts with no
     // session id.
+    // Fresh per-invocation correlation id for the cross-agent attribution tree (parity:
+    // Claude's per-subagent query-tracking lineage, forkedAgent.ts:L451-455 — a new
+    // chainId plus a monotonically incremented depth = parent.depth + 1). childDepth
+    // ._agentDepth is already the CHILD's depth (one below the parent), so it is the
+    // parent.depth+1 value directly.
+    const chainId = generateTaskId('chain');
     const subagentHookCtx = {
       parentSessionId: context.sessionId || taskId,
       subagentSessionId: subConfig.sessionId || taskId,
       prompt,
       mode: effectiveMode,
       invocationKind: (resumeSessionId ? 'resume' : 'spawn') as 'resume' | 'spawn',
+      // Whether this is a built-in identity vs a user-defined custom agent, plus a
+      // privacy-safe analytics label (user-defined names are collapsed). Parity:
+      // Claude's agentContext isBuiltIn + 'user-defined' telemetry collapse.
+      isBuiltIn: subagentIsBuiltIn,
+      analyticsAgentType: collapseAgentTypeForAnalytics(subagentType || mode, subagentIsBuiltIn),
+      // The INVOKING agent's identity (the immediate parent subagent when nested, else
+      // the invoking session) — the boundary marker that roots this invocation's edge in
+      // the attribution tree (parity: Claude's invokingRequestId). session_id already
+      // bundles the whole tree; this names the immediate invoker.
+      invokingRequestId: context.agentId || context.sessionId || taskId,
+      // Per-invocation lineage: a fresh chain id and this child's depth (parent.depth+1).
+      chainId,
+      depth: childDepth._agentDepth,
+      // Discriminated-union agent-context kind (parity: Claude's subagent-vs-teammate
+      // discriminator, agentContext.ts:L124-131): a named spawn joined to a team is a
+      // teammate; every other spawn is a plain subagent.
+      agentContextKind: (agentName && resolvedTeam ? 'teammate' : 'subagent') as 'teammate' | 'subagent',
     };
 
     if (context._hookManager) {
