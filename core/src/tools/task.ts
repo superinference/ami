@@ -24,7 +24,7 @@ import { reviewSubagentHandoff, type HandoffAction } from './handoff-review';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
-import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '../model-registry';
+import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel, getRuntimeMainLoopModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot } from '../skills';
@@ -2932,6 +2932,21 @@ export const taskTool: ToolDefinition = {
           : 'ask'),
       planRequired,
     );
+
+    // Permission-mode-aware runtime re-resolution of an INHERITED model (parity:
+    // Claude's getRuntimeMainLoopModel on the agent-inherit path, utils/model/agent.ts
+    // L80-88). When a subagent ends up running the PARENT's model — either the explicit
+    // `inherit` sentinel resolved to it, or no model was specified anywhere so the spread
+    // parent model was retained — re-resolve it the way the main loop would at spawn time
+    // instead of copying the raw string. The behavioral difference is the deferred
+    // `opusplan` alias, which runs Opus while the spawned agent is in plan mode and Sonnet
+    // during execution. A concrete model id passes through unchanged, so this is a no-op
+    // for the common case and NEVER rewrites an explicitly-pinned (non-inherited) model.
+    if (parentModel && providerConfig.model === parentModel) {
+      providerConfig.model =
+        getRuntimeMainLoopModel({ permissionMode: resolvedPermissionMode, mainLoopModel: providerConfig.model })
+        ?? providerConfig.model;
+    }
 
     // Plan-required STRUCTURAL read-only-bash boundary (parity: Claude's planAgent
     // keeps bash for read-only investigation but refuses mutating commands). The

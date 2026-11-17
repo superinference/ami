@@ -907,6 +907,43 @@ export function resolveModelAlias(input: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Request shape for {@link getRuntimeMainLoopModel} (parity: Claude Code's
+ * `getRuntimeMainLoopModel({ permissionMode, mainLoopModel, exceeds200kTokens })`,
+ * utils/model/agent.ts:L80-88).
+ */
+export interface RuntimeMainLoopModelRequest {
+  /** The active permission mode (`plan` switches a `opusplan` run to Opus). */
+  permissionMode?: string;
+  /** The configured main-loop model id/alias to re-resolve at runtime. */
+  mainLoopModel: string | undefined;
+}
+
+/**
+ * Re-resolve a main-loop / inherited model the same way the running main loop would
+ * at spawn time, instead of copying the configured string verbatim (parity: Claude
+ * Code's `getRuntimeMainLoopModel`, which the agent-inherit path runs the parent
+ * model through — utils/model/agent.ts:L80-88). The behavioral difference AMI needs
+ * is the DEFERRED `opusplan` alias: it resolves to Opus while the agent is in plan
+ * mode (planning benefits from the strongest model) and to Sonnet during execution.
+ * Every concrete model id — and every other alias — passes through unchanged, so a
+ * subagent that INHERITS the parent model gets mode-conditional switching at spawn
+ * without ever downgrading an explicitly-pinned model. (AMI governs the long-context
+ * 1M window through model-capabilities, not a distinct model id, so unlike Claude
+ * there is no separate context-size re-route here — the window is a capability of the
+ * resolved model, not a different model.)
+ */
+export function getRuntimeMainLoopModel(req: RuntimeMainLoopModelRequest): string | undefined {
+  const { permissionMode, mainLoopModel } = req;
+  if (!mainLoopModel) return mainLoopModel;
+  if (normalizeAlias(mainLoopModel) === 'opusplan') {
+    return permissionMode === 'plan'
+      ? MODEL_ALIAS_TARGETS['opus']
+      : MODEL_ALIAS_TARGETS['sonnet'];
+  }
+  return mainLoopModel;
+}
+
 // ---------------------------------------------------------------------------
 // Provider-aware default subagent model — the fast family default a brand-new
 // subagent/teammate runs on when NO model is resolvable from any higher-priority
