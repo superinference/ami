@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../memory';
 import type { MemoryManager } from '../memory';
 import type { CriticDecision } from './types';
 
@@ -8,6 +9,35 @@ export interface GatedMemoryEntry {
   belief: number;
   step: number;
   timestamp: number;
+}
+
+/**
+ * Freshness readout for the gate's memory consolidation (the `persistTo()` write
+ * that promotes critic-approved entries into the MemoryManager). Mirrors the
+ * state Claude Code surfaces from its consolidation lock + MemoryFileSelector
+ * status row: whether consolidation has ever run, how long ago, and how many
+ * approved entries are waiting for the next write. AMI consolidation is
+ * synchronous, so there is no persistent `running` phase — the state is `never`
+ * until the first write and `idle` afterwards.
+ */
+export interface ConsolidationStatus {
+  state: 'never' | 'idle';
+  /** Epoch ms of the last `persistTo()`, or null when consolidation never ran. */
+  lastConsolidatedAt: number | null;
+  /** Approved entries currently held in the gate, awaiting the next write. */
+  pending: number;
+  /** Human-readable "<n><unit> ago" of the last write, or null when never run. */
+  relative: string | null;
+}
+
+// Per-entry cap: an individual stored result longer than `max` is cut and an
+// explicit marker is appended so the model (and the persisted memory file) never
+// read a mid-content cut as if it were the complete result. Distinct from
+// capAggregate() below, which bounds the JOINED output on an entry boundary.
+function truncResult(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const omitted = text.length - max;
+  return `${text.slice(0, max)}…[truncated ${omitted} chars]`;
 }
 
 // Overall budgets on gate state and the content it emits for the model, so a
@@ -38,6 +68,10 @@ function capAggregate(text: string, max: number): string {
 
 export class MemoryGate {
   private entries: GatedMemoryEntry[] = [];
+  // Epoch ms of the last persistTo() consolidation, or null until the first one.
+  // Surfaced through getConsolidationStatus()/getLastConsolidatedAt() so a readout
+  // can show consolidation freshness (parity with Claude's readLastConsolidatedAt).
+  private lastConsolidatedAt: number | null = null;
 
   // Equation 5: M_{t+1} = M_t ∪ {(q_t, a_t, metadata)} if approved, M_t if rejected
   gate(
@@ -72,7 +106,7 @@ export class MemoryGate {
 
     const content = capAggregate(
       this.entries
-        .map((e) => `Step ${e.step}: ${e.query}\n→ ${e.result.substring(0, 200)} (score: ${e.criticScore.toFixed(2)})`)
+        .map((e) => `Step ${e.step}: ${e.query}\n→ ${truncResult(e.result, 200)} (score: ${e.criticScore.toFixed(2)})`)
         .join('\n\n'),
       MAX_PERSIST_CHARS,
     );
@@ -83,6 +117,26 @@ export class MemoryGate {
       'Critic-approved task results',
       'project',
     );
+    // Record the consolidation time so a readout can report freshness.
+    this.lastConsolidatedAt = Date.now();
+  }
+
+  /**
+   * Freshness readout for memory consolidation — parity with Claude's
+   * consolidation-lock mtime read + MemoryFileSelector status row. Exposes the
+   * last-consolidation timestamp (parity: readLastConsolidatedAt) alongside the
+   * derived state/relative string. `now` is injectable for deterministic tests.
+   */
+  getConsolidationStatus(now: number = Date.now()): ConsolidationStatus {
+    const last = this.lastConsolidatedAt;
+    return {
+      state: last === null ? 'never' : 'idle',
+      lastConsolidatedAt: last,
+      pending: this.entries.length,
+      relative: last === null
+        ? null
+        : formatRelativeTime(new Date(last), { now: new Date(now) }),
+    };
   }
 
   getEntries(): GatedMemoryEntry[] { return [...this.entries]; }
@@ -91,11 +145,14 @@ export class MemoryGate {
   getApprovedContext(): string {
     return capAggregate(
       this.entries
-        .map(e => `Q: ${e.query}\nA: ${e.result.substring(0, 500)}`)
+        .map(e => `Q: ${e.query}\nA: ${truncResult(e.result, 500)}`)
         .join('\n\n'),
       MAX_CONTEXT_CHARS,
     );
   }
 
-  reset(): void { this.entries = []; }
+  reset(): void {
+    this.entries = [];
+    this.lastConsolidatedAt = null;
+  }
 }

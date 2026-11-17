@@ -92,14 +92,25 @@ describe('MemoryGate – getApprovedContext()', () => {
     assert.ok(context.includes('A: X is a variable'));
   });
 
-  it('truncates long results to 500 chars', () => {
+  it('truncates long results to 500 chars with an explicit per-entry marker', () => {
     const gate = new MemoryGate();
     const longResult = 'x'.repeat(1000);
     gate.gate('q', longResult, { approved: true, score: 0.8 }, 0.5, 1);
     const context = gate.getApprovedContext();
-    // The 'A:' line should have at most ~500 chars of the result
     const aLine = context.split('\n').find(l => l.startsWith('A:'));
-    assert.ok(aLine!.length <= 510, `Result should be truncated, got ${aLine!.length} chars`);
+    // Exactly 500 chars of content are retained...
+    assert.ok(aLine!.includes('x'.repeat(500)), 'should retain 500 chars of content');
+    assert.ok(!aLine!.includes('x'.repeat(501)), 'should retain no more than 500 chars');
+    // ...and a marker names how many chars were dropped (no silent mid-content cut).
+    assert.match(aLine!, /…\[truncated 500 chars\]$/);
+  });
+
+  it('does not add a per-entry marker when the result is within the cap', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'x'.repeat(500), { approved: true, score: 0.8 }, 0.5, 1);
+    const ctx = gate.getApprovedContext();
+    assert.doesNotMatch(ctx, /truncated/);
+    assert.equal(ctx, `Q: q\nA: ${'x'.repeat(500)}`);
   });
 
   it('includes multiple entries separated by double newlines', () => {
@@ -166,7 +177,7 @@ describe('MemoryGate – persistTo()', () => {
     assert.ok(savedContent.includes('0.85'));
   });
 
-  it('truncates long results in persisted content to 200 chars', () => {
+  it('truncates long results in persisted content to 200 chars with a marker', () => {
     const gate = new MemoryGate();
     const longResult = 'x'.repeat(500);
     gate.gate('q', longResult, { approved: true, score: 0.8 }, 0.5, 1);
@@ -176,9 +187,68 @@ describe('MemoryGate – persistTo()', () => {
       saveMemory(_p: string, content: string) { savedContent = content; },
     };
     gate.persistTo(mockMemory as any, 'task');
-    // The result portion should be substring'd to 200 chars
     const resultPart = savedContent.split('\n').find(l => l.includes('xxx'));
     assert.ok(resultPart!.length < 500, 'Should truncate long results');
+    // The dropped tail is signalled, not silently cut mid-content.
+    assert.ok(resultPart!.includes('…[truncated 300 chars]'), 'should mark the dropped tail');
+    assert.ok(resultPart!.includes('x'.repeat(200)), 'should retain 200 chars of content');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Consolidation freshness (lastConsolidatedAt + getConsolidationStatus)
+// ---------------------------------------------------------------------------
+
+describe('MemoryGate – consolidation status', () => {
+  it('reports "never" before any persistTo()', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'r', { approved: true, score: 0.8 }, 0.5, 1);
+    const status = gate.getConsolidationStatus();
+    assert.equal(status.state, 'never');
+    assert.equal(status.lastConsolidatedAt, null);
+    assert.equal(status.relative, null);
+    assert.equal(status.pending, 1);
+  });
+
+  it('records lastConsolidatedAt and goes "idle" after persistTo()', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'r', { approved: true, score: 0.8 }, 0.5, 1);
+    const before = Date.now();
+    gate.persistTo({ saveMemory() {} } as any, 'task');
+    const after = Date.now();
+    const status = gate.getConsolidationStatus();
+    assert.equal(status.state, 'idle');
+    const ts = status.lastConsolidatedAt;
+    assert.ok(ts !== null && ts >= before && ts <= after, 'timestamp within the persist window');
+  });
+
+  it('does not mark a consolidation when there is nothing to persist', () => {
+    const gate = new MemoryGate();
+    gate.persistTo({ saveMemory() {} } as any, 'task');
+    const status = gate.getConsolidationStatus();
+    assert.equal(status.lastConsolidatedAt, null);
+    assert.equal(status.state, 'never');
+  });
+
+  it('renders a relative "ago" string against an injected now', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'r', { approved: true, score: 0.8 }, 0.5, 1);
+    gate.persistTo({ saveMemory() {} } as any, 'task');
+    const ts = gate.getConsolidationStatus().lastConsolidatedAt!;
+    // 90 seconds later: the interval table selects the minute unit (1m ago).
+    const status = gate.getConsolidationStatus(ts + 90_000);
+    assert.equal(status.relative, '1m ago');
+  });
+
+  it('reset() clears the consolidation timestamp back to "never"', () => {
+    const gate = new MemoryGate();
+    gate.gate('q', 'r', { approved: true, score: 0.8 }, 0.5, 1);
+    gate.persistTo({ saveMemory() {} } as any, 'task');
+    assert.notEqual(gate.getConsolidationStatus().lastConsolidatedAt, null);
+    gate.reset();
+    const status = gate.getConsolidationStatus();
+    assert.equal(status.lastConsolidatedAt, null);
+    assert.equal(status.state, 'never');
   });
 });
 
