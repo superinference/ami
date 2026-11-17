@@ -1995,8 +1995,28 @@ function findMatchingParen(s: string, start: number): number {
   return -1;
 }
 
-function extractBaseCommands(command: string): string[] {
+/**
+ * Hard cap on how deep the recursive command decomposition
+ * ({@link extractBaseCommands} into `$(...)`/backticks/subshells/`-c` payloads and
+ * {@link extractCommandSubstitutions}'s nested-substitution walk) may descend
+ * before it stops. A maliciously deep nesting chain
+ * (`$( $( $( … rm -rf / … ) ) )`) would otherwise recurse unbounded and blow the
+ * call stack (RangeError) or hang permission evaluation — a denial-of-service on
+ * the safety layer itself. Mirrors Claude Code's `recursionDepth > 10` boundary in
+ * `utils/bash/prefix.ts`. Beyond the cap the decomposition returns what it has
+ * collected so far; the width guard ({@link MAX_SUBCOMMANDS_FOR_SECURITY_CHECK})
+ * independently fails compound commands closed, so a command too deep to fully
+ * analyze still can never be *proven* safe.
+ */
+export const MAX_COMMAND_PARSE_DEPTH = 10;
+
+function extractBaseCommands(command: string, depth = 0): string[] {
   const commands: string[] = [];
+
+  // Bounded recursion: a pathologically deep wrapper/substitution chain must not
+  // blow the stack or hang the permission check (DoS). Mirrors Claude's
+  // recursionDepth>10 guard — stop descending past the cap.
+  if (depth > MAX_COMMAND_PARSE_DEPTH) return commands;
 
   // 0. Unwrap shell control structures so for/while/if bodies are classified
   command = unwrapShellControlStructures(command);
@@ -2009,7 +2029,7 @@ function extractBaseCommands(command: string): string[] {
     while (i < cmd.length) {
       const m = match(cmd[i], i, cmd);
       if (m) {
-        commands.push(...extractBaseCommands(cmd.slice(m.innerStart, m.end)));
+        commands.push(...extractBaseCommands(cmd.slice(m.innerStart, m.end), depth + 1));
         i = m.end + 1;
       } else {
         i++;
@@ -2070,7 +2090,7 @@ function extractBaseCommands(command: string): string[] {
         // -c takes the next arg as a command string — parse it
         if ((flag === '-c') && i < tokens.length) {
           const innerCmd = tokens.slice(i).join(' ').replace(/^["']|["']$/g, '');
-          commands.push(...extractBaseCommands(innerCmd));
+          commands.push(...extractBaseCommands(innerCmd, depth + 1));
           i = tokens.length;
           break;
         }
@@ -2364,6 +2384,58 @@ export function isGitReadOnlyCommandSafe(command: string): boolean {
 }
 
 /**
+ * Does `command` invoke `git` as a base command (compound-aware)? Env-var prefixes
+ * (`GIT_DIR=… git …`) and leading `sudo`/`env`-style wrappers are peeled by the
+ * shared {@link extractBaseCommands} decomposition, so `git`, `GIT_DIR=x git log`,
+ * and `cd x && git status` all report true. Used to gate git invocations behind the
+ * disguised-bare-repo boundary check in {@link PermissionManager.check}.
+ */
+export function commandInvokesGit(command: string): boolean {
+  return extractBaseCommands(command).some(b => b === 'git' || b.startsWith('git '));
+}
+
+/**
+ * Detect that `cwd` is (or has been manipulated to look like) a BARE git repo, so
+ * that running any git command from it would make git treat `cwd` as the git dir
+ * and execute attacker-planted hooks (`hooks/pre-commit`, …) — a sandbox-escape
+ * vector. Git's `is_git_directory()` (setup.c) treats a directory as a git dir when
+ * it holds a valid `HEAD` ref plus `objects/` and `refs/`. The attack: plant
+ * `HEAD` + `objects/` + `refs/` + `hooks/pre-commit` in `cwd` and remove/corrupt
+ * `.git/HEAD` so git falls back to cwd discovery and runs the hook.
+ *
+ * Returns true when `cwd` has bare-repo indicators WITHOUT a valid `.git/HEAD`:
+ * - `.git` is a regular FILE → worktree/submodule gitdir reference → SAFE (false).
+ * - `.git` is a directory with a regular-file `HEAD` → normal repo → SAFE (false).
+ * - otherwise, flag if any of `HEAD` (file), `objects/` (dir), `refs/` (dir) exist
+ *   directly in `cwd`.
+ *
+ * Each indicator is stat'd under its own try/catch so one stat error can't mask
+ * another. Pure + synchronous (a permission-eval boundary check). Mirrors Claude's
+ * `isCurrentDirectoryBareGitRepo` (utils/git.ts). `cwd` defaults to the process cwd.
+ */
+export function isDisguisedBareGitRepo(cwd: string = process.cwd()): boolean {
+  const gitPath = path.join(cwd, '.git');
+  try {
+    const stats = fs.statSync(gitPath);
+    if (stats.isFile()) return false; // worktree/submodule gitdir reference
+    if (stats.isDirectory()) {
+      try {
+        // An attacker creating .git/HEAD as a DIRECTORY passes a bare statSync but
+        // git rejects a non-file HEAD and falls back to cwd discovery — so only a
+        // regular-file HEAD proves a normal repo.
+        if (fs.statSync(path.join(gitPath, 'HEAD')).isFile()) return false;
+      } catch { /* .git exists but no HEAD — fall through to bare-repo check */ }
+    }
+  } catch { /* no .git — fall through to bare-repo indicator check */ }
+
+  // No valid .git/HEAD — flag if cwd itself carries bare-repo indicators.
+  try { if (fs.statSync(path.join(cwd, 'HEAD')).isFile()) return true; } catch { /* none */ }
+  try { if (fs.statSync(path.join(cwd, 'objects')).isDirectory()) return true; } catch { /* none */ }
+  try { if (fs.statSync(path.join(cwd, 'refs')).isDirectory()) return true; } catch { /* none */ }
+  return false;
+}
+
+/**
  * Detect a compound command that changes directory (`cd`/`pushd`/`chdir`/
  * PowerShell `Set-Location`) AND then performs a file-writing output redirection
  * (`>`/`>>` to a file, not an fd-dup like `2>&1`). The validator classifies the
@@ -2550,14 +2622,17 @@ export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
  */
 function extractCommandSubstitutions(command: string): string[] {
   const results: string[] = [];
-  const walk = (s: string): void => {
+  const walk = (s: string, depth: number): void => {
+    // Bounded recursion: a deeply-nested substitution chain must not blow the
+    // stack or hang deny-matching (DoS). Mirrors Claude's recursionDepth>10 guard.
+    if (depth > MAX_COMMAND_PARSE_DEPTH) return;
     for (let i = 0; i < s.length; i++) {
       if (s[i] === '$' && i + 1 < s.length && s[i + 1] === '(') {
         const end = findMatchingParen(s, i + 2);
         if (end !== -1) {
           const inner = s.slice(i + 2, end);
           results.push(inner);
-          walk(inner); // nested $(...) / backticks
+          walk(inner, depth + 1); // nested $(...) / backticks
           i = end;
         }
       } else if (s[i] === '`') {
@@ -2565,13 +2640,13 @@ function extractCommandSubstitutions(command: string): string[] {
         if (end !== -1) {
           const inner = s.slice(i + 1, end);
           results.push(inner);
-          walk(inner);
+          walk(inner, depth + 1);
           i = end;
         }
       }
     }
   };
-  walk(command);
+  walk(command, 0);
   return results;
 }
 
@@ -3904,6 +3979,17 @@ export class PermissionManager {
     if (toolName === 'bash' && typeof input.command === 'string') {
       const hardline = detectHardlineCommand(input.command);
       if (hardline.blocked) return 'deny';
+
+      // Disguised-bare-repo guard: running git from a cwd that has been made to look
+      // like a bare git repo makes git treat the cwd as the git dir and execute
+      // attacker-planted hooks (sandbox escape). Force an explicit prompt for any
+      // git invocation from such a cwd — even under auto-allow/bypass — so the hook
+      // execution can never be silently auto-allowed. deny-all still denies below.
+      if (this.mode !== 'deny-all' &&
+          commandInvokesGit(input.command) &&
+          isDisguisedBareGitRepo()) {
+        return 'ask';
+      }
     }
 
     // Least-privilege capability ceiling (parity: Claude's forked-agent canUseTool).
