@@ -5,6 +5,7 @@ import {
   getFirstWordPrefix,
   suggestAllowPrefix,
   BARE_SHELL_PREFIXES,
+  isBareShellPrefix,
   SUBCOMMAND_AWARE_ROOTS,
   normalizeToolName,
   permissionRuleValueFromString,
@@ -90,6 +91,45 @@ test('getFirstWordPrefix refuses dangerous PowerShell cmdlets', () => {
   assert.equal(getFirstWordPrefix('new-object system.net.webclient'), null);
   // A benign (lowercase) PS cmdlet is unaffected.
   assert.equal(getFirstWordPrefix('get-content file.txt'), 'get-content');
+});
+
+test('BARE_SHELL_PREFIXES covers Windows .exe shell variants', () => {
+  for (const s of ['cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe']) {
+    assert.ok(BARE_SHELL_PREFIXES.has(s), `expected ${s} in BARE_SHELL_PREFIXES`);
+  }
+});
+
+test('isBareShellPrefix matches case-insensitively incl. .exe variants', () => {
+  assert.equal(isBareShellPrefix('bash'), true);
+  assert.equal(isBareShellPrefix('Bash'), true);
+  assert.equal(isBareShellPrefix('POWERSHELL.EXE'), true);
+  assert.equal(isBareShellPrefix('PwSh.Exe'), true);
+  assert.equal(isBareShellPrefix('git'), false);
+  assert.equal(isBareShellPrefix('npm'), false);
+});
+
+test('suggestAllowPrefix never anchors a scoped prefix on a shell/interpreter root', () => {
+  // RED without the two-word bare-shell guard: getSimpleCommandPrefix returns
+  // `bash foo` / `powershell.exe x`, which would become a wildcard allow rule
+  // that auto-executes arbitrary commands through the shell.
+  assert.equal(suggestAllowPrefix('bash foo'), null);
+  assert.equal(suggestAllowPrefix('sh script'), null);
+  assert.equal(suggestAllowPrefix('zsh run'), null);
+  assert.equal(suggestAllowPrefix('pwsh something'), null);
+  assert.equal(suggestAllowPrefix('cmd foo'), null);
+  // Windows `.exe` shell variants escape the first-word shape guard (the `.`
+  // fails SUBCOMMAND_SHAPE_RE) but must still be refused via the two-word path.
+  assert.equal(suggestAllowPrefix('powershell.exe x'), null);
+  assert.equal(suggestAllowPrefix('bash.exe y'), null);
+  assert.equal(suggestAllowPrefix('pwsh.exe run'), null);
+  // Regression: a legitimate subcommand-aware root is unaffected.
+  assert.equal(suggestAllowPrefix('git log --oneline'), 'git log');
+  assert.equal(suggestAllowPrefix('npm run build'), 'npm run');
+});
+
+test('getFirstWordPrefix refuses shell prefixes case-insensitively', () => {
+  assert.equal(getFirstWordPrefix('BASH -c "x"'), null);
+  assert.equal(getFirstWordPrefix('Zsh run'), null);
 });
 
 test('normalizeToolName canonicalizes legacy/cross-framework names', () => {

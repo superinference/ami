@@ -2729,6 +2729,12 @@ const SUBCOMMAND_SHAPE_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
  */
 export const BARE_SHELL_PREFIXES = new Set([
   'sh', 'bash', 'zsh', 'fish', 'csh', 'tcsh', 'ksh', 'dash', 'cmd', 'powershell', 'pwsh',
+  // Windows `.exe` shell variants — a cross-platform payload can name the
+  // interpreter as `bash.exe` / `powershell.exe` / `cmd.exe`; these must be
+  // denied as a grantable prefix exactly like their bare forms (Claude's
+  // DANGEROUS_SHELL_PREFIXES lists cmd.exe/powershell.exe/pwsh.exe/bash.exe).
+  'cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe', 'zsh.exe',
+  'fish.exe', 'csh.exe', 'tcsh.exe', 'ksh.exe', 'dash.exe',
   // wrappers that exec their args as a command
   'env', 'xargs', 'nice', 'stdbuf', 'nohup', 'timeout', 'time',
   // privilege escalation
@@ -2736,6 +2742,18 @@ export const BARE_SHELL_PREFIXES = new Set([
   // cross-platform code-exec interpreters
   'node', 'deno', 'bun', 'python', 'python3', 'ruby', 'perl', 'php', 'osascript', 'iex',
 ]);
+
+/**
+ * True if `word` names a shell/interpreter/wrapper executable that must never be
+ * treated as a permission-granting prefix — matched case-insensitively so
+ * Windows-style `Bash.EXE` / `PowerShell.exe` are caught too. Mirrors Claude's
+ * DANGEROUS_SHELL_PREFIXES guard (utils/shell/prefix.ts): accepting e.g. `bash`
+ * (or a scoped `bash foo`) as a prefix would let any command through the shell
+ * and defeat the permission system.
+ */
+export function isBareShellPrefix(word: string): boolean {
+  return BARE_SHELL_PREFIXES.has(word.toLowerCase());
+}
 
 /**
  * Commands that take subcommands or depth-scoped flags: a bare single-word
@@ -2870,7 +2888,7 @@ export function getFirstWordPrefix(command: string): string | null {
   const cmd = tokens[i];
   if (!cmd) return null;
   if (!SUBCOMMAND_SHAPE_RE.test(cmd)) return null;
-  if (BARE_SHELL_PREFIXES.has(cmd)) return null;
+  if (isBareShellPrefix(cmd)) return null;
   // Dangerous PowerShell cmdlets/aliases (download/exfil, code-exec, process
   // spawn, scriptblock-arg gate, …): a `invoke-webrequest*` / `foreach-object*`
   // wildcard would defeat the per-command security checks, so never suggest one.
@@ -2982,8 +3000,14 @@ export function suggestAllowPrefix(command: string): string | null {
   const two = getSimpleCommandPrefix(cleaned);
   // Guard the two-word path too: `start-process notepad*` would match
   // `start-process notepad.exe & evil`, so a dangerous PowerShell spawner as
-  // the ROOT word is never offered even with a scoped subcommand.
-  if (two) return isPowerShellNeverSuggest(two.split(' ')[0]!) ? null : two;
+  // the ROOT word is never offered even with a scoped subcommand. Likewise a
+  // shell/interpreter root (`bash foo`, `powershell.exe x`, `pwsh something`)
+  // must never anchor a scoped prefix — it would auto-allow arbitrary execution
+  // through the shell (Claude's DANGEROUS_SHELL_PREFIXES applied to extraction).
+  if (two) {
+    const root = two.split(' ')[0]!;
+    return isBareShellPrefix(root) || isPowerShellNeverSuggest(root) ? null : two;
+  }
   const one = getFirstWordPrefix(cleaned);
   if (one && !SUBCOMMAND_AWARE_ROOTS.has(one)) return one;
   return null;
