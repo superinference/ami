@@ -67,6 +67,59 @@ export function lspFileSizeBytes(filePath: string): number | undefined {
     return undefined;
   }
 }
+
+/**
+ * Distinct outcome of {@link validateLspFilePath}'s failure path. `errorCode`
+ * mirrors Claude Code's LSPTool.validateInput classification (LSPTool.ts
+ * L175-208) so a programmatic caller can branch on WHY the path was rejected:
+ *   1 = file does not exist (ENOENT)
+ *   2 = path exists but is not a regular file (dir, socket, fifo, …)
+ *   4 = other stat() failure (permission denied, I/O error, …)
+ */
+export interface LspFilePathError {
+  ok: false;
+  message: string;
+  errorCode: 1 | 2 | 4;
+}
+
+/** Success outcome of {@link validateLspFilePath} — carries the stat'd size. */
+export interface LspFilePathOk {
+  ok: true;
+  sizeBytes: number;
+}
+
+/**
+ * PARITY (additive): pre-flight existence + regular-file validation for an LSP
+ * file operation, mirroring Claude Code's LSPTool.validateInput (LSPTool.ts
+ * L175-208). AMI previously accepted any `file_path` and only distinguished
+ * "no server" — a missing file, a directory, or an unreadable path were all
+ * reported identically (or silently fell through the size check, which returns
+ * `undefined` for a missing file). This classifies the failure precisely:
+ *   - ENOENT                → "File does not exist" (errorCode 1)
+ *   - stat ok, not a file   → "Path is not a file"  (errorCode 2)
+ *   - any other stat error  → "Cannot access file"  (errorCode 4)
+ * On success it returns the file size so the caller reuses this single stat()
+ * for the {@link MAX_LSP_FILE_SIZE_BYTES} boundary (no redundant second stat).
+ *
+ * The caller is responsible for the UNC short-circuit ({@link isUncPath}) BEFORE
+ * invoking this, matching Claude's ordering where a UNC path skips the stat.
+ */
+export function validateLspFilePath(filePath: string): LspFilePathOk | LspFilePathError {
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { ok: false, message: `File does not exist: ${filePath}`, errorCode: 1 };
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    return { ok: false, message: `Cannot access file: ${filePath}. ${detail}`, errorCode: 4 };
+  }
+  if (!stats.isFile()) {
+    return { ok: false, message: `Path is not a file: ${filePath}`, errorCode: 2 };
+  }
+  return { ok: true, sizeBytes: stats.size };
+}
 export type DiagnosticSeverityName = (typeof DIAGNOSTIC_SEVERITY_NAMES)[number];
 
 export interface DiagnosticPosition {

@@ -4,9 +4,12 @@
  * old: reverting the corresponding change in src/tools/lsp-diagnostics.ts makes
  * the test fail (RED), re-applying it makes it pass (GREEN).
  */
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, before, after } from 'node:test';
 import { mock } from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as nodePath from 'node:path';
 
 import {
   lspDiagnosticsTool,
@@ -48,6 +51,20 @@ afterEach(() => {
   mock.restoreAll();
   _lspDiagHooks.diagnosticsTimeoutMs = DEFAULT_LSP_DIAGNOSTICS_TIMEOUT_MS;
 });
+
+// Real on-disk files so pre-flight existence validation passes before the
+// mocked LSP-client path is exercised.
+let TMP_DIR: string;
+let FOO_TS: string;
+let SLOW_TS: string;
+before(() => {
+  TMP_DIR = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'lsp-parity-files-'));
+  FOO_TS = nodePath.join(TMP_DIR, 'foo.ts');
+  SLOW_TS = nodePath.join(TMP_DIR, 'slow.ts');
+  fs.writeFileSync(FOO_TS, '');
+  fs.writeFileSync(SLOW_TS, '');
+});
+after(() => fs.rmSync(TMP_DIR, { recursive: true, force: true }));
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -158,7 +175,7 @@ describe('FIX 4: async fetch is bounded by a timeout', () => {
     const fake = fakeClient({ getDiagnostics: () => slow });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
     _lspDiagHooks.diagnosticsTimeoutMs = 10;
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/slow.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: SLOW_TS }, ctx);
     // Discriminator: without the bound the tool would await the real result.
     assert.ok(res.output.includes('timed out'));
     assert.ok(!res.output.includes('LATE_DIAGNOSTIC'));
@@ -173,7 +190,7 @@ describe('FIX 4: async fetch is bounded by a timeout', () => {
     const fake = fakeClient({ diagnostics: { hasBaseline: () => true, getNewDiagnostics: () => slow } });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
     _lspDiagHooks.diagnosticsTimeoutMs = 10;
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/slow.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: SLOW_TS }, ctx);
     assert.ok(res.output.includes('timed out'));
     await slow;
   });
@@ -188,7 +205,7 @@ describe('FIX 5: single-file severity floor empty state', () => {
       getDiagnostics: async () => file('file:///tmp/foo.ts', [diag('ONLY_A_WARNING', 'Warning')]),
     });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts', severity: 'error' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS, severity: 'error' }, ctx);
     // Discriminator: without the filter the warning diagnostic would be shown.
     assert.ok(!res.output.includes('ONLY_A_WARNING'));
     assert.ok(res.output.includes('No Error-level (or higher) diagnostics for'));
@@ -203,7 +220,7 @@ describe('FIX 5: single-file severity floor empty state', () => {
       },
     });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts', severity: 'error' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS, severity: 'error' }, ctx);
     assert.ok(res.output.includes('NEW_ERROR'));
     assert.ok(!res.output.includes('NEW_WARNING'));
   });
@@ -216,7 +233,7 @@ describe('FIX 5: single-file severity floor empty state', () => {
       },
     });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts', severity: 'error' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS, severity: 'error' }, ctx);
     assert.ok(res.output.includes('No new Error-level (or higher) diagnostics introduced'));
   });
 });

@@ -473,12 +473,21 @@ describe('readMcpResourceTool', () => {
 
 describe('lspDiagnosticsTool', () => {
   it('returns a file-specific message when file_path is provided', async () => {
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/w/foo.ts' }, ctx());
-    assert.equal(res.isError, undefined);
-    // With no running LSP server for the file, the tool reports the absence and
-    // points at manual tooling. U052 parity: the message names the file TYPE
-    // ("for file type: .ts") the way Claude does, with the path in parentheses.
-    assert.match(res.output, /No LSP server available for file type: \.ts \(\/w\/foo\.ts\)\./);
+    // A real on-disk .ts file so the pre-flight existence validation passes and
+    // the no-server affordance branch is reached.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-mcpcov-'));
+    try {
+      const foo = path.join(dir, 'foo.ts');
+      fs.writeFileSync(foo, '');
+      const res = await lspDiagnosticsTool.execute!({ file_path: foo }, ctx());
+      assert.equal(res.isError, undefined);
+      // With no running LSP server for the file, the tool reports the absence and
+      // points at manual tooling. U052 parity: the message names the file TYPE
+      // ("for file type: .ts") the way Claude does, with the path in parentheses.
+      assert.match(res.output, new RegExp(`No LSP server available for file type: \\.ts \\(${foo.replace(/[.]/g, '\\.')}\\)\\.`));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('returns a workspace message when no file_path is provided', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, before, after } from 'node:test';
 import { mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 
@@ -37,6 +37,20 @@ function fakeClient(overrides: Partial<LspDiagClient> & { baseline?: boolean } =
 
 afterEach(() => mock.restoreAll());
 
+// Real on-disk files so the diagnostics tool's pre-flight existence validation
+// (validateLspFilePath) passes and the mocked LSP-client paths are exercised.
+let TMP_DIR: string;
+let FOO_TS: string;
+let FOO_RB: string;
+before(() => {
+  TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-diag-files-'));
+  FOO_TS = path.join(TMP_DIR, 'foo.ts');
+  FOO_RB = path.join(TMP_DIR, 'foo.rb');
+  fs.writeFileSync(FOO_TS, '');
+  fs.writeFileSync(FOO_RB, '');
+});
+after(() => fs.rmSync(TMP_DIR, { recursive: true, force: true }));
+
 describe('lspDiagnosticsTool', () => {
   it('has correct name and schema', () => {
     assert.equal(lspDiagnosticsTool.name, 'diagnostics');
@@ -52,7 +66,7 @@ describe('lspDiagnosticsTool', () => {
       },
     });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
     assert.ok(res.output.includes('Found 1 new diagnostic issue in 1 file'));
     assert.ok(res.output.includes('type error here'));
   });
@@ -60,28 +74,28 @@ describe('lspDiagnosticsTool', () => {
   it('reports no new diagnostics when the baseline-diff is empty', async () => {
     const fake = fakeClient({ diagnostics: { hasBaseline: () => true, getNewDiagnostics: async () => [] } });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
     assert.ok(res.output.includes('No new diagnostics'));
   });
 
   it('returns current diagnostics for a file with no baseline', async () => {
     const fake = fakeClient({ getDiagnostics: async () => diagFile('file:///tmp/foo.ts', ['unused var']) });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
     assert.ok(res.output.includes('unused var'));
   });
 
   it('says no diagnostics when the file is clean', async () => {
     const fake = fakeClient({ getDiagnostics: async () => diagFile('file:///tmp/foo.ts', []) });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
     assert.ok(res.output.includes('No diagnostics for'));
   });
 
   it('reports no server available when getDiagnostics returns null', async () => {
     const fake = fakeClient({ getDiagnostics: async () => null });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.rb' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_RB }, ctx);
     assert.ok(res.output.includes('No LSP server available'));
   });
 
@@ -181,7 +195,7 @@ describe('lspDiagnosticsTool', () => {
   it('falls back gracefully when the file-path query throws', async () => {
     const fake = fakeClient({ getDiagnostics: async () => { throw new Error('boom'); } });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
     assert.ok(res.output.includes('LSP not available'));
   });
 });

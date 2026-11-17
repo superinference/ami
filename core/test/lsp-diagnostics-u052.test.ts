@@ -1,6 +1,8 @@
-import { describe, it, afterEach, mock } from 'node:test';
+import { describe, it, afterEach, before, after, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 import {
   lspDiagnosticsTool,
@@ -48,6 +50,23 @@ afterEach(() => {
   mock.restoreAll();
   delete process.env.AMI_LSP;
 });
+
+// Real on-disk files so the diagnostics tool's pre-flight existence validation
+// (validateLspFilePath) passes and the mocked LSP-client paths are exercised.
+let TMP_DIR: string;
+let FOO_TS: string;
+let FOO_RB: string;
+let MAKEFILE: string;
+before(() => {
+  TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-u052-files-'));
+  FOO_TS = path.join(TMP_DIR, 'foo.ts');
+  FOO_RB = path.join(TMP_DIR, 'foo.rb');
+  MAKEFILE = path.join(TMP_DIR, 'Makefile');
+  fs.writeFileSync(FOO_TS, '');
+  fs.writeFileSync(FOO_RB, '');
+  fs.writeFileSync(MAKEFILE, '');
+});
+after(() => fs.rmSync(TMP_DIR, { recursive: true, force: true }));
 
 // ---------------------------------------------------------------------------
 // Gap 10/11/12 — formatLspDisplayPath (Claude formatUri parity)
@@ -198,8 +217,8 @@ describe('diagnostics verbose toggle', () => {
   it('verbose:false summarizes a single file without detail', async () => {
     mock.method(_lspDiagHooks, 'getLSPClient', () =>
       fakeClient({ getDiagnostics: async () => diagFile('file:///tmp/foo.ts', 3) }));
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts', verbose: false }, ctx);
-    assert.ok(res.output.includes('3 diagnostic issue(s) in /tmp/foo.ts'));
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS, verbose: false }, ctx);
+    assert.ok(res.output.includes(`3 diagnostic issue(s) in ${FOO_TS}`));
     assert.ok(!res.output.includes('[Line 1:1]'));
   });
 
@@ -211,7 +230,7 @@ describe('diagnostics verbose toggle', () => {
           getNewDiagnostics: async () => [diagFile('file:///tmp/foo.ts', 2)],
         },
       }));
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.ts', verbose: false }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS, verbose: false }, ctx);
     assert.ok(res.output.includes('Found 2 new diagnostic issues'));
     assert.ok(res.output.includes('set verbose: true'));
     assert.ok(!res.output.includes('[Line 1:1]'));
@@ -296,15 +315,15 @@ describe('structured output metadata', () => {
 describe('no-server capability affordance', () => {
   it('names the exact file type when no server is available', async () => {
     mock.method(_lspDiagHooks, 'getLSPClient', () => fakeClient({ getDiagnostics: async () => null }));
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/foo.rb' }, ctx);
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_RB }, ctx);
     assert.ok(res.output.includes('No LSP server available for file type: .rb'));
-    assert.ok(res.output.includes('/tmp/foo.rb'));
+    assert.ok(res.output.includes(FOO_RB));
   });
 
   it('omits the file-type clause for an extensionless file', async () => {
     mock.method(_lspDiagHooks, 'getLSPClient', () => fakeClient({ getDiagnostics: async () => null }));
-    const res = await lspDiagnosticsTool.execute!({ file_path: '/tmp/Makefile' }, ctx);
-    assert.ok(res.output.includes('No LSP server available (/tmp/Makefile)'));
+    const res = await lspDiagnosticsTool.execute!({ file_path: MAKEFILE }, ctx);
+    assert.ok(res.output.includes(`No LSP server available (${MAKEFILE})`));
   });
 });
 
@@ -338,5 +357,52 @@ describe('searchHint discovery', () => {
   it('advertises code-intelligence synonyms on both tools', () => {
     assert.ok(lspDiagnosticsTool.searchHint && lspDiagnosticsTool.searchHint.includes('code intelligence'));
     assert.ok(lspReferencesTool.searchHint && lspReferencesTool.searchHint.includes('code intelligence'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File-existence / regular-file pre-flight validation (Claude LSPTool.validateInput)
+// ---------------------------------------------------------------------------
+describe('diagnostics file-path validation', () => {
+  it('reports "File does not exist" (errorCode 1) for a missing file_path', async () => {
+    // getLSPClient must NOT be consulted — validation short-circuits first.
+    let clientConsulted = false;
+    mock.method(_lspDiagHooks, 'getLSPClient', () => {
+      clientConsulted = true;
+      return fakeClient({ getDiagnostics: async () => diagFile('file:///x.ts', 3) });
+    });
+    const missing = path.join(TMP_DIR, 'does-not-exist.ts');
+    const res = await lspDiagnosticsTool.execute!({ file_path: missing }, ctx);
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('File does not exist'));
+    assert.ok(res.output.includes(missing));
+    assert.deepEqual(res.metadata, { errorCode: 1 });
+    // getLSPClient is called once to obtain the client, but no diagnostics fetch
+    // happens — the output is the validation error, not a diagnostics listing.
+    assert.equal(clientConsulted, true);
+  });
+
+  it('reports "Path is not a file" (errorCode 2) when file_path is a directory', async () => {
+    mock.method(_lspDiagHooks, 'getLSPClient', () =>
+      fakeClient({ getDiagnostics: async () => diagFile('file:///x.ts', 3) }));
+    const res = await lspDiagnosticsTool.execute!({ file_path: TMP_DIR }, ctx);
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('Path is not a file'));
+    assert.deepEqual(res.metadata, { errorCode: 2 });
+  });
+
+  it('proceeds normally for an existing regular file', async () => {
+    mock.method(_lspDiagHooks, 'getLSPClient', () =>
+      fakeClient({ getDiagnostics: async () => diagFile(`file://${FOO_TS}`, 2) }));
+    const res = await lspDiagnosticsTool.execute!({ file_path: FOO_TS }, ctx);
+    assert.ok(!res.isError);
+    assert.deepEqual(res.metadata, { operation: 'diagnostics', resultCount: 2, fileCount: 1 });
+  });
+
+  it('skips validation for workspace-wide mode (no file_path)', async () => {
+    mock.method(_lspDiagHooks, 'getLSPClient', () =>
+      fakeClient({ getAllDiagnostics: () => [diagFile('file:///a.ts', 1)] }));
+    const res = await lspDiagnosticsTool.execute!({}, ctx);
+    assert.ok(!res.isError);
   });
 });

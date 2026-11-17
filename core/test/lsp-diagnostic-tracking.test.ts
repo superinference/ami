@@ -17,6 +17,7 @@ import {
   capDiagnosticVolume,
   isUncPath,
   lspFileSizeBytes,
+  validateLspFilePath,
   MAX_DIAGNOSTICS_PER_FILE,
   MAX_TOTAL_DIAGNOSTICS,
   MAX_DIAGNOSTICS_SUMMARY_CHARS,
@@ -279,6 +280,45 @@ describe('path + size safety helpers', () => {
       fs.writeFileSync(f, 'hello');
       assert.equal(lspFileSizeBytes(f), 5);
       assert.equal(lspFileSizeBytes(path.join(dir, 'missing.ts')), undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('validateLspFilePath classifies existence / type / access with distinct error codes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-validate-'));
+    try {
+      const f = path.join(dir, 'a.ts');
+      fs.writeFileSync(f, 'hello');
+
+      // Regular file → ok, carries the stat'd size (reused for the size cap).
+      const ok = validateLspFilePath(f);
+      assert.equal(ok.ok, true);
+      if (ok.ok) assert.equal(ok.sizeBytes, 5);
+
+      // Missing path → ENOENT, errorCode 1.
+      const missing = validateLspFilePath(path.join(dir, 'missing.ts'));
+      assert.equal(missing.ok, false);
+      if (!missing.ok) {
+        assert.equal(missing.errorCode, 1);
+        assert.match(missing.message, /File does not exist/);
+      }
+
+      // Directory → exists but not a regular file, errorCode 2.
+      const asDir = validateLspFilePath(dir);
+      assert.equal(asDir.ok, false);
+      if (!asDir.ok) {
+        assert.equal(asDir.errorCode, 2);
+        assert.match(asDir.message, /Path is not a file/);
+      }
+
+      // Non-ENOENT stat failure (name too long → ENAMETOOLONG), errorCode 4.
+      const tooLong = validateLspFilePath(path.join(dir, 'x'.repeat(5000)));
+      assert.equal(tooLong.ok, false);
+      if (!tooLong.ok) {
+        assert.equal(tooLong.errorCode, 4);
+        assert.match(tooLong.message, /Cannot access file/);
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

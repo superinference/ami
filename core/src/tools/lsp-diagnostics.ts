@@ -5,7 +5,7 @@ import {
   formatLspDisplayPath,
   formatNewDiagnosticsSummary,
   isUncPath,
-  lspFileSizeBytes,
+  validateLspFilePath,
   MAX_LSP_FILE_SIZE_BYTES,
   MAX_DIAGNOSTICS_PER_FILE,
   MAX_TOTAL_DIAGNOSTICS,
@@ -314,11 +314,18 @@ export const lspDiagnosticsTool: ToolDefinition = {
     if (filePath && isUncPath(filePath)) {
       return { output: `Skipping diagnostics for UNC path "${filePath}" (security: avoids NTLM credential leaks).` };
     }
-    // File-size boundary: never force a huge file through the language server.
+    // PARITY (additive): pre-flight existence / regular-file validation with
+    // distinct error codes (Claude's LSPTool.validateInput). A single stat()
+    // classifies the failure (missing / not-a-file / unreadable) AND yields the
+    // size for the MAX_LSP_FILE_SIZE_BYTES boundary below.
     if (filePath) {
-      const sizeBytes = lspFileSizeBytes(filePath);
-      if (sizeBytes !== undefined && sizeBytes > MAX_LSP_FILE_SIZE_BYTES) {
-        return { output: `File too large for LSP analysis (${Math.ceil(sizeBytes / 1_000_000)}MB exceeds 10MB limit).` };
+      const validation = validateLspFilePath(filePath);
+      if (!validation.ok) {
+        return { output: validation.message, isError: true, metadata: { errorCode: validation.errorCode } };
+      }
+      // File-size boundary: never force a huge file through the language server.
+      if (validation.sizeBytes > MAX_LSP_FILE_SIZE_BYTES) {
+        return { output: `File too large for LSP analysis (${Math.ceil(validation.sizeBytes / 1_000_000)}MB exceeds 10MB limit).` };
       }
     }
     const timeoutMs = _lspDiagHooks.diagnosticsTimeoutMs;
