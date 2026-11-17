@@ -449,8 +449,31 @@ export function isSilentBashCommand(command: string): boolean {
 const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat|grep|egrep|fgrep|sed\s+-n)\b/;
 const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
 
-export function extractBashReadPaths(command: string, cwd: string): string[] {
-  const paths: string[] = [];
+/**
+ * A single filesystem path a bash read command targets, carrying whether the
+ * ORIGINAL token was relative. Relativeness matters for the compound-`cd`
+ * read-boundary guard: a relative path after a `cd` in a compound command
+ * (`cd ../../other && cat secret`) resolves against the STATIC launch cwd here
+ * but at runtime resolves against the NEW cwd, so an "inside workspace" verdict
+ * for a relative token can't be trusted and must be re-gated. Absolute tokens are
+ * cwd-immune, so they stay trustworthy. Parity: Claude's compoundCommandHasCd
+ * forces approval for cwd-relative paths in a cd-bearing compound command.
+ */
+export interface BashReadPathRef {
+  /** The resolved absolute path (relative tokens resolved against `cwd`). */
+  resolved: string;
+  /** True when the original command token was a relative (non-absolute) path. */
+  relative: boolean;
+}
+
+/**
+ * Extract every filesystem path a bash read command (`cat`/`head`/`tail`/`grep`/
+ * `sed -n`/…) targets, together with whether each was a relative token (see
+ * {@link BashReadPathRef}). This is the canonical extractor; {@link
+ * extractBashReadPaths} is a thin resolved-paths-only wrapper over it.
+ */
+export function extractBashReadPathRefs(command: string, cwd: string): BashReadPathRef[] {
+  const refs: BashReadPathRef[] = [];
   const segments = command.split(/[;&|]+/).map(s => s.trim());
   for (const seg of segments) {
     if (!FILE_READ_COMMANDS.test(seg)) continue;
@@ -463,11 +486,16 @@ export function extractBashReadPaths(command: string, cwd: string): string[] {
       const t = tokens[i];
       if (t.startsWith('-')) continue;
       if ((isGrep || isSed) && !patternSkipped) { patternSkipped = true; continue; }
-      const resolved = path.isAbsolute(t) ? t : path.resolve(cwd, t);
-      paths.push(resolved);
+      const relative = !path.isAbsolute(t);
+      const resolved = relative ? path.resolve(cwd, t) : t;
+      refs.push({ resolved, relative });
     }
   }
-  return paths;
+  return refs;
+}
+
+export function extractBashReadPaths(command: string, cwd: string): string[] {
+  return extractBashReadPathRefs(command, cwd).map(r => r.resolved);
 }
 
 function looksLikeHungPrompt(output: string): boolean {
