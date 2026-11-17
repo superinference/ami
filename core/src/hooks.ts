@@ -282,6 +282,11 @@ export interface CompactContext {
   /** The user-supplied custom compaction instructions a PreCompact hook may
    *  read and extend/override via `newCustomInstructions`. */
   customInstructions?: string | null;
+  /** The compaction summary text produced by the compaction run. Supplied to
+   *  PostCompact hooks (Claude Code's `executePostCompactHooks({ trigger,
+   *  compactSummary })`) so a post-compaction automation can read, log, or
+   *  annotate the generated summary. Absent on PreCompact (no summary yet). */
+  compactSummary?: string;
 }
 
 export interface PermissionContext {
@@ -404,16 +409,38 @@ export interface ElicitationContext {
 /** SessionStart/Setup hook result. A hook may inject a single `initialUserMessage`
  *  OR, matching Claude Code's SessionStart hook result (an ARRAY of injectable
  *  messages, not a single string), multiple messages via `initialUserMessages`.
+ *  A hook may ALSO contribute `additionalContexts[]` — model-facing context that
+ *  executeSessionStart/executeSetup accumulate across every hook and surface as a
+ *  single combined `hook_additional_context` attachment (Claude Code's
+ *  SessionStart/Setup additionalContexts aggregation).
  *  executeSessionStart aggregates ALL messages from ALL hooks (not last-wins). */
-export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; initialUserMessages?: string[]; watchPaths?: string[] } | void>;
+export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; initialUserMessages?: string[]; additionalContexts?: string[]; watchPaths?: string[] } | void>;
 export type SubagentHookFn = (context: SubagentContext) => Promise<void>;
 /** SubagentStart hook: may contribute additionalContexts prepended to the
  *  subagent's initial messages (Claude Code parity). */
 export type SubagentStartHookFn = (context: SubagentContext) => Promise<{ additionalContexts?: string[] } | void>;
-export type CompactHookFn = (context: CompactContext) => Promise<void>;
+/** PostCompact hook: receives the generated compaction summary + trigger via
+ *  {@link CompactContext} and may surface a user-facing display message (Claude
+ *  Code's `executePostCompactHooks` → `userDisplayMessage`). */
+export type PostCompactHookFn = (context: CompactContext) => Promise<{ userDisplayMessage?: string } | void>;
 /** PreCompact hook: may inject/override compaction instructions and surface a
  *  user-facing display message (Claude Code parity). */
 export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void>;
+/** How a permission grant/denial should be classified (Claude Code's
+ *  `PermissionDecisionClassificationSchema`): `user_temporary` (session-scoped
+ *  grant), `user_permanent` (durable grant the engine persists), or `user_reject`
+ *  (explicit rejection). Carried on BOTH allow and deny permission decisions so a
+ *  host/engine can distinguish a one-off approval from a remembered rule. */
+export const HOOK_DECISION_CLASSIFICATIONS = ['user_temporary', 'user_permanent', 'user_reject'] as const;
+export type HookDecisionClassification = (typeof HOOK_DECISION_CLASSIFICATIONS)[number];
+
+/** Narrow an arbitrary value to a known decision classification. Matches Claude
+ *  Code's lenient `z.enum(...).catch(undefined)`: a malformed value degrades to
+ *  `false` (→ undefined at the call site) rather than rejecting the decision. */
+export function isHookDecisionClassification(v: unknown): v is HookDecisionClassification {
+  return typeof v === 'string' && (HOOK_DECISION_CLASSIFICATIONS as readonly string[]).includes(v);
+}
+
 /**
  * Result a PermissionRequest hook may return (Claude Code's PermissionDecision
  * from `runHooks`). Beyond allow/deny, an ALLOW may rewrite the tool input
@@ -427,6 +454,10 @@ export interface PermissionHookResult {
   updatedInput?: Record<string, unknown>;
   updatedPermissions?: PermissionUpdate[];
   interrupt?: boolean;
+  /** Classifies the grant/denial as session-scoped / durable / explicit-reject
+   *  (Claude Code's `decisionClassification`). Parsed leniently — a malformed
+   *  value from the hook is dropped rather than rejecting the whole decision. */
+  decisionClassification?: HookDecisionClassification;
 }
 
 export type PermissionHookFn = (context: PermissionContext) => Promise<PermissionHookResult | void>;
@@ -1131,6 +1162,9 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   notificationType: 'notification_type',
   permissionMode: 'permission_mode',
   samplingOrigin: 'sampling_origin',
+  // PostCompact input carries the generated summary (Claude Code's compactSummary);
+  // emit the snake_case alias too so cross-framework hooks can read either form.
+  compactSummary: 'compact_summary',
   // Correlation id for the pending tool call (Claude Code's `tool_use_id`): lets a
   // permission-prompt / PostToolUseFailure hook tie its decision to the exact call.
   toolUseId: 'tool_use_id',
@@ -1348,6 +1382,24 @@ export function extractAdditionalContexts(result: string): string[] {
   } else if (typeof result === 'string' && result.startsWith('SYSTEM:')) {
     const text = result.slice(7).trim();
     if (text) out.push(text);
+  }
+  return out;
+}
+
+/** Collect ONLY the model-facing `additionalContexts[]` / `additionalContext`
+ *  strings a SessionStart/Setup hook contributed — distinct from
+ *  {@link extractAdditionalContexts}, this deliberately EXCLUDES `systemMessage`
+ *  and the `SYSTEM:` sentinel because SessionStart/Setup already route those into
+ *  an `initialUserMessage`. Claude Code accumulates these across every hook into a
+ *  single `hook_additional_context` attachment. */
+export function extractSessionAdditionalContexts(result: string): string[] {
+  const out: string[] = [];
+  const obj = tryParseHookJson(result);
+  if (obj) {
+    if (Array.isArray(obj.additionalContexts)) {
+      for (const c of obj.additionalContexts) if (typeof c === 'string' && c) out.push(c);
+    }
+    if (typeof obj.additionalContext === 'string' && obj.additionalContext) out.push(obj.additionalContext);
   }
   return out;
 }
@@ -1638,13 +1690,13 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   stop: { summary: 'When the agent turn is about to end', description: 'Input: JSON with stop_hook_active, last_assistant_message. May block turn-end.' + EXIT_CODE_BLOCKING },
   stopFailure: { summary: 'When the turn ends due to an API error (or a Stop hook itself errors)', description: `Input: JSON with error (failure class: ${STOP_FAILURE_ERROR_CLASSES.join('|')}), errorMessage, hookIndex.` + EXIT_CODE_OBSERVE },
   error: { summary: 'On an engine/turn error', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
-  sessionStart: { summary: 'At session start', description: `Input: JSON with session_id, source (${SESSION_START_SOURCES.join('|')}), model, agent_type. May return initialUserMessage / initialUserMessages[] / watchPaths.` + EXIT_CODE_OBSERVE },
+  sessionStart: { summary: 'At session start', description: `Input: JSON with session_id, source (${SESSION_START_SOURCES.join('|')}), model, agent_type. May return initialUserMessage / initialUserMessages[] / additionalContexts[] / watchPaths.` + EXIT_CODE_OBSERVE },
   sessionEnd: { summary: 'At session end', description: `Input: JSON with session_id, reason (${SESSION_END_REASONS.join('|')}).` + EXIT_CODE_OBSERVE },
-  setup: { summary: 'On first-run setup', description: `Input: JSON with session_id, cwd, trigger (${SETUP_TRIGGERS.join('|')}).` + EXIT_CODE_OBSERVE },
+  setup: { summary: 'On first-run setup', description: `Input: JSON with session_id, cwd, trigger (${SETUP_TRIGGERS.join('|')}). May return additionalContexts[].` + EXIT_CODE_OBSERVE },
   subagentStart: { summary: 'When a subagent starts', description: 'Input: JSON with prompt. May contribute additionalContexts.' + EXIT_CODE_OBSERVE },
   subagentStop: { summary: 'When a subagent stops', description: 'Input: JSON with subagent_session_id.' + EXIT_CODE_OBSERVE },
   preCompact: { summary: 'Before context compaction', description: 'Input: JSON with message_count, trigger, customInstructions. May override instructions.' + EXIT_CODE_OBSERVE },
-  postCompact: { summary: 'After context compaction', description: 'Input: JSON with message_count.' + EXIT_CODE_OBSERVE },
+  postCompact: { summary: 'After context compaction', description: 'Input: JSON with message_count, trigger (auto|manual), compact_summary. May return userDisplayMessage.' + EXIT_CODE_OBSERVE },
   notification: { summary: 'When a notification is sent', description: 'Input: JSON with message, notification type, title.' + EXIT_CODE_OBSERVE },
   configChange: { summary: 'When configuration changes', description: 'Input: JSON with source, filePath. A blocking hook vetoes the change.' + EXIT_CODE_BLOCKING },
   instructionsLoaded: { summary: 'When instruction files load', description: 'Input: JSON with filePath, loadReason.' + EXIT_CODE_OBSERVE },
@@ -1835,6 +1887,10 @@ export interface HookDecisionOutput {
   /** PermissionRequest DENY: abort the whole turn (not just skip this tool) —
    *  Claude Code's `decision.interrupt` → `abortController.abort()`. */
   interrupt?: boolean;
+  /** PermissionRequest allow/deny classification (Claude Code's
+   *  `decisionClassification`): user_temporary | user_permanent | user_reject.
+   *  Parsed leniently — a malformed value is ignored, not an error. */
+  decisionClassification?: HookDecisionClassification;
 }
 
 export type HookCallback = (event: string, data: unknown) => Promise<HookDecisionOutput | string | void>;
@@ -2564,7 +2620,7 @@ export class HookManager extends EventEmitter {
   private subagentStartHooks: SubagentStartHookFn[] = [];
   private subagentStopHooks: SubagentHookFn[] = [];
   private preCompactHooks: PreCompactHookFn[] = [];
-  private postCompactHooks: CompactHookFn[] = [];
+  private postCompactHooks: PostCompactHookFn[] = [];
   private permissionRequestHooks: PermissionHookFn[] = [];
   private permissionDeniedHooks: PermissionHookFn[] = [];
   private userPromptSubmitHooks: UserPromptHookFn[] = [];
@@ -2993,6 +3049,11 @@ export class HookManager extends EventEmitter {
             const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source, model: ctx.model ?? this._providerConfig?.model, agentType: ctx.agentType });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.sessionStartHooks, fn, 'sessionStart');
             const watchPaths = this.registerWatchPaths('sessionStart', result);
+            // Claude Code accumulates `additionalContexts[]` from every SessionStart
+            // hook into a single hook_additional_context attachment — carry them on
+            // every return branch so executeSessionStart can aggregate them.
+            const additionalContexts = extractSessionAdditionalContexts(result);
+            const base = additionalContexts.length > 0 ? { additionalContexts, watchPaths } : { watchPaths };
             try {
               const parsed = JSON.parse(result);
               // Claude Code's SessionStart hook result is an ARRAY of injectable
@@ -3000,13 +3061,13 @@ export class HookManager extends EventEmitter {
               // single `initialUserMessage` / `systemMessage` forms.
               if (Array.isArray(parsed.initialUserMessages)) {
                 const msgs = parsed.initialUserMessages.filter((m: unknown): m is string => typeof m === 'string' && m.length > 0);
-                if (msgs.length > 0) return { initialUserMessages: msgs, watchPaths };
+                if (msgs.length > 0) return { ...base, initialUserMessages: msgs };
               }
-              if (parsed.initialUserMessage) return { initialUserMessage: parsed.initialUserMessage, watchPaths };
-              if (parsed.systemMessage) return { initialUserMessage: parsed.systemMessage, watchPaths };
+              if (parsed.initialUserMessage) return { ...base, initialUserMessage: parsed.initialUserMessage };
+              if (parsed.systemMessage) return { ...base, initialUserMessage: parsed.systemMessage };
             } catch {}
-            if (result.startsWith('SYSTEM:')) return { initialUserMessage: result.slice(7).trim(), watchPaths };
-            if (watchPaths.length > 0) return { watchPaths };
+            if (result.startsWith('SYSTEM:')) return { ...base, initialUserMessage: result.slice(7).trim() };
+            if (additionalContexts.length > 0 || watchPaths.length > 0) return base;
             return undefined;
           };
           this.onSessionStart(fn);
@@ -3063,10 +3124,19 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'postCompact': {
-          const fn: CompactHookFn = async (ctx) => {
+          const fn: PostCompactHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('postCompact', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'postCompact', messageCount: ctx.messageCount });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.postCompactHooks, fn, 'postCompact');
+            // Hand the PostCompact hook the compaction `trigger` and the generated
+            // `compactSummary` (Claude Code's executePostCompactHooks input) so a
+            // post-compaction automation can read/log/annotate the summary, and let
+            // it surface a `userDisplayMessage` back to the user.
+            const eventData = serializeHookEvent({ event: 'postCompact', messageCount: ctx.messageCount, trigger: ctx.trigger, compactSummary: ctx.compactSummary });
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.postCompactHooks, fn, 'postCompact');
+            const parsed = tryParseHookJson(result);
+            if (parsed && typeof parsed.userDisplayMessage === 'string' && parsed.userDisplayMessage) {
+              return { userDisplayMessage: parsed.userDisplayMessage };
+            }
+            return undefined;
           };
           this.onPostCompact(fn);
           break;
@@ -3106,6 +3176,7 @@ export class HookManager extends EventEmitter {
                 const out: PermissionHookResult = { action: 'allow' as const };
                 if (parsed.updatedInput && typeof parsed.updatedInput === 'object' && !Array.isArray(parsed.updatedInput)) out.updatedInput = parsed.updatedInput;
                 if (Array.isArray(parsed.updatedPermissions) && parsed.updatedPermissions.length > 0) out.updatedPermissions = parsed.updatedPermissions as PermissionUpdate[];
+                if (isHookDecisionClassification(parsed.decisionClassification)) out.decisionClassification = parsed.decisionClassification;
                 return out;
               }
               if (parsed.permissionDecision === 'deny' || parsed.decision === 'deny' || parsed.decision === 'block') {
@@ -3113,6 +3184,7 @@ export class HookManager extends EventEmitter {
                 // just skipping this one tool (Claude's decision.interrupt).
                 const out: PermissionHookResult = { action: 'deny' as const, reason: parsed.reason ?? 'Hook denied' };
                 if (parsed.interrupt === true) out.interrupt = true;
+                if (isHookDecisionClassification(parsed.decisionClassification)) out.decisionClassification = parsed.decisionClassification;
                 return out;
               }
               // Strict rejection (Claude Code parseHookOutput): an unrecognized
@@ -3212,7 +3284,13 @@ export class HookManager extends EventEmitter {
             // Scope on the Setup `trigger` (init | maintenance) when a matcher is set.
             if (!matcherAppliesToCtx('setup', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd, trigger: ctx.trigger });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup');
+            // Setup hooks, like SessionStart, may contribute model-facing
+            // additionalContexts accumulated into one hook_additional_context
+            // attachment (Claude Code's Setup additionalContexts aggregation).
+            const additionalContexts = extractSessionAdditionalContexts(result);
+            if (additionalContexts.length > 0) return { additionalContexts };
+            return undefined;
           };
           this.onSetup(fn);
           break;
@@ -3353,7 +3431,7 @@ export class HookManager extends EventEmitter {
   onSubagentStart(fn: SubagentStartHookFn): void { this.subagentStartHooks.push(fn); }
   onSubagentStop(fn: SubagentHookFn): void { this.subagentStopHooks.push(fn); }
   onPreCompact(fn: PreCompactHookFn): void { this.preCompactHooks.push(fn); }
-  onPostCompact(fn: CompactHookFn): void { this.postCompactHooks.push(fn); }
+  onPostCompact(fn: PostCompactHookFn): void { this.postCompactHooks.push(fn); }
   onPermissionRequest(fn: PermissionHookFn): void { this.permissionRequestHooks.push(fn); }
   onPermissionDenied(fn: PermissionHookFn): void { this.permissionDeniedHooks.push(fn); }
   onUserPromptSubmit(fn: UserPromptHookFn): void { this.userPromptSubmitHooks.push(fn); }
@@ -3537,26 +3615,37 @@ export class HookManager extends EventEmitter {
       this.executeDecisionHooks(this.preSamplingHooks, ctx));
   }
 
-  async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> {
+  async executeSessionStart(ctx: SessionContext): Promise<{ initialUserMessage?: string; additionalContexts?: string[]; watchPaths?: string[] } | void> {
     if (ctx.source !== undefined && !isSessionStartSource(ctx.source)) {
       coreLog('hooks', `SessionStart: unrecognized source '${ctx.source}' (expected ${SESSION_START_SOURCES.join('|')})`);
     }
-    return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string; watchPaths?: string[] } | void> => {
+    return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string; additionalContexts?: string[]; watchPaths?: string[] } | void> => {
       // Aggregate ALL messages from ALL SessionStart hooks (Claude Code injects
       // an array of hook messages, not just the last) — a hook may contribute one
       // (`initialUserMessage`) or many (`initialUserMessages[]`); all are joined.
+      // Model-facing `additionalContexts[]` are accumulated across every hook and
+      // returned as a single combined list for one hook_additional_context
+      // attachment (Claude Code's SessionStart additionalContexts aggregation).
       const messages: string[] = [];
+      const additionalContexts: string[] = [];
       const watchPaths: string[] = [];
       for (const hook of this.sessionStartHooks) {
         try {
           const result = await hook(ctx);
           if (result?.initialUserMessage) messages.push(result.initialUserMessage);
           if (result?.initialUserMessages?.length) messages.push(...result.initialUserMessages);
+          if (result?.additionalContexts?.length) additionalContexts.push(...result.additionalContexts);
           if (result?.watchPaths?.length) watchPaths.push(...result.watchPaths);
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
       const initialUserMessage = messages.length ? messages.join('\n\n') : undefined;
-      if (initialUserMessage || watchPaths.length > 0) return { initialUserMessage, watchPaths: watchPaths.length > 0 ? watchPaths : undefined };
+      if (initialUserMessage || additionalContexts.length > 0 || watchPaths.length > 0) {
+        return {
+          initialUserMessage,
+          additionalContexts: additionalContexts.length > 0 ? additionalContexts : undefined,
+          watchPaths: watchPaths.length > 0 ? watchPaths : undefined,
+        };
+      }
     });
   }
 
@@ -3640,11 +3729,22 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executePostCompact(ctx: CompactContext): Promise<void> {
-    return this.withConcurrencyGate('postCompact', async () => {
+  /**
+   * Execute PostCompact hooks with the generated compaction summary + trigger
+   * (`ctx.compactSummary` / `ctx.trigger`). A hook may surface a user-facing
+   * display message; the messages from all hooks are joined (Claude Code combines
+   * the PostCompact hook's `userDisplayMessage` into the result shown to the user).
+   */
+  async executePostCompact(ctx: CompactContext): Promise<{ userDisplayMessage?: string } | void> {
+    return this.withConcurrencyGate('postCompact', async (): Promise<{ userDisplayMessage?: string } | void> => {
+      const messages: string[] = [];
       for (const hook of this.postCompactHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const r = await hook(ctx);
+          if (r?.userDisplayMessage) messages.push(r.userDisplayMessage);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (messages.length > 0) return { userDisplayMessage: messages.join('\n') };
     });
   }
 
@@ -3788,14 +3888,22 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executeSetup(ctx: SessionContext): Promise<void> {
+  async executeSetup(ctx: SessionContext): Promise<{ additionalContexts?: string[] } | void> {
     if (ctx.trigger !== undefined && !isSetupTrigger(ctx.trigger)) {
       coreLog('hooks', `Setup: unrecognized trigger '${ctx.trigger}' (expected ${SETUP_TRIGGERS.join('|')})`);
     }
-    return this.withConcurrencyGate('setup', async () => {
+    return this.withConcurrencyGate('setup', async (): Promise<{ additionalContexts?: string[] } | void> => {
+      // Accumulate model-facing additionalContexts across every Setup hook into a
+      // single combined list for one hook_additional_context attachment (Claude
+      // Code's Setup additionalContexts aggregation).
+      const additionalContexts: string[] = [];
       for (const hook of this.setupHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try {
+          const result = await hook(ctx);
+          if (result?.additionalContexts?.length) additionalContexts.push(...result.additionalContexts);
+        } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
+      if (additionalContexts.length > 0) return { additionalContexts };
     });
   }
 
