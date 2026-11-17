@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Skillbook } from '../src/skillbook';
+import { Skillbook, SKILLBOOK_FEEDBACK_VALUES } from '../src/skillbook';
 
 describe('Skillbook', () => {
   let tmpDir: string;
@@ -324,5 +324,84 @@ describe('Skillbook', () => {
     const cautions = skillbook.getCautions();
     assert.ok(Buffer.byteLength(cautions, 'utf-8') <= 25_000 + 200);
     assert.ok(cautions.includes('more omitted to stay within the context budget'));
+  });
+
+  // --- Graded feedback granularity (score) ---
+
+  it('exposes the full graded feedback scale', () => {
+    assert.deepEqual(
+      [...SKILLBOOK_FEEDBACK_VALUES].sort(),
+      ['essential', 'harmful', 'helpful', 'neutral', 'slightly_helpful', 'unhelpful', 'very_helpful'].sort(),
+    );
+  });
+
+  it('ADD initializes score to 0', () => {
+    const entry = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+    assert.equal(entry!.score, 0);
+  });
+
+  it('graded TAG accumulates a weighted score (essential > helpful)', () => {
+    const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'essential' });
+    const updated = skillbook.getAll()[0];
+    assert.equal(updated.score, 4);          // essential weight
+    assert.equal(updated.helpfulCount, 1);   // positive grade → helpful counter
+    assert.equal(updated.harmfulCount, 0);
+  });
+
+  it('graded negative TAG (unhelpful) lowers score and bumps the harmful counter', () => {
+    const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'unhelpful' });
+    const updated = skillbook.getAll()[0];
+    assert.equal(updated.score, -1);
+    assert.equal(updated.harmfulCount, 1);
+    assert.equal(updated.helpfulCount, 0);
+  });
+
+  it('getContext ranks by graded score, not raw helpful count', () => {
+    // Both get one positive tag (helpfulCount === 1), but "essential" outranks
+    // "slightly_helpful" via the finer score.
+    const slight = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['slight'], issue: 'i', insight: 'slightly useful' } });
+    skillbook.apply({ type: 'TAG', id: slight!.id, feedback: 'slightly_helpful' });
+    const ess = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['ess'], issue: 'i', insight: 'essential insight' } });
+    skillbook.apply({ type: 'TAG', id: ess!.id, feedback: 'essential' });
+    const context = skillbook.getContext();
+    assert.ok(context.indexOf('essential insight') < context.indexOf('slightly useful'));
+  });
+
+  it('backfills score from counts for a legacy entry persisted without it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-score-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [{ id: 'legacy', section: 'context', keywords: ['k'], issue: 'i', insight: 'x', helpfulCount: 5, harmfulCount: 2, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    }));
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll()[0].score, 3); // 5 helpful - 2 harmful
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('loads a persisted negative score verbatim (not clamped to >= 0)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-negscore-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [{ id: 'n', section: 'context', keywords: ['k'], issue: 'i', insight: 'x', helpfulCount: 0, harmfulCount: 0, neutralCount: 0, score: -5, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    }));
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll()[0].score, -5);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // --- CSPRNG entry ids (no Math.random) ---
+
+  it('generates well-formed, unique, crypto-random entry ids', () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+      assert.match(e!.id, /^sk-\d+-[a-z0-9]{6}$/);
+      ids.add(e!.id);
+    }
+    assert.equal(ids.size, 200);
   });
 });

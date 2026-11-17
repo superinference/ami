@@ -109,15 +109,32 @@ const VERBS: readonly string[] = [
   'wibbling', 'wiggling', 'wishing', 'wobbling', 'wondering', 'yawning', 'zooming'
 ];
 
-/** Cryptographically strong integer in [0, max). */
-function randomInt(max: number): number {
-  if (max <= 0) throw new RangeError('randomInt: max must be positive');
-  const value = randomBytes(4).readUInt32BE(0);
+/**
+ * Cryptographically strong, UNBIASED integer in `[0, max)`.
+ *
+ * Draws 32 bits from `crypto.randomBytes` and uses rejection sampling: values
+ * in the final, partial bucket (`>= floor(2^32 / max) * max`) are discarded and
+ * re-drawn so a plain `value % max` can't skew the distribution toward the low
+ * end when `max` is not a power of two. Exported as the canonical random-index
+ * selection helper so other modules (e.g. skillbook entry-id generation) pick
+ * elements/characters securely instead of reaching for `Math.random`.
+ */
+export function randomInt(max: number): number {
+  if (!Number.isInteger(max) || max <= 0) {
+    throw new RangeError('randomInt: max must be a positive integer');
+  }
+  // Largest multiple of `max` that fits in a uint32; anything at/above `limit`
+  // lives in the biased partial bucket and is rejected.
+  const limit = Math.floor(0x1_0000_0000 / max) * max;
+  let value: number;
+  do {
+    value = randomBytes(4).readUInt32BE(0);
+  } while (value >= limit);
   return value % max;
 }
 
-/** Pick a random element from a non-empty array using strong randomness. */
-function pickRandom<T>(array: readonly T[]): T {
+/** Pick a random element from a non-empty array using strong, unbiased randomness. */
+export function pickRandom<T>(array: readonly T[]): T {
   return array[randomInt(array.length)]!;
 }
 

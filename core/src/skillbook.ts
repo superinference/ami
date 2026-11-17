@@ -1,5 +1,38 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomInt } from './words';
+
+/**
+ * Graded helpfulness scale for a learned entry. The three coarse values
+ * (`harmful`/`neutral`/`helpful`) are kept for backward-compatible counters and
+ * filtering; the four extra graded values mirror the reference's finer
+ * helpfulness granularity (unhelpful → essential) so a single "essential" tag
+ * ranks a strategy above one that was merely "slightly_helpful" instead of every
+ * positive tag being worth exactly the same. Every value maps to a signed weight
+ * (see {@link FEEDBACK_WEIGHT}) accumulated into {@link SkillbookEntry.score}.
+ */
+export type SkillbookFeedback =
+  | 'harmful'
+  | 'unhelpful'
+  | 'neutral'
+  | 'slightly_helpful'
+  | 'helpful'
+  | 'very_helpful'
+  | 'essential';
+
+/** Signed weight each feedback grade contributes to {@link SkillbookEntry.score}. */
+const FEEDBACK_WEIGHT: Record<SkillbookFeedback, number> = {
+  harmful: -2,
+  unhelpful: -1,
+  neutral: 0,
+  slightly_helpful: 1,
+  helpful: 2,
+  very_helpful: 3,
+  essential: 4,
+};
+
+/** All feedback grades, exported so UIs can advertise the valid options. */
+export const SKILLBOOK_FEEDBACK_VALUES = Object.keys(FEEDBACK_WEIGHT) as SkillbookFeedback[];
 
 export interface SkillbookEntry {
   id: string;
@@ -10,16 +43,37 @@ export interface SkillbookEntry {
   helpfulCount: number;
   harmfulCount: number;
   neutralCount: number;
+  /**
+   * Cumulative weighted helpfulness from graded {@link SkillbookFeedback} tags.
+   * Used to RANK entries within a section (finer than the coarse counters, which
+   * still drive inclusion/exclusion filtering). Can be negative.
+   */
+  score: number;
   occurrences: Array<{ sessionId: string; timestamp: number; spanId?: string }>;
   createdAt: number;
   updatedAt: number;
 }
 
 export type SkillbookOperation =
-  | { type: 'ADD'; entry: Omit<SkillbookEntry, 'id' | 'createdAt' | 'updatedAt' | 'helpfulCount' | 'harmfulCount' | 'neutralCount' | 'occurrences'> }
-  | { type: 'TAG'; id: string; feedback: 'helpful' | 'harmful' | 'neutral' }
+  | { type: 'ADD'; entry: Omit<SkillbookEntry, 'id' | 'createdAt' | 'updatedAt' | 'helpfulCount' | 'harmfulCount' | 'neutralCount' | 'score' | 'occurrences'> }
+  | { type: 'TAG'; id: string; feedback: SkillbookFeedback }
   | { type: 'UPDATE'; id: string; insight?: string; keywords?: string[] }
   | { type: 'REMOVE'; id: string };
+
+/** Alphabet for the random suffix of a skillbook entry id (base36). */
+const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * Collision-resistant entry id using a CSPRNG for the random suffix. Uses the
+ * canonical unbiased {@link randomInt} helper (crypto.randomBytes-backed) rather
+ * than `Math.random`, which is not cryptographically secure and biases toward
+ * predictable values.
+ */
+function generateEntryId(now: number): string {
+  let suffix = '';
+  for (let i = 0; i < 6; i++) suffix += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
+  return `sk-${now}-${suffix}`;
+}
 
 /**
  * On-disk schema version written by {@link Skillbook.saveToDisk}. A persisted
@@ -88,6 +142,15 @@ export class Skillbook {
 
     const toCount = (v: unknown): number =>
       typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+    const helpfulCount = toCount(e.helpfulCount);
+    const harmfulCount = toCount(e.harmfulCount);
+    // `score` is a signed accumulator, so it may be negative (unlike the
+    // counters). A legacy entry persisted before graded feedback existed has no
+    // `score`; backfill it from the coarse counters so its ranking is sensible.
+    const score =
+      typeof e.score === 'number' && Number.isFinite(e.score)
+        ? e.score
+        : helpfulCount - harmfulCount;
     const now = Date.now();
     const toTimestamp = (v: unknown): number =>
       typeof v === 'number' && Number.isFinite(v) ? v : now;
@@ -107,9 +170,10 @@ export class Skillbook {
       keywords: sanitizeKeywords(e.keywords as string[]),
       issue: clampString(e.issue, MAX_ISSUE_LENGTH),
       insight: clampString(e.insight, MAX_INSIGHT_LENGTH),
-      helpfulCount: toCount(e.helpfulCount),
-      harmfulCount: toCount(e.harmfulCount),
+      helpfulCount,
+      harmfulCount,
       neutralCount: toCount(e.neutralCount),
+      score,
       occurrences,
       createdAt: toTimestamp(e.createdAt),
       updatedAt: toTimestamp(e.updatedAt),
@@ -145,9 +209,9 @@ export class Skillbook {
     const now = Date.now();
     switch (op.type) {
       case 'ADD': {
-        const id = `sk-${now}-${Math.random().toString(36).slice(2, 8)}`;
+        const id = generateEntryId(now);
         const entry: SkillbookEntry = {
-          ...op.entry, id, helpfulCount: 0, harmfulCount: 0, neutralCount: 0,
+          ...op.entry, id, helpfulCount: 0, harmfulCount: 0, neutralCount: 0, score: 0,
           occurrences: [], createdAt: now, updatedAt: now,
           // Clamp untrusted/unbounded author input before it is persisted or
           // ever injected into the prompt.
@@ -162,9 +226,14 @@ export class Skillbook {
       case 'TAG': {
         const entry = this.entries.get(op.id);
         if (!entry) return null;
-        if (op.feedback === 'helpful') entry.helpfulCount++;
-        else if (op.feedback === 'harmful') entry.harmfulCount++;
+        const weight = FEEDBACK_WEIGHT[op.feedback];
+        // Coarse counters (used for include/exclude filtering) are driven by the
+        // sign of the grade; the signed weight accumulates into `score` for
+        // finer ranking.
+        if (weight > 0) entry.helpfulCount++;
+        else if (weight < 0) entry.harmfulCount++;
         else entry.neutralCount++;
+        entry.score += weight;
         entry.updatedAt = now;
         this.saveToDisk();
         return entry;
@@ -252,7 +321,7 @@ export class Skillbook {
       if (entries.length === 0) continue;
       const { text, bytes } = Skillbook.renderGroup(
         entries,
-        e => e.helpfulCount,
+        e => e.score,
         e => `- **${e.keywords.join(', ')}**: ${e.insight} (${e.helpfulCount} helpful)`,
         remaining,
       );
@@ -275,7 +344,7 @@ export class Skillbook {
     if (entries.length === 0) return '';
     const { text } = Skillbook.renderGroup(
       entries,
-      e => e.harmfulCount - e.helpfulCount,
+      e => -e.score,
       e => `- **${e.keywords.join(', ')}**: ${e.insight} (${e.harmfulCount} harmful)`,
       MAX_CONTEXT_BYTES,
     );
