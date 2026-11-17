@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { isWSL } from '../utils/env';
-import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath, ORPHANED_PLUGIN_HOLD_DIRNAME } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { resolveRipgrepConfig } from './ripgrep-config';
@@ -441,7 +441,7 @@ Usage:
 // Keep the VCS metadata set aligned with buildRgArgs' --glob exclusions (git, svn, hg,
 // bzr, jj, sl) so the in-process fallback never searches an internal object store that
 // the ripgrep path skips.
-const FALLBACK_SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.svn', '.hg', '.bzr', '.jj', '.sl']);
+const FALLBACK_SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.svn', '.hg', '.bzr', '.jj', '.sl', ORPHANED_PLUGIN_HOLD_DIRNAME]);
 const FALLBACK_MAX_FILES = 4000;
 const FALLBACK_MAX_FILE_BYTES = 1_000_000;
 
@@ -593,6 +593,10 @@ function buildRgArgs(
   // over a Sapling checkout would walk the internal object store (noise + possible
   // leakage of packed content). Mirrors Claude Code's full VCS exclusion set.
   args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj', '--glob', '!.sl');
+  // Superseded plugin versions relocated to the hidden `.orphaned/` hold dir
+  // (common's plugin-orphan-cache) hold stale SKILL.md/source until reclaimed;
+  // never return matches from them (parity: Claude's getGlobExclusionsForPluginCache).
+  args.push('--glob', `!${ORPHANED_PLUGIN_HOLD_DIRNAME}`);
   // Read-deny exclusions: hide files the permission layer forbids reading from EVERY
   // output mode (including content, which would otherwise print their lines). Negated
   // globs anchored per ripgrep's cwd-relative ignore rule. Parity: Claude GrepTool.

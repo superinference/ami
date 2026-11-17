@@ -305,6 +305,20 @@ export function isSensitivePath(filePath: string): boolean {
 export const MAX_DIRS_TO_LIST = 5;
 
 /**
+ * Hidden hold directory where the plugin installer relocates SUPERSEDED plugin
+ * versions during the deferred-deletion grace window (see common's
+ * `plugin-orphan-cache.ts` → `ORPHAN_HOLD_DIRNAME`). A relocated version keeps
+ * its full file tree (including `SKILL.md`s and source) under this dir until it
+ * is reclaimed, so a raw glob/grep over a plugin install tree would otherwise
+ * surface STALE files from an orphaned version. The search tools exclude it by
+ * name — exactly as they exclude `node_modules`/`.git` — so results never mix
+ * live and orphaned plugin content. Parity: Claude Code's
+ * `getGlobExclusionsForPluginCache` (orphanedPluginFilter.ts), adapted to AMI's
+ * relocate-to-hold-dir layout. The literal is duplicated across the core↔common
+ * layer boundary (core must not import from common); keep the two in sync. */
+export const ORPHANED_PLUGIN_HOLD_DIRNAME = '.orphaned';
+
+/**
  * Render a quoted, truncated list of directories for an access-denied hint, e.g.
  * `'a', 'b', 'c', 'd', 'e', and 3 more`. De-duplicates and drops empties.
  * Returns '' when there is nothing to list so callers can omit the hint.

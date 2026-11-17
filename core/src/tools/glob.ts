@@ -5,7 +5,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
+import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath, ORPHANED_PLUGIN_HOLD_DIRNAME } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { isEagainStderr } from './grep';
 import { resolveRipgrepConfig, type RipgrepOverride } from './ripgrep-config';
@@ -327,6 +327,12 @@ export const globTool: ToolDefinition = {
     const ignore: string[] = [];
     if (!pattern.includes('node_modules')) ignore.push('**/node_modules/**');
     if (!pattern.includes('.git')) ignore.push('**/.git/**');
+    // Superseded plugin versions are relocated into a hidden `.orphaned/` hold dir
+    // (common's plugin-orphan-cache) and kept for a grace window; never enumerate
+    // their stale files. Dropped if the pattern explicitly targets the hold dir, so
+    // a deliberate audit of orphaned versions still works (same escape hatch as
+    // node_modules/.git above). Parity: Claude's getGlobExclusionsForPluginCache.
+    if (!pattern.includes(ORPHANED_PLUGIN_HOLD_DIRNAME)) ignore.push(`**/${ORPHANED_PLUGIN_HOLD_DIRNAME}/**`);
 
     // .gitignore respect (opt-in via AMI_GLOB_NO_IGNORE=false). Translate the
     // project's ignore sources into tinyglobby excludes so deliberately-excluded
