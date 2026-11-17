@@ -949,8 +949,23 @@ export function scanAddedSecrets(before: string, after: string): SecretMatch[] {
  * write ("content") from an in-place edit ("edited content"). Labels only — the
  * matched secret bytes are never echoed.
  */
-export function secretWarning(secrets: SecretMatch[], where: 'content' | 'edited content'): string {
+export function secretWarning(
+  secrets: SecretMatch[],
+  where: 'content' | 'edited content',
+  opts: { teamMemory?: boolean } = {},
+): string {
   const labels = secrets.map(s => s.label).join(', ');
+  // Team-memory scope: a file under the shared team-memory tree is replicated to
+  // every repository collaborator, so writing a secret there is strictly worse
+  // than committing one to this checkout. Surface a distinct, collaborator-aware
+  // block message for that path (parity with Claude Code's teamMemSecretGuard,
+  // which hard-blocks with "Team memory is shared with all repository
+  // collaborators"). Any other path keeps the generic repository-scoped warning.
+  if (opts.teamMemory) {
+    return `Error: Potential secrets detected in ${where}: ${labels}. ` +
+      'This file is in the shared TEAM MEMORY, which is synced to and readable by ALL repository collaborators — ' +
+      'never write a secret there. Remove the secret (use an env var or secret manager) before writing.';
+  }
   return `Warning: Potential secrets detected in ${where}: ${labels}. ` +
     'A committed secret is exposed to everyone with access to this repository and its history — ' +
     'remove the secret (use an env var or secret manager) before writing.';

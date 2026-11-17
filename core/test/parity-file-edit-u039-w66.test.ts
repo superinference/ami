@@ -271,6 +271,8 @@ describe('fileEditTool – single-replace change counts', () => {
       ctx(),
     );
     assert.ok(!res.isError, res.output);
-    assert.match(res.output, /\[edit: s\.txt, \+1 -1\]/, res.output);
+    // The patch-info tag now also carries the 1-based edit location (`:1` — the
+    // first changed line) alongside the +additions/-removals counts.
+    assert.match(res.output, /\[edit: s\.txt:1, \+1 -1\]/, res.output);
   });
 });

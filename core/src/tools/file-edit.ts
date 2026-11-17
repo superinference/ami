@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, DiffHunk } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { suggestPathUnderCwd } from './path-suggest';
@@ -9,6 +9,25 @@ import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigK
 import { coerceBool } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import { trackFileHistory } from './file-history';
+import { MemoryManager } from '../memory';
+
+/**
+ * True when `resolved` lives under the shared TEAM-memory tree for `cwd`. A write
+ * there is replicated to every repository collaborator, so a secret in it is
+ * strictly worse than one committed to this checkout — the secret guard escalates
+ * to a collaborator-aware block for such paths (parity: Claude Code's
+ * teamMemSecretGuard `isTeamMemPath` scoping). Reuses the ONE canonical
+ * team-memory classifier ({@link MemoryManager.isTeamMemFile}) rather than a
+ * second path check; best-effort — any classifier failure falls back to the
+ * generic (non-team) warning so a secret is never under-reported.
+ */
+function isTeamMemoryTarget(resolved: string, cwd: string): boolean {
+  try {
+    return new MemoryManager(cwd).isTeamMemFile(resolved);
+  } catch {
+    return false;
+  }
+}
 
 const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 
@@ -210,6 +229,27 @@ function validateJsonEdit(resolved: string, originalContent: string, newContent:
   }
   // Beyond JSON syntax, an AMI settings file must stay schema-valid.
   return validateAmiSettingsSchema(resolved, originalContent, parsedNew);
+}
+
+/**
+ * The TRUE 1-based line in the OLD file where the first change of `hunks` lands.
+ * A structured-patch hunk's {@link DiffHunk.oldStart} is the hunk's FIRST line —
+ * which includes the leading context lines — not the first actually-changed line.
+ * Walk the first hunk's leading context (lines prefixed `' '`) to the first
+ * removed/added line (`'-'`/`'+'`), advancing the old-side counter past each
+ * context line, so the reported location points at the edit itself (parity:
+ * Claude Code's readEditContext lineOffset, which locates the edit, not the window
+ * start). Returns undefined when there is no change.
+ */
+function firstChangedLine(hunks: DiffHunk[]): number | undefined {
+  if (hunks.length === 0) return undefined;
+  const h = hunks[0];
+  let line = h.oldStart;
+  for (const l of h.lines) {
+    if (l.startsWith('-') || l.startsWith('+')) return line;
+    line++; // a context line advances the old-side line counter
+  }
+  return h.oldStart;
 }
 
 interface SequentialEdit {
@@ -429,7 +469,7 @@ export async function writeEntireFile(
 
   const secrets = scanAddedSecrets(oldContent, content);
   if (secrets.length > 0) {
-    return { output: secretWarning(secrets, 'content'), isError: true };
+    return { output: secretWarning(secrets, 'content', { teamMemory: isTeamMemoryTarget(resolved, context.cwd) }), isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, oldContent, content);
@@ -608,7 +648,7 @@ async function applySequentialEdits(
 
   const secrets = scanAddedSecrets(rawContent, content);
   if (secrets.length > 0) {
-    return { output: secretWarning(secrets, 'edited content'), isError: true };
+    return { output: secretWarning(secrets, 'edited content', { teamMemory: isTeamMemoryTarget(resolved, context.cwd) }), isError: true };
   }
 
   const jsonErr = validateJsonEdit(resolved, rawContent, content);
@@ -928,7 +968,7 @@ export const fileEditTool: ToolDefinition = {
         const replaced = content.split(normalizedOld).join(normalizedNew);
         const addedSecrets = scanAddedSecrets(content, replaced);
         if (addedSecrets.length > 0) {
-          return { output: secretWarning(addedSecrets, 'edited content'), isError: true };
+          return { output: secretWarning(addedSecrets, 'edited content', { teamMemory: isTeamMemoryTarget(resolved, context.cwd) }), isError: true };
         }
         const jsonErr = validateJsonEdit(resolved, rawContent, replaced);
         if (jsonErr) return jsonErr;
@@ -958,7 +998,7 @@ export const fileEditTool: ToolDefinition = {
 
     const secrets = scanAddedSecrets(rawContent, newContent);
     if (secrets.length > 0) {
-      return { output: secretWarning(secrets, 'content'), isError: true };
+      return { output: secretWarning(secrets, 'content', { teamMemory: isTeamMemoryTarget(resolved, context.cwd) }), isError: true };
     }
 
     await fileHistoryHooks.track(resolved, rawContent, context.cwd);
@@ -971,10 +1011,19 @@ export const fileEditTool: ToolDefinition = {
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
     const { additions, removals } = countLinesChanged(content, normalizeToLf(newContent));
-    const patchInfo = `[edit: ${path.basename(resolved)}, +${additions} -${removals}]`;
+    // Surface the TRUE 1-based line where the edit landed (the first hunk's
+    // oldStart), so the model/UI can locate the change in the file without
+    // re-reading it — parity with Claude Code's readEditContext, which reports the
+    // edit in its surrounding context at its real line number (lineOffset). The
+    // structured patch is computed once and reused for both the location tag and
+    // the `structuredPatch` field.
+    const patch = buildStructuredPatch(content, normalizeToLf(newContent));
+    const editLine = firstChangedLine(patch);
+    const locationNote = editLine !== undefined ? `:${editLine}` : '';
+    const patchInfo = `[edit: ${path.basename(resolved)}${locationNote}, +${additions} -${removals}]`;
     return {
       output: `${patchInfo}\nSuccessfully edited ${resolved}${strategyNote}\n\n${diff}`,
-      structuredPatch: buildStructuredPatch(content, normalizeToLf(newContent)),
+      structuredPatch: patch,
     };
   },
 };
