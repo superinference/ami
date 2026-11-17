@@ -14,7 +14,8 @@ import { getCurrentTeam, registerTeamMember, setTeamMemberActive, teamAllowedPat
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
-import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
+import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '../model-registry';
+import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName } from '../skills';
 
@@ -468,6 +469,25 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
     return parentModel;
   }
   return resolveModelAlias(normalized) ?? requested;
+}
+
+/**
+ * Final subagent-model fallback: return `currentModel` when it names a model, else
+ * the provider-aware default from {@link getDefaultSubagentModel}. Used after every
+ * higher-priority source (env override → per-call model → agent-def model → explore
+ * default → inherited parent model) has had its say, so a subagent spawned with no
+ * model configured ANYWHERE runs on a concrete provider-correct fast model instead
+ * of dispatching an empty model string. AMI KEEPS its parent-inheritance perk (a
+ * non-empty `currentModel` passes through untouched); this only ADDS the hardcoded
+ * default for the genuinely-unset case — parity with Claude Code's
+ * getHardcodedTeammateModelFallback without regressing the inherit behavior.
+ */
+export function defaultSubagentModelFallback(
+  currentModel: string | undefined,
+  providerConfig: ProviderConfig,
+): string {
+  const trimmed = (currentModel ?? '').trim();
+  return trimmed !== '' ? trimmed : getDefaultSubagentModel(providerConfig);
 }
 
 /** Operator override for the model an `explore`-mode sub-agent runs on. Set to a
@@ -1823,6 +1843,13 @@ export const taskTool: ToolDefinition = {
       const fastModel = defaultExploreModel(parentModel);
       if (fastModel) providerConfig.model = fastModel;
     }
+
+    // Final fallback: if NO model was resolvable from any source above and the
+    // parent provided none to inherit, run the subagent on the provider-aware fast
+    // default instead of dispatching an empty model id (parity with Claude Code's
+    // getHardcodedTeammateModelFallback; keeps AMI's parent-inheritance perk when a
+    // model IS present — see defaultSubagentModelFallback).
+    providerConfig.model = defaultSubagentModelFallback(providerConfig.model, providerConfig);
 
     // Per-call `max_output_tokens` cap (parity: Claude's ForkedAgentParams.maxOutputTokens
     // → maxOutputTokensOverride): size the sub-engine's per-request max_tokens so a

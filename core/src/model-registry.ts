@@ -10,7 +10,9 @@ import {
   writeModelCapabilitiesCache,
   discoveryToCacheEntries,
   isFirstPartyProvider,
+  toApiProviderClass,
 } from './model-capabilities';
+import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
@@ -636,6 +638,55 @@ export function resolveModelAlias(input: string): string | undefined {
   // Version-specific short keys (opus45/sonnet46/…) pin a concrete generation.
   if (isModelShortKey(key)) return MODEL_SHORT_KEYS[key];
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Provider-aware default subagent model — the fast family default a brand-new
+// subagent/teammate runs on when NO model is resolvable from any higher-priority
+// source. Mirrors Claude Code's provider-aware getHardcodedTeammateModelFallback
+// (utils/swarm/teammateModel.ts): a teammate the user never configured still gets
+// a concrete, PROVIDER-CORRECT model id (Bedrock/Vertex/Foundry), never an empty
+// string. AMI keeps ONE central send-path remap (provider.ts → resolveBedrockModelId)
+// instead of Claude's N hardcoded per-provider config tables, so the per-provider
+// mapping here REUSES that same canonical Bedrock resolver — no parallel id table.
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical, provider-neutral fast model id a subagent falls back to when nothing
+ * else selected a model. A read-only/delegated subagent does not need the main
+ * model's full capability, so this is the fast/cheap family default (matches the
+ * `haiku` alias target and the explore-mode fast default). {@link getDefaultSubagentModel}
+ * maps it to the concrete id for the active provider.
+ */
+const DEFAULT_SUBAGENT_MODEL = 'claude-haiku-4-5';
+
+/**
+ * Map a canonical first-party model id to the concrete id to INVOKE for the
+ * provider that `config` detects. For Amazon Bedrock the id is resolved against
+ * the account's declared inference profiles / cross-region prefix via the SINGLE
+ * canonical {@link resolveBedrockModelId} — the exact resolver the provider
+ * send-path (provider.ts) already uses, so a selected id lands on a provisioned
+ * region-scoped profile with no parallel per-provider id table. Vertex / Foundry /
+ * first-party send the canonical id unchanged (AMI's one-central-remap design).
+ */
+function toProviderModelId(canonicalId: string, config: ProviderConfig): string {
+  if (toApiProviderClass(detectProvider(config)) === 'bedrock') {
+    return resolveBedrockModelId(canonicalId, getBedrockInferenceProfiles());
+  }
+  return canonicalId;
+}
+
+/**
+ * Provider-aware default subagent model: the fast {@link DEFAULT_SUBAGENT_MODEL}
+ * resolved to the concrete id for the provider `config` detects. Used as the FINAL
+ * fallback when a subagent has no model configured anywhere (no per-call `model`,
+ * no agent-definition model, no SUPERINFERENCE_SUBAGENT_MODEL override, and no
+ * inheritable parent model), so a Bedrock run gets a provisioned region-scoped
+ * profile id and a first-party run gets the canonical id — never an empty model
+ * string. Mirrors Claude Code's provider-aware getHardcodedTeammateModelFallback.
+ */
+export function getDefaultSubagentModel(config: ProviderConfig): string {
+  return toProviderModelId(DEFAULT_SUBAGENT_MODEL, config);
 }
 
 /**
