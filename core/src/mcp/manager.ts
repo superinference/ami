@@ -488,6 +488,14 @@ export interface McpServerConfig {
    * (Claude-parity, mcpPluginIntegration.ts:L517).
    */
   pluginDataDir?: string;
+  /**
+   * Provenance tag for a server contributed by a plugin/bundle (the bundle name or
+   * install source). Set by {@link scopePluginMcpServers} alongside the
+   * `plugin:<name>:<server>` name scoping so the `/mcp` view can attribute a
+   * scoped server back to the plugin that shipped it (Claude-parity
+   * `ScopedMcpServerConfig.pluginSource`, mcpPluginIntegration.ts:L341-360).
+   */
+  pluginSource?: string;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
   oauth?: {
     redirectUri?: string;
@@ -3763,6 +3771,63 @@ export function substitutePluginMcpVars(value: string, vars: PluginMcpVars): str
     if (ref === 'CLAUDE_PLUGIN_DATA') return vars.pluginDataDir ?? '';
     const key = ref.slice('user_config.'.length);
     return vars.userConfig?.[key] ?? '';
+  });
+}
+
+/**
+ * Scope a plugin/bundle's MCP server names so two different plugins can each ship
+ * a server under the same local name (e.g. `github`) without one clobbering the
+ * other (Claude-parity `addPluginScopeToServers`, mcpPluginIntegration.ts:L341-360).
+ * Each server is renamed to `plugin:${pluginName}:${name}` and tagged with a
+ * {@link McpServerConfig.pluginSource} provenance marker. Returns the scoped map
+ * plus a `nameMap` (original → scoped) so the caller can carry the plugin's
+ * `mcp-auto-allow-patterns` onto the scoped tool names via
+ * {@link remapMcpAutoAllowPatterns}. The input map is not mutated (each config is
+ * shallow-cloned).
+ */
+export function scopePluginMcpServers(
+  servers: Record<string, McpServerConfig>,
+  pluginName: string,
+  pluginSource: string,
+): { scoped: Record<string, McpServerConfig>; nameMap: Record<string, string> } {
+  const scoped: Record<string, McpServerConfig> = {};
+  const nameMap: Record<string, string> = {};
+  for (const [name, config] of Object.entries(servers)) {
+    const scopedName = `plugin:${pluginName}:${name}`;
+    scoped[scopedName] = { ...config, pluginSource };
+    nameMap[name] = scopedName;
+  }
+  return { scoped, nameMap };
+}
+
+/**
+ * Rewrite a plugin's `mcp-auto-allow-patterns` so they still match the per-plugin
+ * SCOPED tool names produced by {@link scopePluginMcpServers}. A pattern targets a
+ * server via the `mcp__<server>__…` tool-name prefix (or the bare `mcp__<server>`
+ * server-granularity form); after scoping, the server segment normalizes
+ * differently ({@link normalizeMcpNameSegment} maps the `plugin:<name>:<server>`
+ * colons to underscores), so a stale `mcp__github__*` would never match the scoped
+ * `mcp__plugin_<name>_github__…`. Each pattern whose server prefix matches a
+ * `nameMap` entry is rewritten onto the scoped prefix; every other pattern (and a
+ * pattern that does not reference a scoped server) is returned unchanged.
+ */
+export function remapMcpAutoAllowPatterns(
+  patterns: string[],
+  nameMap: Record<string, string>,
+): string[] {
+  const prefixMap: Array<[string, string]> = Object.entries(nameMap).map(
+    ([orig, scoped]) => [`mcp__${normalizeMcpNameSegment(orig)}`, `mcp__${normalizeMcpNameSegment(scoped)}`],
+  );
+  return patterns.map((pattern) => {
+    for (const [oldPrefix, newPrefix] of prefixMap) {
+      if (pattern.startsWith(oldPrefix + '__')) {
+        return newPrefix + pattern.slice(oldPrefix.length);
+      }
+      if (pattern === oldPrefix || pattern.startsWith(oldPrefix + '*')) {
+        return newPrefix + pattern.slice(oldPrefix.length);
+      }
+    }
+    return pattern;
   });
 }
 
