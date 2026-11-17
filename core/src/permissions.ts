@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -338,7 +338,7 @@ export type PermissionDecisionReason =
   | { type: 'other'; message?: string };
 
 export const SAFETY_CHECK_KINDS = [
-  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec',
+  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec', 'toctou',
 ] as const;
 export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
 
@@ -2979,6 +2979,21 @@ export class PermissionManager {
       return 'ask';
     }
 
+    // Compound-command TOCTOU guard — an archive-extraction-before-git compound
+    // or a symlink-creating compound always confirms in rule-evaluated modes
+    // (ask/acceptEdits), even under a wildcard allow rule, because the auto-allow
+    // paths cannot see the runtime repo/path redirection those shapes introduce
+    // (the archive is unpacked, or the link is created, AFTER the permission
+    // decision and BEFORE the later command runs). Mirrors Claude's
+    // GIT_SAFETY_ARCHIVE_EXTRACTORS + hasSymlinkCreate gates. An explicit deny
+    // still wins via the unconditional deny scan below.
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        this.bashToctouEscalation(input.command) !== null &&
+        !this.hasExplicitDeny(toolName, input)) {
+      return 'ask';
+    }
+
     // Policy memo: return cached decision for this exact tool+input if available
     if (this._memo) {
       const inputHash = this._hashInput(input);
@@ -3105,6 +3120,10 @@ export class PermissionManager {
       if (this.classifyBashCommand(command) === 'destructive') {
         return { type: 'safetyCheck', check: 'destructive', message: 'Command is destructive and requires approval' };
       }
+      const toctou = this.bashToctouEscalation(command);
+      if (toctou !== null) {
+        return { type: 'safetyCheck', check: 'toctou', message: `Command requires approval: ${toctou}` };
+      }
       // Code-execution allow-rule downgrade: the ask verdict came from a matched
       // over-broad interpreter / package-runner / shell allow rule, not the mode.
       if (decision === 'ask' && (this.mode === 'ask' || this.mode === 'acceptEdits')) {
@@ -3162,6 +3181,23 @@ export class PermissionManager {
   /**
    * Classify a bash command as safe, unsafe, or destructive.
    */
+  /**
+   * Single source of truth for the compound-command TOCTOU escalation reason:
+   * returns a human-readable reason string when a bash command extracts an
+   * archive before running git, or creates a filesystem link inside a compound —
+   * both of which must require explicit approval even under an allow rule — or
+   * `null` when neither shape is present. Used by {@link check} (to force `ask`)
+   * and {@link deriveDecisionReason} (to explain WHY), so the predicate lives in
+   * exactly one place.
+   */
+  private bashToctouEscalation(command: string): string | null {
+    const archive = detectArchiveExtractionWithGit(command);
+    if (archive.escalate) return archive.reason ?? 'archive-extraction TOCTOU';
+    const symlink = detectSymlinkCreateCompound(command);
+    if (symlink.escalate) return symlink.reason ?? 'symlink-creation TOCTOU';
+    return null;
+  }
+
   classifyBashCommand(command: string): BashClassification {
     const result = this.classifyBashCommandCore(command);
     // Any command that touches a credential/secret path — even a read like

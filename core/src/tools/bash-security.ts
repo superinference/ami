@@ -4553,6 +4553,70 @@ export function commandInvokesGit(command: string): boolean {
   return false;
 }
 
+/**
+ * Archive-extraction tools whose output is OPAQUE at permission-eval time. A
+ * compound that extracts an archive and then runs git defeats the bare-repo cwd
+ * probe ({@link commandInvokesGit} + the tool's `isCurrentDirectoryBareGitRepo`):
+ * the probe runs when permission is decided, but the archive is unpacked AFTER
+ * that and BEFORE git runs, so it can drop bare-repo indicators (HEAD, `hooks/`,
+ * `refs/`) that git then treats as the repository root and executes hooks from.
+ * Parity with Claude Code's GIT_SAFETY_ARCHIVE_EXTRACTORS (PowerShellTool/
+ * gitSafety.ts), scoped to the POSIX extractors the bash tool can spawn.
+ */
+const ARCHIVE_EXTRACTOR_COMMANDS: ReadonlySet<string> = new Set([
+  'tar', 'bsdtar', 'unzip', '7z', '7za', 'gzip', 'gunzip',
+]);
+
+/**
+ * Detect a compound command that extracts an archive AND invokes git. Because
+ * archive contents are opaque, any such pairing must require explicit approval
+ * (an `ask`, not an auto-allow) — even under a matching allow rule — to close the
+ * archive-extraction TOCTOU on the bare-repository guard. Returns `escalate`
+ * with a human-readable `reason` when the shape is present.
+ */
+export function detectArchiveExtractionWithGit(command: string): { escalate: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  if (!commandInvokesGit(stripped)) return { escalate: false };
+  for (const seg of splitShellSegments(stripped)) {
+    if (ARCHIVE_EXTRACTOR_COMMANDS.has(segmentBaseCommand(seg))) {
+      return {
+        escalate: true,
+        reason:
+          'compound command extracts an archive and runs git — the archive can plant ' +
+          'bare-repository indicators (HEAD, hooks/, refs/) that git then executes',
+      };
+    }
+  }
+  return { escalate: false };
+}
+
+/**
+ * Detect a compound command that creates a filesystem link (`ln`, incl. symbolic
+ * `ln -s` and hard links) alongside at least one other command. A created link
+ * redirects later reads/writes in the same compound to arbitrary locations that
+ * the path validator — which inspects the literal pre-link path — cannot see
+ * (the same TOCTOU shape as a cwd desync). Such a compound must require explicit
+ * approval even under a matching allow rule. Parity with Claude Code's
+ * `hasSymlinkCreate` / `isSymlinkCreatingCommand` gate (PowerShellTool/
+ * powershellPermissions.ts), scoped to the POSIX `ln` link creator.
+ */
+export function detectSymlinkCreateCompound(command: string): { escalate: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  const segments = splitShellSegments(stripped);
+  if (segments.length <= 1) return { escalate: false };
+  for (const seg of segments) {
+    if (segmentBaseCommand(seg) === 'ln') {
+      return {
+        escalate: true,
+        reason:
+          'compound command creates a filesystem link — a later read/write through ' +
+          'the link can escape the path validator',
+      };
+    }
+  }
+  return { escalate: false };
+}
+
 // ---------------------------------------------------------------------------
 // PowerShell encoded / download-and-execute guard
 // ---------------------------------------------------------------------------
