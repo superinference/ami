@@ -209,6 +209,14 @@ export interface PluginBundle {
    */
   skillsPaths?: string[];
   /**
+   * Additional agent directories/files declared by the manifest `agentsPaths`
+   * (Claude parity: loadPluginAgents's `plugin.agentsPaths`, L275-335 — each entry a
+   * directory OR a single `.md` file), resolved + hardened exactly like
+   * {@link commandsPaths}/{@link skillsPaths}. Loaded ALONGSIDE the primary
+   * `agents/` dir. `undefined` when the manifest declares none or none survive.
+   */
+  agentsPaths?: string[];
+  /**
    * Per-command metadata declared by the manifest `commandsMetadata` object-mapping
    * (Claude parity: PluginManifestCommandsSchema's object form). Maps a command key
    * to either a `source` file-path override (with description/argumentHint/model/
@@ -881,8 +889,10 @@ export interface PluginValidationResult {
 
 /** Fields that belong in a marketplace entry, not plugin.json — author confusion. */
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict', 'id'];
-/** Optional component-path fields a manifest may declare. */
-const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers'];
+/** Optional component-path fields a manifest may declare. The single-path forms
+ *  (skills/agents/commands/hooks/mcpServers) plus the multi-path `agentsPaths`
+ *  list form (Claude parity: loadPluginAgents) are all traversal-validated. */
+const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers', 'agentsPaths'];
 
 /**
  * Flag a single component-path string that would escape the plugin root — an
@@ -1075,6 +1085,75 @@ function validateCommandsMetadata(val: unknown, errors: PluginValidationIssue[])
 }
 
 /**
+ * The value types a plugin `userConfig` option may declare (Claude parity:
+ * PluginUserConfigOptionSchema, utils/plugins/schemas.ts L589 — matches
+ * `@anthropic-ai/mcpb`'s McpbUserConfigurationOption). A `directory`/`file` option
+ * prompts for a path; `string`/`number`/`boolean` for the obvious scalars.
+ */
+export const USER_CONFIG_OPTION_TYPES = ['string', 'number', 'boolean', 'directory', 'file'] as const;
+export type UserConfigOptionType = (typeof USER_CONFIG_OPTION_TYPES)[number];
+/** An option KEY must be a valid identifier — it becomes an env var name at hook
+ *  time (Claude parity: CLAUDE_PLUGIN_OPTION_<KEY>). */
+const USER_CONFIG_KEY_RE = /^[A-Za-z_]\w*$/;
+
+/**
+ * Validate a manifest's optional `userConfig` — the user-prompted configuration
+ * options a plugin needs at enable time (Claude parity: PluginManifestUserConfigSchema
+ * + PluginUserConfigOptionSchema, utils/plugins/schemas.ts L575-654). Each entry is
+ * keyed by an identifier-safe option key and declares a `type` (one of
+ * {@link USER_CONFIG_OPTION_TYPES}), required `title`/`description` strings, and the
+ * optional `required`/`default`/`multiple`/`sensitive`/`min`/`max` knobs. Every
+ * message carries a corrective example so an author can self-correct.
+ */
+function validateUserConfig(val: unknown, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+    errors.push({ path: 'userConfig', message: 'Plugin "userConfig" must be an object mapping an option key to its { type, title, description, ... } definition.' });
+    return;
+  }
+  for (const [key, opt] of Object.entries(val as Record<string, unknown>)) {
+    const label = `userConfig.${key}`;
+    if (!USER_CONFIG_KEY_RE.test(key)) {
+      errors.push({ path: label, message: `Option key "${key}" must be a valid identifier (letters, digits, underscore; no leading digit) — it becomes a CLAUDE_PLUGIN_OPTION_<KEY> env var in hooks.` });
+    }
+    if (!opt || typeof opt !== 'object' || Array.isArray(opt)) {
+      errors.push({ path: label, message: 'Option must be an object with a "type", "title", and "description".' });
+      continue;
+    }
+    const o = opt as Record<string, unknown>;
+    if (typeof o.type !== 'string' || !(USER_CONFIG_OPTION_TYPES as readonly string[]).includes(o.type)) {
+      errors.push({ path: `${label}.type`, message: `Option "type" must be one of: ${USER_CONFIG_OPTION_TYPES.join(', ')}.` });
+    }
+    if (typeof o.title !== 'string' || o.title.trim() === '') {
+      errors.push({ path: `${label}.title`, message: 'Option "title" must be a non-empty string (the label shown in the config prompt).' });
+    }
+    if (typeof o.description !== 'string' || o.description.trim() === '') {
+      errors.push({ path: `${label}.description`, message: 'Option "description" must be a non-empty string (help text for the config prompt).' });
+    }
+    for (const flag of ['required', 'multiple', 'sensitive'] as const) {
+      if (o[flag] !== undefined && typeof o[flag] !== 'boolean') {
+        errors.push({ path: `${label}.${flag}`, message: `Option "${flag}" must be a boolean (true/false).` });
+      }
+    }
+    for (const num of ['min', 'max'] as const) {
+      if (o[num] !== undefined && typeof o[num] !== 'number') {
+        errors.push({ path: `${label}.${num}`, message: `Option "${num}" must be a number.` });
+      }
+    }
+    if (o.default !== undefined && !isValidUserConfigDefault(o.default)) {
+      errors.push({ path: `${label}.default`, message: 'Option "default" must be a string, number, boolean, or array of strings.' });
+    }
+  }
+}
+
+/** A userConfig `default` may be a scalar (string/number/boolean) or, for a
+ *  `multiple` string option, an array of strings (Claude parity). */
+function isValidUserConfigDefault(val: unknown): boolean {
+  if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') return true;
+  return Array.isArray(val) && val.every(v => typeof v === 'string');
+}
+
+/**
  * Validate a parsed plugin manifest object. Checks required `name`/`version`
  * strings (with a kebab-case name refinement), validates the optional metadata
  * fields (description/author/homepage/repository/license/keywords) via
@@ -1108,6 +1187,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
 
   validateManifestMetadata(obj, errors);
   validateCommandsMetadata(obj.commandsMetadata, errors);
+  validateUserConfig(obj.userConfig, errors);
 
   for (const field of COMPONENT_PATH_FIELDS) {
     validateComponentPathField(field, obj[field], errors);
@@ -1120,6 +1200,73 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+/** The action `type` a plugin hook entry may declare (Claude parity: HookConfigType
+ *  — mirrors core/core/src/hooks.ts HOOK_CONFIG_TYPES without importing the heavy
+ *  HookManager graph into this building-block module). */
+const PLUGIN_HOOK_ACTION_TYPES = ['command', 'prompt', 'http', 'agent'] as const;
+
+/**
+ * Structurally validate one hook entry, recursing into the Claude matcher form
+ * `{ matcher?, hooks: [ { type, command } ] }`. A declared `type` must be a known
+ * action type and a `command`-type action must carry a non-empty `command` string
+ * (the security hardening of the command itself runs at hook LOAD time via
+ * `validateHookCommand`; this is the author-facing STRUCTURAL lint).
+ */
+function validateHookAction(obj: unknown, label: string, errors: PluginValidationIssue[]): void {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    errors.push({ path: label, message: 'Hook entry must be an object.' });
+    return;
+  }
+  const o = obj as Record<string, unknown>;
+  if (Array.isArray(o.hooks)) {
+    o.hooks.forEach((h, i) => validateHookAction(h, `${label}.hooks[${i}]`, errors));
+    return;
+  }
+  if (o.type !== undefined && (typeof o.type !== 'string' || !(PLUGIN_HOOK_ACTION_TYPES as readonly string[]).includes(o.type))) {
+    errors.push({ path: `${label}.type`, message: `Hook "type" must be one of: ${PLUGIN_HOOK_ACTION_TYPES.join(', ')}.` });
+  }
+  if (o.type === 'command' && (typeof o.command !== 'string' || o.command.trim() === '')) {
+    errors.push({ path: `${label}.command`, message: 'A "command" hook must declare a non-empty "command" string.' });
+  }
+}
+
+/**
+ * Validate the STRUCTURE of a parsed plugin `hooks.json` (Claude parity:
+ * PluginHooksSchema, utils/plugins/validatePlugin.ts L640-711). Claude's loader
+ * HARD-parses hooks.json (`.parse()`, not `.safeParse()`) so a malformed file breaks
+ * the whole plugin load — surfacing the structural errors here (instead of only
+ * catching a JSON syntax error) lets an author fix it before it ships. Accepts both
+ * the AMI flat-array form (`[ { event, type, command } ]`) and the Claude map-keyed
+ * form (`{ EventName: [ { matcher?, hooks: [...] } ] }`, optionally wrapped in a top
+ * `hooks` key). Event-NAME membership is intentionally NOT checked — AMI translates
+ * Claude's PascalCase event names via normalizeMapKeyedHooks, so a cross-framework
+ * manifest must validate. Returns the issues (empty when structurally sound).
+ */
+export function validatePluginHooks(parsed: unknown): PluginValidationIssue[] {
+  const errors: PluginValidationIssue[] = [];
+  if (parsed === null || typeof parsed !== 'object') {
+    errors.push({ path: 'hooks', message: 'hooks.json must be a JSON object (event → matchers) or an array of hook entries.' });
+    return errors;
+  }
+  if (Array.isArray(parsed)) {
+    parsed.forEach((entry, i) => validateHookAction(entry, `hooks[${i}]`, errors));
+    return errors;
+  }
+  const raw = parsed as Record<string, unknown>;
+  // Claude map-keyed form may wrap the event map in a top-level `hooks` key.
+  const map = raw.hooks && typeof raw.hooks === 'object' && !Array.isArray(raw.hooks)
+    ? (raw.hooks as Record<string, unknown>)
+    : raw;
+  for (const [event, matchers] of Object.entries(map)) {
+    if (!Array.isArray(matchers)) {
+      errors.push({ path: `hooks.${event}`, message: `Hooks for "${event}" must be an array of hook matchers.` });
+      continue;
+    }
+    matchers.forEach((m, i) => validateHookAction(m, `hooks.${event}[${i}]`, errors));
+  }
+  return errors;
 }
 
 /**
@@ -1204,13 +1351,23 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     }
   }
 
-  // hooks.json (root) OR hooks/hooks.json (Claude Code) — must be valid JSON.
+  // hooks.json (root) OR hooks/hooks.json (Claude Code) — must be valid JSON AND
+  // structurally sound (Claude parity: PluginHooksSchema). A bad hooks.json hard-breaks
+  // the plugin at load time, so both the JSON syntax and the schema are linted here.
   const hooksFile = resolvePluginHooksFile(pluginDir);
   if (hooksFile) {
+    const rel = path.relative(pluginDir, hooksFile);
+    let parsedHooks: unknown;
     try {
-      JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
+      parsedHooks = JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
     } catch (err) {
-      errors.push({ path: path.relative(pluginDir, hooksFile), message: `Invalid hooks JSON: ${err instanceof Error ? err.message : String(err)}` });
+      errors.push({ path: rel, message: `Invalid hooks JSON: ${err instanceof Error ? err.message : String(err)}` });
+      parsedHooks = undefined;
+    }
+    if (parsedHooks !== undefined) {
+      for (const issue of validatePluginHooks(parsedHooks)) {
+        errors.push({ path: `${rel}:${issue.path}`, message: issue.message });
+      }
     }
   }
 
@@ -1665,6 +1822,9 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // hardened (Claude parity: commandsPaths / skillsPaths).
       commandsPaths: resolveManifestPathList(root, manifest, 'commandsPaths'),
       skillsPaths: resolveManifestPathList(root, manifest, 'skillsPaths'),
+      // Additional agent directories/files (Claude parity: loadPluginAgents's
+      // agentsPaths), resolved + hardened; loaded alongside the primary agents/ dir.
+      agentsPaths: resolveManifestPathList(root, manifest, 'agentsPaths'),
       // Per-command metadata object-mapping (Claude parity: commandsMetadata) — kept
       // only when it carries at least one well-formed entry.
       commandsMetadata: parseCommandsMetadata(manifest),
