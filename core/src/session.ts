@@ -1105,6 +1105,32 @@ export function isSessionCleanupEnabled(cleanupPeriodDays?: number): boolean {
   );
 }
 
+/** Sub-directory of a session store holding per-session content-addressed blob
+ *  sidecars — one `<sessionId>/` dir per session (see
+ *  {@link SessionManager.offloadMessage}). The ONE place the name lives so
+ *  {@link SessionManager.blobDirFor} and {@link SessionManager.cleanupOrphanedBlobs}
+ *  can never disagree about where blobs are stored (§0b.6). */
+export const BLOBS_SUBDIR = 'blobs';
+
+/**
+ * Of a cache base's per-session sub-directory names, the ones that are ORPHANED —
+ * whose name is not in `liveIds` (the session ids that still have a surviving owner
+ * on disk). The pure cross-session cache-GC boundary behind
+ * {@link SessionManager.cleanupOrphanedBlobs}, so the "which dirs are stale?" rule is
+ * unit-testable without touching the filesystem.
+ *
+ * Parity: Claude's `cleanupOldImageCaches` sweep (which drops every session dir that
+ * is not the CURRENT one). AMI diverges intentionally — its per-session dir is a
+ * content-addressed BLOB store backing a RESUMABLE transcript, not an ephemeral
+ * pasted-image cache — so EVERY live session's dir is kept (deleting a non-current
+ * session's blobs would corrupt its `--resume`) and only truly owner-less dirs are
+ * swept. A `"current only"` caller just passes a single-element iterable.
+ */
+export function collectOrphanedCacheDirs(dirNames: string[], liveIds: Iterable<string>): string[] {
+  const live = liveIds instanceof Set ? liveIds : new Set(liveIds);
+  return dirNames.filter(name => !live.has(name));
+}
+
 /**
  * Decide whether a daily housekeeping sweep is due given the last-run timestamp
  * (`null` when never run / no marker) and the current time. Due when: never run,
@@ -1292,7 +1318,7 @@ export class SessionManager {
 
   /** Directory holding a session's content-addressed blobs. */
   private blobDirFor(safeId: string): string {
-    return path.join(this.sessionDir, 'blobs', safeId);
+    return path.join(this.sessionDir, BLOBS_SUBDIR, safeId);
   }
 
   /**
@@ -1718,6 +1744,56 @@ export class SessionManager {
       depsOverride,
     );
     return { ran, removed };
+  }
+
+  /**
+   * Garbage-collect ORPHANED per-session blob directories under
+   * `<sessionDir>/{@link BLOBS_SUBDIR}/`: a `<sessionId>/` blob dir whose owning
+   * `<sessionId>.json` session file no longer exists (the session was deleted
+   * out-of-band, crash-orphaned before its JSON landed, or synced without its blobs)
+   * is removed, and the blob base dir itself is `rmdir`'d when it ends up empty.
+   * Returns the number of blob dirs swept.
+   *
+   * This is the AMI-faithful analog of Claude Code's cross-session cache GC
+   * (`cleanupOldImageCaches`, which deletes every NON-current session's image-cache
+   * dir then rmdir's the base when empty). AMI diverges intentionally: its per-session
+   * dir is a content-addressed BLOB store backing a RESUMABLE transcript, not an
+   * ephemeral pasted-image cache — so every LIVE session's blobs are kept (deleting a
+   * non-current session's blobs would corrupt its `--resume`) and only owner-less dirs
+   * are swept. Which dirs are stale is decided by the pure
+   * {@link collectOrphanedCacheDirs} boundary. Best-effort: a stat/read race or an
+   * undeletable dir is skipped (never aborting the sweep), a stray non-dir entry under
+   * the base is left untouched, and an unreadable/absent base degrades to `0`. Each
+   * removal is {@link assertPathWithin}-guarded so the sweep can never escape the store.
+   */
+  cleanupOrphanedBlobs(): number {
+    const blobsBase = path.join(this.sessionDir, BLOBS_SUBDIR);
+    let dirNames: string[];
+    try {
+      dirNames = fs.readdirSync(blobsBase);
+    } catch {
+      return 0; // no blob base / unreadable — nothing to sweep
+    }
+    // Live ids = the stems of the session .json files currently in the store, so a
+    // blob dir is kept iff its session still exists on disk.
+    const liveIds = new Set(
+      this.listFiles().map(f => path.basename(f).replace(/\.json$/, '')),
+    );
+    let removed = 0;
+    for (const name of collectOrphanedCacheDirs(dirNames, liveIds)) {
+      const dir = path.join(blobsBase, name);
+      try {
+        assertPathWithin(dir, this.sessionDir);
+        if (!fs.statSync(dir).isDirectory()) continue; // leave a stray file alone
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed++;
+      } catch { /* best effort — one undeletable dir must not abort the sweep */ }
+    }
+    // rmdir the base when it ends up empty (parity: cleanupOldImageCaches final rmdir).
+    try {
+      if (fs.readdirSync(blobsBase).length === 0) fs.rmdirSync(blobsBase);
+    } catch { /* non-empty / raced / gone — leave it */ }
+    return removed;
   }
 
   /**
