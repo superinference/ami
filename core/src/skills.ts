@@ -67,6 +67,12 @@ export interface SkillDefinition {
   /** Custom help/examples message returned when a {@link requiresArgument} skill is
    *  invoked without an argument. Blank/absent ⇒ a generated usage line. */
   missingArgumentMessage?: string;
+  /** When true, the skill may only run inside a git working tree — invoking it from a
+   *  non-git cwd returns an up-front, explanatory precondition message instead of
+   *  letting a later worktree/PR step fail with a low-level error (parity with Claude
+   *  Code's `getIsGit()` guard in worktree-spawning commands like `/batch`). Checked by
+   *  the skill tool via {@link isGitRepo}; declarative metadata (reviewed-safe). */
+  requiresGitRepo?: boolean;
   /** Programmatic dynamic-prompt builder (parity with Claude's bundled-skill
    *  `getPromptForCommand(args)`, e.g. `/batch`, `/claude-api`). When present, the
    *  skill body is COMPUTED per invocation from the raw argument string (plus any
@@ -543,6 +549,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
+  'requiresGitRepo',
   'isSensitive', 'disableNonInteractive', 'supportsNonInteractive',
   'shell', 'templateVars', 'kind',
   // Stance/tool-restriction properties (reviewed-safe declarative metadata the

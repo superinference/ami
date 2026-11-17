@@ -6,6 +6,7 @@ import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isSt
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
+import { isGitRepo } from '../utils/git';
 
 /**
  * The outcome of resolving a requested skill name against the manager.
@@ -384,7 +385,10 @@ export const skillTool: ToolDefinition = {
       },
       args: {
         type: 'string',
-        description: 'Optional arguments passed to the skill (available as $ARGUMENTS in the skill template).',
+        description:
+          'Optional arguments passed to the skill. Inside the skill template they are available as ' +
+          '$ARGUMENTS (the full string), $ARGUMENTS[N] / $N (the Nth whitespace-separated token, ' +
+          '0-based for $ARGUMENTS[N] and 1-based for $N), and $0 (the full argument string).',
       },
       clear: {
         type: 'boolean',
@@ -517,6 +521,18 @@ export const skillTool: ToolDefinition = {
     if (skillDef && !isSkillAvailableNonInteractive(skillDef, context.detachedMode === true)) {
       return {
         output: `Error: skill "${resolvedName}" is not available in non-interactive (detached) mode.`,
+        isError: true,
+      };
+    }
+
+    // FUNCTIONAL (parity): a skill that declares `requires-git-repo` runs ONLY inside a
+    // git working tree (it spawns isolated worktrees / opens PRs). Fail fast with an
+    // explanatory, user-facing precondition message instead of letting a later
+    // worktree-creation step surface a low-level "Failed to create worktree" error.
+    // Mirrors Claude Code's getIsGit() guard in worktree-spawning commands (/batch).
+    if (skillDef?.requiresGitRepo && !isGitRepo(context.cwd)) {
+      return {
+        output: `Error: skill "${resolvedName}" requires a git repository because it spawns agents in isolated git worktrees and/or creates pull requests. The current directory is not a git repo — initialize one first (git init) or run this from inside an existing repository.`,
         isError: true,
       };
     }

@@ -3062,6 +3062,43 @@ export function persistSkillUsageStat(name: string, now: number = Date.now()): b
   }
 }
 
+/**
+ * Debounce window for {@link recordSkillUsageDebounced}: a skill usage written less
+ * than this long ago skips the (lock + read + parse + write) global-config round-trip
+ * on the next invocation. Parity with Claude Code's `SKILL_USAGE_DEBOUNCE_MS`
+ * (utils/suggestions/skillUsageTracking.ts) — the frecency ranking uses a 7-day
+ * half-life, so sub-minute write granularity is irrelevant and the hot-repeat lock+I/O
+ * is pure overhead.
+ */
+export const SKILL_USAGE_DEBOUNCE_MS = 60_000;
+
+/**
+ * Record one invocation of `name` for frecency ranking, DEBOUNCED against the
+ * caller-owned `lastWriteBySkill` map so a skill invoked repeatedly in quick succession
+ * does not take the global-config lock + read + parse + write on every call. When the
+ * previous recorded write for this skill was under {@link SKILL_USAGE_DEBOUNCE_MS} ago,
+ * it bails BEFORE touching disk and returns `false`; otherwise it stamps the map and
+ * delegates the actual read-modify-write to {@link persistSkillUsageStat}, returning
+ * that function's `written` verdict. Best-effort (never throws).
+ *
+ * The debounce cache is passed IN (not module-global as in Claude Code) so each owner
+ * scopes it to its own lifetime — AMI creates many `SkillManager`s per process (sessions,
+ * forked sub-engines), and an instance-scoped map keeps independent sessions from
+ * suppressing each other's first write. Parity with Claude Code's `recordSkillUsage`
+ * pattern, adapted to AMI's multi-manager model.
+ */
+export function recordSkillUsageDebounced(
+  name: string,
+  lastWriteBySkill: Map<string, number>,
+  now: number = Date.now(),
+): boolean {
+  if (!name) return false;
+  const last = lastWriteBySkill.get(name);
+  if (last !== undefined && now - last < SKILL_USAGE_DEBOUNCE_MS) return false;
+  lastWriteBySkill.set(name, now);
+  return persistSkillUsageStat(name, now);
+}
+
 export function cleanupStaleConfigTmp(filePath: string): boolean {
   const tmpPath = filePath + '.tmp';
   try {

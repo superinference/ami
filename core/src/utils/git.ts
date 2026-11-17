@@ -362,6 +362,19 @@ export function findRemoteBase(
 }
 
 /**
+ * Return `true` when `cwd` is inside a git working tree, `false` otherwise (not a
+ * repo, or git unavailable — fails CLOSED so a precondition guard treats "can't tell"
+ * as "not a repo"). Delegates to `git rev-parse --is-inside-work-tree` via the shared
+ * no-shell {@link runGit} runner (injection-safe, hard timeout). Parity with Claude
+ * Code's `getIsGit()` precondition check (used by worktree-spawning commands like
+ * `/batch`). Shared helper so worktree-dependent callers don't each re-spawn git.
+ */
+export function isGitRepo(cwd: string): boolean {
+  const res = runGit(cwd, ['rev-parse', '--is-inside-work-tree']);
+  return !!res && res.code === 0 && res.stdout === 'true';
+}
+
+/**
  * Return `true` when `cwd` is inside a shallow git clone (one with a truncated
  * history), `false` otherwise or when git is unavailable. Callers use this to
  * fall back to a `diff HEAD` base when a merge-base cannot be computed.
