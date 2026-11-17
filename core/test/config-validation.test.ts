@@ -259,10 +259,23 @@ describe('validateEngineConfig — sandbox policy', () => {
         enabledPlatforms: ['linux'],
         network: { allowedHosts: ['registry.npmjs.org'], deniedHosts: ['evil.test'], httpProxyPort: 3128, allowAllUnixSockets: true, allowLocalBinding: true },
         filesystem: { allowWrite: ['/tmp/x'], denyWrite: ['/etc'], denyRead: ['/secret'], allowRead: ['/secret/ok'] },
+        ripgrep: { command: '/usr/local/bin/rg', args: ['--mmap'] },
       },
     });
     assert.equal(r.valid, true);
     assert.equal(r.warnings.length, 0);
+  });
+
+  it('rejects a sandbox.ripgrep with an empty command', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', ripgrep: { command: '   ' } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('sandbox.ripgrep.command')));
+  });
+
+  it('rejects a sandbox.ripgrep with a blank args entry', () => {
+    const r = validateEngineConfig({ sandbox: { mode: 'container', ripgrep: { command: 'rg', args: ['--mmap', ''] } } });
+    assert.equal(r.valid, false);
+    assert.ok(r.warnings.some(w => w.includes('sandbox.ripgrep.args')));
   });
 });
 
@@ -292,5 +305,20 @@ describe('sanitizeEngineConfig — sandbox policy', () => {
   it('normalizes enabledPlatforms', () => {
     const r = sanitizeEngineConfig({ sandbox: { mode: 'container', enabledPlatforms: ['linux', 'linux', ' '] } });
     assert.deepEqual(r.sandbox!.enabledPlatforms, ['linux']);
+  });
+
+  it('trims the ripgrep command and cleans its args', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', ripgrep: { command: '  /usr/bin/rg ', args: ['--mmap', ' ', '--mmap'] } } });
+    assert.deepEqual(r.sandbox!.ripgrep, { command: '/usr/bin/rg', args: ['--mmap'] });
+  });
+
+  it('drops a ripgrep override whose command is blank', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', ripgrep: { command: '   ' } } });
+    assert.equal(r.sandbox!.ripgrep, undefined);
+  });
+
+  it('omits args when the ripgrep override has only blanks', () => {
+    const r = sanitizeEngineConfig({ sandbox: { mode: 'container', ripgrep: { command: 'rg', args: ['', '  '] } } });
+    assert.deepEqual(r.sandbox!.ripgrep, { command: 'rg' });
   });
 });

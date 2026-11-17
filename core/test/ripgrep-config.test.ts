@@ -50,6 +50,42 @@ describe('resolveRipgrepConfig – USE_BUILTIN_RIPGREP / AMI_RIPGREP_PATH knob',
   });
 });
 
+describe('resolveRipgrepConfig – sandbox.ripgrep config override', () => {
+  it('a config override command wins over the env waterfall (mode "config")', () => {
+    const c = resolveRipgrepConfig(
+      { [RIPGREP_PATH_ENV]: '/opt/rg/bin/rg' },
+      { command: '/usr/local/bin/rg' },
+    );
+    assert.equal(c.mode, 'config');
+    assert.equal(c.command, '/usr/local/bin/rg');
+    assert.equal(c.args, undefined);
+  });
+
+  it('carries sanitized extra args, dropping empty/whitespace entries', () => {
+    const c = resolveRipgrepConfig({}, { command: 'rg', args: ['--mmap', '  ', ' --threads=2 ', ''] });
+    assert.equal(c.mode, 'config');
+    assert.deepEqual(c.args, ['--mmap', '--threads=2']);
+  });
+
+  it('omits args when the override supplies none or only blanks', () => {
+    const c = resolveRipgrepConfig({}, { command: 'rg', args: ['', '   '] });
+    assert.equal(c.mode, 'config');
+    assert.equal(c.args, undefined);
+  });
+
+  it('a blank/whitespace override command falls through to the env waterfall', () => {
+    const c = resolveRipgrepConfig({ [RIPGREP_PATH_ENV]: '/opt/rg/bin/rg' }, { command: '   ' });
+    assert.equal(c.mode, 'builtin');
+    assert.equal(c.command, '/opt/rg/bin/rg');
+  });
+
+  it('no override falls through to system `rg` as before', () => {
+    const c = resolveRipgrepConfig({});
+    assert.equal(c.mode, 'system');
+    assert.equal(c.command, 'rg');
+  });
+});
+
 describe('getRipgrepStatus / probeRipgrep – cached self-test', () => {
   it('reports working=null before any probe', () => {
     resetRipgrepStatus();

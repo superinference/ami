@@ -8,7 +8,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { isEagainStderr } from './grep';
-import { resolveRipgrepConfig } from './ripgrep-config';
+import { resolveRipgrepConfig, type RipgrepOverride } from './ripgrep-config';
 import { toAnyDepthGlob } from './read-ignore';
 import { collectGitignoreGlobs } from '../workspace-indexer';
 
@@ -130,7 +130,7 @@ export function extractGlobBaseDirectory(pattern: string): { baseDir: string; re
  * Injectable via {@link globHooks.rgFiles} for tests (no real ripgrep needed).
  */
 /** One `rg --files` run; resolves {result, eagain}. result is null on any non-empty error. */
-function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Promise<{ result: string[] | null; eagain: boolean }> {
+function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal, override?: RipgrepOverride): Promise<{ result: string[] | null; eagain: boolean }> {
   return new Promise((resolve) => {
     const timeoutMs = globHooks.timeoutMs;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -144,10 +144,11 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Pro
     // Env-configurable timeout (AMI_GLOB_TIMEOUT_SECONDS via globHooks.timeoutMs): on
     // expiry execFile sends SIGTERM (killSignal). Forward the turn's AbortSignal too so
     // a cancelled turn (Esc / engine abort) kills the running rg child.
+    // A config-level sandbox.ripgrep override wins over the env waterfall, same as grep.
+    const rgConfig = resolveRipgrepConfig(process.env, override);
     const child = globHooks.execFileImpl(
-      // Shared ripgrep resolution (USE_BUILTIN_RIPGREP / AMI_RIPGREP_PATH), same as grep.
-      resolveRipgrepConfig().command,
-      args,
+      rgConfig.command,
+      rgConfig.args?.length ? [...rgConfig.args, ...args] : args,
       { cwd, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM', signal },
       (err, stdout, stderr) => {
         if (err) {
@@ -174,7 +175,7 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal): Pro
   });
 }
 
-async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal): Promise<string[] | null> {
+async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal, override?: RipgrepOverride): Promise<string[] | null> {
   // --no-ignore: don't respect .gitignore (default; AMI_GLOB_NO_IGNORE=false lets
   // ripgrep honor it natively). --hidden: include dotfiles (AMI_GLOB_HIDDEN=false
   // excludes them). Mirrors Claude Code's rg flag assembly.
@@ -188,10 +189,10 @@ async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], sign
   args.push('--sortr=modified');
   args.push('-g', pattern);
   for (const ig of ignore) { args.push('-g', `!${ig}`); }
-  let r = await runRipgrepFiles(args, cwd, signal);
+  let r = await runRipgrepFiles(args, cwd, signal, override);
   // Thread-spawn exhaustion (EAGAIN): retry once single-threaded before giving up.
   if (r.result === null && r.eagain) {
-    r = await runRipgrepFiles([...args, '-j', '1'], cwd, signal);
+    r = await runRipgrepFiles([...args, '-j', '1'], cwd, signal, override);
   }
   return r.result;
 }
@@ -205,7 +206,7 @@ async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], sign
  */
 export const globHooks: {
   glob: typeof glob;
-  rgFiles: (pattern: string, cwd: string, ignore: string[], signal?: AbortSignal) => Promise<string[] | null>;
+  rgFiles: (pattern: string, cwd: string, ignore: string[], signal?: AbortSignal, override?: RipgrepOverride) => Promise<string[] | null>;
   execFileImpl: typeof execFile;
   timeoutMs: number;
   /** Grace period after the SIGTERM timeout before escalating to SIGKILL on the rg child. */
@@ -350,7 +351,7 @@ export const globTool: ToolDefinition = {
       // `--sortr=modified`, so the per-file stat sort below is skipped for that path.
       let sortedByRipgrep = false;
       if (isRipgrepGlobEnabled()) {
-        entries = await globHooks.rgFiles(pattern, resolved, ignore, context.abortSignal);
+        entries = await globHooks.rgFiles(pattern, resolved, ignore, context.abortSignal, context.sandbox?.ripgrep);
         if (entries !== null) sortedByRipgrep = true;
       }
       if (entries === null) {

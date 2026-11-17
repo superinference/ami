@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSubsystems, EXIT_REASONS, STREAM_CHUNK_TYPES, OUTPUT_STYLES, ENGINE_EVENT_TYPES, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, NOTIFICATION_CHANNELS, asSessionId, asAgentId, toAgentId } from '../src/types';
 import type {
-  EngineConfig, SessionId, AgentId, NotificationChannel, ToolDefinition, ToolValidationResult,
+  EngineConfig, SessionId, AgentId, NotificationChannel, ToolDefinition, ToolContext, ToolValidationResult,
   ToolAccessClassification, AutoModeConfig, UserMessage, AssistantMessage, SystemMessage,
   MessageOrigin, ToolResult, DiffHunk, EngineSubmitOptions, UserQuestionOption,
   UsageStats, StreamChunk, EngineEvent, TaskUsageSnapshot, TaskTerminalStatus, ServiceTier,
@@ -203,6 +203,10 @@ describe('ToolDefinition parity knobs (compile-time shape)', () => {
       toAutoClassifierInput: (input) => `ls ${String(input.path)}`,
       prompt: 'Use this tool proactively and often.',
       renderUseMessage: () => 'cleanup team: current',
+      userFacingName: (input) => (input.op === 'create' ? 'Creating worktree' : ''),
+      isTransparentWrapper: true,
+      isResultTruncated: (output) => output.split('\n').length > 100,
+      inputsEquivalent: (a, b) => String(a.path) === String(b.path),
       execute: async () => ({ output: '' }),
     };
     assert.equal(tool.isDestructive?.({ action: 'remove' }), true);
@@ -211,6 +215,13 @@ describe('ToolDefinition parity knobs (compile-time shape)', () => {
     assert.equal(tool.getActivityDescription?.({ path: 'a.ts' }), 'Reading a.ts');
     assert.deepEqual(tool.isSearchOrReadCommand?.({}), classification);
     assert.deepEqual(await tool.validateInput?.({}, {} as never), vr);
+    assert.equal(tool.userFacingName?.({ op: 'create' }), 'Creating worktree');
+    assert.equal(tool.userFacingName?.({ op: 'list' }), '');
+    assert.equal(tool.isTransparentWrapper, true);
+    assert.equal(tool.isResultTruncated?.('a\nb'), false);
+    assert.equal(tool.isResultTruncated?.(Array.from({ length: 101 }, () => 'x').join('\n')), true);
+    assert.equal(tool.inputsEquivalent?.({ path: 'a' }, { path: 'a' }), true);
+    assert.equal(tool.inputsEquivalent?.({ path: 'a' }, { path: 'b' }), false);
   });
 });
 
@@ -256,12 +267,22 @@ describe('EngineConfig parity knobs (compile-time shape)', () => {
       notificationChannel: 'kitty',
       lspRecommendationNeverPlugins: ['py-lsp'],
       lspRecommendationDisabled: true,
+      copyFullResponse: true,
+      streamingToolExecution: true,
+      showTeammateMessagePreview: true,
+      skipAutoPermissionPrompt: true,
+      sandbox: { mode: 'container', ripgrep: { command: '/usr/local/bin/rg', args: ['--mmap'] } },
     };
     const opts: EngineSubmitOptions = { appendSystemPrompt: 'turn-local policy' };
     assert.equal(c.editorMode, 'vim');
     assert.equal(c.autoMode?.twoStageClassifier, 'fast');
     assert.equal(c.teammateMode, 'in-process');
     assert.equal(opts.appendSystemPrompt, 'turn-local policy');
+    assert.equal(c.copyFullResponse, true);
+    assert.equal(c.streamingToolExecution, true);
+    assert.equal(c.showTeammateMessagePreview, true);
+    assert.equal(c.skipAutoPermissionPrompt, true);
+    assert.deepEqual(c.sandbox?.ripgrep, { command: '/usr/local/bin/rg', args: ['--mmap'] });
   });
 });
 
@@ -294,6 +315,17 @@ describe('Message provenance + transcript metadata (compile-time shape)', () => 
       { kind: 'teammate', name: 't' }, { kind: 'channel', source: 's' },
     ];
     assert.equal(kinds.length, 5);
+  });
+});
+
+describe('ToolContext user-modified parity flag (compile-time shape)', () => {
+  it('carries userModified set by the permission layer when the input was edited', () => {
+    const ctx: ToolContext = {
+      cwd: '/tmp',
+      abortSignal: new AbortController().signal,
+      userModified: true,
+    };
+    assert.equal(ctx.userModified, true);
   });
 });
 

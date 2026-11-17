@@ -13,12 +13,21 @@ export const USE_BUILTIN_RIPGREP_ENV = 'USE_BUILTIN_RIPGREP';
 /** Env knob: an explicit ripgrep binary path to prefer (the AMI "builtin" slot). */
 export const RIPGREP_PATH_ENV = 'AMI_RIPGREP_PATH';
 
-export type RipgrepMode = 'system' | 'builtin';
+export type RipgrepMode = 'system' | 'builtin' | 'config';
+
+/** A config-level ripgrep override (from `sandbox.ripgrep` in settings): an explicit
+ *  binary plus optional extra flags, taking precedence over the env waterfall. */
+export interface RipgrepOverride {
+  command: string;
+  args?: string[];
+}
 
 export interface RipgrepConfig {
   mode: RipgrepMode;
   /** The command to spawn: either the bare name `rg` or an operator-configured path. */
   command: string;
+  /** Extra flags prepended to every invocation (from a config-level override). */
+  args?: string[];
 }
 
 /**
@@ -35,6 +44,8 @@ function useBuiltinDefaultTrue(raw: string | undefined): boolean {
 /**
  * Resolve which ripgrep binary the search tools should spawn.
  *
+ * - A config-level `override` (from `sandbox.ripgrep`) with a non-empty `command`
+ *   WINS over everything → mode `config`, carrying its optional extra `args`.
  * - `USE_BUILTIN_RIPGREP` truthy (default) AND `AMI_RIPGREP_PATH` set → the
  *   configured path, mode `builtin`.
  * - Otherwise → the bare name `rg`, mode `system`.
@@ -43,7 +54,17 @@ function useBuiltinDefaultTrue(raw: string | undefined): boolean {
  * relative path) so the OS resolves it via PATH and a planted `./rg` in the cwd
  * cannot be executed (PATH-hijack protection, mirroring Claude Code).
  */
-export function resolveRipgrepConfig(env: NodeJS.ProcessEnv = process.env): RipgrepConfig {
+export function resolveRipgrepConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  override?: RipgrepOverride,
+): RipgrepConfig {
+  const overrideCommand = (override?.command ?? '').trim();
+  if (overrideCommand) {
+    const args = (override?.args ?? []).map((a) => a.trim()).filter((a) => a !== '');
+    return args.length
+      ? { mode: 'config', command: overrideCommand, args }
+      : { mode: 'config', command: overrideCommand };
+  }
   const useBuiltin = useBuiltinDefaultTrue(env[USE_BUILTIN_RIPGREP_ENV]);
   const configured = (env[RIPGREP_PATH_ENV] ?? '').trim();
   if (useBuiltin && configured) {

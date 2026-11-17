@@ -468,6 +468,13 @@ export interface SandboxPolicy {
    *  security** — opens a potential data-exfiltration vector; see
    *  {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. Default false. */
   enableWeakerNetworkIsolation?: boolean;
+  /** Config-level override for the ripgrep binary used by the search tools (grep/glob),
+   *  taking precedence over the `USE_BUILTIN_RIPGREP`/`AMI_RIPGREP_PATH` env waterfall.
+   *  `command` is the binary to spawn (an absolute path or a bare name resolved via PATH);
+   *  `args` are extra flags prepended to every ripgrep invocation. Consumed by
+   *  {@link import('./tools/ripgrep-config').resolveRipgrepConfig}. Parity: Claude Code's
+   *  sandbox `ripgrep: { command, args }` setting. */
+  ripgrep?: { command: string; args?: string[] };
 }
 
 export interface ToolContext {
@@ -575,6 +582,11 @@ export interface ToolContext {
    *  spawns past the per-session cap; depth/concurrency stay governed by the
    *  _agentDepth/_maxConcurrentAgents logic above. */
   subagentLimiter?: import('./subagent-limiter').SubagentLimiter;
+  /** True when the user EDITED this tool call's input at the permission prompt before
+   *  approving it (the executed input differs from the model's original). Threaded by the
+   *  permission layer so a tool can tailor its behavior/telemetry to a human-corrected call.
+   *  Parity: Claude's toolUseContext `userModified` (services/tools/toolExecution.ts). */
+  userModified?: boolean;
 }
 
 /** Result of a tool's structured pre-execution {@link ToolDefinition.validateInput}
@@ -666,6 +678,24 @@ export interface ToolDefinition {
   /** Tool-authored concise transcript label for a call, preferred by renderers over the
    *  generic field-sniffer/JSON fallback. Parity: Claude's `renderToolUseMessage`. */
   renderUseMessage?: (input: Record<string, unknown>) => string;
+  /** Input-derived display name for a tool call, so a renderer can show a human-friendly
+   *  header (e.g. "Creating worktree") computed from the arguments instead of the raw tool
+   *  name. Empty string => fall back to {@link name}. Parity: Claude's `Tool.userFacingName(input)`
+   *  (components/tasks/renderToolActivity.tsx). */
+  userFacingName?: (input: Record<string, unknown>) => string;
+  /** When true, this tool is a transparent wrapper: renderers show only its progress/result
+   *  and suppress the tool-name header row (e.g. a passthrough/forwarding tool). Parity:
+   *  Claude's `Tool.isTransparentWrapper` (components/messages/AssistantToolUseMessage.tsx). */
+  isTransparentWrapper?: boolean;
+  /** Per-tool predicate deciding whether a result string is truncated (e.g. exceeded a
+   *  line-count cap), so a renderer can show a "truncated" affordance without re-deriving
+   *  the tool's own limit. Parity: Claude's `Tool.isResultTruncated(output)` (MCPTool). */
+  isResultTruncated?: (output: string) => boolean;
+  /** Semantic equality of two parsed inputs for this tool, used to dedup repeated identical
+   *  calls (order-insensitive / field-normalized where the generic deep-equal is too strict).
+   *  Absent => callers fall back to structural equality. Parity: Claude's
+   *  `Tool.inputsEquivalent(a, b)`. */
+  inputsEquivalent?: (a: Record<string, unknown>, b: Record<string, unknown>) => boolean;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 
@@ -1335,6 +1365,19 @@ export interface EngineConfig {
   lspRecommendationNeverPlugins?: string[];
   /** Hard off-switch for LSP-plugin recommendations. Parity: `lspRecommendationDisabled`. */
   lspRecommendationDisabled?: boolean;
+  /** Skip the code-block picker on `/copy` and always copy the full response. Parity:
+   *  `copyFullResponse`. */
+  copyFullResponse?: boolean;
+  /** Execute tool calls as they stream in during the assistant message (vs waiting for the
+   *  whole message). Runtime gate. Parity: `streamingToolExecution` (query/config.ts). */
+  streamingToolExecution?: boolean;
+  /** Show a one-line preview of each teammate's latest message in the teammate spinner tree.
+   *  Parity: `showTeammateMessagePreview`. */
+  showTeammateMessagePreview?: boolean;
+  /** Opt-in consent flag that suppresses the auto-mode (YOLO) permission-opt-in dialog on
+   *  subsequent runs once the user has accepted it. Parity: `skipAutoPermissionPrompt`
+   *  (components/AutoModeOptInDialog.tsx). */
+  skipAutoPermissionPrompt?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,6 +1550,16 @@ function validateSandboxPolicy(sandbox: SandboxPolicy, warnings: string[]): bool
   if (sandbox.failIfUnavailable && sandbox.mode === 'off') {
     warnings.push('sandbox.failIfUnavailable has no effect when sandbox.mode is off');
   }
+  if (sandbox.ripgrep !== undefined) {
+    if (typeof sandbox.ripgrep.command !== 'string' || sandbox.ripgrep.command.trim() === '') {
+      warnings.push('sandbox.ripgrep.command must be a non-empty string');
+      valid = false;
+    }
+    if (sandbox.ripgrep.args && sandbox.ripgrep.args.some((a) => typeof a !== 'string' || a.trim() === '')) {
+      warnings.push('sandbox.ripgrep.args entries must be non-empty strings');
+      valid = false;
+    }
+  }
   return valid;
 }
 
@@ -1602,5 +1655,14 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
     out.seccomp = profilePath ? { profilePath } : {};
   }
   if (sandbox.enabledPlatforms) out.enabledPlatforms = cleanList(sandbox.enabledPlatforms);
+  if (sandbox.ripgrep) {
+    const command = typeof sandbox.ripgrep.command === 'string' ? sandbox.ripgrep.command.trim() : '';
+    if (command) {
+      const args = cleanList(sandbox.ripgrep.args);
+      out.ripgrep = args ? { command, args } : { command };
+    } else {
+      delete out.ripgrep;
+    }
+  }
   return out;
 }

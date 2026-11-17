@@ -327,15 +327,19 @@ Usage:
     // Ask for one past the page so formatResult can say the list was cut.
     // --max-count equal to head_limit hid later matches and dropped offset.
     const fetchLimit = headLimit === 0 ? 0 : offset + Math.max(headLimit, 1) + 1;
-    // Resolve which ripgrep binary to spawn (honors USE_BUILTIN_RIPGREP /
-    // AMI_RIPGREP_PATH, shared with the glob tool). Falls back to the bare name `rg`.
-    const rgCommand = resolveRipgrepConfig().command;
+    // Resolve which ripgrep binary to spawn. A config-level sandbox.ripgrep override wins
+    // over the USE_BUILTIN_RIPGREP / AMI_RIPGREP_PATH env waterfall (shared with the glob
+    // tool). Falls back to the bare name `rg`.
+    const rgConfig = resolveRipgrepConfig(process.env, context.sandbox?.ripgrep);
+    const rgCommand = rgConfig.command;
     // File-READ deny globs the permission layer wants excluded from search output, so a
     // file the user forbade reading never surfaces (its path OR its matching lines) in any
     // output mode. Threaded into every search path (rg, grep, in-process). Parity: Claude's
     // getFileReadIgnorePatterns → `--glob !pattern` injection.
     const readIgnore = context.readIgnorePatterns ?? [];
     const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings, readIgnore);
+    // Prepend any config-supplied extra ripgrep flags (sandbox.ripgrep.args).
+    if (rgConfig.args?.length) rgArgs.unshift(...rgConfig.args);
     let rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
 
     if (rgOutcome.eagain) {
