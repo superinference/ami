@@ -137,7 +137,8 @@ export type {
   UsageStats,
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType } from './types';
-export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS } from './types';
+export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS, mergeSkillUsageStat } from './types';
+export type { SkillUsageStat } from './types';
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, modelSupportsMaxEffort, modelSupportsAdvisor, modelAlwaysOnThinking, resolveMaxEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, normalizeModelStringForAPI, getSmallFastModel, SMALL_FAST_MODEL_ENV_VARS, THINKING_LEVELS, REVIEW_EFFORT_LEVELS, getModelDeprecationWarning, toApiProviderClass, hasUltrathinkKeyword, findThinkingTriggerPositions, get3PModelFallbackSuggestion } from './model-capabilities';
 export type { ApiProviderClass } from './model-capabilities';
 export { formatTokenCount } from './token-format';
@@ -145,7 +146,7 @@ export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS,
 export type { PermissionRuleSource } from './permissions';
 export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, resolveOverriddenModel, MODEL_ENV_TOGGLES } from './model-registry';
 export type { ValidateModelResult, ModelAlias } from './model-registry';
-export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, CONFIG_DOC_BASE, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS } from './config';
+export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, CONFIG_DOC_BASE, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS, loadPersistedSkillUsage, persistSkillUsageStat } from './config';
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue, ConfigSource } from './config';
 export { STRATEGY_NAMES } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';

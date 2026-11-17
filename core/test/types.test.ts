@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSubsystems, EXIT_REASONS, STREAM_CHUNK_TYPES, OUTPUT_STYLES, ENGINE_EVENT_TYPES, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, NOTIFICATION_CHANNELS, asSessionId, asAgentId, toAgentId } from '../src/types';
+import { buildSubsystems, EXIT_REASONS, STREAM_CHUNK_TYPES, OUTPUT_STYLES, ENGINE_EVENT_TYPES, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, NOTIFICATION_CHANNELS, asSessionId, asAgentId, toAgentId, mergeSkillUsageStat } from '../src/types';
+import type { SkillUsageStat } from '../src/types';
 import type {
   EngineConfig, SessionId, AgentId, NotificationChannel, ToolDefinition, ToolContext, ToolValidationResult,
   ToolAccessClassification, AutoModeConfig, UserMessage, AssistantMessage, SystemMessage,
@@ -417,6 +418,38 @@ describe('subagent EngineEvent task-usage/terminal-status parity fields', () => 
       assert.equal(ev.usage?.toolUses, 2);
       assert.equal(ev.lastToolName, 'bash');
     }
+  });
+});
+
+describe('mergeSkillUsageStat (persisted skill frecency)', () => {
+  it('creates a count-1 entry for a never-seen skill, stamping lastUsedAt', () => {
+    const next = mergeSkillUsageStat(undefined, 'planner', 1000);
+    assert.deepEqual(next, { planner: { usageCount: 1, lastUsedAt: 1000 } });
+  });
+
+  it('increments usageCount and refreshes lastUsedAt without mutating the input', () => {
+    const prev: Record<string, SkillUsageStat> = { planner: { usageCount: 2, lastUsedAt: 500 } };
+    const next = mergeSkillUsageStat(prev, 'planner', 900);
+    assert.deepEqual(next.planner, { usageCount: 3, lastUsedAt: 900 });
+    // Input untouched (pure).
+    assert.deepEqual(prev.planner, { usageCount: 2, lastUsedAt: 500 });
+  });
+
+  it('preserves other skills and treats a malformed/negative prior count as zero', () => {
+    const prev = {
+      other: { usageCount: 7, lastUsedAt: 10 },
+      bad: { usageCount: -3, lastUsedAt: 10 },
+    } as Record<string, SkillUsageStat>;
+    const a = mergeSkillUsageStat(prev, 'bad', 42);
+    assert.equal(a.bad.usageCount, 1, 'negative baseline resets to 1');
+    assert.deepEqual(a.other, { usageCount: 7, lastUsedAt: 10 }, 'untouched skill preserved');
+  });
+
+  it('defaults now to Date.now() when omitted', () => {
+    const before = Date.now();
+    const next = mergeSkillUsageStat({}, 'x');
+    assert.ok(next.x.lastUsedAt >= before && next.x.lastUsedAt <= Date.now() + 5);
+    assert.equal(next.x.usageCount, 1);
   });
 });
 

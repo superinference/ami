@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
-import { validateEngineConfig, type EngineConfig } from './types';
+import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type SkillUsageStat } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { levenshteinDistance } from './tools/path-suggest';
 import { TIER_LOCKED_KEYS } from './settings-guard';
@@ -194,6 +194,15 @@ export interface ProjectConfig {
    * as "no preference" (English — the default — never gets a redundant directive).
    */
   language?: string;
+  /**
+   * Persisted per-skill usage statistics keyed by skill name (parity: Claude Code's
+   * global-config `skillUsage`). Each entry is a {@link SkillUsageStat}
+   * (`{ usageCount, lastUsedAt }`), written to the GLOBAL config on each skill
+   * invocation via {@link persistSkillUsageStat} and read back at session start so a
+   * skill's frecency ranking survives across sessions instead of resetting to zero on
+   * every launch. A user-level, cross-project signal (lives in global config only).
+   */
+  skillUsage?: Record<string, SkillUsageStat>;
 }
 
 // ---------------------------------------------------------------------------
@@ -670,6 +679,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
   ['worktree', 'object'], ['attribution', 'object'],
+  ['skillUsage', 'object'],
 ];
 
 /**
@@ -2274,6 +2284,45 @@ export function updateConfigFile(
     onCompromised: (err) => coreLog('config', `config write lock compromised for ${lockTarget}: ${err.message}`),
     ...lockOptions,
   });
+}
+
+/**
+ * Read the persisted per-skill usage map ({@link ProjectConfig.skillUsage}) from the
+ * GLOBAL config, or an empty map when none exists / the path is unavailable. Used at
+ * session start to seed a skill's cross-session frecency ranking. Best-effort: any read
+ * failure yields `{}` (a missing history must never block startup). Parity: Claude
+ * Code's `getGlobalConfig().skillUsage` read.
+ */
+export function loadPersistedSkillUsage(): Record<string, SkillUsageStat> {
+  try {
+    return loadGlobalConfig()?.skillUsage ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Record one invocation of `name` into the GLOBAL config's {@link ProjectConfig.skillUsage}
+ * map (bumping `usageCount`, stamping `lastUsedAt = now`) via the lock-safe
+ * read-modify-write {@link updateConfigFile}, so cross-process writers never lose each
+ * other's counts. Returns `true` when the update was written, `false` when there is no
+ * writable global-config path or the write was skipped/failed (best-effort — a usage
+ * write must never surface as an error to the caller). The increment formula is the ONE
+ * canonical {@link mergeSkillUsageStat}. Parity: Claude Code's `saveGlobalConfig` on each
+ * skill use (`utils/suggestions/skillUsageTracking.ts`).
+ */
+export function persistSkillUsageStat(name: string, now: number = Date.now()): boolean {
+  const target = getGlobalConfigPath();
+  if (!target) return false;
+  try {
+    const result = updateConfigFile(target, current => ({
+      ...current,
+      skillUsage: mergeSkillUsageStat(current.skillUsage, name, now),
+    }));
+    return result.written;
+  } catch {
+    return false;
+  }
 }
 
 export function cleanupStaleConfigTmp(filePath: string): boolean {

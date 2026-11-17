@@ -965,6 +965,36 @@ export interface TaskUsageSnapshot {
   durationMs: number;
 }
 
+/** Persisted per-skill usage statistic (parity: Claude Code's global-config
+ *  `skillUsage` map, `utils/suggestions/skillUsageTracking.ts`). Keyed by skill name
+ *  in the global config, each entry records how many times the skill was invoked and
+ *  when it was last used (epoch ms). Lets a skill's frecency ranking survive across
+ *  sessions instead of resetting to zero every launch (AMI previously tracked this
+ *  only in-memory, session-scoped). */
+export interface SkillUsageStat {
+  /** Total number of times this skill has been invoked (monotonic, persisted). */
+  usageCount: number;
+  /** Epoch-ms timestamp of the most recent invocation. */
+  lastUsedAt: number;
+}
+
+/** Fold one invocation of `name` into a persisted {@link SkillUsageStat} map at time
+ *  `now`, returning a NEW map (the input is never mutated). The single canonical
+ *  increment+stamp formula so every persistence call site agrees — bumps `usageCount`
+ *  and refreshes `lastUsedAt`. A malformed/absent prior entry is treated as a zero
+ *  baseline. Parity: Claude's `skillUsage[name] = { usageCount: prev+1, lastUsedAt: now }`. */
+export function mergeSkillUsageStat(
+  record: Record<string, SkillUsageStat> | undefined,
+  name: string,
+  now: number = Date.now(),
+): Record<string, SkillUsageStat> {
+  const prev = record?.[name];
+  const prevCount = typeof prev?.usageCount === 'number' && Number.isFinite(prev.usageCount) && prev.usageCount > 0
+    ? prev.usageCount
+    : 0;
+  return { ...(record ?? {}), [name]: { usageCount: prevCount + 1, lastUsedAt: now } };
+}
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
