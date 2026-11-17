@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { isTerminalTaskStatus } from '../process-manager';
+import { isTerminalTaskStatus, PROGRESS_IDLE_MS } from '../process-manager';
 import type { BackgroundProcess, TaskStatus } from '../process-manager';
 
 /**
@@ -225,14 +225,38 @@ export const taskListTool: ToolDefinition = {
           ref += ' [aborting]';
         }
         parts.push(ref);
-        if (typeof t.tokenCount === 'number' && t.tokenCount > 0) {
-          parts.push(formatTokenCount(t.tokenCount));
+        // Final-result vs live-progress stats (parity: Claude Code's
+        // AsyncAgentDetailDialog, which shows a FINISHED agent's `result` totals
+        // separately from the in-flight `progress` totals). For a TERMINAL agent
+        // prefer the authoritative result totals recorded at completion, falling
+        // back to the last live counter when a producer never set them; a RUNNING
+        // agent always shows the live counter.
+        const term = isTerminal(t.status);
+        const dispTokens = term ? (t.resultTokenCount ?? t.tokenCount) : t.tokenCount;
+        const dispTools = term ? (t.resultToolCount ?? t.toolCount) : t.toolCount;
+        if (typeof dispTokens === 'number' && dispTokens > 0) {
+          parts.push(formatTokenCount(dispTokens));
         }
         // Live tool-call progress counter (parity: Claude Code's
         // task.progress.toolCount) — how many tool calls this background agent has
         // made so far. Gated on >0 so a just-spawned agent shows no noise tag.
-        if (typeof t.toolCount === 'number' && t.toolCount > 0) {
-          parts.push(`${t.toolCount} ${t.toolCount === 1 ? 'tool' : 'tools'}`);
+        if (typeof dispTools === 'number' && dispTools > 0) {
+          parts.push(`${dispTools} ${dispTools === 1 ? 'tool' : 'tools'}`);
+        }
+        // Live AI progress summary (parity: Claude Code's CoordinatorAgentStatus
+        // `progress.summary`, which takes PRECEDENCE over the static description):
+        // for a still-RUNNING agent, surface what it is doing right now, plus an
+        // activity-direction indicator — "idle Ns" once no progress signal has
+        // arrived for PROGRESS_IDLE_MS, so a reader can tell a working agent from a
+        // quiet one. Both are omitted for a terminal agent / when unset.
+        if (t.status === 'running') {
+          if (t.progressSummary) parts.push(`— ${t.progressSummary}`);
+          if (typeof t.lastActivity === 'number') {
+            const idleMs = Date.now() - t.lastActivity;
+            if (idleMs >= PROGRESS_IDLE_MS) {
+              parts.push(`[idle ${Math.round(idleMs / 1000)}s]`);
+            }
+          }
         }
         // Incremental progress since the previous task_list (parity: Claude's
         // lastReportedToolCount/lastReportedTokenCount delta caching "for computing

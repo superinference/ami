@@ -353,6 +353,15 @@ export const OUTPUT_FLUSH_MS = 50;
 export const TERMINAL_RETENTION_MS = 5 * 60_000; // 5 minutes
 
 /**
+ * Idle threshold (ms) after which a RUNNING background agent that has produced no
+ * live progress signal (token/tool/summary update — see
+ * {@link BackgroundProcess.lastActivity}) is surfaced as "idle" rather than
+ * actively working, mirroring Claude Code's CoordinatorAgentStatus activity
+ * indicator. Below this window the agent is treated as actively making progress.
+ */
+export const PROGRESS_IDLE_MS = 30_000;
+
+/**
  * Stall-watchdog tuning knobs (parity with Claude Code's LocalShellTask
  * STALL_CHECK_INTERVAL_MS / STALL_THRESHOLD_MS / STALL_TAIL_BYTES). AMI previously
  * conflated the poll cadence and the "no growth" threshold into a single 45s
@@ -510,6 +519,44 @@ export interface BackgroundProcess {
    * reader having to scrape the output tail. Undefined for a healthy/killed task.
    */
   error?: string;
+  /**
+   * FINAL-result token total for a finished background AGENT, distinct from the
+   * LIVE {@link tokenCount} progress counter (parity with Claude Code's
+   * AsyncAgentDetailDialog separating the completed run's `result` stats from the
+   * in-flight `progress` stats). The live counter tracks the last `usage_update`
+   * seen while running; this is the authoritative total recorded at the terminal
+   * transition, which can differ from the last live sample. A consumer reads this
+   * for a terminal agent, FALLING BACK to {@link tokenCount} when a legacy producer
+   * never set it. Undefined while still running / for bash tasks.
+   */
+  resultTokenCount?: number;
+  /**
+   * FINAL-result tool-call total for a finished background AGENT, the terminal
+   * counterpart of the live {@link toolCount} (see {@link resultTokenCount}).
+   * Recorded at the terminal transition; read for a terminal agent with a fallback
+   * to the live {@link toolCount}. Undefined while running / for bash tasks.
+   */
+  resultToolCount?: number;
+  /**
+   * Live AI progress summary for a running background AGENT — a short human phrase
+   * of what the agent is doing RIGHT NOW (e.g. `bash: npm test`), updated on each
+   * tool invocation (parity with Claude Code's CoordinatorAgentStatus
+   * `progress.summary`, which takes PRECEDENCE over the static task description).
+   * A consumer surfaces this in place of/alongside the description so the reader
+   * sees current activity, not just the one-line task label set at spawn. Undefined
+   * before the agent's first tool call / for bash tasks.
+   */
+  progressSummary?: string;
+  /**
+   * Wall-clock time (ms epoch) of the last observed progress on a background AGENT —
+   * stamped by {@link ProcessManager.updateEntry} whenever a live progress signal
+   * (tokenCount / toolCount / progressSummary) arrives (parity with Claude Code's
+   * CoordinatorAgentStatus `progress.lastActivity`, the basis for its
+   * activity-direction indicator). A consumer compares `now - lastActivity` against
+   * {@link PROGRESS_IDLE_MS} to tell a still-working agent from one that has gone
+   * quiet. Undefined until the first progress signal.
+   */
+  lastActivity?: number;
   /**
    * Dedup latch (parity with Claude Code's `task.notified`): true once the model
    * has already been told about this task's termination — either because it
@@ -1690,7 +1737,7 @@ export class ProcessManager extends EventEmitter {
     return true;
   }
 
-  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'toolCount' | 'error'>>): void {
+  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'toolCount' | 'error' | 'resultTokenCount' | 'resultToolCount' | 'progressSummary'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
     if (updates.status !== undefined) {
@@ -1711,6 +1758,25 @@ export class ProcessManager extends EventEmitter {
     if (updates.toolCount !== undefined) entry.toolCount = updates.toolCount;
     // Dedicated failure-reason channel for a failed agent (see BackgroundProcess.error).
     if (updates.error !== undefined) entry.error = updates.error;
+    // FINAL-result stats, distinct from the live progress counters (see
+    // BackgroundProcess.resultTokenCount/resultToolCount) — the authoritative
+    // totals recorded at the terminal transition.
+    if (updates.resultTokenCount !== undefined) entry.resultTokenCount = updates.resultTokenCount;
+    if (updates.resultToolCount !== undefined) entry.resultToolCount = updates.resultToolCount;
+    // Live AI progress summary (see BackgroundProcess.progressSummary) — current
+    // activity, takes precedence over the static description in task_list.
+    if (updates.progressSummary !== undefined) entry.progressSummary = updates.progressSummary;
+    // Stamp last-activity on any LIVE progress signal (token/tool/summary) so a
+    // consumer can tell a still-working agent from one that has gone quiet (see
+    // BackgroundProcess.lastActivity). A status/exitCode/error-only update is a
+    // lifecycle transition, not progress, so it does not refresh the clock.
+    if (
+      updates.tokenCount !== undefined ||
+      updates.toolCount !== undefined ||
+      updates.progressSummary !== undefined
+    ) {
+      entry.lastActivity = Date.now();
+    }
   }
 
   /**

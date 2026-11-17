@@ -435,15 +435,38 @@ export const workflowTool: ToolDefinition = {
         pm.updateEntry(taskId, {
           status,
           exitCode: status === 'failed' ? 1 : 0,
+          // Final-result stats distinct from the live progress counters (parity:
+          // AsyncAgentDetailDialog result-vs-progress split) — the authoritative
+          // totals at the terminal transition, preferred by task_list for a
+          // finished agent.
+          resultToolCount: agentToolUses,
+          resultTokenCount: agentTokens,
           // Surface the failure reason on the entry's dedicated error channel.
           ...(status === 'failed' && error ? { error } : {}),
         });
       };
       let agentTokens = 0;
+      // Per-agent tool-use count (distinct from the run-wide totalToolUses) so a
+      // finished workflow agent's resultToolCount reflects ITS OWN tool calls.
+      let agentToolUses = 0;
       try {
         for await (const event of subEngine.submit(framedPrompt)) {
           if (event.type === 'text_delta') { result += event.text; flushProgress(); }
-          else if (event.type === 'tool_use_start') { totalToolUses++; }
+          else if (event.type === 'tool_use_start') {
+            totalToolUses++;
+            agentToolUses++;
+            // Live tool count + current-activity summary on the task entry (parity:
+            // task.progress.toolCount / progress.summary); stamps lastActivity.
+            if (pm && taskId) {
+              const act = typeof event.input?.command === 'string'
+                ? event.input.command
+                : event.toolName;
+              pm.updateEntry(taskId, {
+                toolCount: agentToolUses,
+                progressSummary: `${event.toolName}: ${act}`.slice(0, 80),
+              });
+            }
+          }
           else if (event.type === 'usage_update') {
             // usage_update carries the agent's cumulative token total; keep the
             // latest and mirror it onto the process entry as a live token count.

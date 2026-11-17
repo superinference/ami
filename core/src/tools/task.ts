@@ -1280,16 +1280,22 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       }
       if (event.type === 'tool_use_start') {
         bgToolUseCount++;
-        // Live tool-call progress: surface the running count on the task entry so
-        // task_list can show how much work this background agent has done and the
-        // model can see incremental deltas (reportProgressDelta). Mirrors Claude
-        // Code's live task.progress.toolCount counter.
-        context.processManager?.updateEntry(taskId, { toolCount: bgToolUseCount });
         const summary = typeof event.input?.command === 'string'
           ? event.input.command
           : typeof event.input?.file_path === 'string'
             ? (event.input.file_path as string)
             : JSON.stringify(event.input || {}).slice(0, 120);
+        // Live tool-call progress: surface the running count on the task entry so
+        // task_list can show how much work this background agent has done and the
+        // model can see incremental deltas (reportProgressDelta). Mirrors Claude
+        // Code's live task.progress.toolCount counter. Also surface a short AI
+        // progress summary of the CURRENT action (progress.summary parity — takes
+        // precedence over the static description in task_list); this stamps the
+        // entry's lastActivity so a quiet agent can be flagged idle.
+        context.processManager?.updateEntry(taskId, {
+          toolCount: bgToolUseCount,
+          progressSummary: `${event.toolName}: ${summary}`.slice(0, 80),
+        });
         w(`\n▸ ${event.toolName} ${summary}\n`);
       }
       if (event.type === 'tool_use_progress') {
@@ -1359,7 +1365,16 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
     const killed = bgStalled || subAbort.signal.aborted;
     const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
     const exitCode = terminalStatus === 'completed' ? 0 : 1;
-    context.processManager.updateEntry(taskId, { status: terminalStatus, exitCode });
+    // Record the FINAL-result stats distinct from the live progress counters
+    // (parity: Claude Code's AsyncAgentDetailDialog result-vs-progress split) — the
+    // authoritative tool/token totals at the terminal transition, which task_list
+    // prefers for a finished agent (falling back to the live counter if absent).
+    context.processManager.updateEntry(taskId, {
+      status: terminalStatus,
+      exitCode,
+      resultToolCount: bgToolUseCount,
+      resultTokenCount: bgTotalTokens,
+    });
     context.processManager.emit('complete', { taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}` });
   }
   // Tear down the isolated worktree on the background completion path too
