@@ -1,6 +1,14 @@
 import type { EngineEvent } from '../types';
 
 /**
+ * AMI's synthetic final-output tool. Its calls are internal result-emission, not
+ * work worth surfacing, so the live-roster activity preview omits them (parity:
+ * Claude Code special-cases `SYNTHETIC_OUTPUT_TOOL_NAME` out of its
+ * recentActivities preview while still counting the tool use).
+ */
+const SYNTHETIC_OUTPUT_TOOL_NAME = 'structured_output';
+
+/**
  * Build a compact, human-readable argument summary for a sub-agent's tool call so
  * the live roster shows "bash npm test" or "file_read src/x.ts" instead of just
  * the tool name. Picks the most salient field per tool and truncates. Returns ''
@@ -57,10 +65,14 @@ export function mapChildToSubagentEvent(
         ? { type: 'subagent_progress', nodeId, depth, activity: 'thinking', detail: child.text }
         : null;
     case 'tool_use_start': {
+      // Omit the internal synthetic-output tool from the activity preview — it is a
+      // result-emission call, not visible work (parity: Claude's recentActivities skip).
+      if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
       const arg = summarizeToolInput(child.toolName, child.input);
       return { type: 'subagent_progress', nodeId, depth, activity: 'tool', detail: arg ? `${child.toolName} ${arg}` : child.toolName };
     }
     case 'tool_use_result':
+      if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
         detail: `${child.toolName} ${child.isError ? '✗' : '✓'}`,

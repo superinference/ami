@@ -16,7 +16,21 @@ import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias } from '../model-registry';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode } from '../skills';
+import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName } from '../skills';
+
+/**
+ * Open flags for a sub-agent's output-capture file. `O_NOFOLLOW` refuses to open
+ * the file if the predictable `<taskId>.output` path has been replaced by a
+ * symlink (parity: Claude Code's `O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW` on
+ * command-output fds — "to prevent symlink-following attacks from the sandbox").
+ * A sandboxed/malicious sub-agent could otherwise pre-plant a symlink at that
+ * path and redirect the captured output into an attacker-chosen file (e.g.
+ * `~/.bashrc`, a git `HEAD`); with `O_NOFOLLOW` the open throws `ELOOP` instead.
+ * `O_TRUNC` preserves the "start from empty" semantics of the old `'w'` flag /
+ * `writeFileSync(path, '')` it replaces. Exported for the symlink-guard test.
+ */
+export const OUTPUT_FILE_OPEN_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
 
 /** Auto-background threshold for foreground agents exceeding this duration. */
 const AUTO_BG_MS = 120_000;
@@ -1055,6 +1069,11 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'number',
     description: 'Cap the subagent\'s per-request output tokens (sizes the model\'s max_tokens). Useful for bounded delegations — a short summary or a terse report — where a full-length response would waste tokens. Must be a positive integer; omit to inherit the parent\'s output budget.',
   },
+  color: {
+    type: 'string',
+    description: 'Display color for this subagent\'s badge/row in the live roster so parallel agents are visually distinguishable. Overrides a named subagent_type\'s own color. Omit to let the UI derive a stable color from the agent name.',
+    enum: [...AGENT_COLORS],
+  },
 };
 
 /** Parameters for {@link runBackgroundAgentDrain}. */
@@ -1105,7 +1124,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   let bgToolUseCount = p.initialToolUseCount ?? 0;
   let bgTotalTokens = p.initialTokens ?? 0;
   const bgStartedAt = p.startedAt ?? Date.now();
-  const fd = fs.openSync(outputPath, 'w');
+  const fd = fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS);
   const w = (s: string) => { try { fs.writeSync(fd, s); } catch { /* fd closed */ } };
   // Preserve any output accumulated before an auto-background promotion.
   if (result) w(result);
@@ -1249,7 +1268,9 @@ export const taskTool: ToolDefinition = {
     'restricted to search/read) must ONLY be given research, search, or planning tasks — never implementation/' +
     'edit work, which they have no tools to do. Use a full-capability agent (mode:"general" or a subagent_type ' +
     'with edit/bash tools) for changes. Before assigning work to a named subagent_type, review its tool set so ' +
-    'the task matches what the agent can actually do.\n' +
+    'the task matches what the agent can actually do. If a named agent\'s description says it should be used ' +
+    'proactively, reach for it on your own — spawn it when its trigger arises without waiting for the user to ' +
+    'ask.\n' +
     '\n' +
     'Writing the prompt: brief the agent like a smart colleague who just walked into the room — it has not ' +
     'seen this conversation. Explain what you are trying to accomplish and why, what you have already ruled ' +
@@ -1340,6 +1361,18 @@ export const taskTool: ToolDefinition = {
     if (thoroughness !== undefined && !(EXPLORE_THOROUGHNESS_LEVELS as readonly string[]).includes(thoroughness)) {
       return {
         output: `Error: invalid thoroughness "${thoroughness}". Valid values: ${EXPLORE_THOROUGHNESS_LEVELS.join(', ')}.`,
+        isError: true,
+      };
+    }
+
+    // Per-spawn `color` override for the live-roster badge. Validated against the
+    // known agent palette so a typo'd color is rejected with the valid options
+    // rather than silently ignored (consumers derive a stable name-color fallback
+    // only for an ABSENT color, not an invalid one).
+    const colorOverride = input.color as string | undefined;
+    if (colorOverride !== undefined && parseAgentColor(colorOverride) === undefined) {
+      return {
+        output: `Error: invalid color "${colorOverride}". Valid values: ${AGENT_COLORS.join(', ')}.`,
         isError: true,
       };
     }
@@ -1467,6 +1500,10 @@ export const taskTool: ToolDefinition = {
     // a one-line note naming any declared-but-unresolvable skill, prepended to the
     // agent's returned output so a typo'd/disabled preload is visible, not silent.
     let agentSkillPreloadNote = '';
+    // Per-agent `color` (parity: Claude's agent/teammate `color`) — the named
+    // agent's declared display color, used for the live-roster badge unless the
+    // caller passes an explicit per-spawn `color` override below.
+    let agentColor: AgentColorName | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -1492,6 +1529,7 @@ export const taskTool: ToolDefinition = {
       agentIsolationDefault = agentDef.isolation;
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
+      agentColor = agentDef.color;
 
       // Preload the bodies of the skills this agent declares (parity: Claude's
       // runAgent skill preloading) into its authoritative system prompt, so the
@@ -1953,7 +1991,7 @@ export const taskTool: ToolDefinition = {
       const tasksDir = projectStateDir(context.cwd, 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const outputPath = path.join(tasksDir, `${taskId}.output`);
-      fs.writeFileSync(outputPath, '');
+      fs.closeSync(fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS));
 
       const label = taskDescription || `${prompt.slice(0, 80)}`;
       if (context.processManager) {
@@ -2017,9 +2055,15 @@ export const taskTool: ToolDefinition = {
 
     // Surface this foreground subagent live to the parent engine's UI.
     const relayDepth = childDepth._agentDepth;
+    // Per-spawn `color` wins over the named agent's declared color; absent both,
+    // the roster derives a stable name-based color. Resolved here so the roster
+    // badge is tinted the same way whether the color came from the task call or
+    // the agent definition.
+    const effectiveColor = (colorOverride as AgentColorName | undefined) ?? agentColor;
     context._emitChild?.({
       type: 'subagent_start', nodeId: taskId, depth: relayDepth,
       agentName: agentName || undefined, model: subConfig.provider?.model, prompt,
+      color: effectiveColor,
     });
 
     let toolUseCount = 0;
@@ -2151,7 +2195,7 @@ export const taskTool: ToolDefinition = {
         const tasksDir = projectStateDir(context.cwd, 'tasks');
         fs.mkdirSync(tasksDir, { recursive: true });
         const outputPath = path.join(tasksDir, `${taskId}.output`);
-        fs.writeFileSync(outputPath, '');
+        fs.closeSync(fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS));
         const label = taskDescription || `${prompt.slice(0, 80)}`;
         if (context.processManager) {
           context.processManager.registerAgent(taskId, {

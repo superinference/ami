@@ -958,7 +958,7 @@ export type EngineEvent =
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'skill_activated'; skill: string; description: string; hasMcpServers: boolean; source: 'model' | 'user' }
-  | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string }
+  | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string; color?: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number }
   | { type: 'todo_update'; todos: TodoItemView[] }
