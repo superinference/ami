@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage, SessionOperatingMode } from './types';
 import { asSessionId } from './types';
 import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDir, projectSlug, MAX_SLUG_LENGTH } from './reference-journal';
@@ -50,6 +51,16 @@ export const INITIAL_ENRICH_COUNT = 50;
  * `SKIP_PRECOMPACT_THRESHOLD` resume-read size guard.
  */
 export const SKIP_PRECOMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MiB
+
+/**
+ * Chunk size for the forward transcript reader {@link readTranscriptForLoad}. The
+ * resume load path reads the transcript fd one megabyte at a time — balancing the
+ * number of read syscalls against buffer growth — instead of slurping the whole
+ * file with a single `readFileSync`, so peak memory tracks the SURVIVING
+ * (post-last-compact-boundary) output rather than the raw on-disk file size. Parity:
+ * Claude's `TRANSCRIPT_READ_CHUNK_SIZE` (sessionStoragePortable) forward reader.
+ */
+export const TRANSCRIPT_READ_CHUNK_SIZE = 1024 * 1024; // 1 MiB
 
 /**
  * Session/transcript persistence is disabled when the user opts out: the
@@ -2437,14 +2448,18 @@ export function loadMessagesFromTranscriptPath(
     return []; // missing / inaccessible
   }
   if (size > MAX_SESSION_READ_BYTES) return []; // OOM boundary — don't slurp it
-  let raw: string;
-  try {
-    raw = fs.readFileSync(jsonlPath, 'utf-8');
-  } catch {
-    return [];
-  }
+  // Forward chunked read instead of a whole-file readFileSync slurp: peak memory
+  // tracks the surviving (post-last-compact-boundary) output, not the raw file
+  // size. Precompact truncation is only applied for large transcripts
+  // ({@link SKIP_PRECOMPACT_THRESHOLD}) — a big file almost always got big because
+  // auto-compact ran, so dropping its pre-compaction prefix is both safe and the
+  // whole point (parity: Claude's size-gated readTranscriptForLoad).
+  const { lines } = readTranscriptForLoad(jsonlPath, {
+    fileSize: size,
+    applyBoundaryTruncation: size >= SKIP_PRECOMPACT_THRESHOLD,
+  });
   const messages: Message[] = [];
-  for (const line of raw.split('\n')) {
+  for (const line of lines) {
     if (!line.trim()) continue;
     let parsed: unknown;
     try {
@@ -2457,6 +2472,171 @@ export function loadMessagesFromTranscriptPath(
     messages.push(parsed as Message);
   }
   return buildConversationChain(messages, opts.leafUuid);
+}
+
+// ---------------------------------------------------------------------------
+// Forward chunked, compact-boundary-truncating resume reader
+// ---------------------------------------------------------------------------
+
+/** Result of {@link readTranscriptForLoad} — the surviving transcript segment. */
+export interface TranscriptLoadResult {
+  /** Surviving transcript lines in file order: when boundary truncation applied,
+   *  only the segment at/after the LAST non-preserved `compact_boundary`; with at
+   *  most the single most-recent `attribution-snapshot` line appended at the end
+   *  (position-independent — a restore reads only the last snapshot). Each entry is
+   *  a raw JSONL string with no trailing newline. */
+  lines: string[];
+  /** File byte offset where the surviving segment begins (`0` when nothing was
+   *  truncated). Parity: Claude's `boundaryStartOffset`. */
+  boundaryStartOffset: number;
+  /** `true` when the truncating boundary carried a `preservedSegment`, so messages
+   *  before it were intentionally kept rather than dropped. Parity: Claude's
+   *  `hasPreservedSegment`. */
+  hasPreservedSegment: boolean;
+}
+
+/**
+ * Determine whether a transcript line is a genuine `compact_boundary` system entry
+ * (the marker string can appear inside ordinary user content, so a real JSON parse
+ * — not a substring test — is required), returning whether it preserves a segment,
+ * or `null` when the line is not a boundary. Parity: Claude's `parseBoundaryLine`.
+ */
+function parseCompactBoundaryLine(line: string): { hasPreservedSegment: boolean } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as { type?: unknown; subtype?: unknown; compactMetadata?: { preservedSegment?: unknown } };
+  if (obj.type !== 'system' || obj.subtype !== 'compact_boundary') return null;
+  return { hasPreservedSegment: Boolean(obj.compactMetadata?.preservedSegment) };
+}
+
+/** Whether a transcript line is an {@link AttributionSnapshot} entry (type guard on
+ *  the parsed `type` field). Only the most-recent one is retained by the reader. */
+function isAttributionSnapshotLine(line: string): boolean {
+  // Cheap prefix reject before the full parse — nearly every line is not a snapshot.
+  if (!line.startsWith('{"type":"attribution-snapshot"')) return false;
+  try {
+    const parsed = JSON.parse(line) as { type?: unknown };
+    return parsed?.type === 'attribution-snapshot';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Single forward chunked read of a `.jsonl` transcript for the `--resume` load
+ * path. The file is read {@link TRANSCRIPT_READ_CHUNK_SIZE} bytes at a time through
+ * a `StringDecoder` (so a multi-byte UTF-8 sequence split across a chunk seam is
+ * reassembled correctly) and processed line-by-line:
+ *
+ *  - `attribution-snapshot` lines are stripped in-stream; only the LAST one is kept
+ *    and appended at EOF (a restore reads only the most-recent snapshot, so its
+ *    position doesn't matter).
+ *  - when `applyBoundaryTruncation`, a real `compact_boundary` line without a
+ *    `preservedSegment` DISCARDS everything accumulated before it (the pre-compaction
+ *    prefix) and records its offset in {@link TranscriptLoadResult.boundaryStartOffset};
+ *    a boundary WITH a preserved segment keeps the earlier output.
+ *
+ * Because the accumulator is reset at each truncating boundary, peak memory tracks
+ * the surviving output rather than the whole file — the point of the chunked read
+ * for multi-megabyte sessions. A boundaryless file yields every line (identical to
+ * the previous whole-file read, no behaviour change). A missing / oversized /
+ * unreadable path yields an empty result. Parity: Claude's `readTranscriptForLoad`.
+ */
+export function readTranscriptForLoad(
+  jsonlPath: string,
+  opts: { applyBoundaryTruncation?: boolean; chunkSize?: number; fileSize?: number } = {},
+): TranscriptLoadResult {
+  const empty: TranscriptLoadResult = { lines: [], boundaryStartOffset: 0, hasPreservedSegment: false };
+
+  let fileSize = opts.fileSize;
+  if (fileSize === undefined) {
+    try {
+      fileSize = fs.statSync(jsonlPath).size;
+    } catch {
+      return empty; // missing / inaccessible
+    }
+  }
+  if (fileSize > MAX_SESSION_READ_BYTES) return empty; // OOM boundary — don't read it
+  if (fileSize === 0) return empty;
+
+  const chunkSize = opts.chunkSize !== undefined && opts.chunkSize > 0
+    ? opts.chunkSize
+    : TRANSCRIPT_READ_CHUNK_SIZE;
+  const applyTruncation = opts.applyBoundaryTruncation ?? false;
+
+  let fd: number;
+  try {
+    fd = fs.openSync(jsonlPath, 'r');
+  } catch {
+    return empty;
+  }
+
+  const kept: string[] = []; // surviving data/boundary lines (reset on truncation)
+  let lastSnapshot: string | undefined;
+  let boundaryStartOffset = 0;
+  let hasPreservedSegment = false;
+  // Running file byte offset of the next line's first byte (for boundaryStartOffset).
+  let offset = 0;
+
+  const processLine = (line: string, terminated: boolean): void => {
+    const lineOffset = offset;
+    offset += Buffer.byteLength(line, 'utf-8') + (terminated ? 1 : 0); // +1 for the '\n'
+    if (!line.trim()) return;
+    if (applyTruncation) {
+      const boundary = parseCompactBoundaryLine(line);
+      if (boundary) {
+        if (boundary.hasPreservedSegment) {
+          hasPreservedSegment = true; // keep the already-accumulated output
+        } else {
+          kept.length = 0; // drop the entire pre-compaction prefix
+          lastSnapshot = undefined;
+          boundaryStartOffset = lineOffset;
+          hasPreservedSegment = false;
+        }
+        kept.push(line); // the boundary system line itself stays in the stream
+        return;
+      }
+    }
+    if (isAttributionSnapshotLine(line)) {
+      lastSnapshot = line; // retain only the most-recent snapshot
+      return;
+    }
+    kept.push(line);
+  };
+
+  const decoder = new StringDecoder('utf-8');
+  const buf = Buffer.allocUnsafe(chunkSize);
+  let carry = ''; // partial trailing line spanning a chunk seam
+  try {
+    let filePos = 0;
+    while (filePos < fileSize) {
+      const bytesRead = fs.readSync(fd, buf, 0, Math.min(chunkSize, fileSize - filePos), filePos);
+      if (bytesRead === 0) break;
+      filePos += bytesRead;
+      const text = carry + decoder.write(buf.subarray(0, bytesRead));
+      let start = 0;
+      let nl = text.indexOf('\n');
+      while (nl !== -1) {
+        processLine(text.slice(start, nl), true);
+        start = nl + 1;
+        nl = text.indexOf('\n', start);
+      }
+      carry = text.slice(start);
+    }
+    carry += decoder.end();
+    if (carry.length > 0) processLine(carry, false); // final line without a trailing '\n'
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const lines = kept;
+  if (lastSnapshot !== undefined) lines.push(lastSnapshot);
+  return { lines, boundaryStartOffset, hasPreservedSegment };
 }
 
 /** Options for {@link getSessionMessages} (parity: Claude's
