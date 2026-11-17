@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult } from '../types';
-import { gitExec } from '../worktree-manager';
+import { gitExec, stashToCleanState } from '../worktree-manager';
 
 /**
  * Every git call in the exit path — reads AND the destructive teardown — runs
@@ -32,6 +32,10 @@ export const _exitWorktreeHooks = {
   // it was awaited, without a real 100ms wait in every removal test.
   branchDeleteDelayMs: 100,
   sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+  // Recoverable stash-to-clean-state used by the non-destructive `stash` action
+  // (parity: Claude's stashToCleanState). Routed through the hook object so a test
+  // can simulate a stash failure deterministically without a real dirty tree.
+  stash: stashToCleanState,
 };
 
 const ALLOWED_KEYS = new Set(['action', 'discard_changes']);
@@ -54,7 +58,11 @@ export const exitWorktreeTool: ToolDefinition = {
     'When to use: on explicit user request to finish, merge, or discard isolated work — not proactively.\n' +
     'action "keep" preserves the worktree and its branch on disk (your work stays saved there); ' +
     'action "merge" merges the worktree branch back into the original branch, then deletes the worktree AND its branch; ' +
-    'action "remove" deletes the worktree AND its branch WITHOUT merging (discards the isolated work). ' +
+    'action "remove" deletes the worktree AND its branch WITHOUT merging (discards the isolated work); ' +
+    'action "stash" is the NON-DESTRUCTIVE alternative to "remove": it saves the worktree\'s uncommitted files ' +
+    '(tracked and untracked) into a recoverable git stash, then deletes the worktree and its branch — the uncommitted ' +
+    'work is NOT lost (recover it from the main checkout with git stash apply). "stash" refuses if the worktree has ' +
+    'unpushed commits (a stash cannot preserve commits), telling you to use "merge"/"keep"/"remove" instead. ' +
     'discard_changes (default false) must be true to remove a worktree that has uncommitted files or unpushed commits, ' +
     'and to merge a worktree that still has uncommitted files (uncommitted work is never part of a merge and would be lost) — ' +
     'otherwise the tool refuses and tells you to confirm with the user or use action:"keep". ' +
@@ -67,12 +75,12 @@ export const exitWorktreeTool: ToolDefinition = {
     properties: {
       action: {
         type: 'string',
-        description: '"keep" leaves the worktree and branch on disk; "merge" merges the branch back into the original branch then deletes both; "remove" deletes both without merging.',
-        enum: ['keep', 'merge', 'remove'],
+        description: '"keep" leaves the worktree and branch on disk; "merge" merges the branch back into the original branch then deletes both; "remove" deletes both without merging; "stash" saves uncommitted files to a recoverable git stash then deletes both (the non-destructive alternative to "remove").',
+        enum: ['keep', 'merge', 'remove', 'stash'],
       },
       discard_changes: {
         type: 'boolean',
-        description: 'Required true when action is "remove" and the worktree has uncommitted files OR unpushed commits. The tool refuses otherwise. Default false.',
+        description: 'Required true when action is "remove" and the worktree has uncommitted files OR unpushed commits. The tool refuses otherwise. To preserve uncommitted work instead of discarding it, use action:"stash" (no discard_changes needed). Default false.',
         default: false,
       },
     },
@@ -85,12 +93,13 @@ export const exitWorktreeTool: ToolDefinition = {
   outputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['keep', 'merge', 'remove'], description: 'The action that was performed.' },
+      action: { type: 'string', enum: ['keep', 'merge', 'remove', 'stash'], description: 'The action that was performed.' },
       originalCwd: { type: 'string', description: 'The directory the session returned to.' },
       worktreePath: { type: 'string', description: 'Absolute path of the worktree that was acted on.' },
       worktreeBranch: { type: 'string', description: 'Branch the worktree was on, when known.' },
       discardedFiles: { type: 'number', description: 'Count of uncommitted files discarded (remove action).' },
       discardedCommits: { type: 'number', description: 'Count of unpushed commits discarded (remove action).' },
+      stashedFiles: { type: 'number', description: 'Count of uncommitted files saved to a recoverable git stash (stash action).' },
       message: { type: 'string', description: 'Human-readable summary of what happened.' },
     },
     required: ['action', 'originalCwd', 'worktreePath', 'message'],
@@ -113,10 +122,11 @@ export const exitWorktreeTool: ToolDefinition = {
     const action = input.action as string;
     const discardChanges = input.discard_changes === true;
 
-    if (action !== 'keep' && action !== 'remove' && action !== 'merge') {
-      return { output: 'Error: action must be "keep", "merge", or "remove".', isError: true };
+    if (action !== 'keep' && action !== 'remove' && action !== 'merge' && action !== 'stash') {
+      return { output: 'Error: action must be "keep", "merge", "remove", or "stash".', isError: true };
     }
     const wantMerge = action === 'merge';
+    const wantStash = action === 'stash';
 
     try {
       gitExec(['rev-parse', '--is-inside-work-tree'], { cwd: context.cwd, stdio: 'ignore' });
@@ -221,11 +231,50 @@ export const exitWorktreeTool: ToolDefinition = {
     // (originalHeadCommit..HEAD) rather than the remote-based count, which would
     // over-count pre-existing local-only base commits and wrongly refuse remove.
     const changes = countWorktreeChanges(worktreePath, worktreePath, { baseCommit: existing?.originalHeadCommit });
+
+    // Non-destructive "stash" path (parity: Claude's stashToCleanState / the
+    // "Stash changes and continue" affordance): instead of discarding the
+    // worktree's uncommitted work, save it to a recoverable git stash (which
+    // survives the worktree's removal — refs/stash lives in the shared git dir),
+    // then fall through to the SAME teardown as remove. Uncommitted work is never
+    // lost. A stash cannot preserve COMMITS, so a worktree with unpushed commits
+    // is refused here (directing the user to merge/keep/remove) — keeping "stash"
+    // strictly non-destructive.
+    let stashedFiles = 0;
+    if (wantStash) {
+      if (changes === null) {
+        return {
+          output: 'Error: could not determine worktree status (git check failed). Use action:"keep" to preserve it, or action:"remove" with discard_changes=true.',
+          isError: true,
+        };
+      }
+      if (changes.unpushed > 0) {
+        return {
+          output: cap(`Error: worktree${branchLabel} has ${pluralize(changes.unpushed, 'unpushed commit')} that a stash cannot preserve (stashing only saves uncommitted files; the commits would be lost when the branch is deleted). Use action:"merge" to integrate them into the original branch, action:"keep" to preserve everything on disk, or action:"remove" with discard_changes=true to discard them.`),
+          isError: true,
+        };
+      }
+      if (changes.uncommitted > 0) {
+        const stashed = _exitWorktreeHooks.stash(worktreePath, `exit_worktree auto-stash${branch ? ` (${branch})` : ''}`);
+        if (!stashed) {
+          // Fail-closed (parity: TeleportStash refuses to continue on a failed
+          // stash): do NOT proceed to a destructive teardown — the uncommitted
+          // work is still only in the worktree, so leave it fully intact.
+          return {
+            output: cap(`Error: failed to stash the worktree's uncommitted changes — the worktree is preserved at ${worktreePath} and nothing was removed. Resolve the git state manually, or use action:"keep".`),
+            isError: true,
+          };
+        }
+        stashedFiles = changes.uncommitted;
+      }
+    }
+
     // What the user will lose if we proceed. For "merge", the committed/unpushed
     // work is NOT a loss — it is exactly what gets merged — so only uncommitted
     // files are at risk and require discard_changes. For "remove", both
     // uncommitted files and unpushed commits are discarded, so both are guarded.
-    if (!discardChanges) {
+    // "stash" has its own guard above (it preserves the work), so skip here.
+    if (!discardChanges && !wantStash) {
       if (changes === null) {
         return {
           output: `Error: could not determine worktree status (git check failed). Set discard_changes=true to force ${wantMerge ? 'merge' : 'removal'}, or use action:"keep".`,
@@ -257,9 +306,15 @@ export const exitWorktreeTool: ToolDefinition = {
         const consequence = wantMerge
           ? 'These uncommitted changes are not part of a merge and will be lost.'
           : 'Removing will discard this work permanently (the branch will be deleted too).';
+        // Offer the non-destructive stash path only when it would actually help:
+        // "stash" preserves uncommitted files but refuses on unpushed commits, so
+        // surface it as the recoverable alternative only when there are none.
+        const stashOffer = (!wantMerge && changes.unpushed === 0)
+          ? ' Or use action:"stash" to save the uncommitted work to a recoverable git stash and remove the worktree (nothing lost).'
+          : '';
         const hint = wantMerge
           ? 'Commit them first so they are included in the merge, set discard_changes=true to discard them and merge only committed work, or use action:"keep".'
-          : 'Set discard_changes=true to force removal, use action:"merge" to merge committed work into the original branch, or use action:"keep". Confirm with the user before discarding.';
+          : `Set discard_changes=true to force removal, use action:"merge" to merge committed work into the original branch, or use action:"keep". Confirm with the user before discarding.${stashOffer}`;
         return {
           output: cap(`Error: worktree${branchLabel} has ${parts.join(' and ')}. ${consequence}${preview}\n\n${hint}`),
           isError: true,
@@ -267,9 +322,11 @@ export const exitWorktreeTool: ToolDefinition = {
       }
     }
 
-    // Snapshot what will be discarded for the success summary.
-    const discardedFiles = changes?.uncommitted ?? 0;
-    const discardedCommits = changes?.unpushed ?? 0;
+    // Snapshot what will be discarded for the success summary. For "stash" the
+    // uncommitted files were SAVED to a stash (counted as stashedFiles), not
+    // discarded, and unpushed commits were already refused — so nothing is lost.
+    const discardedFiles = wantStash ? 0 : (changes?.uncommitted ?? 0);
+    const discardedCommits = wantStash ? 0 : (changes?.unpushed ?? 0);
 
     const repoRoot = worktreePath.split('.ami/worktrees/')[0];
 
@@ -417,6 +474,19 @@ export const exitWorktreeTool: ToolDefinition = {
       return {
         output: cap(mergeMsg),
         metadata: { action, originalCwd, worktreePath, worktreeBranch: branch, mergedInto, discardedFiles, discardedCommits, message: mergeMsg },
+      };
+    }
+    if (wantStash) {
+      // Non-destructive removal: uncommitted work was preserved in a recoverable
+      // stash (or there was nothing to stash). Tell the user exactly how to get it
+      // back from the main checkout.
+      const stashNote = stashedFiles > 0
+        ? ` (${pluralize(stashedFiles, 'uncommitted file')} saved to a git stash — recover from ${repoRoot} with: git stash apply)`
+        : ' (no uncommitted changes to stash)';
+      const stashMsg = `Worktree removed${branchLabel}${stashNote}.${returned}`;
+      return {
+        output: cap(stashMsg),
+        metadata: { action, originalCwd, worktreePath, worktreeBranch: branch, discardedFiles: 0, discardedCommits: 0, stashedFiles, message: stashMsg },
       };
     }
     const discardSummary = (discardedFiles > 0 || discardedCommits > 0)

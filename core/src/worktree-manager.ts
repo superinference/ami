@@ -293,6 +293,39 @@ export function countWorktreeChanges(
   }
 }
 
+/**
+ * Stash a worktree's uncommitted changes (tracked modifications AND untracked
+ * files, via `git stash push -u`) to a clean working state, preserving them
+ * RECOVERABLY instead of discarding them. Mirrors Claude's `stashToCleanState`
+ * (components/TeleportStash.tsx): the non-destructive alternative offered before a
+ * git operation that would otherwise clobber a dirty tree.
+ *
+ * The stash is written to `refs/stash`, which lives in the repository's SHARED
+ * (common) git dir — so a stash created inside a linked worktree survives the
+ * worktree's removal and can be recovered from the main checkout with
+ * `git stash list` / `git stash apply`. Verified behavior, relied on by the
+ * exit_worktree `stash` action which stashes then removes the worktree.
+ *
+ * Returns true only when a stash was actually created AND the tree is now clean;
+ * false when there was nothing to stash or the stash failed (fail-closed — the
+ * caller must NOT proceed with a destructive teardown on a false result, so no
+ * uncommitted work is ever silently lost). Runs through the hardened `gitExec`
+ * (no shell, bounded timeout, prompts/hooks disabled).
+ */
+export function stashToCleanState(worktreePath: string, message: string): boolean {
+  try {
+    const before = gitExec(['--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath });
+    if (!before) return false; // nothing to stash
+    gitExec(['stash', 'push', '-u', '-m', message], { cwd: worktreePath, stdio: 'pipe' });
+    // Confirm the stash actually cleaned the tree (git stash can no-op in edge
+    // cases); only report success when the working tree is genuinely clean.
+    const after = gitExec(['--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath });
+    return after === '';
+  } catch {
+    return false;
+  }
+}
+
 export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): string[] {
   const worktreeDir = path.join(cwd, '.ami', 'worktrees');
   if (!fs.existsSync(worktreeDir)) return [];
