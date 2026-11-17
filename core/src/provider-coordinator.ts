@@ -36,13 +36,17 @@ export class ProviderCoordinator {
   private fallbackIndex = 0; // 0 = primary; 1..N = position in the fallback chain
   private fallbackSuccessCount = 0;
   private stickyFallback = false;
-  private rateLimits = new RateLimitTracker();
+  private rateLimits: RateLimitTracker;
   private health = new ProviderHealthTracker();
   private credentialPool: CredentialPool | null = null;
   private activeCredentialId: string | null = null;
 
   constructor(subsystem: ProviderSubsystem, additionalKeys?: string[]) {
     this.subsystem = subsystem;
+    // Honor the engine-supplied rate-limit tuning (warn/error thresholds +
+    // proactive early-warning ladder) so the knob is reachable end-to-end rather
+    // than always defaulting; falls back to provider defaults when absent.
+    this.rateLimits = new RateLimitTracker(subsystem.rateLimit);
     const inferred = this.inferProvider(subsystem.primary);
     this.state = {
       currentModel: subsystem.primary.model || inferred?.defaultModel || 'unknown',

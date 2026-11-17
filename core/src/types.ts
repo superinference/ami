@@ -1,5 +1,6 @@
 import type { SuperInferenceConfig } from './superinference/types';
 import type { ToolCapabilityCeiling } from './tools/scoped-permissions';
+import type { RateLimitTrackerOptions } from './rate-limiter';
 
 /**
  * Type-branded session id: a nominal `string` subtype so a raw string can't be silently
@@ -1501,6 +1502,14 @@ export interface EngineConfig {
   memoryCriticalRssBytes?: number;
   /** Injectable RSS reader for tests (defaults to process.memoryUsage().rss). */
   memoryUsageReader?: () => number;
+  /**
+   * Rate-limit tracker tuning, threaded to the {@link ProviderCoordinator}'s
+   * {@link RateLimitTracker}: `warnThreshold` / `errorThreshold` utilization
+   * fractions and the proactive `earlyWarningConfigs` ladder (an empty array
+   * disables proactive "approaching limit" warnings). Undefined = provider
+   * defaults ({@link DEFAULT_EARLY_WARNING_CONFIGS}).
+   */
+  rateLimit?: RateLimitTrackerOptions;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on (beyond the essential set + tool_search). */
@@ -2077,6 +2086,13 @@ export interface ProviderSubsystem {
   /** Architect model for dual-model (plan + execute) mode. */
   architectModel?: string;
   thinking?: ThinkingConfig;
+  /**
+   * Rate-limit tracker tuning (warn/error thresholds + proactive early-warning
+   * ladders). Threaded from {@link EngineConfig.rateLimit} so the coordinator's
+   * {@link RateLimitTracker} is configurable rather than always defaulting;
+   * undefined = provider defaults.
+   */
+  rateLimit?: RateLimitTrackerOptions;
 }
 
 export interface PermissionSubsystem {
@@ -2110,6 +2126,7 @@ export function buildSubsystems(config: EngineConfig): {
       compactionModel: config.compactionModel,
       architectModel: config.architectModel,
       thinking: config.thinking,
+      rateLimit: config.rateLimit,
     },
     permissions: {
       mode: config.permissionMode ?? 'ask',

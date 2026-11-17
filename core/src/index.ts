@@ -213,7 +213,7 @@ export { STRATEGY_NAMES, NOOP_EDIT_ERROR } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
 export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL } from './prompt-categorizer';
 export type { Intent, Scope, PromptCategory, PromptTier, TierSignals } from './prompt-categorizer';
-export type { RateLimitBucket, RateLimitStatus, RateLimitOverage, RawWindowUtilization, RawUtilization } from './rate-limiter';
+export type { RateLimitBucket, RateLimitStatus, RateLimitOverage, RawWindowUtilization, RawUtilization, RateLimitTrackerOptions } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
