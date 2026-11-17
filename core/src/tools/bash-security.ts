@@ -1,8 +1,9 @@
-import { win32 as win32Path } from 'node:path';
+import { win32 as win32Path, posix as posixPath } from 'node:path';
 import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, analyzeCommandStructure } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
+import { normalizeCaseForComparison } from '../utils/path';
 import { CODE_LOADING_VARIABLES as PINNED_CODE_LOADING_VARIABLES } from '../env-protection';
 
 export interface SecurityCheckResult {
@@ -1263,7 +1264,7 @@ function hasShellQuoteSingleQuoteBug(command: string): boolean {
 
 function validateShellQuoteBug(command: string): SecurityCheckResult {
   if (hasShellQuoteSingleQuoteBug(command)) {
-    return fail(CHECK_IDS.SHELL_QUOTE_BUG, 'Blocked: shell-quote single-quote backslash pattern detected (library misparse vector)');
+    return fail(CHECK_IDS.SHELL_QUOTE_BUG, 'Blocked: shell-quote single-quote backslash pattern detected (library misparse vector) — to proceed, rewrite the argument so a literal single quote is escaped as \'\\\'\' (close-quote, escaped quote, reopen-quote) or avoid mixing \\ and \' in one token');
   }
   return PASS;
 }
@@ -1518,14 +1519,14 @@ function validateMalformedTokenInjection(command: string): SecurityCheckResult {
   // single command the shell will reject, not a hidden-command injection.
   if (!/[;|&]/.test(command)) return PASS;
   if (hasUnbalancedQuotes(command)) {
-    return fail(CHECK_IDS.MALFORMED_TOKEN, 'Blocked: potentially malformed quoting with command separators');
+    return fail(CHECK_IDS.MALFORMED_TOKEN, 'Blocked: potentially malformed quoting with command separators — balance the quotes (every \' and " must be paired) or split the command into separate invocations so no unbalanced quote spans a ;/&&/||/| separator');
   }
   // Quotes balance (checked above), so quoted content strips cleanly; scan the
   // remainder for an unclosed structural delimiter that could hide an injected
   // command after an embedded separator.
   const delim = unclosedStructuralDelimiter(extractQuotedContent(command).fullyUnquoted);
   if (delim !== null) {
-    return fail(CHECK_IDS.MALFORMED_TOKEN, `Blocked: unclosed ${delim} with command separators (malformed token may hide an injected command)`);
+    return fail(CHECK_IDS.MALFORMED_TOKEN, `Blocked: unclosed ${delim} with command separators (malformed token may hide an injected command) — close the ${delim} or remove the command separator so the token cannot be re-parsed into a hidden command`);
   }
   return PASS;
 }
@@ -2048,6 +2049,90 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
   return PASS;
 }
 
+/**
+ * grep/rg value-taking flags whose NEXT token is the flag's value, NOT a search
+ * path. Without skipping that value token the naive "first non-flag = pattern,
+ * rest = files" scan mis-reads the value as the pattern and every following
+ * positional (incl. the real regex) as a path (`grep -m 5 pat file` → `5` is the
+ * pattern, `pat`+`file` are "paths"). `-e`/`--regexp`/`-f`/`--file` additionally
+ * SUPPLY the pattern, so once seen the first positional is already a file.
+ * Parity: Claude Code BashTool/pathValidation parsePatternCommand flags-with-args.
+ */
+const GREP_VALUE_FLAGS = new Set([
+  '-e', '--regexp', '-f', '--file',
+  '-m', '--max-count', '-A', '--after-context', '-B', '--before-context',
+  '-C', '--context', '-d', '--directories', '--color', '--colour',
+  '--include', '--exclude', '--exclude-dir', '--include-dir', '--exclude-from',
+  '-D', '--devices', '--label', '--group-separator', '--binary-files',
+  // ripgrep extras (harmless supersets for grep):
+  '-g', '--glob', '--iglob', '-t', '--type', '-T', '--type-not',
+  '-M', '--max-columns', '--sort', '--sortr', '-j', '--threads',
+  '--max-depth', '--max-filesize', '--context-separator',
+  // NB: `-r` is deliberately EXCLUDED — in grep it is valueless (`--recursive`),
+  // and mis-treating it as value-taking would swallow the search pattern. ripgrep's
+  // value-taking `-r/--replace` is the rarer form and is left unparsed (no regression
+  // vs. the previous naive extractor).
+]);
+const GREP_PATTERN_FLAGS = new Set(['-e', '--regexp', '-f', '--file']);
+
+/**
+ * Extract the FILE operands from a grep/rg/egrep/fgrep argv, skipping the value
+ * token of {@link GREP_VALUE_FLAGS} and consuming the first bare positional as
+ * the regex (unless `-e`/`-f` already supplied it). The pattern-file / colour /
+ * context values are intentionally dropped here; `-f` pattern files are recovered
+ * as read paths by {@link extractOptionValuePaths}.
+ */
+function extractPatternCommandPaths(args: string[]): string[] {
+  const paths: string[] = [];
+  let patternConsumed = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { for (let j = i + 1; j < args.length; j++) paths.push(args[j]); break; }
+    if (a.startsWith('-') && a.length > 1) {
+      if (a.includes('=')) continue;            // fused --flag=value carries its own value
+      if (GREP_VALUE_FLAGS.has(a)) {
+        if (GREP_PATTERN_FLAGS.has(a)) patternConsumed = true;
+        i++;                                     // skip the value token
+      }
+      continue;
+    }
+    if (!patternConsumed) { patternConsumed = true; continue; } // this positional is the regex
+    paths.push(a);
+  }
+  return paths;
+}
+
+/**
+ * Extract FILE operands from a `jq` argv. The first bare positional is the jq
+ * PROGRAM (a filter, never a path); subsequent positionals are JSON input files.
+ * `--arg name value` / `--argjson name value` carry two non-path values;
+ * `--slurpfile name file` / `--rawfile name file` carry a name then a FILE;
+ * `-f`/`--from-file` supplies the program from a file (so the first positional is
+ * then a data file) and `--indent` takes a numeric value.
+ */
+function extractJqPaths(args: string[]): string[] {
+  const NAME_VALUE = new Set(['--arg', '--argjson']);
+  const NAME_FILE = new Set(['--slurpfile', '--rawfile']);
+  const VALUE1 = new Set(['--indent']);
+  const paths: string[] = [];
+  let programConsumed = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { for (let j = i + 1; j < args.length; j++) paths.push(args[j]); break; }
+    if (a.startsWith('-') && a.length > 1) {
+      if (a.includes('=')) continue;
+      if (a === '-f' || a === '--from-file') { programConsumed = true; i++; continue; }
+      if (NAME_FILE.has(a)) { if (i + 2 < args.length) paths.push(args[i + 2]); i += 2; continue; }
+      if (NAME_VALUE.has(a)) { i += 2; continue; }
+      if (VALUE1.has(a)) { i++; continue; }
+      continue;
+    }
+    if (!programConsumed) { programConsumed = true; continue; } // jq filter program
+    paths.push(a);
+  }
+  return paths.filter(Boolean);
+}
+
 const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   cd: (a) => a.filter(x => !x.startsWith('-')),
   ls: (a) => a.filter(x => !x.startsWith('-')),
@@ -2094,8 +2179,9 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   diff: (a) => a.filter(x => !x.startsWith('-')),
   file: (a) => a.filter(x => !x.startsWith('-')),
   strings: (a) => a.filter(x => !x.startsWith('-')),
-  grep: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
-  rg: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
+  grep: extractPatternCommandPaths,
+  rg: extractPatternCommandPaths,
+  jq: extractJqPaths,
   sed: (a) => a.filter(x => !x.startsWith('-') && !/^s[/|]/.test(x)),
   awk: (a) => a.filter(x => !x.startsWith('-') && !x.startsWith("'")),
   git: (a) => a.slice(1).filter(x => !x.startsWith('-')),
@@ -2111,8 +2197,8 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   more: (a) => a.filter(x => !x.startsWith('-')),
   fmt: (a) => a.filter(x => !x.startsWith('-')),
   column: (a) => a.filter(x => !x.startsWith('-')),
-  egrep: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
-  fgrep: (a) => { const idx = a.findIndex(x => !x.startsWith('-')); return idx >= 0 ? a.slice(idx + 1).filter(x => !x.startsWith('-')) : []; },
+  egrep: extractPatternCommandPaths,
+  fgrep: extractPatternCommandPaths,
 };
 
 const FILE_TAKING_FLAGS: Record<string, Set<string>> = {
@@ -2189,9 +2275,29 @@ const CREDENTIAL_PATH_PATTERNS: RegExp[] = [
   /\/etc\/(passwd|shadow|sudoers)\b/,
 ];
 
+/**
+ * Candidate comparison forms for matching a raw path token against a protected-
+ * path pattern set. Returns the separator-normalized token PLUS, when it carries
+ * `..`/`.` segments, its lexically-collapsed form — so a traversal that
+ * RECONSTRUCTS a protected path (`.aws/x/../credentials`, `.ami/a/../sessions/y`)
+ * is caught even though the raw string never contains the target contiguously.
+ * Case is folded on case-insensitive filesystems (win32/darwin) via the canonical
+ * {@link normalizeCaseForComparison} so `.SSH/ID_RSA` cannot evade the (lowercase)
+ * patterns; a no-op on Linux. Parity: Claude Code normalizes (case-fold + `..`
+ * collapse) before protected/sensitive-path matching (utils/memoryFileDetection).
+ */
+function protectedPathComparands(p: string): string[] {
+  const norm = normalizeCaseForComparison(p.replace(/\\/g, '/'));
+  if (!/(?:^|\/)\.\.?(?:\/|$)/.test(norm)) return [norm];
+  // posix.normalize collapses `.`/`..` lexically; absolute inputs keep their
+  // leading `/`, relative inputs stay relative.
+  const collapsed = posixPath.normalize(norm);
+  return collapsed === norm ? [norm] : [norm, collapsed];
+}
+
 export function isCredentialPath(p: string): boolean {
-  const norm = p.replace(/\\/g, '/');
-  return CREDENTIAL_PATH_PATTERNS.some((re) => re.test(norm));
+  const comparands = protectedPathComparands(p);
+  return CREDENTIAL_PATH_PATTERNS.some((re) => comparands.some((c) => re.test(c)));
 }
 
 /**
@@ -2274,7 +2380,9 @@ export function detectSessionTranscriptWrite(command: string): { blocked: boolea
   const re = /(^|\/)\.ami\/sessions(\/|$)/;
   const norm = command.replace(/\\/g, '/');
   for (const t of collectWriteTargets(command)) {
-    if (re.test(t.replace(/\\/g, '/'))) {
+    // Case-fold (win32/darwin) + `..`-collapse the target so `.AMI/Sessions` and
+    // `.ami/x/../sessions/y` are matched too (parity: normalize before match).
+    if (protectedPathComparands(t).some((c) => re.test(c))) {
       return { blocked: true, description: `write to protected session transcript path "${t}"` };
     }
   }
@@ -3591,8 +3699,12 @@ const SHELL_INTERPRETERS_RE = /(?:^|\/)(?:ba)?sh$/;
 export function detectBase64ShellPipe(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
 
-  // Split on pipes and check if any segment's output feeds into a shell
-  const pipeSegments = stripped.split(/\s*\|\s*/);
+  // Split on REAL pipes via the quote-aware, `||`-respecting pipeline splitter
+  // (shared getPipeSegments grammar) rather than a naive `split(/\s*\|\s*/)`.
+  // The naive split (a) treated a logical-OR `base64 -d x || sh` as a pipe —
+  // falsely flagging `sh` as a downstream interpreter — and (b) split on a `|`
+  // sitting inside quotes (`echo "a|b" | sh`), both of which this fixes.
+  const pipeSegments = getPipeSegments(stripped);
 
   for (let i = 0; i < pipeSegments.length - 1; i++) {
     const current = pipeSegments[i].trim();
