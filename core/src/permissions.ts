@@ -1133,8 +1133,20 @@ export function normalizeCaseForComparison(p: string): string {
  *     or a leading `=` (zsh equals-expansion, e.g. `=rg` → `/usr/bin/rg`).
  *   - `tilde-variant`:   an unsupported `~` form (`~user`, `~+`, `~-`, `~N`) that
  *     `expandPath` leaves for the shell (it resolves only bare `~`, `~/`, `~\`).
+ *   - `network-path`:    a UNC / network-share path (`//server`, `\\server`) or a
+ *     WebDAV credential-leak marker (`@SSL@`, `DavWWWRoot`). Resolving one can leak
+ *     NTLM/host credentials to a remote server, and its real target lives off the
+ *     local filesystem where the workspace/forbidden guards cannot reason about it.
+ *   - `command-substitution`: a backtick (`` ` ``) escape embedded in the path —
+ *     the shell runs the backticked text as a command at execution time, so the
+ *     validated literal and the real target diverge (a TOCTOU gap `$(...)` already
+ *     covers under `shell-expansion`, but backtick substitution has no `$`).
  */
-export type PathExpansionHazard = 'shell-expansion' | 'tilde-variant';
+export type PathExpansionHazard =
+  | 'shell-expansion'
+  | 'tilde-variant'
+  | 'network-path'
+  | 'command-substitution';
 
 /**
  * Classify a raw (un-expanded) path token for shell-expansion / tilde-variant
@@ -1152,6 +1164,20 @@ export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard 
   if (trimmed.startsWith('~') && trimmed !== '~'
       && !trimmed.startsWith('~/') && !trimmed.startsWith('~\\')) {
     return 'tilde-variant';
+  }
+  // UNC / network-share prefix (`//server`, `\\server`) or a WebDAV credential-leak
+  // marker (`@SSL@`, `DavWWWRoot`). A normal POSIX path begins with a SINGLE slash,
+  // so a leading double slash/backslash is the UNC shape Claude blocks before
+  // resolution (pathValidation.ts L1098-L1114) — resolving it can leak NTLM/host
+  // credentials to a remote server and its target lives off the local filesystem.
+  if (/^(?:\/\/|\\\\)/.test(trimmed) || /@SSL@|DavWWWRoot/i.test(trimmed)) {
+    return 'network-path';
+  }
+  // A backtick escape runs the backticked text as a command at execution time
+  // (`/project/`whoami`/x`), so the validated literal and the real target diverge.
+  // `$(...)` substitution is already caught below by the `$` test.
+  if (trimmed.includes('`')) {
+    return 'command-substitution';
   }
   if (trimmed.includes('$') || trimmed.includes('%') || trimmed.startsWith('=')) {
     return 'shell-expansion';
@@ -1203,9 +1229,18 @@ export function isUnvalidatableReadGlob(rawPath: string): boolean {
  * understands why an otherwise-valid-looking path was gated.
  */
 export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
-  return hazard === 'tilde-variant'
-    ? 'Tilde expansion variants (~user, ~+, ~-) in paths require manual approval'
-    : 'Shell expansion syntax in paths requires manual approval';
+  switch (hazard) {
+    case 'tilde-variant':
+      return 'Tilde expansion variants (~user, ~+, ~-) in paths require manual approval';
+    case 'network-path':
+      return 'UNC / remote network-share paths require manual approval (they can leak '
+        + 'credentials to a remote server and resolve outside the local filesystem)';
+    case 'command-substitution':
+      return 'Backtick command substitution in paths requires manual approval';
+    case 'shell-expansion':
+    default:
+      return 'Shell expansion syntax in paths requires manual approval';
+  }
 }
 
 /** Safe target commands for xargs — only these can follow xargs. */
@@ -4472,6 +4507,15 @@ export class PermissionManager {
    *  triggered it. Parity: Claude's single `notifyPermissionModeChanged` choke point. */
   private _modeChangeListener?: PermissionModeChangeListener;
   private rules: PermissionRule[] = [];
+  /**
+   * Dangerous code-exec `allow` rules that were REMOVED because they came from an
+   * untrusted (shared/committable) settings tier — a project/`command` rule is
+   * attacker-PR-able, so a broad interpreter grant it carries (`Bash(python:*)`)
+   * must not silently widen auto-approval. Retained for reporting (diagnostics /
+   * introspection) via {@link getStrippedDangerousRules}. Parity: Claude's
+   * `ToolPermissionContext.strippedDangerousRules`.
+   */
+  private strippedDangerousRules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
   /** Whether bypass-permissions mode was AVAILABLE when this session started
@@ -6166,6 +6210,47 @@ export class PermissionManager {
     return this.rules.filter(r => this.isDangerousCodeExecAllow(r));
   }
 
+  /**
+   * Remove dangerous code-exec `allow` rules that originate from an UNTRUSTED,
+   * shared/committable settings tier ({@link isSharedSettingSource} minus the
+   * enterprise-managed `policySettings` tier, which is admin-owned and trusted) and
+   * record them in {@link strippedDangerousRules}. A committed `.ami/permissions.json`
+   * (or a slash-command's frontmatter) is attacker-PR-able, so a broad interpreter
+   * grant it carries must never silently widen auto-approval — the check() code-exec
+   * downgrade only moves such a rule to a prompt, whereas a hostile project rule
+   * should not exist at all. Personal tiers (user/local/cliArg/session) and an
+   * untagged rule are the user's own and are left intact. Returns the newly
+   * stripped rules. Parity: Claude's dangerous-rule stripping into
+   * `ToolPermissionContext.strippedDangerousRules`.
+   */
+  private stripDangerousRulesFromUntrustedSources(): PermissionRule[] {
+    const stripped: PermissionRule[] = [];
+    this.rules = this.rules.filter(r => {
+      const untrustedShared = isSharedSettingSource(r.source) && !isManagedPermissionSource(r.source);
+      if (untrustedShared && this.isDangerousCodeExecAllow(r)) {
+        stripped.push(r);
+        return false;
+      }
+      return true;
+    });
+    if (stripped.length > 0) {
+      this.strippedDangerousRules.push(...stripped);
+      for (const r of stripped) {
+        this.traceMutation(`Stripped dangerous code-execution allow rule from an untrusted source: ${describeRule(r)}`);
+      }
+    }
+    return stripped;
+  }
+
+  /**
+   * Introspection: dangerous code-exec `allow` rules that were stripped from
+   * untrusted shared settings tiers at load time ({@link stripDangerousRulesFromUntrustedSources}).
+   * Lets a diagnostic / UI report WHICH committable rules were refused and why.
+   */
+  getStrippedDangerousRules(): PermissionRule[] {
+    return [...this.strippedDangerousRules];
+  }
+
   /** All named-param globs in a rule's paramPattern must match the tool input. */
   private paramMatches(paramPattern: Record<string, string>, input: Record<string, unknown>): boolean {
     for (const [key, glob] of Object.entries(paramPattern)) {
@@ -6663,6 +6748,11 @@ export class PermissionManager {
           const { rule: coerced, warning } = this._coerceRule(rule, 'projectSettings');
           if (coerced) this.rules.push(coerced);
           else if (warning) warnings.push(warning);
+        }
+        // Defense-in-depth: a committed/untrusted project rule cannot smuggle a
+        // broad interpreter grant (`Bash(python:*)`) that would widen auto-approval.
+        for (const r of this.stripDangerousRulesFromUntrustedSources()) {
+          warnings.push(`Stripped dangerous code-execution allow rule from untrusted project settings: ${describeRule(r)}`);
         }
       }
     } catch {

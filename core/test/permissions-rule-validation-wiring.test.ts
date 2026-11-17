@@ -136,14 +136,19 @@ test('loadRules drops a malformed bash :* rule with an actionable warning (RED-G
 });
 
 test('loadRules accepts a well-formed rule (no warning)', () => {
+  // `ls:*` is a well-formed `:*`-at-end rule that is NOT a dangerous code-exec
+  // prefix, so it loads cleanly. (A dangerous interpreter grant such as
+  // `npm run:*` from the committable project tier is now stripped — see
+  // permissions-u003-w95.test.ts; a user wanting it must grant it in a personal
+  // settings tier, not a project-committed file.)
   withTempPermissions(
-    { rules: [{ tool: 'bash', pattern: 'npm run:*', action: 'allow' }] },
+    { rules: [{ tool: 'bash', pattern: 'ls:*', action: 'allow' }] },
     (cwd) => {
       const pm = new PermissionManager();
       const warnings = pm.loadRules(cwd);
       assert.equal(pm.getRules().length, 1);
       assert.deepEqual(warnings, []);
-      assert.equal(pm.getRules()[0]!.pattern, 'npm run:*');
+      assert.equal(pm.getRules()[0]!.pattern, 'ls:*');
     },
   );
 });
