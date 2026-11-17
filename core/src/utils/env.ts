@@ -9,6 +9,19 @@
  */
 
 import { readFileSync } from 'node:fs';
+import * as os from 'node:os';
+
+/**
+ * True when running under Windows Subsystem for Linux — detected via the
+ * WSL-specific env vars (`WSL_DISTRO_NAME`/`WSL_INTEROP`) or the `microsoft`/`wsl`
+ * marker in the kernel release string. The single canonical WSL detector shared by
+ * every consumer (ripgrep timeout tuning, cross-OS lock-reclaim guards) so the
+ * check can never drift between call sites (§0b.6 — no duplicated platform probe).
+ */
+export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
+  try { return /microsoft|wsl/i.test(os.release()); } catch { return false; }
+}
 
 /**
  * Parse an environment variable as an integer, accepting:

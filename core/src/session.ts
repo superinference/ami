@@ -11,6 +11,8 @@ import { getGitBranch } from './utils/git';
 import { stripDisplayTags } from './utils/display-tags';
 import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
+import { isWSL } from './utils/env';
+import { normalizePermissionMode } from './permissions';
 export { assertPathWithin } from './path-safety';
 
 /**
@@ -486,6 +488,26 @@ export function isValidSessionId(id: unknown): id is string {
   if (id.length === 0 || id.length > 255) return false;
   if (id === '.' || id === '..' || id.includes('..')) return false;
   return !UNSAFE_SESSION_ID_RE.test(id);
+}
+
+/**
+ * Allowlist-sanitize a session parsed back from disk before it is handed to any
+ * consumer. The on-disk JSON is UNTRUSTED (it may have been written by a different
+ * build, hand-edited, or synced from another machine), so a security-sensitive
+ * field is validated against its canonical allowlist rather than restored blindly:
+ *  - `settings.permissionMode` must round-trip through {@link normalizePermissionMode}
+ *    (the single {@link PERMISSION_MODES} acceptance boundary); an unknown mode is
+ *    DROPPED so --resume can never reinstate a bogus or dangerous permission posture
+ *    from a foreign/corrupt transcript.
+ * Mutates and returns `parsed` (the just-parsed object is not shared). Parity:
+ * Claude's resume-time PERMISSION_MODES allowlist nulling of deserialized state.
+ */
+function sanitizeLoadedSession(parsed: Session): Session {
+  const mode = parsed?.settings?.permissionMode;
+  if (typeof mode === 'string' && normalizePermissionMode(mode) === null) {
+    delete parsed.settings!.permissionMode;
+  }
+  return parsed;
 }
 
 /**
@@ -1114,7 +1136,7 @@ export class SessionManager {
       // (a corrupt/hostile file must not crash --resume). Skip it as unreadable.
       if (fs.statSync(filePath).size > MAX_SESSION_READ_BYTES) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as Session;
+      const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
       if (rehydrate && Array.isArray(parsed.messages)) {
         const safeId = path.basename(filePath).replace(/\.json$/, '');
         const blobDir = this.blobDirFor(safeId);
@@ -1134,7 +1156,7 @@ export class SessionManager {
       const st = await fs.promises.stat(filePath);
       if (st.size > MAX_SESSION_READ_BYTES) return null;
       const raw = await fs.promises.readFile(filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as Session;
+      const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
       if (rehydrate && Array.isArray(parsed.messages)) {
         const safeId = path.basename(filePath).replace(/\.json$/, '');
         const blobDir = this.blobDirFor(safeId);
@@ -1260,6 +1282,55 @@ export function buildConversationChain(messages: Message[], leafUuid?: string): 
   }
   chain.reverse();
   return chain;
+}
+
+/**
+ * Cross-directory resume: reconstruct a conversation from an ARBITRARY `.jsonl`
+ * transcript path, not just a session in this manager's store. Reads the file
+ * (honouring the same {@link MAX_SESSION_READ_BYTES} OOM boundary as the JSON
+ * loaders), parses each line as a message record, skips any corrupt/truncated line
+ * (a crash can tear the final line), then walks the `parentUuid` DAG via
+ * {@link buildConversationChain} to return the newest non-sidechain thread in
+ * chronological order. A missing / oversized / unreadable path, or one with no
+ * valid message rows, yields `[]`. An explicit `leafUuid` resumes a specific
+ * branch; otherwise the newest non-sidechain leaf is chosen.
+ *
+ * This is the core primitive behind `--resume <path.jsonl>` (parity: Claude's
+ * `loadMessagesFromJsonlPath` / `loadConversationForResume(sourceJsonlFile)` for
+ * resuming a session whose transcript lives OUTSIDE the current project dir). It
+ * reuses the existing DAG walk rather than re-implementing leaf selection (§0b.6).
+ */
+export function loadMessagesFromTranscriptPath(
+  jsonlPath: string,
+  opts: { leafUuid?: string } = {},
+): Message[] {
+  let size: number;
+  try {
+    size = fs.statSync(jsonlPath).size;
+  } catch {
+    return []; // missing / inaccessible
+  }
+  if (size > MAX_SESSION_READ_BYTES) return []; // OOM boundary — don't slurp it
+  let raw: string;
+  try {
+    raw = fs.readFileSync(jsonlPath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const messages: Message[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue; // corrupt / truncated line (e.g. a crash tore the tail) — skip it
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    if (typeof (parsed as { role?: unknown }).role !== 'string') continue; // only message rows
+    messages.push(parsed as Message);
+  }
+  return buildConversationChain(messages, opts.leafUuid);
 }
 
 /** Options for {@link getSessionMessages} (parity: Claude's
@@ -1423,6 +1494,10 @@ export interface SessionLockDeps {
   isPidAlive: (pid: number) => boolean;
   getProcessCommand: (pid: number) => string | null;
   now: () => number;
+  /** True when running under WSL — drives the cross-OS PID-probe boundary guard in
+   *  {@link lockHolderActive}. Injectable so the guard is testable without a real
+   *  WSL kernel. Defaults to {@link isWSL}. */
+  isWsl: () => boolean;
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -1463,6 +1538,7 @@ const DEFAULT_LOCK_DEPS: SessionLockDeps = {
   isPidAlive,
   getProcessCommand,
   now: Date.now,
+  isWsl: () => isWSL(),
 };
 
 function readLockPayload(lockPath: string): SessionLockPayload | null {
@@ -1498,7 +1574,18 @@ function lockHolderActive(
   deps: SessionLockDeps,
 ): boolean {
   const { pid } = payload;
-  if (!deps.isPidAlive(pid)) return false;       // dead / sentinel → stale
+  if (!deps.isPidAlive(pid)) {
+    // WSL cross-OS boundary guard: when the session dir is shared with a
+    // Windows-native AMI (symlink / AMI_DATA_DIR on /mnt), the holder's PID is a
+    // Windows PID that is NOT probeable from WSL and `isPidAlive` reports it dead.
+    // Reclaiming on liveness alone would evict a live cross-OS holder, so under
+    // WSL we fall through to the time-based fallback: the lock is treated as held
+    // until it ages past {@link LOCK_FALLBACK_STALE_MS} (bounded self-heal), never
+    // reclaimed purely because an un-probeable PID "looks dead" (parity: Claude's
+    // `getPlatform() !== 'wsl'` guard before a stale-session sweep).
+    if (deps.isWsl()) return deps.now() - payload.startedAt <= LOCK_FALLBACK_STALE_MS;
+    return false;                                // dead / sentinel → stale
+  }
   if (pid === process.pid) return true;          // it's us → held
   const command = deps.getProcessCommand(pid);
   if (command === null) {
@@ -1526,6 +1613,23 @@ function makeLockPayload(deps: SessionLockDeps): string {
 // lock is freed even if the caller never invokes release() (signal / crash /
 // forgotten cleanup). Mirrors Claude's registerCleanup-at-acquire.
 const activeLockReleases = new Set<() => void>();
+
+// Zero-syscall ownership map: the lock paths this process currently holds a fresh
+// (un-released) handle for. Added when a fresh acquire wins, removed on release —
+// so {@link isSessionLockHeldLocally} can answer "do I hold this?" with no disk I/O
+// (parity: Claude's `isLockHeldLocally`, used to gate a per-turn release so a
+// non-holding turn never touches disk).
+const locallyHeldLockPaths = new Set<string>();
+
+/**
+ * Zero-syscall check: does THIS process currently believe it holds the session
+ * lock for `sessionDir`? True iff a fresh {@link acquireSessionLock} won the lock
+ * here and its `release()` has not run yet. No filesystem access — purely the
+ * in-process ownership map. Parity: Claude's `isLockHeldLocally()`.
+ */
+export function isSessionLockHeldLocally(sessionDir: string): boolean {
+  return locallyHeldLockPaths.has(path.join(sessionDir, SESSION_LOCK_FILE));
+}
 let exitHookInstalled = false;
 function installExitHook(): void {
   if (exitHookInstalled) return;
@@ -1541,12 +1645,13 @@ export function releaseAllSessionLocks(): void {
   }
 }
 
-function makeAcquiredHandle(lockPath: string): { acquired: true; release: () => void } {
+function makeAcquiredHandle(lockPath: string): { acquired: true; fresh: true; release: () => void } {
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
     activeLockReleases.delete(release);
+    locallyHeldLockPaths.delete(lockPath);
     // Ownership-verified release: only unlink the lock if it STILL belongs to us.
     // If another live process judged our lock stale (dead PID / cross-host fallback)
     // and reclaimed it, the file now carries their pid — deleting it would wipe a
@@ -1556,14 +1661,15 @@ function makeAcquiredHandle(lockPath: string): { acquired: true; release: () => 
     try { fsHooks.unlinkSync(lockPath); } catch { /* already gone */ }
   };
   activeLockReleases.add(release);
+  locallyHeldLockPaths.add(lockPath);
   installExitHook();
-  return { acquired: true, release };
+  return { acquired: true, fresh: true, release };
 }
 
 export function acquireSessionLock(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
-): { acquired: boolean; pid?: number; release: () => void } {
+): { acquired: boolean; fresh?: boolean; pid?: number; release: () => void } {
   const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
   const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
   // Create the dir owner-only when absent; do NOT chmod an existing dir here so
@@ -1581,6 +1687,14 @@ export function acquireSessionLock(
     } catch (err: any) {
       if (err?.code !== 'EEXIST') throw err;
       const payload = readLockPayload(lockPath);
+      // Re-entrant: this process already holds the lock for this dir. Report an
+      // acquired, NON-fresh result with a no-op release (the original fresh handle
+      // still owns the on-disk lock and is the one that unlinks it) — so a caller
+      // can fire an "entered" side effect only on `fresh` and never double-unlink
+      // (parity: Claude's AcquireResult `{kind:'acquired',fresh:false}` reentrant).
+      if (payload && payload.pid === process.pid) {
+        return { acquired: true, fresh: false, pid: payload.pid, release: () => {} };
+      }
       if (payload && lockHolderActive(payload, deps)) {
         return { acquired: false, pid: payload.pid, release: () => {} };
       }
@@ -1613,6 +1727,49 @@ export function isSessionLocked(
   const payload = readLockPayload(lockPath);
   if (!payload) return false;
   return lockHolderActive(payload, deps);
+}
+
+/** Tri-state result of {@link checkSessionLock} — a check-without-acquire probe:
+ *  `free` (no live holder — reclaimable), `held_by_self` (this process owns it), or
+ *  `blocked` (another live process owns it). Parity: Claude's computer-use lock
+ *  `CheckResult` (`free` / `held_by_self` / `blocked`). */
+export type SessionLockCheck =
+  | { kind: 'free' }
+  | { kind: 'held_by_self'; pid: number }
+  | { kind: 'blocked'; pid: number };
+
+/**
+ * Check the session lock for `sessionDir` WITHOUT acquiring it, yet still perform
+ * stale-PID recovery: a lock whose holder is dead / a reused PID / a cross-host
+ * lock aged past the fallback window (and a corrupt/unparseable lock) is UNLINKED
+ * during the check so a crashed session's lock can't block a pure "may I?" query —
+ * but no new lock is created (the caller defers the real acquire). Returns:
+ *  - `{kind:'free'}` — no lock, or a stale one that was just recovered;
+ *  - `{kind:'held_by_self',pid}` — this process already holds it (zero-syscall
+ *    local ownership first, else the on-disk pid matches);
+ *  - `{kind:'blocked',pid}` — a live, verified other holder owns it.
+ * Parity: Claude's `checkComputerUseLock` (the `defersLockAcquire` contract).
+ */
+export function checkSessionLock(
+  sessionDir: string,
+  depsOverride?: Partial<SessionLockDeps>,
+): SessionLockCheck {
+  const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
+  const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
+  if (!fs.existsSync(lockPath)) return { kind: 'free' };
+  const payload = readLockPayload(lockPath);
+  if (!payload) {
+    // Corrupt/unparseable — can't identify a holder; recover so it can't wedge.
+    try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
+    return { kind: 'free' };
+  }
+  if (isSessionLockHeldLocally(sessionDir) || payload.pid === process.pid) {
+    return { kind: 'held_by_self', pid: payload.pid };
+  }
+  if (lockHolderActive(payload, deps)) return { kind: 'blocked', pid: payload.pid };
+  // Stale (dead / reused PID / cross-host-expired) — recover, but do NOT acquire.
+  try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
+  return { kind: 'free' };
 }
 
 /** Introspection snapshot of one session lock, for diagnostics / a `/doctor`-style

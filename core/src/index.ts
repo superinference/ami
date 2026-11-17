@@ -1,6 +1,6 @@
-export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, detectTurnInterruption, buildConversationChain, selectNewestLeaf, getSessionMessages, appendResumeSentinel, NO_RESPONSE_REQUESTED, getSessionDisplayTitle, getSessionLockInfo, getAllLockInfo, SESSION_KINDS, envSessionKind, isBgSession } from './session';
+export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, detectTurnInterruption, buildConversationChain, selectNewestLeaf, getSessionMessages, appendResumeSentinel, NO_RESPONSE_REQUESTED, getSessionDisplayTitle, getSessionLockInfo, getAllLockInfo, SESSION_KINDS, envSessionKind, isBgSession, checkSessionLock, isSessionLockHeldLocally, loadMessagesFromTranscriptPath } from './session';
 export type { SessionKind } from './session';
-export type { Session, SessionListEntry, TurnInterruption, GetSessionMessagesOptions, LockInfo } from './session';
+export type { Session, SessionListEntry, TurnInterruption, GetSessionMessagesOptions, LockInfo, SessionLockCheck } from './session';
 export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
 export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';

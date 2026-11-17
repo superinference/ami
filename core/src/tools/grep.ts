@@ -1,8 +1,8 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { isWSL } from '../utils/env';
 import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
 import { coerceBool, coerceNumber } from '../utils/coerce';
@@ -40,11 +40,10 @@ const WSL_RG_TIMEOUT = 60_000;
 /** Env override for the search timeout, in seconds. Mirrors Claude Code's CLAUDE_CODE_*. */
 const GREP_TIMEOUT_ENV = 'AMI_GREP_TIMEOUT_SECONDS';
 
-/** True when running under WSL (slow /mnt bridge), via distro env or kernel release. */
-export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
-  try { return /microsoft|wsl/i.test(os.release()); } catch { return false; }
-}
+/** True when running under WSL (slow /mnt bridge). Re-exported from the canonical
+ *  {@link isWSL} in utils/env so the ripgrep timeout and the session-lock cross-OS
+ *  reclaim guard share ONE detector (§0b.6 — no duplicated platform probe). */
+export { isWSL };
 
 /**
  * Resolve the search timeout in ms: an explicit AMI_GREP_TIMEOUT_SECONDS override

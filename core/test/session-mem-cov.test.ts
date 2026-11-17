@@ -372,14 +372,20 @@ describe('acquireSessionLock / isSessionLocked — defensive paths', () => {
     assert.equal(isSessionLocked(mkTmp()), false);
   });
 
-  it('a second acquire by a live holder fails with a no-op release', () => {
+  it('a second acquire by the same live process is re-entrant with a no-op release', () => {
+    // FUNCTIONAL (labeled): same-process re-acquire is re-entrant (acquired, fresh:false),
+    // not a block — parity with Claude's AcquireResult. The no-op release must not
+    // remove the lock the original fresh handle still owns.
     const dir = mkTmp();
     const first = acquireSessionLock(dir);
     assert.equal(first.acquired, true);
+    assert.equal(first.fresh, true);
     const second = acquireSessionLock(dir); // held by this (alive) process
-    assert.equal(second.acquired, false);
+    assert.equal(second.acquired, true);
+    assert.equal(second.fresh, false);
     assert.equal(second.pid, process.pid);
     assert.doesNotThrow(() => second.release()); // no-op release
+    assert.equal(isSessionLocked(dir), true); // original handle still owns it
     first.release();
   });
 

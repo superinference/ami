@@ -70,18 +70,29 @@ describe('acquireSessionLock', () => {
     assert.equal(fs.existsSync(path.join(dir, SESSION_LOCK_FILE)), false);
   });
 
-  it('fails when lock is held by the current process (alive PID)', () => {
+  it('re-entrant acquire by the current process succeeds as non-fresh (parity)', () => {
+    // FUNCTIONAL (labeled): a second acquire by the SAME process is re-entrant —
+    // Claude's AcquireResult reports {acquired, fresh:false} for the same session,
+    // not a block. The first acquire is fresh:true; the reentrant one is fresh:false
+    // with a no-op release so the original handle still owns the on-disk lock.
     const dir = tmpDir();
     after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
     const first = acquireSessionLock(dir);
     assert.equal(first.acquired, true);
+    assert.equal(first.fresh, true);
 
     const second = acquireSessionLock(dir);
-    assert.equal(second.acquired, false);
+    assert.equal(second.acquired, true);
+    assert.equal(second.fresh, false);
     assert.equal(second.pid, process.pid);
 
+    // The reentrant release must NOT remove the lock the original handle owns.
+    second.release();
+    assert.equal(fs.existsSync(path.join(dir, SESSION_LOCK_FILE)), true);
+
     first.release();
+    assert.equal(fs.existsSync(path.join(dir, SESSION_LOCK_FILE)), false);
   });
 
   it('reclaims a stale lock (dead PID)', () => {
