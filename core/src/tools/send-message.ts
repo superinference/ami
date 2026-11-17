@@ -2216,6 +2216,14 @@ export const sendMessageTool: ToolDefinition = {
           return { output: `Permission mode "${structured.mode}" requested for ${toRaw} [from: ${from}]` };
         }
         case 'permission_request': {
+          // Privilege separation (parity: Claude Code's WorkerPendingPermission — a
+          // worker cannot self-approve a tool; its request is held pending and routed
+          // UP to the human-supervised lead). Only a non-lead WORKER may originate a
+          // permission_request: the lead is the approver, so a lead forwarding a
+          // permission prompt to itself has no one to escalate to and is rejected.
+          if (isSenderLead) {
+            return { output: 'Error: the team lead cannot forward a permission request — the lead is the approver. Only a worker escalates a permission prompt to the lead.', isError: true };
+          }
           // A worker forwards a permission prompt up to the lead for a decision.
           // The request id is keyed on the requester (from): the lead's response
           // routes back to that worker.

@@ -525,6 +525,11 @@ export interface SelfIdentity {
    *  `'teammate'`, or `'none'` for a standalone session. */
   role: TeamRole | 'none';
   isInProcess: boolean;
+  /** Whether this session may self-approve a permission request (true for a lead or
+   *  solo session) or must escalate it to the team leader (false for a non-lead
+   *  worker) — parity: Claude Code's WorkerPendingPermission gate. Resolved via
+   *  {@link canSelfApprovePermission}. */
+  canSelfApprovePermission: boolean;
 }
 
 /**
@@ -546,6 +551,21 @@ export function isTaskListVisibleForSelf(): boolean {
 }
 
 /**
+ * Whether THIS session may SELF-APPROVE a permission request, or must escalate it to
+ * the human-supervised team leader (parity: Claude Code's `WorkerPendingPermission` —
+ * a worker cannot self-grant a tool; its request is withheld in a pending state and
+ * routed to the lead, who decides). The privilege-separation rule is one line: a
+ * non-lead teammate (worker) can NEVER self-approve, so this is true only for a
+ * `'lead'` session or a standalone `'none'` session. Reuses the single resolved role
+ * ({@link getSelfRole}) so it never drifts from {@link isTeammate}/{@link isLeader}
+ * (no duplicate role resolution). This is the functional essence of the pending-on-
+ * leader gate, surfaced on the cohesive {@link getSelfIdentity} introspection aggregate.
+ */
+export function canSelfApprovePermission(): boolean {
+  return getSelfRole() !== 'teammate';
+}
+
+/**
  * Resolve this session's full swarm identity through the precedence chain — the
  * single cohesive introspection surface (parity: Claude Code's inspection aggregate).
  * Reuses the per-field accessors (no duplicated resolution logic) so it never drifts
@@ -563,6 +583,7 @@ export function getSelfIdentity(): SelfIdentity {
     isLeader: isLeader(),
     role: getSelfRole(),
     isInProcess: isInProcessTeammate(),
+    canSelfApprovePermission: canSelfApprovePermission(),
   };
 }
 

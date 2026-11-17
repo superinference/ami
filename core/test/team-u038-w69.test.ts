@@ -117,6 +117,9 @@ describe('U038-w69 team.ts resolved self-identity introspection surface', () => 
         isLeader: false,
         role: 'none',
         isInProcess: false,
+        // A standalone session is its own approver — it may self-approve permissions
+        // (parity: WorkerPendingPermission applies only to a non-lead worker).
+        canSelfApprovePermission: true,
       });
     });
 
