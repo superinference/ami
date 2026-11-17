@@ -12,11 +12,28 @@ import { inspect } from 'node:util';
 interface SecretRule {
   type: string;
   pattern: RegExp;
+  /**
+   * When `false`, the rule is matched exactly as written. Otherwise (the
+   * default) a zero-width leading word boundary (`LEADING_BOUNDARY`) is prepended
+   * at compile time so the distinctive prefix must START a token — a provider key
+   * glued to the tail of a longer identifier (`fooAKIA…`, `xghp_…`) is NOT a real
+   * credential and is no longer over-redacted (mirrors gitleaks' `\b`-anchored
+   * rules). Set `false` only for block-delimited rules (PEM) where a leading
+   * boundary is meaningless.
+   */
+  boundary?: boolean;
 }
 
+// Open-ended token bodies are capped with a GENEROUS upper bound (far above any
+// real credential length) instead of an unbounded `{n,}`. This caps the scan
+// work a single match can perform on malformed/untrusted input (defence-in-depth
+// against pathological inputs) while never truncating a real secret — mirroring
+// gitleaks' bounded quantifiers (token bodies capped at 4096, PEM blocks at
+// 16384). The patterns are star-height 1 (no nested quantifier), so there is no
+// catastrophic backtracking regardless.
 const SECRET_RULES: SecretRule[] = [
   // Anthropic must precede the generic openai `sk-` rule.
-  { type: 'anthropic_key', pattern: /sk-ant-[a-zA-Z0-9-]{20,}/g },
+  { type: 'anthropic_key', pattern: /sk-ant-[a-zA-Z0-9-]{20,4096}/g },
   // OpenAI project/service/admin keys (new `sk-(proj|svcacct|admin)-…T3BlbkFJ…`
   // format) must precede the generic `sk-…` rule — the hyphenated prefix is not
   // matched by openai_key below, so this is the only rule that catches them.
@@ -25,7 +42,7 @@ const SECRET_RULES: SecretRule[] = [
     pattern:
       /sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})/g,
   },
-  { type: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,}/g },
+  { type: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,4096}/g },
   { type: 'google_key', pattern: /AIza[a-zA-Z0-9_-]{35}/g },
   // Azure AD client secret — distinctive `…<digit>Q~…` infix (gitleaks
   // azure-ad-client-secret).
@@ -37,19 +54,19 @@ const SECRET_RULES: SecretRule[] = [
   // refresh (ghr).
   { type: 'github_pat', pattern: /ghp_[a-zA-Z0-9]{36}/g },
   { type: 'github_oauth', pattern: /gho_[a-zA-Z0-9]{36}/g },
-  { type: 'github_fine_pat', pattern: /github_pat_[a-zA-Z0-9_]{22,}/g },
+  { type: 'github_fine_pat', pattern: /github_pat_[a-zA-Z0-9_]{22,4096}/g },
   { type: 'github_app_token', pattern: /gh[us]_[a-zA-Z0-9]{36}/g },
   { type: 'github_refresh_token', pattern: /ghr_[a-zA-Z0-9]{36}/g },
-  { type: 'gitlab_pat', pattern: /glpat-[a-zA-Z0-9_-]{20,}/g },
+  { type: 'gitlab_pat', pattern: /glpat-[a-zA-Z0-9_-]{20,4096}/g },
   { type: 'gitlab_deploy_token', pattern: /gldt-[a-zA-Z0-9_-]{20}/g },
-  { type: 'slack_bot', pattern: /xoxb-[0-9]+-[a-zA-Z0-9]+/g },
-  { type: 'slack_user', pattern: /xoxp-[0-9]+-[a-zA-Z0-9]+/g },
-  { type: 'slack_app', pattern: /xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+/gi },
+  { type: 'slack_bot', pattern: /xoxb-[0-9]{1,20}-[a-zA-Z0-9]{1,4096}/g },
+  { type: 'slack_user', pattern: /xoxp-[0-9]{1,20}-[a-zA-Z0-9]{1,4096}/g },
+  { type: 'slack_app', pattern: /xapp-\d-[A-Z0-9]{1,64}-\d{1,20}-[a-z0-9]{1,4096}/gi },
   // AWS access-key family: long-term (AKIA), temporary/STS session (ASIA),
   // plus A3T*/ABIA/ACCA prefixes. Body is base32 (A-Z,2-7), 16 chars.
   { type: 'aws_access_key', pattern: /(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}/g },
-  { type: 'jwt', pattern: /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g },
-  { type: 'nvidia_key', pattern: /nvapi-[a-zA-Z0-9_-]{20,}/g },
+  { type: 'jwt', pattern: /eyJ[a-zA-Z0-9_-]{20,4096}\.[a-zA-Z0-9_-]{20,4096}\.[a-zA-Z0-9_-]{20,4096}/g },
+  { type: 'nvidia_key', pattern: /nvapi-[a-zA-Z0-9_-]{20,4096}/g },
   // Stripe (restricted + secret, test/live/prod); Stripe uses `sk_`/`rk_` with
   // an underscore so it never collides with the openai `sk-` rule above.
   { type: 'stripe_key', pattern: /(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}/g },
@@ -78,13 +95,36 @@ const SECRET_RULES: SecretRule[] = [
   { type: 'pulumi_token', pattern: /pul-[a-f0-9]{40}/g },
   { type: 'postman_token', pattern: /PMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34}/g },
   { type: 'twilio_key', pattern: /SK[0-9a-fA-F]{32}/g },
-  // PEM private-key blocks (RSA / EC / OPENSSH / DSA / PGP / unlabelled).
-  { type: 'private_key', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g },
+  // PEM private-key blocks (RSA / EC / OPENSSH / DSA / PGP / unlabelled). Block
+  // delimited by `-----…-----`, so a leading word boundary is meaningless.
+  { type: 'private_key', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]{1,16384}?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, boundary: false },
   // Bearer tokens in Authorization headers / curl examples.
-  { type: 'bearer_token', pattern: /Bearer\s+[a-zA-Z0-9_\-.=+/]{20,}/g },
+  { type: 'bearer_token', pattern: /Bearer\s+[a-zA-Z0-9_\-.=+/]{20,4096}/g },
 ];
 
-const CREDENTIAL_PATTERNS = SECRET_RULES.map(r => r.pattern);
+// Prepended to every boundary-enabled rule at compile time. A zero-width
+// negative lookbehind (does not consume input, so `findCredentials` match offsets
+// are unchanged) asserting the distinctive prefix is not glued to a preceding
+// alphanumeric — the word-boundary / delimiter anchoring gitleaks relies on to
+// avoid over-redacting a prefix that merely appears MID-token.
+const LEADING_BOUNDARY = '(?<![A-Za-z0-9])';
+
+/**
+ * Compile-once rule cache. Each rule's RegExp is rebuilt a single time (at module
+ * load) with the leading boundary applied, so the detect / redact / enumerate
+ * paths all share ONE set of compiled patterns rather than recompiling per call.
+ */
+interface CompiledRule {
+  type: string;
+  re: RegExp;
+}
+
+const COMPILED_RULES: CompiledRule[] = SECRET_RULES.map(r => ({
+  type: r.type,
+  re: new RegExp((r.boundary === false ? '' : LEADING_BOUNDARY) + r.pattern.source, r.pattern.flags),
+}));
+
+const CREDENTIAL_PATTERNS = COMPILED_RULES.map(r => r.re);
 
 export const REDACT_PLACEHOLDER = '[REDACTED]';
 
@@ -96,7 +136,7 @@ const LABEL_SPECIAL_CASE: Record<string, string> = {
   oauth: 'OAuth', npm: 'NPM', pypi: 'PyPI', jwt: 'JWT', github: 'GitHub',
   gitlab: 'GitLab', openai: 'OpenAI', digitalocean: 'DigitalOcean',
   huggingface: 'HuggingFace', hashicorp: 'HashiCorp', sendgrid: 'SendGrid',
-  nvidia: 'NVIDIA',
+  nvidia: 'NVIDIA', url: 'URL',
 };
 
 /**
@@ -165,10 +205,30 @@ const ENV_SECRET_ASSIGN_RE =
 
 // Field names that are UNCONDITIONALLY secret: the assigned value is redacted
 // regardless of length or entropy (a short/opaque session token must not leak just
-// because it is low-entropy). The weaker `*_key` family (api_key/access_key) keeps
-// the entropy gate below, since those names also appear with non-secret values.
+// because it is low-entropy). `authorization` is included here (matching Claude's
+// unconditional `authorization` header redaction) — a raw Authorization value is a
+// credential whatever its entropy. The weaker `*_key` family (api_key/access_key)
+// keeps the entropy gate below, since those names also appear with non-secret
+// placeholder values; the explicit `x-api-key` HEADER form is handled
+// unconditionally by HEADER_SECRET_RE instead.
 const UNCONDITIONAL_SECRET_KEY =
-  /^(?:password|passwd|secret|token|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|credential)$/i;
+  /^(?:password|passwd|secret|token|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential)$/i;
+
+// Explicit HTTP-header secrets whose value is redacted UNCONDITIONALLY (regardless
+// of length/entropy), mirroring Claude's dedicated `x-api-key` header rule. Kept
+// separate from the generic `api[_-]?key` key (which stays entropy-gated, since a
+// bare `api_key=placeholder` is often not a secret) so only the unambiguous
+// `x-api-key` HEADER form bypasses the entropy gate. Group 1 = header name, 2 =
+// separator (incl. opening quote), 3 = value (stops at a quote/delimiter).
+const HEADER_SECRET_RE = /(?<![A-Za-z0-9_-])(x-api-key)(["']?\s*[:=]\s*["']?)([^"',\s)}\]]+)/gi;
+
+// Credentials embedded in a URL's userinfo (`scheme://user:password@host`). The
+// `user:password` segment is a credential regardless of entropy and is not caught
+// by the provider-prefix or assigned-secret rules, so it is redacted here. Group 1
+// = `scheme://`, 2 = `user:password`, which is masked; the `@host` is preserved.
+// Scheme + userinfo parts are length-bounded so an unterminated lowercase run
+// cannot drive O(n²) backtracking while scanning for the `://` / `@` anchors.
+const URL_CRED_RE = /([a-z][a-z0-9+.\-]{0,30}:\/\/)([^\s/@:]{1,256}:[^\s/@]{1,4096})@/gi;
 
 /** Whether the value assigned to a secret-ish key should be redacted. */
 function assignedSecretShouldRedact(key: string, value: string): boolean {
@@ -215,6 +275,12 @@ export function containsCredential(text: string): boolean {
     pattern.lastIndex = 0;
     return pattern.test(text);
   })) return true;
+  // Explicit `x-api-key` header value (unconditional).
+  HEADER_SECRET_RE.lastIndex = 0;
+  if (HEADER_SECRET_RE.test(text)) return true;
+  // Credentials in a URL's userinfo (`user:password@`).
+  URL_CRED_RE.lastIndex = 0;
+  if (URL_CRED_RE.test(text)) return true;
   // Prefixed UPPER_SNAKE env-var secret (unconditional).
   ENV_SECRET_ASSIGN_RE.lastIndex = 0;
   if (ENV_SECRET_ASSIGN_RE.test(text)) return true;
@@ -237,6 +303,18 @@ export function redactCredentials(text: string, options: RedactOptions = {}): st
       (match: string) => maskSecretValue(match, options),
     );
   }
+  // Explicit `x-api-key` header value — unconditionally redacted (keep the header
+  // name + separator for context). Runs before the generic assigned-secret rules.
+  result = result.replace(
+    new RegExp(HEADER_SECRET_RE.source, HEADER_SECRET_RE.flags),
+    (_full: string, key: string, sep: string, value: string) =>
+      `${key}${sep}${maskSecretValue(value, options)}`,
+  );
+  // Credentials in a URL's userinfo are masked, preserving the scheme + host.
+  result = result.replace(
+    new RegExp(URL_CRED_RE.source, URL_CRED_RE.flags),
+    (_full: string, scheme: string, creds: string) => `${scheme}${maskSecretValue(creds, options)}@`,
+  );
   // Prefixed UPPER_SNAKE env-var secrets are unconditionally redacted (keep the
   // name + separator for context). Runs before SECRET_ASSIGN_RE; because the
   // name carries an underscore-joined prefix, the lowercase rule's key lookbehind
@@ -267,12 +345,28 @@ export function findCredentials(text: string): CredentialMatch[] {
   if (!text || text.length < 10) return [];
   const found: CredentialMatch[] = [];
 
-  for (const { pattern, type } of SECRET_RULES) {
-    pattern.lastIndex = 0;
+  for (const { re, type } of COMPILED_RULES) {
+    re.lastIndex = 0;
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
+    while ((match = re.exec(text)) !== null) {
       found.push({ type, label: getCredentialLabel(type), start: match.index, length: match[0].length });
     }
+  }
+
+  // Explicit `x-api-key` header values (value only, unconditional).
+  HEADER_SECRET_RE.lastIndex = 0;
+  let hm: RegExpExecArray | null;
+  while ((hm = HEADER_SECRET_RE.exec(text)) !== null) {
+    const valueStart = hm.index + hm[1].length + hm[2].length;
+    found.push({ type: 'header_secret', label: getCredentialLabel('header_secret'), start: valueStart, length: hm[3].length });
+  }
+
+  // Credentials in a URL's userinfo (`user:password@`) — the user:password span.
+  URL_CRED_RE.lastIndex = 0;
+  let um: RegExpExecArray | null;
+  while ((um = URL_CRED_RE.exec(text)) !== null) {
+    const valueStart = um.index + um[1].length;
+    found.push({ type: 'url_credentials', label: getCredentialLabel('url_credentials'), start: valueStart, length: um[2].length });
   }
 
   // Prefixed UPPER_SNAKE env-var secrets (value only, unconditional).

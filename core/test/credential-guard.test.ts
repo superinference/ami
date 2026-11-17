@@ -360,3 +360,101 @@ describe('field-name-based secret redaction (unconditional for secret keys)', ()
     assert.equal(text.slice(found[0].start, found[0].start + found[0].length), 'xyz987');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unconditional header / Authorization redaction (regardless of entropy)
+// ---------------------------------------------------------------------------
+describe('unconditional header + Authorization secret redaction', () => {
+  it('redacts a short, low-entropy x-api-key header value (entropy gate bypassed)', () => {
+    const text = 'x-api-key: short123';
+    assert.equal(containsCredential(text), true);
+    const red = redactCredentials(text);
+    assert.ok(!red.includes('short123'));
+    assert.equal(red, 'x-api-key: [REDACTED]');
+    const found = findCredentials(text);
+    assert.ok(found.some(f => f.type === 'header_secret'));
+    const h = found.find(f => f.type === 'header_secret')!;
+    assert.equal(text.slice(h.start, h.start + h.length), 'short123');
+  });
+
+  it('redacts a quoted x-api-key header value', () => {
+    const red = redactCredentials('{"x-api-key": "abc"}');
+    assert.ok(!red.includes('abc'));
+    assert.ok(red.includes('[REDACTED]'));
+  });
+
+  it('leaves the bare api_key= family entropy-gated (no regression)', () => {
+    // A low-entropy placeholder under a bare api_key is NOT a header and stays gated.
+    const text = 'api_key="aaaaaaaaaaaaaaaaaaaa"';
+    assert.equal(containsCredential(text), false);
+    assert.equal(redactCredentials(text), text);
+  });
+
+  it('redacts a low-entropy raw Authorization value unconditionally', () => {
+    const text = 'authorization: basictoken42';
+    assert.equal(containsCredential(text), true);
+    const red = redactCredentials(text);
+    assert.ok(!red.includes('basictoken42'));
+    assert.ok(red.includes('[REDACTED]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credentials embedded in URL userinfo (user:password@host)
+// ---------------------------------------------------------------------------
+describe('URL userinfo credential redaction', () => {
+  it('masks the user:password of a URL, preserving scheme + host', () => {
+    const text = 'clone https://alice:s3cr3tpw@github.com/org/repo.git';
+    assert.equal(containsCredential(text), true);
+    const red = redactCredentials(text);
+    assert.ok(!red.includes('s3cr3tpw'));
+    assert.ok(!red.includes('alice:s3cr3tpw'));
+    assert.ok(red.includes('https://[REDACTED]@github.com/org/repo.git'));
+    const found = findCredentials(text);
+    const u = found.find(f => f.type === 'url_credentials')!;
+    assert.ok(u);
+    assert.equal(text.slice(u.start, u.start + u.length), 'alice:s3cr3tpw');
+  });
+
+  it('does not match a plain URL with no userinfo', () => {
+    const text = 'see https://github.com/org/repo for details here';
+    assert.equal(containsCredential(text), false);
+    assert.equal(redactCredentials(text), text);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leading word-boundary anchoring prevents mid-token over-redaction
+// ---------------------------------------------------------------------------
+describe('word-boundary anchoring', () => {
+  it('does NOT match a provider prefix glued to the tail of a longer identifier', () => {
+    // AKIA embedded mid-identifier is not a real AWS key — gitleaks `\b` behavior.
+    const embedded = 'fooAKIA' + 'ABCDEFGHIJKLMNOP';
+    assert.equal(containsCredential(`id ${embedded}`), false);
+    assert.deepEqual(findCredentials(`id ${embedded}`), []);
+  });
+
+  it('still matches a standalone provider key after a non-alnum delimiter', () => {
+    const key = 'AKIA' + 'ABCDEFGHIJKLMNOP';
+    assert.equal(containsCredential(`key=${key}`), true);
+    assert.ok(findCredentials(`key=${key}`).some(f => f.type === 'aws_access_key'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded quantifiers: real-length secrets still caught; scan work capped
+// ---------------------------------------------------------------------------
+describe('bounded quantifiers', () => {
+  it('still detects a realistic (sub-bound) OpenAI key', () => {
+    const key = 'sk-' + 'a'.repeat(200);
+    assert.equal(containsCredential(`k=${key}`), true);
+  });
+
+  it('completes quickly on a large non-matching input (scan work is capped)', () => {
+    const blob = 'sk-' + 'a'.repeat(2_000_000); // one huge run, well past any real key
+    const start = Date.now();
+    const red = redactCredentials(blob);
+    assert.ok(Date.now() - start < 2000, 'redaction should not hang on pathological input');
+    assert.ok(red.includes('[REDACTED]')); // the leading 4096-char slice is still redacted
+  });
+});
