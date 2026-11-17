@@ -286,7 +286,7 @@ export const globTool: ToolDefinition = {
     if (typeof searchPathArg === 'string' && isUNCPath(searchPathArg)) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${searchPathArg}`, isError: true };
     }
-    const v = validatePatternAndPath(patternArg, searchPathArg, context.cwd, context.allowedReadRoots);
+    const v = validatePatternAndPath(patternArg, searchPathArg, context.cwd, context.allowedReadRoots, 'glob');
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     // The glob pattern itself must not traverse above the (already-confined) search root:

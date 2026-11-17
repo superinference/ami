@@ -194,6 +194,7 @@ export function resolveSearchPath(
   inputPath: string | undefined,
   cwd: string,
   allowedRoots: readonly string[] = [],
+  operation?: string,
 ): { resolved: string; error?: string } {
   // UNC guard — BEFORE any filesystem access, mirroring resolveFilePath. Merely
   // realpath'ing a UNC path on Windows opens an outbound SMB connection that can
@@ -215,9 +216,7 @@ export function resolveSearchPath(
   const realCwd = realpathOrResolve(cwd);
   const realRoots = allowedRoots.map(realpathOrResolve);
   if (!isWithinWorkspaceRoots(abs, realCwd, realRoots)) {
-    const roots = formatDirectoryList([cwd, ...allowedRoots]);
-    const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
-    return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory (cwd: ${cwd}).${hint}` };
+    return { resolved, error: outsideWorkspaceMessage(inputPath ?? cwd, cwd, allowedRoots, operation) };
   }
   return { resolved };
 }
@@ -331,15 +330,60 @@ export function formatDirectoryList(dirs: readonly string[], max: number = MAX_D
   return extra > 0 ? `${shown.join(', ')}, and ${extra} more` : shown.join(', ');
 }
 
-/** Append the session's accessible roots to an out-of-workspace denial so the
- *  model/user learns WHERE access is permitted and can retry correctly. */
-function outsideWorkspaceError(filePath: string, cwd: string, allowedRoots: readonly string[]): ToolResult {
+/**
+ * Human-readable phrasing for the operation named in an access-denied message, so
+ * a blocked path tells the reader WHAT was attempted — "read files in", "search
+ * for patterns in files in", … — not just that it failed. Mirrors Claude Code's
+ * `ACTION_VERBS` (BashTool/pathValidation.ts). Keyed by the tool operation; an
+ * unknown/absent operation falls back to a generic verb via {@link describeAction}.
+ */
+export const ACTION_VERBS: Readonly<Record<string, string>> = {
+  read: 'read files in',
+  write: 'write files in',
+  edit: 'edit files in',
+  list: 'list files in',
+  search: 'search for patterns in files in',
+  glob: 'find files in',
+};
+
+/**
+ * The verb phrase for a tool operation (from {@link ACTION_VERBS}), or a generic
+ * `'access'` fallback for an unknown/absent operation — so every denial can name
+ * the action in human terms without each call site re-deriving the phrasing.
+ */
+export function describeAction(operation?: string): string {
+  return (operation !== undefined && ACTION_VERBS[operation]) || 'access';
+}
+
+/**
+ * Build the canonical out-of-workspace denial string — ONE source shared by the
+ * read/write path resolver and the search-path resolver so the wording never
+ * drifts. It (1) names the working directory as context so the model can rebase a
+ * relative path (Claude Code's FILE_NOT_FOUND_CWD_NOTE convention), (2) names the
+ * OPERATION in human terms via {@link describeAction} (Claude Code's ACTION_VERBS),
+ * and (3) enumerates the session's accessible roots so the reader learns WHERE
+ * access is permitted and can retry correctly.
+ */
+export function outsideWorkspaceMessage(
+  filePath: string,
+  cwd: string,
+  allowedRoots: readonly string[] = [],
+  operation?: string,
+): string {
   const roots = formatDirectoryList([cwd, ...allowedRoots]);
-  const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
-  // Name the working directory in the denial so the model can rebase a relative
-  // path correctly instead of re-guessing (Claude Code's FILE_NOT_FOUND_CWD_NOTE
-  // convention — surface the cwd as context on every containment failure).
-  return { output: `Error: path "${filePath}" is outside the workspace directory (cwd: ${cwd}).${hint}`, isError: true };
+  const rootHint = roots ? ` Accessible roots for this session: ${roots}.` : '';
+  return `Error: path "${filePath}" is outside the workspace directory (cwd: ${cwd}). ` +
+    `For security, AMI may only ${describeAction(operation)} the allowed working directories this session.${rootHint}`;
+}
+
+/** {@link outsideWorkspaceMessage} wrapped as an error ToolResult for the file tools. */
+function outsideWorkspaceError(
+  filePath: string,
+  cwd: string,
+  allowedRoots: readonly string[],
+  operation?: string,
+): ToolResult {
+  return { output: outsideWorkspaceMessage(filePath, cwd, allowedRoots, operation), isError: true };
 }
 
 /**
@@ -405,6 +449,7 @@ export function resolveFilePath(
   filePath: string,
   cwd: string,
   allowedRoots: readonly string[] = [],
+  operation?: string,
 ): { resolved: string; error?: ToolResult } {
   // UNC guard — BEFORE any filesystem access. Merely touching a UNC path on
   // Windows can open an outbound SMB connection that leaks NTLM credentials, so
@@ -421,7 +466,7 @@ export function resolveFilePath(
   }
   // Logical (pre-symlink) containment: cwd OR a permission-granted root.
   if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
-    return { resolved, error: outsideWorkspaceError(filePath, cwd, allowedRoots) };
+    return { resolved, error: outsideWorkspaceError(filePath, cwd, allowedRoots, operation) };
   }
   // Special-file (FIFO/socket/char/block device) guard — BEFORE realpathSync,
   // which can block INDEFINITELY on a FIFO waiting for a writer (a DoS a crafted
@@ -649,10 +694,11 @@ export function validatePatternAndPath(
   searchPath: string | undefined,
   cwd: string,
   allowedRoots: readonly string[] = [],
+  operation?: string,
 ): { pattern: string; resolved: string; error?: undefined } | { error: ToolResult; pattern?: undefined; resolved?: undefined } {
   const invalid = validateRequiredString(pattern, 'pattern');
   if (invalid) return { error: invalid };
-  const { resolved, error: pathError } = resolveSearchPath(searchPath, cwd, allowedRoots);
+  const { resolved, error: pathError } = resolveSearchPath(searchPath, cwd, allowedRoots, operation);
   if (pathError) return { error: { output: pathError, isError: true } };
   return { pattern: pattern as string, resolved };
 }

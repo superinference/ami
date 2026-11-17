@@ -299,7 +299,7 @@ Usage:
     if (typeof searchPath === 'string' && isUNCPath(searchPath)) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${searchPath}`, isError: true };
     }
-    const v = validatePatternAndPath(input.pattern, searchPath, context.cwd, context.allowedReadRoots);
+    const v = validatePatternAndPath(input.pattern, searchPath, context.cwd, context.allowedReadRoots, 'search');
     if (v.error) return v.error;
     const { pattern, resolved } = v;
     // The file-FILTER glob (`include`) must not traverse above the search root — a filter

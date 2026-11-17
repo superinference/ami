@@ -185,8 +185,12 @@ export function isHighEntropySecret(token: string): boolean {
 // value class deliberately excludes quotes/whitespace so a trailing quote is left
 // intact. Unlike the old pattern this accepts short values (no `{16,}` floor) so
 // a short/opaque token under a secret-named key is caught (see redaction tiers).
+// `session[_-]?ingress[_-]?token` and `environment[_-]?secret` mirror Claude
+// Code's debug `SECRET_FIELD_NAMES` (bridge/debugUtils.ts) — compound field names
+// whose secret word is prefixed, so the bare `token`/`secret` alternatives (which
+// the leading lookbehind anchors to a word boundary) never match them.
 const SECRET_ASSIGN_RE =
-  /(?<![A-Za-z0-9_])(password|passwd|secret|token|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential|api[_-]?key|access[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/gi;
+  /(?<![A-Za-z0-9_])(password|passwd|secret|token|session[_-]?ingress[_-]?token|environment[_-]?secret|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential|api[_-]?key|access[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9+/_.\-=]+)/gi;
 
 // Prefixed UPPER_SNAKE env-var secret names that the lowercase SECRET_ASSIGN_RE
 // misses because its key lookbehind rejects a leading `PREFIX_` (e.g.
@@ -212,7 +216,7 @@ const ENV_SECRET_ASSIGN_RE =
 // placeholder values; the explicit `x-api-key` HEADER form is handled
 // unconditionally by HEADER_SECRET_RE instead.
 const UNCONDITIONAL_SECRET_KEY =
-  /^(?:password|passwd|secret|token|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential)$/i;
+  /^(?:password|passwd|secret|token|session[_-]?ingress[_-]?token|environment[_-]?secret|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential)$/i;
 
 // Explicit HTTP-header secrets whose value is redacted UNCONDITIONALLY (regardless
 // of length/entropy), mirroring Claude's dedicated `x-api-key` header rule. Kept

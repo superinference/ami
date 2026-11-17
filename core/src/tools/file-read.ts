@@ -308,7 +308,7 @@ async function resolveAlternateScreenshotPath(
 ): Promise<string | undefined> {
   const alt = getAlternateScreenshotPath(resolved);
   if (!alt) return undefined;
-  const altResolution = resolveFilePath(alt, context.cwd, context.allowedReadRoots);
+  const altResolution = resolveFilePath(alt, context.cwd, context.allowedReadRoots, 'read');
   if (altResolution.error) return undefined;
   if (isBlockedPath(altResolution.resolved)) return undefined;
   try {
@@ -883,7 +883,7 @@ export const fileReadTool: ToolDefinition = {
       return { output: 'Error: file read was cancelled.', isError: true };
     }
 
-    const { resolved: resolvedInput, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots);
+    const { resolved: resolvedInput, error: pathError } = resolveFilePath(filePath, context.cwd, context.allowedReadRoots, 'read');
     if (pathError) return pathError;
     let resolved = resolvedInput;
 
