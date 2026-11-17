@@ -644,6 +644,40 @@ export function validatePatternAndPath(
 }
 
 /**
+ * Pluralize `word` for a count (mirrors Claude Code's `plural()` helper in
+ * `utils/stringUtils.ts`). The single canonical implementation shared by the
+ * code-intelligence tools (`search_symbols`, `lsp`) so count headers read
+ * `1 symbol` / `2 symbols` without each tool re-declaring the same helper.
+ */
+export function plural(n: number, word: string, pluralWord = `${word}s`): string {
+  return n === 1 ? word : pluralWord;
+}
+
+/**
+ * Parse an optional non-negative integer tool-input knob (e.g. `limit`,
+ * `offset`). Returns `{ value }` with the parsed integer (or `fallback` when the
+ * key is absent/undefined), or `{ error }` — mirroring extractQuery's shape —
+ * when present but not a finite non-negative integer, so a bad paging knob
+ * surfaces a validation error instead of being silently coerced.
+ */
+export function extractNonNegativeInt(
+  raw: unknown,
+  name: string,
+  fallback: number,
+): { value: number; error?: undefined } | { error: ToolResult; value?: undefined } {
+  if (raw === undefined || raw === null) return { value: fallback };
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+    return {
+      error: {
+        output: `Invalid "${name}": expected a non-negative integer, got ${JSON.stringify(raw)}.`,
+        isError: true,
+      },
+    };
+  }
+  return { value: raw };
+}
+
+/**
  * Extract and validate a required 'query' string from tool input.
  * Returns { query } on success, or { error } on validation failure.
  */

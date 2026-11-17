@@ -7,6 +7,8 @@ import {
   MAX_LSP_FILE_SIZE_BYTES,
 } from '../lsp/diagnostic-tracking';
 import { isLspEnabled } from './tool-gates';
+import { plural } from './tool-utils';
+import { filterGitIgnoredLocations } from './lsp-gitignore-filter';
 
 /**
  * Position-based semantic LSP tool — parity with Claude Code's LSPTool.
@@ -55,11 +57,6 @@ interface SymbolInformation { name: string; kind: number; containerName?: string
 interface CallHierarchyItem { name: string; kind?: number; detail?: string; uri: string; range: Range }
 interface IncomingCall { from: CallHierarchyItem; fromRanges?: Range[] }
 interface OutgoingCall { to: CallHierarchyItem; fromRanges?: Range[] }
-
-/** Pluralize `word` for a count (Claude's `plural()` helper). */
-function plural(n: number, word: string, pluralWord = `${word}s`): string {
-  return n === 1 ? word : pluralWord;
-}
 
 /** LSP SymbolKind enum → readable label (1=File…26=TypeParameter). */
 const SYMBOL_KINDS: Record<number, string> = {
@@ -314,6 +311,40 @@ function formatHover(contents: unknown): string {
   return JSON.stringify(contents);
 }
 
+/**
+ * Drop gitignored files from location-bearing results (goToDefinition,
+ * goToImplementation, findReferences, workspaceSymbol) so build-artifact /
+ * vendored / generated locations never appear in navigation output — matching
+ * Claude Code's `filterGitIgnoredLocations`. Other operations (hover,
+ * documentSymbol on an explicitly-opened file, call hierarchy) pass through
+ * unchanged. The result shape is preserved: a single Location in →
+ * (filtered) array out is fine because the location formatters normalize both.
+ */
+async function filterIgnoredResult(op: LspOperation, result: unknown, cwd: string): Promise<unknown> {
+  if (result == null) return result;
+  switch (op) {
+    case 'goToDefinition':
+    case 'goToImplementation': {
+      const arr = (Array.isArray(result) ? result : [result]) as Array<Location | LocationLink>;
+      return filterGitIgnoredLocations(
+        arr,
+        item => (item as Location).uri ?? (item as LocationLink).targetUri,
+        cwd,
+      );
+    }
+    case 'findReferences': {
+      if (!Array.isArray(result)) return result;
+      return filterGitIgnoredLocations(result as Location[], loc => loc?.uri, cwd);
+    }
+    case 'workspaceSymbol': {
+      if (!Array.isArray(result)) return result;
+      return filterGitIgnoredLocations(result as SymbolInformation[], s => s?.location?.uri, cwd);
+    }
+    default:
+      return result;
+  }
+}
+
 export const lspTool: ToolDefinition = {
   name: 'lsp',
   // PARITY (additive): declarative per-tool gate for the LSP subsystem.
@@ -393,6 +424,8 @@ export const lspTool: ToolDefinition = {
         const callMethod = operation === 'incomingCalls' ? 'callHierarchy/incomingCalls' : 'callHierarchy/outgoingCalls';
         result = await client.request(absPath, context.cwd, callMethod, { item: items[0] });
       }
+
+      result = await filterIgnoredResult(operation, result, context.cwd);
 
       return { output: formatResult(operation, result) };
     } catch (e) {

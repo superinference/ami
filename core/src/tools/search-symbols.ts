@@ -1,7 +1,7 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { WorkspaceIndexer, SymbolEntry } from '../workspace-indexer';
 import * as path from 'path';
-import { extractQuery } from './tool-utils';
+import { extractQuery, extractNonNegativeInt, plural } from './tool-utils';
 
 // ---------------------------------------------------------------------------
 // Module-level singleton
@@ -22,12 +22,25 @@ let _buildFailed = false;
 /** Default cap on how long a tool call waits for the background index build. */
 const DEFAULT_INDEX_TIMEOUT_MS = 10_000;
 
-/** Max symbols returned to the model per search. */
-const RESULT_LIMIT = 30;
+/** Default number of symbols returned to the model per search when the caller
+ *  does not pass an explicit `limit`. */
+const DEFAULT_RESULT_LIMIT = 30;
+/** Hard ceiling on `limit` (and the meaning of `limit: 0` — "as many as allowed").
+ *  Bounds the result volume pulled into context even when the model asks for
+ *  "unlimited", mirroring Claude Code's capped head_limit behavior. */
+const MAX_RESULT_LIMIT = 250;
 /** When a `type` filter is active the result cap must apply AFTER filtering, so a
  *  wider ranked candidate set is pulled from the (type-agnostic) index and capped
  *  post-filter. Bounded so a broad query can't pull an unbounded set into memory. */
-const TYPE_FILTER_CANDIDATE_LIMIT = RESULT_LIMIT * 10;
+const TYPE_FILTER_CANDIDATE_MULTIPLIER = 10;
+
+/** Every symbol kind the WorkspaceIndexer can emit (SymbolEntry['type']). The
+ *  `type` filter enum MUST stay in sync with the data model so a caller can
+ *  request any indexed kind (including 'method'/'import'/'export'), not just the
+ *  historical five. */
+const VALID_SYMBOL_TYPES: ReadonlyArray<SymbolEntry['type']> = [
+  'function', 'class', 'interface', 'type', 'variable', 'method', 'import', 'export',
+];
 
 /** Resolve the index-build wait timeout (ms) from the env flag, with a default. */
 export function indexBuildTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -110,12 +123,24 @@ export const searchSymbolsTool: ToolDefinition = {
     properties: {
       query: {
         type: 'string',
-        description: 'Symbol name to search for (supports partial matches)',
+        description: 'Symbol name to search for (supports partial/fuzzy matches)',
       },
       type: {
         type: 'string',
-        description: 'Filter by symbol type',
-        enum: ['function', 'class', 'interface', 'type', 'variable'],
+        description: 'Filter by symbol kind',
+        enum: [...VALID_SYMBOL_TYPES],
+      },
+      limit: {
+        type: 'integer',
+        description:
+          `Maximum number of symbols to return (default ${DEFAULT_RESULT_LIMIT}, ` +
+          `hard cap ${MAX_RESULT_LIMIT}). Pass 0 for "as many as allowed" (${MAX_RESULT_LIMIT}).`,
+      },
+      offset: {
+        type: 'integer',
+        description:
+          'Skip the first N matches before returning results — page through a ' +
+          'large result set (default 0).',
       },
     },
     required: ['query'],
@@ -135,9 +160,30 @@ export const searchSymbolsTool: ToolDefinition = {
         : undefined;
 
     const typeFilter = input.type as SymbolEntry['type'] | undefined;
+    // Validate the `type` filter against the kinds the indexer can actually emit.
+    // A provider that doesn't strictly enforce the JSON-schema enum could pass an
+    // arbitrary string; reject it with the valid options (per the project's
+    // "invalid input must show valid options" rule) instead of silently filtering
+    // to zero matches behind a misleading "no symbols found" message.
+    if (typeFilter !== undefined && !VALID_SYMBOL_TYPES.includes(typeFilter)) {
+      return {
+        output: `Invalid "type" filter "${String(input.type)}". Valid types: ${VALID_SYMBOL_TYPES.join(', ')}.`,
+        isError: true,
+      };
+    }
+
     const q = extractQuery(input);
     if (q.error) return q.error;
     const query = q.query;
+
+    // Paging knobs: `limit` caps the returned set, `offset` skips the first N.
+    const limitParsed = extractNonNegativeInt(input.limit, 'limit', DEFAULT_RESULT_LIMIT);
+    if (limitParsed.error) return limitParsed.error;
+    const offsetParsed = extractNonNegativeInt(input.offset, 'offset', 0);
+    if (offsetParsed.error) return offsetParsed.error;
+    // `limit: 0` means "as many as allowed"; any value is clamped to the hard cap.
+    const limit = Math.min(limitParsed.value === 0 ? MAX_RESULT_LIMIT : limitParsed.value, MAX_RESULT_LIMIT);
+    const offset = offsetParsed.value;
 
     let early = aborted();
     if (early) return early;
@@ -147,27 +193,66 @@ export const searchSymbolsTool: ToolDefinition = {
     early = aborted();
     if (early) return early;
 
-    // The result cap must apply AFTER the type filter: fetching the top-N first and
-    // filtering second would hide matching-type symbols ranked just past the cap.
-    // With a filter active, pull a wider ranked candidate set and cap post-filter.
-    const fetchLimit = typeFilter ? TYPE_FILTER_CANDIDATE_LIMIT : RESULT_LIMIT;
-    let results = indexer.searchSymbols(query.trim(), fetchLimit);
+    // Fetch enough ranked candidates to cover the requested page PLUS one extra, so
+    // we can tell the caller whether more matches exist past the page (truncation
+    // disclosure). With a `type` filter active the cap must apply AFTER filtering —
+    // fetching the top-N first would hide matching-kind symbols ranked just past the
+    // cap — so pull a wider candidate set and filter before paging.
+    const pageEnd = offset + limit;
+    const fetchLimit = typeFilter
+      ? pageEnd * TYPE_FILTER_CANDIDATE_MULTIPLIER + 1
+      : pageEnd + 1;
+    let matched = indexer.searchSymbols(query.trim(), fetchLimit);
+    if (typeFilter) matched = matched.filter(s => s.type === typeFilter);
 
-    if (typeFilter) {
-      results = results.filter(s => s.type === typeFilter).slice(0, RESULT_LIMIT);
-    }
+    const page = matched.slice(offset, pageEnd);
+    const hasMore = matched.length > pageEnd;
 
-    if (results.length === 0) {
+    const typeNote = typeFilter ? ` (type: ${typeFilter})` : '';
+
+    if (page.length === 0) {
       const stats = indexer.getStats();
+      // Actionable "why empty / what to try" guidance (mirrors Claude's
+      // self-diagnosing empty-result messages) rather than just reporting counts.
+      const offsetNote = offset > 0 && matched.length > 0
+        ? ` ${matched.length} match(es) exist but offset ${offset} skipped past them — lower the offset.`
+        : '';
+      const hint = offsetNote
+        ? offsetNote
+        : ' Try a shorter or partial name, check casing (a lowercase query matches case-insensitively), or drop the type filter to broaden the search.';
       return {
-        output: `No symbols matching "${query}"${typeFilter ? ` (type: ${typeFilter})` : ''} found. Searched ${stats.fileCount} files with ${stats.symbolCount} symbols.`,
+        output: `No symbols matching "${query}"${typeNote} found. Searched ${stats.fileCount} files with ${stats.symbolCount} symbols.${hint}`,
       };
     }
 
-    const lines = results.map(s => {
+    // Count header with singular/plural handling (so the model can immediately
+    // gauge how many matches came back and whether to narrow the query).
+    const header = `Found ${page.length} ${plural(page.length, 'symbol')} matching "${query}"${typeNote}:`;
+
+    // Group results by file and print each path once as a header, then indented
+    // `name (type) - Line N` entries — far more scannable than repeating the full
+    // path on every line (mirrors Claude's formatWorkspaceSymbolResult).
+    const byFile = new Map<string, SymbolEntry[]>();
+    for (const s of page) {
       const relPath = path.relative(context.cwd, s.filePath);
-      return `${s.name} (${s.type}) in ${relPath}:${s.line}`;
-    });
+      const bucket = byFile.get(relPath);
+      if (bucket) bucket.push(s);
+      else byFile.set(relPath, [s]);
+    }
+
+    const lines: string[] = [header];
+    for (const [relPath, symbols] of byFile) {
+      lines.push(`\n${relPath}:`);
+      for (const s of symbols) lines.push(`  ${s.name} (${s.type}) - Line ${s.line}`);
+    }
+
+    // Truncation disclosure: when more matches exist past this page, tell the
+    // caller so it knows the list was capped (and how to see more).
+    if (hasMore) {
+      lines.push(
+        `\n(showing ${page.length} of more matches — raise "limit", set "offset" to page, or refine your query to narrow)`,
+      );
+    }
 
     return { output: lines.join('\n') };
   },
