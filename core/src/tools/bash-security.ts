@@ -4134,6 +4134,16 @@ export function detectBase64ShellPipe(command: string): { blocked: boolean; reas
     if (/\bpython[23]?\s+-c\b/.test(current)) {
       return { blocked: true, reason: 'python -c output piped to shell interpreter — arbitrary script-to-shell execution' };
     }
+
+    // Check if the left segment runs a python module (`python -m <module>`). A
+    // module invocation emits attacker-chosen output (the module's stdout) which,
+    // piped to a shell, is the same code-to-shell vector as `python -c` — the
+    // module name is opaque to the textual checks (parity: Claude Code classifies
+    // the `-m` argument as an executable module, utils/bash/registry.ts isModule).
+    // eslint-disable-next-line security/detect-unsafe-regex -- `-\S+\s+` (non-space run then a required space) and the trailing `-m\b` are matched against a bounded pipe segment; the `\S+`/`\s+` arms are disjoint on their boundary char so backtracking stays linear
+    if (/\bpython[23]?\s+(?:-\S+\s+)*-m\b/.test(current)) {
+      return { blocked: true, reason: 'python -m module output piped to shell interpreter — arbitrary module-to-shell execution' };
+    }
   }
 
   return { blocked: false };

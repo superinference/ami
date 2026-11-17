@@ -1633,6 +1633,29 @@ describe('detectBase64ShellPipe', () => {
     assert.equal(r.blocked, true);
   });
 
+  it('blocks python -m <module> | bash (module run generates code to shell)', () => {
+    const r = detectBase64ShellPipe('python -m evilmod | bash');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('python'));
+    assert.ok(r.reason!.includes('-m'));
+  });
+
+  it('blocks python3 -m <module> | sh', () => {
+    const r = detectBase64ShellPipe('python3 -m attacker.payload | sh');
+    assert.equal(r.blocked, true);
+    assert.ok(r.reason!.includes('python'));
+  });
+
+  it('allows python -m pytest (no pipe to shell)', () => {
+    const r = detectBase64ShellPipe('python -m pytest -q');
+    assert.equal(r.blocked, false);
+  });
+
+  it('allows python -m http.server | grep (piped to non-shell)', () => {
+    const r = detectBase64ShellPipe('python -m http.server | grep 8000');
+    assert.equal(r.blocked, false);
+  });
+
   it('allows base64 -d file.b64 > output.bin (decode to file, no shell)', () => {
     const r = detectBase64ShellPipe('base64 -d file.b64 > output.bin');
     assert.equal(r.blocked, false);
@@ -1668,6 +1691,12 @@ describe('detectBase64ShellPipe', () => {
   it('allows via validateBashSecurity: echo hello | base64', () => {
     const r = validateBashSecurity('echo hello | base64');
     assert.equal(r.safe, true);
+  });
+
+  it('blocks via validateBashSecurity: python -m <module> | bash', () => {
+    const r = validateBashSecurity('python -m evilmod | bash');
+    assert.equal(r.safe, false);
+    assert.equal(r.checkId, CHECK_IDS.BASE64_SHELL_PIPE);
   });
 });
 
