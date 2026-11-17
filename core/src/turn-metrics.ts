@@ -1,3 +1,5 @@
+import { formatDuration } from './conversation-summary';
+
 export interface TurnData {
   toolCalls: number;
   tokensUsed: number;
@@ -111,6 +113,81 @@ export interface TurnSummary {
   avgCostPerTurn: number;
   /** PARITY: cumulative token usage split by category. */
   tokens: TokenBreakdown;
+}
+
+/** Group an integer with thousands separators (en-US), rounding + sanitizing first. */
+function groupNumber(n: number): string {
+  const v = Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  return v.toLocaleString('en-US');
+}
+
+/** Pick singular/plural unit noun by count (1 → singular, else plural). */
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return count === 1 ? singular : plural;
+}
+
+/**
+ * Render a USD amount, mirroring Claude's `formatCost` (cost-tracker.ts): amounts
+ * over $0.50 round to 2 decimals, smaller amounts keep 4 so sub-cent costs stay
+ * visible. Non-finite / non-positive inputs degrade to `$0.00`.
+ */
+function formatCostUsd(cost: number): string {
+  if (!Number.isFinite(cost) || cost <= 0) return '$0.00';
+  return cost > 0.5 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
+}
+
+/**
+ * PARITY: render a {@link TurnSummary} as a human-readable, column-aligned report —
+ * the counterpart to Claude's `formatTotalCost` (cost-tracker.ts:L228) usage summary.
+ * Raw getters expose bare numbers (milliseconds, unseparated integers, unrounded
+ * floats); this is the single formatting layer that turns them into the `/status`
+ * introspection output:
+ *  - durations rendered via the shared {@link formatDuration} (`3m 4s`, never raw ms),
+ *  - counts grouped with thousands separators,
+ *  - tokens/sec rounded,
+ *  - units pluralized (`1 turn` vs `2 turns`),
+ *  - labels column-padded so values line up,
+ *  - per-model breakdown + per-turn budget suffix (via {@link formatTurnBudget}) when present.
+ *
+ * Returns a newline-joined block; each frontend renders the lines in its own style.
+ */
+export function formatTurnSummary(summary: TurnSummary): string {
+  const LABEL_WIDTH = 14;
+  const row = (label: string, value: string): string => `${(label + ':').padEnd(LABEL_WIDTH)}${value}`;
+  const breakdown = summary.tokens;
+  const lines: string[] = [
+    row('Turns', `${groupNumber(summary.turnCount)} ${pluralize(summary.turnCount, 'turn')}`),
+    row('Tool calls', groupNumber(summary.totalToolCalls)),
+    row(
+      'Tokens',
+      `${groupNumber(summary.totalTokens)} ` +
+        `(${groupNumber(breakdown.input)} input, ${groupNumber(breakdown.output)} output, ` +
+        `${groupNumber(breakdown.cacheRead)} cache read, ${groupNumber(breakdown.cacheCreation)} cache write)`,
+    ),
+    row('Tokens/sec', groupNumber(summary.tokensPerSecond)),
+    row('Total time', formatDuration(summary.totalDurationMs)),
+    row('Active time', formatDuration(summary.activeTimeMs)),
+    row('Longest turn', formatDuration(summary.longestTurnMs)),
+    row('Total cost', formatCostUsd(summary.totalCostUsd)),
+    row('Avg/turn', formatCostUsd(summary.avgCostPerTurn)),
+  ];
+
+  if (summary.budget) {
+    lines.push(row('Turn budget', formatTurnBudget(summary.budget)));
+  }
+
+  const models = Object.entries(summary.byModel);
+  if (models.length > 0) {
+    lines.push('By model:');
+    for (const [model, u] of models) {
+      lines.push(
+        `  ${model}: ${groupNumber(u.turnCount)} ${pluralize(u.turnCount, 'turn')}, ` +
+          `${groupNumber(u.tokens)} tokens, ${formatCostUsd(u.costUsd)}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /** Coerce an arbitrary usage field to a finite, non-negative number (missing/NaN/Infinity/neg → 0). */

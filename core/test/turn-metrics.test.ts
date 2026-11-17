@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { TurnMetrics } from '../src/turn-metrics';
+import { TurnMetrics, formatTurnSummary } from '../src/turn-metrics';
 
 describe('TurnMetrics', () => {
   it('starts with zero turns', () => {
@@ -182,5 +182,100 @@ describe('TurnMetrics — per-turn token budget', () => {
     assert.equal(b.tokens, 1500);
     assert.equal(b.exceeded, true);
     assert.equal(b.nudges, 1);
+  });
+});
+
+describe('formatTurnSummary — human-readable metrics report', () => {
+  it('renders durations via formatDuration, groups numbers, and column-pads labels', () => {
+    const tm = new TurnMetrics();
+    tm.recordTurn({
+      toolCalls: 1200,
+      tokensUsed: 45678,
+      durationMs: 184000, // 3m 4s
+      inputTokens: 12000,
+      outputTokens: 30000,
+      cacheReadTokens: 3678,
+      cacheCreationTokens: 0,
+      costUsd: 0.1234,
+    });
+    const out = formatTurnSummary(tm.getSummary());
+    const lines = out.split('\n');
+
+    // thousands separators on counts (not raw "1200"/"45678")
+    assert.ok(out.includes('1,200'), `tool calls grouped: ${out}`);
+    assert.ok(out.includes('45,678'), `tokens grouped: ${out}`);
+    assert.ok(!/\b1200\b/.test(out), `no ungrouped tool count: ${out}`);
+
+    // durations rendered human-readable, never raw ms
+    assert.ok(out.includes('3m 4s'), `duration formatted: ${out}`);
+    assert.ok(!out.includes('184000'), `no raw ms: ${out}`);
+
+    // token breakdown with pluralized/labelled categories
+    assert.ok(out.includes('12,000 input'), `input breakdown: ${out}`);
+    assert.ok(out.includes('30,000 output'), `output breakdown: ${out}`);
+    assert.ok(out.includes('3,678 cache read'), `cache read breakdown: ${out}`);
+
+    // cost rendered as 4dp under $0.50
+    assert.ok(out.includes('$0.1234'), `cost formatted: ${out}`);
+
+    // labels are column-padded (aligned "Label:" prefixes, consistent value column)
+    const valueCols = lines
+      .filter((l) => /^\S.*:\s{2,}\S/.test(l))
+      .map((l) => l.indexOf(l.trimEnd().split(/:\s{2,}/)[1]));
+    assert.ok(valueCols.length >= 3, `multiple aligned rows: ${out}`);
+    assert.ok(valueCols.every((c) => c === valueCols[0]), `value column aligned: ${out}`);
+  });
+
+  it('rounds tokens-per-second to an integer instead of a raw float', () => {
+    const tm = new TurnMetrics();
+    tm.recordTurn({ toolCalls: 1, tokensUsed: 3333, durationMs: 1000 });
+    const out = formatTurnSummary(tm.getSummary());
+    assert.ok(/Tokens\/sec:\s+3,333\b/.test(out), `tps rounded+grouped: ${out}`);
+    assert.ok(!out.includes('3333.'), `no raw float tps: ${out}`);
+  });
+
+  it('pluralizes the turn unit (1 turn vs N turns)', () => {
+    const one = new TurnMetrics();
+    one.recordTurn({ toolCalls: 0, tokensUsed: 10, durationMs: 10 });
+    assert.ok(/\b1 turn\b/.test(formatTurnSummary(one.getSummary())));
+    const many = new TurnMetrics();
+    many.recordTurn({ toolCalls: 0, tokensUsed: 10, durationMs: 10 });
+    many.recordTurn({ toolCalls: 0, tokensUsed: 10, durationMs: 10 });
+    assert.ok(/\b2 turns\b/.test(formatTurnSummary(many.getSummary())));
+  });
+
+  it('renders a per-model breakdown when models are attributed', () => {
+    const tm = new TurnMetrics();
+    tm.recordTurn({ toolCalls: 1, tokensUsed: 100, durationMs: 200, model: 'haiku', costUsd: 0.01 });
+    tm.recordTurn({ toolCalls: 2, tokensUsed: 2000, durationMs: 800, model: 'opus', costUsd: 0.9 });
+    const out = formatTurnSummary(tm.getSummary());
+    assert.ok(out.includes('By model'), `has model section: ${out}`);
+    assert.ok(out.includes('haiku'), `lists haiku: ${out}`);
+    assert.ok(out.includes('opus'), `lists opus: ${out}`);
+    // cost > $0.50 renders 2dp (parity with Claude formatCost)
+    assert.ok(out.includes('$0.90'), `opus cost 2dp: ${out}`);
+  });
+
+  it('omits the model section when no model was attributed', () => {
+    const tm = new TurnMetrics();
+    tm.recordTurn({ toolCalls: 1, tokensUsed: 100, durationMs: 200 });
+    assert.ok(!formatTurnSummary(tm.getSummary()).includes('By model'));
+  });
+
+  it('appends a budget line using the shared budget formatter when a budget is set', () => {
+    const tm = new TurnMetrics();
+    tm.setTurnBudget(50000);
+    tm.recordTurn({ toolCalls: 1, tokensUsed: 12345, durationMs: 1000 });
+    const out = formatTurnSummary(tm.getSummary());
+    assert.ok(out.includes('Turn budget:'), `has budget row: ${out}`);
+    assert.ok(out.includes('12,345 / 50,000'), `budget uses shared formatter: ${out}`);
+  });
+
+  it('handles an all-zero summary without NaN or raw ms', () => {
+    const tm = new TurnMetrics();
+    const out = formatTurnSummary(tm.getSummary());
+    assert.ok(!out.includes('NaN'), out);
+    assert.ok(out.includes('0 turns'), out);
+    assert.ok(out.includes('$0.00'), out);
   });
 });

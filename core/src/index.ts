@@ -318,7 +318,7 @@ export type {
   TokenBreakdown,
   TurnMetricsSnapshot,
 } from './turn-metrics';
-export { TurnMetrics, formatTurnBudget } from './turn-metrics';
+export { TurnMetrics, formatTurnBudget, formatTurnSummary } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags, grepLineFilePath, splitStreamLines, stripTrailingCR } from './tools/grep';
 export {
   resolveRipgrepConfig,
