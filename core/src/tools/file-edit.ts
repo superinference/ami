@@ -6,8 +6,9 @@ import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import type { FileEncoding } from './tool-utils';
-import { suggestPathUnderCwd } from './path-suggest';
+import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
+import { filterInvalidPermissionRules } from '../permissions';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import { trackFileHistory } from './file-history';
@@ -205,6 +206,69 @@ function validateAmiSettingsSchema(resolved: string, originalContent: string, pa
 }
 
 /**
+ * True when `resolved` is a Claude-Code-compatible permission settings file
+ * (`settings.json` / `settings.local.json`) — the files that carry a
+ * `permissions: { allow, deny, ask }` rule block. A syntactically-valid edit can
+ * still corrupt the security surface by introducing a malformed permission rule
+ * (empty rule, mismatched parentheses, `:*` in the wrong place, a URL-form
+ * web_fetch pattern, …), so an edit to one of these must keep the rules valid.
+ */
+function isPermissionSettingsPath(resolved: string): boolean {
+  const base = path.basename(resolved);
+  return base === 'settings.json' || base === 'settings.local.json';
+}
+
+/**
+ * Collect the human-readable warnings for every INVALID permission rule found in
+ * a parsed settings object's `permissions.{allow,deny,ask}` arrays, reusing the
+ * ONE canonical rule validator ({@link filterInvalidPermissionRules} →
+ * {@link validatePermissionRule}) rather than a parallel check. A non-object
+ * input, a missing/non-object `permissions` block, or a non-array rule list
+ * yields no warnings (nothing to validate).
+ */
+function collectPermissionRuleWarnings(parsed: unknown): string[] {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const perms = (parsed as Record<string, unknown>).permissions;
+  if (perms === null || typeof perms !== 'object' || Array.isArray(perms)) return [];
+  const warnings: string[] = [];
+  for (const key of ['allow', 'deny', 'ask'] as const) {
+    const rules = (perms as Record<string, unknown>)[key];
+    if (rules === undefined) continue;
+    warnings.push(...filterInvalidPermissionRules(rules, `permissions.${key}`).warnings);
+  }
+  return warnings;
+}
+
+/**
+ * Schema-validate the PERMISSION RULES of an edit to a Claude-compatible settings
+ * file (parity with Claude Code's `validateInputForSettingsFileEdit`, which
+ * validates the whole settings schema — including permission-rule validity —
+ * after an edit). A JSON-syntactically-valid edit can still introduce a malformed
+ * rule that would silently never match (a security hole). Block ONLY a
+ * valid→invalid transition: when the file's permission rules were all valid before
+ * the edit but the post-edit content introduces an invalid one. A file that
+ * already contained an invalid rule (or no permissions block) is left editable so
+ * a repair-in-progress is never blocked. Returns an error ToolResult naming each
+ * newly-introduced invalid rule; undefined otherwise.
+ */
+function validatePermissionSettingsEdit(resolved: string, originalContent: string, parsedNew: unknown): ToolResult | undefined {
+  if (!isPermissionSettingsPath(resolved)) return undefined;
+  const newWarnings = collectPermissionRuleWarnings(parsedNew);
+  if (newWarnings.length === 0) return undefined;
+
+  let parsedOld: unknown;
+  try { parsedOld = JSON.parse(originalContent); } catch { return undefined; }
+  // Only guard a valid→invalid transition: an already-broken rule set is a repair.
+  if (collectPermissionRuleWarnings(parsedOld).length > 0) return undefined;
+
+  const lines = [
+    `Warning: Edit would introduce invalid permission rule(s) in ${path.basename(resolved)} (its permission rules were all valid before this edit). Fix the issues below:`,
+    ...newWarnings.map(w => `  - ${w}`),
+  ];
+  return { output: lines.join('\n'), isError: true };
+}
+
+/**
  * Config/settings files (package.json, tsconfig.json, .claude/.ami settings, …)
  * must stay parseable, and this must hold across EVERY edit mode (single
  * replace, replace_all, multi-edit, and full overwrite), not only the single
@@ -230,7 +294,10 @@ function validateJsonEdit(resolved: string, originalContent: string, newContent:
     return { output: `Warning: Edit would create invalid JSON in ${path.basename(resolved)}. Check syntax.\n${(e as Error).message}`, isError: true };
   }
   // Beyond JSON syntax, an AMI settings file must stay schema-valid.
-  return validateAmiSettingsSchema(resolved, originalContent, parsedNew);
+  const schemaErr = validateAmiSettingsSchema(resolved, originalContent, parsedNew);
+  if (schemaErr) return schemaErr;
+  // And a Claude-compatible settings file must keep its permission rules valid.
+  return validatePermissionSettingsEdit(resolved, originalContent, parsedNew);
 }
 
 /**
@@ -734,7 +801,7 @@ export const fileEditTool: ToolDefinition = {
   // 'modify file contents in place'). Consumed by tool-search.ts scoring.
   searchHint: 'modify file contents in place create overwrite write edit replace rewrite patch',
   description:
-    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers. Never use bash sed/awk to edit files.',
+    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers: file_read output prefixes EVERY line with its line number and a tab ("N\\t<content>"), and old_string must contain ONLY the content that appears AFTER that tab — never the "N\\t" prefix — with the original indentation (tabs/spaces) preserved exactly as written in the file. Never use bash sed/awk to edit files.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -933,13 +1000,26 @@ export const fileEditTool: ToolDefinition = {
       rawContent = decodeBuffer(rawBuf).text;
     } catch (err: unknown) {
       if (getErrnoCode(err) === 'ENOENT') {
-        const dir = path.dirname(resolved);
-        const base = path.basename(resolved);
         let suggestions = '';
-        try {
-          const files = fs.readdirSync(dir).filter(f => f.includes(base.slice(0, 3)) || base.includes(f.slice(0, 3)));
-          if (files.length > 0) suggestions = `\nDid you mean: ${files.slice(0, 5).join(', ')}?`;
-        } catch {}
+        // Canonical "did you mean" recovery, reusing the ONE shared path-suggestion
+        // helper (the same one file_read uses) instead of a crude 3-char-prefix
+        // substring scan. suggestSimilarPaths ranks a same-basename/different-
+        // extension sibling (e.g. `config.ts` requested, `config.toml` present) and a
+        // case-only mismatch ahead of plain typos — parity with Claude Code's
+        // findSimilarFile (same base name, different extension) — and never over-
+        // matches on a shared 3-letter prefix.
+        const similar = suggestSimilarPaths(resolved, path.dirname(resolved), 5);
+        if (similar.length > 0) {
+          suggestions = `\nDid you mean: ${similar.map(s => path.basename(s)).join(', ')}?`;
+        } else {
+          // Wrong-ancestor recovery: when the IMMEDIATE parent directory does not
+          // exist (a misspelled directory component), walk up to the nearest
+          // existing ancestor and correct the missing segment there.
+          const corrected = suggestPathCorrection(resolved, context.cwd);
+          if (corrected.kind === 'missing-dir' && corrected.suggestions.length > 0) {
+            suggestions = `\nDid you mean: ${corrected.suggestions.join(', ')}?`;
+          }
+        }
         // "Dropped repo folder" correction: when the model built an absolute path
         // missing the repo-directory segment, point it at the real path under cwd.
         const underCwd = suggestPathUnderCwd(resolved, context.cwd);
