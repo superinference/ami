@@ -162,6 +162,24 @@ export function listRegisteredFormatters(): FormatterConfig[] {
   }));
 }
 
+/**
+ * True when the formatter's configured `check` command (a `<tool> --version` /
+ * `--help` presence probe) exits 0; memoized per `check` string.
+ *
+ * Capability-depth rationale (deliberately a shallow presence probe, NOT a
+ * deep operation probe): a deep "probe the real operation" check is only
+ * warranted when a tool's version probe can pass while the gated operation
+ * still fails with *no fallback* (e.g. a CLI whose version prints fine but
+ * whose API is disabled by a preference toggle). That does not hold for code
+ * formatters: `--version`/`--help` passing means the binary is installed and
+ * runnable, and {@link formatFile} already degrades gracefully at use time —
+ * it wraps the real invocation in try/catch and returns
+ * `{ formatted: false, error }` instead of throwing — so there is a fallback
+ * and no silent late failure. Probing the real operation would also require
+ * running a mutating formatter (writing files / per-tool stdin plumbing) as a
+ * side effect, which is worse than the current cheap check. Hence version-depth
+ * is the correct and sufficient probe here.
+ */
 export function isFormatterAvailable(config: FormatterConfig): boolean {
   if (!config || !config.check) return false;
   const key = config.check;

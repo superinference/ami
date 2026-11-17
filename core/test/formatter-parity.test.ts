@@ -164,6 +164,33 @@ describe('formatter hardening/parity', () => {
     assert.equal(listRegisteredFormatters().length, 0);
   });
 
+  // --- Capability-depth probe (F2098): version-depth is sufficient --------
+  // Rationale: a deep "probe the real operation" availability check is only
+  // needed when the version probe can pass while the gated operation fails
+  // with NO fallback. For formatters that premise does not hold: formatFile
+  // already degrades gracefully when the real invocation fails even though the
+  // availability (version) check passed — it returns {formatted:false,error}
+  // rather than throwing. This test locks that fallback so the shallow probe
+  // stays correct (and a deep operation probe is unnecessary).
+  it('formatFile degrades gracefully when the format op fails after the check passed', () => {
+    registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: [], check: 'myfmt --version' });
+    let call = 0;
+    mock.method(execHooks, 'execSync', (cmd: string) => {
+      call += 1;
+      // 1st call = the `check` (version probe) → passes, proving "available".
+      if (cmd.includes('--version')) return Buffer.from('myfmt 1.0.0');
+      // 2nd call = the real format operation → fails at use time.
+      throw new Error('format op exploded');
+    });
+
+    assert.equal(isFormatterAvailable({ extensions: ['.ts'], command: 'myfmt', args: [], check: 'myfmt --version' }), true);
+    const res = formatFile('/tmp/a.ts', '/tmp');
+    // No throw: the operation-time failure is captured as a fallback result.
+    assert.equal(res.formatted, false);
+    assert.ok(typeof res.error === 'string' && res.error.includes('format op exploded'));
+    assert.ok(call >= 2, 'both the check and the real operation were attempted');
+  });
+
   it('filePath with single quotes is safely escaped in the custom command', () => {
     registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: [], check: 'myfmt --version' });
     const calls: string[] = [];
