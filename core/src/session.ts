@@ -2324,6 +2324,55 @@ export const SESSION_LOCK_FILE = '.session.lock';
  *  cross-host locks self-heal instead of wedging --resume forever. */
 export const LOCK_FALLBACK_STALE_MS = 2 * 60 * 60 * 1000; // 2h
 
+/** Upper bound on the linear backoff wait between contended lock-acquire retries,
+ *  so a large {@link SessionLockOptions.retries} can never grow a single wait into
+ *  an unbounded sleep. */
+export const LOCK_RETRY_MAX_DELAY_MS = 1000;
+
+/** Default base delay between contended lock-acquire retries (ms). */
+export const LOCK_RETRY_DEFAULT_DELAY_MS = 50;
+
+/**
+ * Locking is force-DISABLED when `AMI_DISABLE_SESSION_LOCK` is truthy: every
+ * acquire reports success with a no-op release and never writes a `.session.lock`,
+ * and every probe reports the dir unlocked. Escape hatch for environments where
+ * the cross-process lock is counter-productive — a read-only / single-tenant FS,
+ * a networked store whose PID probes are meaningless, or a test harness that wants
+ * concurrent engines on one dir (parity: Claude's pidLock force-enable/disable env
+ * override, `ENABLE_PID_BASED_VERSION_LOCKING`). Default (unset) = locking ON.
+ */
+export function isSessionLockingDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.AMI_DISABLE_SESSION_LOCK);
+}
+
+/**
+ * Tunables for {@link acquireSessionLock} (and the `stale` subset for
+ * {@link checkSessionLock}). Mirrors the subset of proper-lockfile's `LockOptions`
+ * AMI needs: bounded contended-retry, a per-call staleness override, and a
+ * lock-compromised callback.
+ */
+export interface SessionLockOptions {
+  /** Extra attempts to wait out a LIVE holder before giving up. `0` (default)
+   *  fails immediately on a live holder — the historical behaviour. Each retry
+   *  re-probes the holder, so a lock freed mid-wait is acquired on the next pass
+   *  (parity: proper-lockfile `LockOptions.retries`). */
+  retries?: number;
+  /** Base delay between contended retries (ms); the wait grows linearly with the
+   *  retry index (attempt N waits `retryDelayMs * (N+1)`), capped at
+   *  {@link LOCK_RETRY_MAX_DELAY_MS} (parity: proper-lockfile retry backoff).
+   *  Defaults to {@link LOCK_RETRY_DEFAULT_DELAY_MS}. */
+  retryDelayMs?: number;
+  /** Override the age past which an unverifiable / cross-host holder is treated as
+   *  stale and reclaimable. Defaults to {@link LOCK_FALLBACK_STALE_MS} (parity:
+   *  proper-lockfile `LockOptions.stale`). */
+  stale?: number;
+  /** Invoked if, at release time, the on-disk lock has been taken over by another
+   *  process (our lock was judged stale and reclaimed) — i.e. the lock we believed
+   *  we held was compromised. Never throws into the caller; a throwing callback is
+   *  swallowed (parity: proper-lockfile `LockOptions.onCompromised`). */
+  onCompromised?: (reason: string) => void;
+}
+
 /** On-disk lock payload. Richer than a bare PID so we can (a) detect PID reuse
  *  by comparing the live process's command against our recorded identity and
  *  (b) apply a time-based stale fallback when the PID check is inconclusive. */
@@ -2419,6 +2468,7 @@ function readLockPayload(lockPath: string): SessionLockPayload | null {
 function lockHolderActive(
   payload: SessionLockPayload,
   deps: SessionLockDeps,
+  staleMs: number = LOCK_FALLBACK_STALE_MS,
 ): boolean {
   const { pid } = payload;
   if (!deps.isPidAlive(pid)) {
@@ -2430,7 +2480,7 @@ function lockHolderActive(
     // until it ages past {@link LOCK_FALLBACK_STALE_MS} (bounded self-heal), never
     // reclaimed purely because an un-probeable PID "looks dead" (parity: Claude's
     // `getPlatform() !== 'wsl'` guard before a stale-session sweep).
-    if (deps.isWsl()) return deps.now() - payload.startedAt <= LOCK_FALLBACK_STALE_MS;
+    if (deps.isWsl()) return deps.now() - payload.startedAt <= staleMs;
     return false;                                // dead / sentinel → stale
   }
   if (pid === process.pid) return true;          // it's us → held
@@ -2439,7 +2489,7 @@ function lockHolderActive(
     // Can't verify identity — trust the PID check unless the lock is very old
     // (self-heal cross-host / NFS locks whose PID is meaningless locally).
     const age = deps.now() - payload.startedAt;
-    return age <= LOCK_FALLBACK_STALE_MS;
+    return age <= staleMs;
   }
   // Verify the live process looks like ours; otherwise the PID was reused.
   const c = command.toLowerCase();
@@ -2492,7 +2542,10 @@ export function releaseAllSessionLocks(): void {
   }
 }
 
-function makeAcquiredHandle(lockPath: string): { acquired: true; fresh: true; release: () => void } {
+function makeAcquiredHandle(
+  lockPath: string,
+  onCompromised?: (reason: string) => void,
+): { acquired: true; fresh: true; release: () => void } {
   let released = false;
   const release = (): void => {
     if (released) return;
@@ -2504,7 +2557,17 @@ function makeAcquiredHandle(lockPath: string): { acquired: true; fresh: true; re
     // and reclaimed it, the file now carries their pid — deleting it would wipe a
     // lock we no longer own (boundary violation). A missing/corrupt lock is a no-op.
     const payload = readLockPayload(lockPath);
-    if (payload && payload.pid !== process.pid) return;
+    if (payload && payload.pid !== process.pid) {
+      // Our held lock was taken over by another process while we ran — surface the
+      // compromise so the caller can react (abort the write, warn, re-acquire)
+      // instead of silently losing exclusivity (parity: proper-lockfile
+      // onCompromised). A throwing callback must never break release().
+      if (onCompromised) {
+        try { onCompromised(`session lock at ${lockPath} taken over by pid ${payload.pid}`); }
+        catch { /* a recovery callback must never break release */ }
+      }
+      return;
+    }
     try { fsHooks.unlinkSync(lockPath); } catch { /* already gone */ }
   };
   activeLockReleases.add(release);
@@ -2516,8 +2579,20 @@ function makeAcquiredHandle(lockPath: string): { acquired: true; fresh: true; re
 export function acquireSessionLock(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
+  options: SessionLockOptions = {},
 ): { acquired: boolean; fresh?: boolean; pid?: number; release: () => void } {
+  // Force-disabled: report an un-fresh, no-op "acquired" so every caller behaves as
+  // if it owns the dir, without ever touching the filesystem (no lock written, no
+  // exit hook, no reclaim). `fresh:false` so a fresh-gated side effect does not fire.
+  if (isSessionLockingDisabled()) {
+    return { acquired: true, fresh: false, pid: process.pid, release: () => {} };
+  }
   const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
+  const staleMs = options.stale ?? LOCK_FALLBACK_STALE_MS;
+  const retries = options.retries !== undefined && options.retries > 0 ? options.retries : 0;
+  const baseDelay = options.retryDelayMs !== undefined && options.retryDelayMs >= 0
+    ? options.retryDelayMs
+    : LOCK_RETRY_DEFAULT_DELAY_MS;
   const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
   // Create the dir owner-only when absent; do NOT chmod an existing dir here so
   // a deliberately read-only session dir still surfaces the write EACCES (the
@@ -2526,48 +2601,65 @@ export function acquireSessionLock(
     fs.mkdirSync(sessionDir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
   }
 
-  // Bounded: at most one stale-reclaim retry (replaces unbounded self-recursion
-  // that a racing writer recreating the lock could blow the stack with).
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fsHooks.writeFileSync(lockPath, makeLockPayload(deps), { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
-    } catch (err: any) {
-      if (err?.code !== 'EEXIST') throw err;
-      const payload = readLockPayload(lockPath);
-      // Re-entrant: this process already holds the lock for this dir. Report an
-      // acquired, NON-fresh result with a no-op release (the original fresh handle
-      // still owns the on-disk lock and is the one that unlinks it) — so a caller
-      // can fire an "entered" side effect only on `fresh` and never double-unlink
-      // (parity: Claude's AcquireResult `{kind:'acquired',fresh:false}` reentrant).
-      if (payload && payload.pid === process.pid) {
-        return { acquired: true, fresh: false, pid: payload.pid, release: () => {} };
+  // A single acquire attempt (with the inner bounded stale-reclaim retry). Returns
+  // the final result; `blockedByLiveHolder` tells the outer contended-retry loop
+  // whether waiting could help (a live holder may release) vs. giving up now.
+  const tryAcquireOnce = (): {
+    result: { acquired: boolean; fresh?: boolean; pid?: number; release: () => void };
+    blockedByLiveHolder: boolean;
+  } => {
+    // Bounded: at most one stale-reclaim retry (replaces unbounded self-recursion
+    // that a racing writer recreating the lock could blow the stack with).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fsHooks.writeFileSync(lockPath, makeLockPayload(deps), { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
+      } catch (err: any) {
+        if (err?.code !== 'EEXIST') throw err;
+        const payload = readLockPayload(lockPath);
+        // Re-entrant: this process already holds the lock for this dir. Report an
+        // acquired, NON-fresh result with a no-op release (the original fresh handle
+        // still owns the on-disk lock and is the one that unlinks it) — so a caller
+        // can fire an "entered" side effect only on `fresh` and never double-unlink
+        // (parity: Claude's AcquireResult `{kind:'acquired',fresh:false}` reentrant).
+        if (payload && payload.pid === process.pid) {
+          return { result: { acquired: true, fresh: false, pid: payload.pid, release: () => {} }, blockedByLiveHolder: false };
+        }
+        if (payload && lockHolderActive(payload, deps, staleMs)) {
+          return { result: { acquired: false, pid: payload.pid, release: () => {} }, blockedByLiveHolder: true };
+        }
+        // Stale / corrupt / unreadable → reclaim and retry the exclusive create.
+        try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
+        continue;
       }
-      if (payload && lockHolderActive(payload, deps)) {
-        return { acquired: false, pid: payload.pid, release: () => {} };
+      // Verify we actually won the create (a racer may have recreated the lock
+      // between our unlink and this wx-write, which would have thrown EEXIST; if
+      // instead both reclaimed and one overwrote, re-read confirms ownership).
+      const verify = readLockPayload(lockPath);
+      if (verify?.pid !== process.pid) {
+        return { result: { acquired: false, pid: verify?.pid, release: () => {} }, blockedByLiveHolder: true };
       }
-      // Stale / corrupt / unreadable → reclaim and retry the exclusive create.
-      try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
-      continue;
+      return { result: makeAcquiredHandle(lockPath, options.onCompromised), blockedByLiveHolder: false };
     }
-    // Verify we actually won the create (a racer may have recreated the lock
-    // between our unlink and this wx-write, which would have thrown EEXIST; if
-    // instead both reclaimed and one overwrote, re-read confirms ownership).
-    const verify = readLockPayload(lockPath);
-    if (verify?.pid !== process.pid) {
-      return { acquired: false, pid: verify?.pid, release: () => {} };
-    }
-    return makeAcquiredHandle(lockPath);
-  }
+    // Lost the recovery race after the bounded retry.
+    const payload = readLockPayload(lockPath);
+    return { result: { acquired: false, pid: payload?.pid, release: () => {} }, blockedByLiveHolder: true };
+  };
 
-  // Lost the recovery race after the bounded retry.
-  const payload = readLockPayload(lockPath);
-  return { acquired: false, pid: payload?.pid, release: () => {} };
+  // Outer contended-retry loop: when a LIVE holder blocks us and the caller asked
+  // for retries, wait (bounded linear backoff) and re-probe — the holder may have
+  // released in the meantime (parity: proper-lockfile LockOptions.retries).
+  for (let round = 0; ; round++) {
+    const { result, blockedByLiveHolder } = tryAcquireOnce();
+    if (result.acquired || !blockedByLiveHolder || round >= retries) return result;
+    sleepSync(Math.min(baseDelay * (round + 1), LOCK_RETRY_MAX_DELAY_MS));
+  }
 }
 
 export function isSessionLocked(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
 ): boolean {
+  if (isSessionLockingDisabled()) return false;
   const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
   const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
   if (!fs.existsSync(lockPath)) return false;
@@ -2600,8 +2692,13 @@ export type SessionLockCheck =
 export function checkSessionLock(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
+  options: Pick<SessionLockOptions, 'stale'> = {},
 ): SessionLockCheck {
+  // Force-disabled: every dir reads as free, so a deferred-acquire caller never
+  // treats a live holder as blocking (matches acquireSessionLock's always-succeed).
+  if (isSessionLockingDisabled()) return { kind: 'free' };
   const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
+  const staleMs = options.stale ?? LOCK_FALLBACK_STALE_MS;
   const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
   if (!fs.existsSync(lockPath)) return { kind: 'free' };
   const payload = readLockPayload(lockPath);
@@ -2613,7 +2710,7 @@ export function checkSessionLock(
   if (isSessionLockHeldLocally(sessionDir) || payload.pid === process.pid) {
     return { kind: 'held_by_self', pid: payload.pid };
   }
-  if (lockHolderActive(payload, deps)) return { kind: 'blocked', pid: payload.pid };
+  if (lockHolderActive(payload, deps, staleMs)) return { kind: 'blocked', pid: payload.pid };
   // Stale (dead / reused PID / cross-host-expired) — recover, but do NOT acquire.
   try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
   return { kind: 'free' };
