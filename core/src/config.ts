@@ -1332,7 +1332,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   // 3. Numeric RANGE — delegate to the single canonical EngineConfig validator, one
   //    field at a time so each invalid value is attributed to its own field. Skip a
   //    field already flagged in step 1 so a non-number can't reach the range logic.
-  for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd'] as const) {
+  for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd', 'maxWebSearchesPerSession', 'bashOutputMaxChars', 'taskOutputMaxChars'] as const) {
     if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
     if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field], tip: getConfigValidationTip(field, { kind: 'range' }) });

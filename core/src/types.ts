@@ -1808,6 +1808,15 @@ export function validateEngineConfig(config: Partial<EngineConfig>): { valid: bo
     warnings.push('tokenBudget must be positive');
     valid = false;
   }
+  if (config.maxWebSearchesPerSession !== undefined) {
+    if (!validateNumericKnob(config.maxWebSearchesPerSession, 'maxWebSearchesPerSession', { min: 1, softMax: 10_000, integer: true }, warnings)) valid = false;
+  }
+  if (config.bashOutputMaxChars !== undefined) {
+    if (!validateNumericKnob(config.bashOutputMaxChars, 'bashOutputMaxChars', { min: 1, softMax: 10_000_000, integer: true }, warnings)) valid = false;
+  }
+  if (config.taskOutputMaxChars !== undefined) {
+    if (!validateNumericKnob(config.taskOutputMaxChars, 'taskOutputMaxChars', { min: 1, softMax: 10_000_000, integer: true }, warnings)) valid = false;
+  }
   if (config.sandbox !== undefined) {
     if (!validateSandboxPolicy(config.sandbox, warnings)) valid = false;
   }
@@ -1824,6 +1833,9 @@ export function sanitizeEngineConfig(config: Partial<EngineConfig>): Partial<Eng
   if (out.maxUsageLimitWaitMs !== undefined) out.maxUsageLimitWaitMs = Math.max(0, out.maxUsageLimitWaitMs);
   if (out.requestTimeoutMs !== undefined) out.requestTimeoutMs = Math.max(1000, Math.min(600_000, out.requestTimeoutMs));
   if (out.tokenBudget !== undefined) out.tokenBudget = Math.max(1, out.tokenBudget);
+  if (out.maxWebSearchesPerSession !== undefined) out.maxWebSearchesPerSession = Math.max(1, Math.round(out.maxWebSearchesPerSession));
+  if (out.bashOutputMaxChars !== undefined) out.bashOutputMaxChars = Math.max(1, Math.round(out.bashOutputMaxChars));
+  if (out.taskOutputMaxChars !== undefined) out.taskOutputMaxChars = Math.max(1, Math.round(out.taskOutputMaxChars));
   if (out.sandbox !== undefined) out.sandbox = sanitizeSandboxPolicy(out.sandbox);
   return out;
 }
