@@ -1802,6 +1802,70 @@ function readFileHeadBounded(filePath: string, maxLines: number): string {
 }
 
 /**
+ * Async sibling of {@link readFileHeadBounded}: read the bounded frontmatter
+ * window via `fs/promises` so many memory headers can be read concurrently, and
+ * forward an optional {@link AbortSignal} so a slow/large scan is cancellable
+ * mid-flight (parity: Claude Code's `readFileInRange(..., signal)` used by
+ * `scanMemoryFiles`). The signal is checked once the handle is open (the point a
+ * large read would block); the handle is always closed, even on abort/failure.
+ */
+async function readFileHeadBoundedAsync(
+  filePath: string,
+  maxLines: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const windowBytes = Math.min(MAX_MEMORY_FILE_BYTES, Math.max(4096, maxLines * 512));
+  const fh = await fsp.open(filePath, 'r');
+  try {
+    signal?.throwIfAborted();
+    const buf = Buffer.allocUnsafe(windowBytes);
+    const { bytesRead } = await fh.read(buf, 0, windowBytes, 0);
+    return buf.toString('utf-8', 0, bytesRead).split('\n').slice(0, maxLines).join('\n');
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Shared file-filter for a header scan: a `.md` file that is neither the
+ * `MEMORY.md` index (a table of contents, not a memory body) nor inside the
+ * `team/` subtree (loaded separately). Single-sourced so the sync
+ * {@link MemoryManager.scanMemoryHeaders} and async
+ * {@link MemoryManager.scanMemoryHeadersAsync} filter identically.
+ */
+function isMemoryHeaderFile(f: unknown): f is string {
+  return (
+    typeof f === 'string' &&
+    f.endsWith('.md') &&
+    path.basename(f) !== MEMORY_INDEX_FILENAME &&
+    f.split(/[\\/]/)[0] !== 'team'
+  );
+}
+
+/**
+ * Build a {@link MemoryHeader} from a bounded frontmatter `head` plus the
+ * stat-derived `mtimeMs`/`bytes`. Single-sourced so the sync and async scans
+ * construct headers identically (no duplicated frontmatter/name/type logic).
+ */
+function buildMemoryHeader(
+  filePath: string,
+  relativePath: string,
+  head: string,
+  mtimeMs: number,
+  bytes: number,
+): MemoryHeader {
+  const { frontmatter } = parseFrontmatter(head, filePath);
+  return {
+    path: filePath,
+    name: frontmatter.name || path.basename(relativePath, '.md'),
+    description: frontmatter.description || undefined,
+    memoryType: parseMemoryType(frontmatter.type),
+    mtimeMs,
+    bytes,
+  };
+}
+
+/**
  * Aggregate file-count ceiling for the shared TEAM memory store. Team memories are
  * committed to version control and contributed by everyone in the project, so —
  * unlike the private store — there is no per-author limit on how many accumulate.
@@ -2603,11 +2667,7 @@ export class MemoryManager {
     let files: string[];
     try {
       files = (fs.readdirSync(memoryDir, { recursive: true }) as string[])
-        .filter(f =>
-          typeof f === 'string' &&
-          f.endsWith('.md') &&
-          path.basename(f) !== MEMORY_INDEX_FILENAME &&
-          f.split(/[\\/]/)[0] !== 'team');
+        .filter(f => isMemoryHeaderFile(f));
     } catch (err) {
       logUnexpectedReadError(err, memoryDir);
       return [];
@@ -2620,20 +2680,63 @@ export class MemoryManager {
         const stat = this._statSync(filePath);
         if (!stat.isFile()) continue;
         const head = readFileHeadBounded(filePath, FRONTMATTER_MAX_LINES);
-        const { frontmatter } = parseFrontmatter(head, filePath);
-        headers.push({
-          path: filePath,
-          name: frontmatter.name || path.basename(file, '.md'),
-          description: frontmatter.description || undefined,
-          memoryType: parseMemoryType(frontmatter.type),
-          mtimeMs: stat.mtimeMs,
-          bytes: stat.size,
-        });
+        headers.push(buildMemoryHeader(filePath, file, head, stat.mtimeMs, stat.size));
       } catch {
         // Per-file graceful failure — skip an unreadable file rather than aborting
         // the whole scan (mirrors scanMemoryFiles' per-file allSettled filtering).
       }
     }
+    headers.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return headers.slice(0, MAX_MEMORY_FILES);
+  }
+
+  /**
+   * Async, PARALLEL, CANCELLABLE sibling of {@link scanMemoryHeaders}, matching
+   * Claude Code's `scanMemoryFiles(dir, signal)` exactly (memdir/memoryScan.ts):
+   *
+   *   - **Parallel reads** — every header is read concurrently via
+   *     `Promise.allSettled`, so a large store's headers load in one I/O wave
+   *     instead of a serial blocking loop on the hot path (gap: AMI's scan was
+   *     fully sequential).
+   *   - **Per-file graceful failure** — a rejected read (unreadable file, or one
+   *     dropped by an abort) is filtered out; a single bad file never aborts the
+   *     whole scan (parity with Claude's `filter(r => r.status === 'fulfilled')`).
+   *   - **Cancellation** — an optional {@link AbortSignal} is forwarded into each
+   *     read ({@link readFileHeadBoundedAsync}); once aborted, in-flight reads
+   *     reject and are dropped, so a slow scan can be cancelled mid-flight (gap:
+   *     AMI's scan had no signal/abort parameter).
+   *
+   * The result is identical in SHAPE to {@link scanMemoryHeaders} — the same
+   * file filter, header construction, newest-first sort, and {@link MAX_MEMORY_FILES}
+   * cap are reused (no duplicated logic) — so the two differ only in execution
+   * strategy (sync-sequential vs async-parallel-cancellable).
+   */
+  async scanMemoryHeadersAsync(signal?: AbortSignal): Promise<MemoryHeader[]> {
+    const memoryDir = this.getMemoryDir();
+    let files: string[];
+    try {
+      files = ((await fsp.readdir(memoryDir, { recursive: true })) as string[])
+        .filter(f => isMemoryHeaderFile(f));
+    } catch (err) {
+      logUnexpectedReadError(err, memoryDir);
+      return [];
+    }
+
+    const settled = await Promise.allSettled(
+      files.map(async (file): Promise<MemoryHeader | null> => {
+        signal?.throwIfAborted();
+        const filePath = path.join(memoryDir, file);
+        const stat = await fsp.stat(filePath);
+        if (!stat.isFile()) return null;
+        const head = await readFileHeadBoundedAsync(filePath, FRONTMATTER_MAX_LINES, signal);
+        return buildMemoryHeader(filePath, file, head, stat.mtimeMs, stat.size);
+      }),
+    );
+
+    const headers = settled
+      .filter((r): r is PromiseFulfilledResult<MemoryHeader | null> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter((h): h is MemoryHeader => h !== null);
     headers.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return headers.slice(0, MAX_MEMORY_FILES);
   }
@@ -3690,6 +3793,41 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       return target !== undefined && this.isTeamMemFile(target) ? 'search' : null;
     }
     return null;
+  }
+
+  /**
+   * Notify that a tool use MUTATED a shared team-memory file, so a live sync /
+   * reload can fire. Parity with Claude Code's `sessionFileAccessHooks`
+   * PostToolUse path, which — for Edit/Write ONLY (never Read) on an
+   * `isTeamMemFile` path — calls `teamMemWatcher.notifyTeamMemoryWrite()` to
+   * re-sync the shared store. AMI previously loaded team memories only at
+   * prompt-build time with no write detection; this closes that gap by emitting
+   * a `teamMemoryWrite` hook event (consumed via {@link setHookCallback} by a
+   * sync service / UI) exactly when a shared memory file is edited or written.
+   *
+   * Returns `true` when a notification fired. Fires only when ALL hold:
+   *   - team memory is enabled ({@link isTeamMemoryEnabled}, Claude's `TEAMMEM` gate);
+   *   - the tool is a mutation (`file_edit` or `file_write`) — a `file_read`
+   *     (or any non-mutating tool) NEVER notifies, mirroring the reference's
+   *     Edit/Write-only switch arms;
+   *   - the path resolves inside the shared team store ({@link isTeamMemFile}).
+   */
+  notifyTeamMemoryWrite(
+    toolName: string,
+    absPath: string,
+    env: NodeJS.ProcessEnv = process.env,
+  ): boolean {
+    if (!isTeamMemoryEnabled(env)) return false;
+    if (toolName !== 'file_edit' && toolName !== 'file_write') return false;
+    if (!this.isTeamMemFile(absPath)) return false;
+    if (this._hookCallback) {
+      this._hookCallback('teamMemoryWrite', {
+        filePath: absPath,
+        scope: 'team',
+        location: this.getMemoryScopeDisplay(absPath),
+      });
+    }
+    return true;
   }
 
   /**

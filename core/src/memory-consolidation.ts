@@ -21,6 +21,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MAX_ENTRYPOINT_LINES, MEMORY_INDEX_FILENAME } from './memory';
 import { log } from './logger';
+import { formatDuration } from './conversation-summary';
+import { plural } from './tools/tool-utils';
 
 /**
  * Namespaced, human-readable debug sink for consolidation diagnostics (parity:
@@ -324,6 +326,196 @@ export interface ConsolidationRunParams {
   priorMtime: number;
   /** Cancels the in-flight consolidation subagent. */
   abortController: AbortController;
+  /**
+   * Live progress of the run — a user-facing introspection surface (parity:
+   * Claude Code's `DreamTaskState`: a ticking elapsed timer, a
+   * `reviewing N sessions · M files touched` summary, a running/completed/error
+   * status, and a per-turn transcript with tool counts). Created running by
+   * {@link beginConsolidationRun}; mutate it with {@link recordConsolidationTurn} /
+   * {@link recordConsolidationFileTouched} and seal it with
+   * {@link completeConsolidationProgress} / {@link failConsolidationProgress}.
+   */
+  progress: ConsolidationProgress;
+}
+
+/** Lifecycle state of a consolidation run (parity: Claude's DreamTask status). */
+export type ConsolidationStatus = 'running' | 'completed' | 'error';
+
+/**
+ * One assistant turn of a consolidation run, as surfaced in the live transcript
+ * (parity: Claude's `DreamTaskState.turns` rendered by `DreamDetailDialog` with a
+ * per-turn tool count). `summary` is a short human label; `toolCount` is the
+ * number of tool calls the turn issued (clamped to a non-negative integer).
+ */
+export interface ConsolidationTurn {
+  /** Short human-readable label for the turn (e.g. an assistant text preview). */
+  summary: string;
+  /** Number of tool calls made in this turn (>= 0, integer). */
+  toolCount: number;
+}
+
+/**
+ * Live, mutable progress of a background consolidation ("dream") run — the core
+ * building block behind the progress/introspection surface a frontend renders
+ * (parity: Claude Code's `DreamTaskState`). Holds the start time (for a ticking
+ * elapsed timer), the count of sessions under review, the set of files the pass
+ * has touched, a running per-turn transcript, and a status that moves
+ * `running` → `completed` | `error` exactly once.
+ */
+export interface ConsolidationProgress {
+  /** Current lifecycle status. */
+  status: ConsolidationStatus;
+  /** Epoch ms the run started (anchors the elapsed timer). */
+  startedAt: number;
+  /** Epoch ms the run reached a terminal status, or `null` while running. */
+  endedAt: number | null;
+  /** Count of prior sessions this pass is consolidating (>= 0, integer). */
+  sessionsReviewing: number;
+  /** Absolute paths the pass has touched, de-duplicated in first-seen order. */
+  filesTouched: string[];
+  /** Per-turn transcript (oldest first). */
+  turns: ConsolidationTurn[];
+  /** Error message when `status === 'error'`, else `null`. */
+  error: string | null;
+}
+
+/**
+ * Create a fresh, `running` {@link ConsolidationProgress}. `sessionsReviewing`
+ * is clamped to a non-negative integer (mirrors {@link beginConsolidationRun}).
+ */
+export function createConsolidationProgress(
+  sessionsReviewing: number,
+  now: number = Date.now(),
+): ConsolidationProgress {
+  return {
+    status: 'running',
+    startedAt: now,
+    endedAt: null,
+    sessionsReviewing: Math.max(0, Math.trunc(sessionsReviewing)),
+    filesTouched: [],
+    turns: [],
+    error: null,
+  };
+}
+
+/**
+ * Append a turn to a {@link ConsolidationProgress} transcript. `toolCount` is
+ * clamped to a non-negative integer. Appends regardless of status so a terminal
+ * summary turn can still be recorded.
+ */
+export function recordConsolidationTurn(
+  progress: ConsolidationProgress,
+  turn: { summary: string; toolCount?: number },
+): void {
+  progress.turns.push({
+    summary: turn.summary,
+    toolCount: Math.max(0, Math.trunc(turn.toolCount ?? 0)),
+  });
+}
+
+/**
+ * Record that the run touched `absPath`. De-duplicates (first-seen order
+ * preserved) so the `M files touched` count matches Claude's `filesTouched`
+ * set semantics. Returns `true` when the path was newly added, `false` when it
+ * was already present.
+ */
+export function recordConsolidationFileTouched(
+  progress: ConsolidationProgress,
+  absPath: string,
+): boolean {
+  if (progress.filesTouched.includes(absPath)) return false;
+  progress.filesTouched.push(absPath);
+  return true;
+}
+
+/**
+ * Seal a run as `completed`. Idempotent: a no-op once the run already reached a
+ * terminal status, so a completion can never overwrite a recorded error.
+ */
+export function completeConsolidationProgress(
+  progress: ConsolidationProgress,
+  now: number = Date.now(),
+): void {
+  if (progress.status !== 'running') return;
+  progress.status = 'completed';
+  progress.endedAt = now;
+}
+
+/**
+ * Seal a run as `error` with a message. Idempotent once terminal (the first
+ * terminal transition wins), so an abort-after-complete won't clobber the
+ * recorded outcome.
+ */
+export function failConsolidationProgress(
+  progress: ConsolidationProgress,
+  error: string,
+  now: number = Date.now(),
+): void {
+  if (progress.status !== 'running') return;
+  progress.status = 'error';
+  progress.endedAt = now;
+  progress.error = error;
+}
+
+/**
+ * Elapsed milliseconds for a run: live (`now - startedAt`) while `running`,
+ * frozen (`endedAt - startedAt`) once terminal. Never negative.
+ */
+export function consolidationElapsedMs(
+  progress: ConsolidationProgress,
+  now: number = Date.now(),
+): number {
+  const end = progress.status === 'running' ? now : (progress.endedAt ?? now);
+  return Math.max(0, end - progress.startedAt);
+}
+
+/**
+ * Render the one-line progress summary a frontend shows beneath the title
+ * (parity: Claude's `{elapsed} · reviewing N sessions{· M files touched}` in
+ * `DreamDetailDialog`). The files clause is omitted when nothing has been
+ * touched yet (Claude renders it only when `filesTouched.length > 0`). Elapsed
+ * is formatted via the shared {@link formatDuration}; counts are pluralized via
+ * the shared {@link plural} helper — no bespoke re-implementation.
+ */
+export function formatConsolidationProgress(
+  progress: ConsolidationProgress,
+  now: number = Date.now(),
+): string {
+  const elapsed = formatDuration(consolidationElapsedMs(progress, now));
+  const sessions = `reviewing ${progress.sessionsReviewing} ${plural(progress.sessionsReviewing, 'session')}`;
+  const files = progress.filesTouched.length > 0
+    ? ` · ${progress.filesTouched.length} ${plural(progress.filesTouched.length, 'file')} touched`
+    : '';
+  return `${elapsed} · ${sessions}${files}`;
+}
+
+/**
+ * A no-PII snapshot of a run for the `ami --introspect` / diagnostics surface
+ * (parity: the DreamDetailDialog's displayed fields, minus any transcript text).
+ * Carries counts and timing only — never file paths or turn summaries — so it is
+ * safe to log/emit. `totalToolCalls` is the sum of per-turn tool counts.
+ */
+export function consolidationProgressSnapshot(
+  progress: ConsolidationProgress,
+  now: number = Date.now(),
+): {
+  status: ConsolidationStatus;
+  elapsedMs: number;
+  sessionsReviewing: number;
+  filesTouched: number;
+  turns: number;
+  totalToolCalls: number;
+  summary: string;
+} {
+  return {
+    status: progress.status,
+    elapsedMs: consolidationElapsedMs(progress, now),
+    sessionsReviewing: progress.sessionsReviewing,
+    filesTouched: progress.filesTouched.length,
+    turns: progress.turns.length,
+    totalToolCalls: progress.turns.reduce((sum, t) => sum + t.toolCount, 0),
+    summary: formatConsolidationProgress(progress, now),
+  };
 }
 
 /**
@@ -355,13 +547,16 @@ export function beginConsolidationRun(opts: {
   abortController?: AbortController;
   debug?: ConsolidationDebug;
 }): ConsolidationRunParams | null {
-  const priorMtime = tryAcquireConsolidationLock(opts.lockDir, opts.now ?? Date.now(), opts.debug);
+  const now = opts.now ?? Date.now();
+  const priorMtime = tryAcquireConsolidationLock(opts.lockDir, now, opts.debug);
   if (priorMtime === null) return null;
+  const sessionsReviewing = Math.max(0, Math.trunc(opts.sessionsReviewing));
   return {
     type: CONSOLIDATION_TASK_TYPE,
-    sessionsReviewing: Math.max(0, Math.trunc(opts.sessionsReviewing)),
+    sessionsReviewing,
     priorMtime,
     abortController: opts.abortController ?? new AbortController(),
+    progress: createConsolidationProgress(sessionsReviewing, now),
   };
 }
 
@@ -369,7 +564,9 @@ export function beginConsolidationRun(opts: {
  * Cancel an in-flight consolidation run and rewind the lock to its pre-acquire
  * state (parity: Claude's dream-task kill, which aborts the agent then rolls the
  * lock mtime back via the same path as a fork-failure). Idempotent: aborting an
- * already-aborted controller is a no-op.
+ * already-aborted controller is a no-op. The run's live {@link ConsolidationProgress}
+ * is sealed as an error ("aborted") so a surface watching it reflects the stop
+ * (a no-op if the run already reached a terminal status).
  */
 export function abortConsolidationRun(
   lockDir: string,
@@ -377,5 +574,6 @@ export function abortConsolidationRun(
   debug: ConsolidationDebug = defaultDebug,
 ): void {
   run.abortController.abort();
+  failConsolidationProgress(run.progress, 'aborted');
   rollbackConsolidationLock(lockDir, run.priorMtime, debug);
 }
