@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isSafeSegment } from './skill-catalog';
 import { parseFrontmatter, parseFrontmatterList } from './memory';
+import { validateLspServerConfig, type LspServerConfig } from './lsp/config';
 
 // ---------------------------------------------------------------------------
 // Git source safety — SHARED validators reused by the plugin installer AND the
@@ -252,6 +253,89 @@ export interface PluginBundle {
    * collision-resistant identifier. `undefined` when no author is declared.
    */
   id?: string;
+  /**
+   * Runtime availability requirements declared by the manifest `requires`
+   * (Claude parity: BuiltinPluginDefinition.isAvailable, builtinPlugins.ts
+   * L64-68 — a plugin whose environment prerequisites aren't met is omitted
+   * ENTIRELY). AMI's bundles come from JSON manifests (no code predicate), so
+   * availability is expressed declaratively: a `platform`/`env`/`bin` gate
+   * evaluated by {@link isPluginAvailable}. A bundle whose `requires` are not
+   * satisfied is dropped from discovery (never surfaced), so this is only ever
+   * set on bundles that survived the gate. `undefined` when none are declared.
+   */
+  requires?: PluginRequirements;
+  /**
+   * Inline MCP servers declared directly in the manifest `mcpServers` record
+   * (Claude parity: PluginManifestMcpServerSchema's inline-record / array-mix
+   * forms — schemas.ts L543-572), keyed by server name. These are contributed IN
+   * ADDITION to any {@link mcpServersFile} the plugin ships. `undefined` when the
+   * manifest declares no inline servers (or only a file path).
+   */
+  mcpServers?: Record<string, PluginMcpServer>;
+  /**
+   * Bundled LSP server config file (Claude parity: lspPluginIntegration — a
+   * plugin may ship a `.lsp.json` at its root, or declare the path via a manifest
+   * `lspServers` string). Path-traversal/symlink hardened. `undefined` when the
+   * plugin ships none. Consumed via core's {@link loadLspServersFromFile}.
+   */
+  lspServersFile?: string;
+  /**
+   * Inline LSP servers declared directly in the manifest `lspServers` record
+   * (Claude parity: PluginManifestLspServerSchema's inline-record / array-mix
+   * forms — schemas.ts L738-767), validated against the canonical
+   * {@link LspServerConfig} schema. Contributed alongside {@link lspServersFile}.
+   * `undefined` when the manifest declares no inline LSP servers.
+   */
+  lspServers?: Record<string, LspServerConfig>;
+  /**
+   * Output-styles directory a plugin contributes (Claude parity:
+   * loadPluginOutputStyles's `plugin.outputStylesPath`): the `<root>/output-styles`
+   * dir, or a manifest-declared `outputStyles` relative override. Path-traversal/
+   * symlink hardened. `undefined` when the plugin ships none.
+   */
+  outputStylesDir?: string;
+  /**
+   * Additional output-style directories/files declared by the manifest
+   * `outputStylesPaths` (Claude parity: loadPluginOutputStyles's
+   * `plugin.outputStylesPaths`), resolved + hardened exactly like
+   * {@link commandsPaths}. `undefined` when the manifest declares none.
+   */
+  outputStylesPaths?: string[];
+  /**
+   * Allowlisted plugin-contributed settings (Claude parity:
+   * PluginSettingsSchema.pick({agent}).strip() — pluginLoader.ts L1776-1849). A
+   * plugin may contribute a default `agent` via `settings.json` (preferred) or a
+   * manifest `settings` object; every other key is stripped. `undefined` when the
+   * plugin contributes no allowlisted settings.
+   */
+  settings?: PluginSettings;
+}
+
+/**
+ * Declarative runtime-availability gate for a plugin bundle (Claude parity:
+ * BuiltinPluginDefinition.isAvailable). AMI bundles are described by JSON, so the
+ * predicate is expressed as data a manifest can carry and {@link isPluginAvailable}
+ * evaluates: the current OS must be in `platform` (when listed), every name in
+ * `env` must be a set, non-empty environment variable, and every name in `bin`
+ * must resolve on `PATH`. An omitted/empty constraint imposes no requirement.
+ */
+export interface PluginRequirements {
+  /** Allowed `process.platform` values (e.g. `["linux","darwin"]`). */
+  platform?: string[];
+  /** Environment variables that must be set and non-empty. */
+  env?: string[];
+  /** Executables that must resolve on `PATH`. */
+  bin?: string[];
+}
+
+/**
+ * The allowlisted subset of settings a plugin may contribute (Claude parity:
+ * PluginSettingsSchema.pick({ agent: true }).strip()). Only `agent` (a default
+ * agent name) is honored; any other key an author writes is dropped at parse time.
+ */
+export interface PluginSettings {
+  /** Default agent this plugin contributes to the settings cascade. */
+  agent?: string;
 }
 
 /**
@@ -890,9 +974,17 @@ export interface PluginValidationResult {
 /** Fields that belong in a marketplace entry, not plugin.json — author confusion. */
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict', 'id'];
 /** Optional component-path fields a manifest may declare. The single-path forms
- *  (skills/agents/commands/hooks/mcpServers) plus the multi-path `agentsPaths`
- *  list form (Claude parity: loadPluginAgents) are all traversal-validated. */
-const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'mcpServers', 'agentsPaths'];
+ *  (skills/agents/commands/hooks/outputStyles) plus the multi-path `agentsPaths`/
+ *  `outputStylesPaths` list forms (Claude parity: loadPluginAgents /
+ *  loadPluginOutputStyles) are all traversal-validated. The server-declaration
+ *  fields (mcpServers/lspServers) accept inline-record forms too and are validated
+ *  separately via {@link validateServerDeclarations}. */
+const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'agentsPaths', 'outputStyles', 'outputStylesPaths'];
+
+/** Manifest fields that declare servers either by FILE PATH (traversal-checked) or
+ *  by INLINE RECORD (structurally opaque here): mcpServers (Claude parity:
+ *  PluginManifestMcpServerSchema) and lspServers (PluginManifestLspServerSchema). */
+const SERVER_DECLARATION_FIELDS = ['mcpServers', 'lspServers'];
 
 /**
  * Flag a single component-path string that would escape the plugin root — an
@@ -935,6 +1027,72 @@ function validateComponentPathField(field: string, val: unknown, errors: PluginV
         const src = (meta as Record<string, unknown>).source;
         if (typeof src === 'string') validateComponentPathString(`${field}.${key}.source`, src, errors);
       }
+    }
+  }
+}
+
+/**
+ * Validate a server-declaration field (`mcpServers`/`lspServers`) across the forms
+ * Claude accepts (schemas.ts L543-572 / L738-767): a FILE-PATH string, an INLINE
+ * RECORD, or an ARRAY mixing file-path strings and inline records. Path strings are
+ * traversal-checked via {@link validateComponentPathString} (so a `..`/absolute
+ * override is still a hard error for the discovery gate); inline records are opaque
+ * here (their per-server shape is validated where the servers are actually loaded).
+ */
+function validateServerDeclarations(field: string, val: unknown, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val === 'string') {
+    validateComponentPathString(field, val, errors);
+  } else if (Array.isArray(val)) {
+    val.forEach((el, i) => {
+      if (typeof el === 'string') validateComponentPathString(`${field}[${i}]`, el, errors);
+      // inline-record array entries are opaque here
+    });
+  }
+  // a bare inline record imposes no path to traverse
+}
+
+/**
+ * Validate a manifest's optional `requires` availability gate (AMI's declarative
+ * analogue of Claude's BuiltinPluginDefinition.isAvailable). Each of `platform`/
+ * `env`/`bin`, when present, must be an array of strings; a malformed constraint is
+ * flagged with a corrective example so an author can self-correct.
+ */
+function validatePluginRequirements(val: unknown, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+    errors.push({ path: 'requires', message: 'Plugin "requires" must be an object with optional "platform"/"env"/"bin" string arrays.' });
+    return;
+  }
+  const r = val as Record<string, unknown>;
+  for (const key of ['platform', 'env', 'bin'] as const) {
+    const v = r[key];
+    if (v !== undefined && (!Array.isArray(v) || !v.every(x => typeof x === 'string'))) {
+      errors.push({ path: `requires.${key}`, message: `Plugin "requires.${key}" must be an array of strings (e.g., ["linux", "darwin"] for platform).` });
+    }
+  }
+}
+
+/**
+ * Validate a manifest's optional `settings` object (Claude parity:
+ * PluginSettingsSchema — only `agent` is allowlisted, everything else is stripped).
+ * `settings` must be an object; a present `agent` must be a string. Non-allowlisted
+ * keys are surfaced as warnings (they are silently dropped at load time) so an
+ * author learns the plugin cannot set them.
+ */
+function validatePluginSettings(val: unknown, errors: PluginValidationIssue[], warnings: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+    errors.push({ path: 'settings', message: 'Plugin "settings" must be an object (only the allowlisted "agent" key is honored).' });
+    return;
+  }
+  const s = val as Record<string, unknown>;
+  if (s.agent !== undefined && typeof s.agent !== 'string') {
+    errors.push({ path: 'settings.agent', message: 'Plugin "settings.agent" must be a string (the default agent name).' });
+  }
+  for (const key of Object.keys(s)) {
+    if (key !== 'agent') {
+      warnings.push({ path: `settings.${key}`, message: `Plugin "settings.${key}" is not an allowlisted plugin setting and is ignored (only "agent" is honored).` });
     }
   }
 }
@@ -1188,9 +1346,15 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   validateManifestMetadata(obj, errors);
   validateCommandsMetadata(obj.commandsMetadata, errors);
   validateUserConfig(obj.userConfig, errors);
+  validatePluginRequirements(obj.requires, errors);
+  validatePluginSettings(obj.settings, errors, warnings);
 
   for (const field of COMPONENT_PATH_FIELDS) {
     validateComponentPathField(field, obj[field], errors);
+  }
+
+  for (const field of SERVER_DECLARATION_FIELDS) {
+    validateServerDeclarations(field, obj[field], errors);
   }
 
   for (const field of MARKETPLACE_ONLY_MANIFEST_FIELDS) {
@@ -1725,6 +1889,201 @@ function parseCommandsMetadata(manifest: Record<string, unknown>): Record<string
 }
 
 /**
+ * Context for evaluating {@link isPluginAvailable}: the current OS platform and
+ * environment. Injectable so availability is deterministically unit-testable
+ * (defaults to the live `process.platform` / `process.env`).
+ */
+export interface PluginAvailabilityContext {
+  platform?: string;
+  env?: Record<string, string | undefined>;
+}
+
+/** True when `name` resolves to an executable file on the PATH in `env`. */
+function binOnPath(name: string, env: Record<string, string | undefined>): boolean {
+  // An explicit path (contains a separator) is checked directly, not via PATH.
+  if (name.includes('/') || name.includes('\\')) {
+    try {
+      return fs.statSync(name).isFile();
+    } catch {
+      return false;
+    }
+  }
+  const pathVar = env.PATH ?? env.Path ?? '';
+  for (const dir of pathVar.split(path.delimiter)) {
+    if (dir === '') continue;
+    try {
+      if (fs.statSync(path.join(dir, name)).isFile()) return true;
+    } catch {
+      /* keep scanning */
+    }
+  }
+  return false;
+}
+
+/**
+ * Evaluate a bundle's declarative {@link PluginRequirements} (Claude parity:
+ * BuiltinPluginDefinition.isAvailable — a plugin whose environment prerequisites
+ * aren't met is omitted entirely). Returns true when EVERY declared constraint is
+ * satisfied: the current `platform` is allowed (when the list is non-empty), every
+ * `env` var is set+non-empty, and every `bin` resolves on PATH. `undefined`/empty
+ * constraints impose no requirement, so a plugin with no `requires` is always
+ * available.
+ */
+export function isPluginAvailable(requires: PluginRequirements | undefined, ctx: PluginAvailabilityContext = {}): boolean {
+  if (requires === undefined) return true;
+  const platform = ctx.platform ?? process.platform;
+  const env = ctx.env ?? process.env;
+  if (Array.isArray(requires.platform) && requires.platform.length > 0 && !requires.platform.includes(platform)) {
+    return false;
+  }
+  if (Array.isArray(requires.env)) {
+    for (const name of requires.env) {
+      const v = env[name];
+      if (typeof v !== 'string' || v === '') return false;
+    }
+  }
+  if (Array.isArray(requires.bin)) {
+    for (const name of requires.bin) {
+      if (!binOnPath(name, env)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Parse a manifest's optional `requires` gate into {@link PluginRequirements},
+ * keeping only the well-formed string-array constraints. Returns undefined when
+ * the field is absent or carries no usable constraint, so a bundle only records a
+ * value when it actually declares a requirement.
+ */
+function parsePluginRequirements(manifest: Record<string, unknown>): PluginRequirements | undefined {
+  const raw = manifest.requires;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: PluginRequirements = {};
+  for (const key of ['platform', 'env', 'bin'] as const) {
+    const v = r[key];
+    if (Array.isArray(v)) {
+      const strings = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+      if (strings.length > 0) out[key] = strings;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** True for a plain (non-array) object — an inline server-config record. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Parse inline MCP server declarations from the manifest `mcpServers` field
+ * (Claude parity: PluginManifestMcpServerSchema). The field may be a record of
+ * `name → config`, or an ARRAY mixing file-path strings (handled separately via
+ * {@link PluginBundle.mcpServersFile}) with inline records. Only the inline
+ * record entries are collected here; later records override earlier same-named
+ * ones. Returns undefined when there are no inline servers.
+ */
+function parseInlineMcpServers(manifest: Record<string, unknown>): Record<string, PluginMcpServer> | undefined {
+  const raw = manifest.mcpServers;
+  const out: Record<string, PluginMcpServer> = {};
+  const absorb = (rec: Record<string, unknown>): void => {
+    for (const [name, cfg] of Object.entries(rec)) {
+      if (isPlainObject(cfg)) out[name] = cfg as PluginMcpServer;
+    }
+  };
+  if (isPlainObject(raw)) {
+    absorb(raw);
+  } else if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (isPlainObject(entry)) absorb(entry);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Parse LSP server declarations from the manifest `lspServers` field (Claude
+ * parity: PluginManifestLspServerSchema — string path, inline record, or an array
+ * mixing both). A string/array-string entry is resolved to a hardened `.lsp.json`
+ * FILE path; record entries become inline {@link LspServerConfig}s validated via
+ * the canonical {@link validateLspServerConfig}. Malformed inline configs are
+ * dropped (discovery stays lenient; strict surfacing is {@link validatePluginManifest}).
+ */
+function parseManifestLspServers(
+  root: string,
+  manifest: Record<string, unknown>,
+): { file?: string; servers?: Record<string, LspServerConfig> } {
+  const raw = manifest.lspServers;
+  let file: string | undefined;
+  const servers: Record<string, LspServerConfig> = {};
+  const absorbRecord = (rec: Record<string, unknown>): void => {
+    for (const [name, cfg] of Object.entries(rec)) {
+      try {
+        servers[name] = validateLspServerConfig(name, cfg);
+      } catch {
+        /* lenient at discovery */
+      }
+    }
+  };
+  const absorbPath = (p: string): void => {
+    const resolved = hardenedResolve(root, p);
+    if (resolved !== undefined && file === undefined) file = resolved;
+  };
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    absorbPath(raw);
+  } else if (isPlainObject(raw)) {
+    absorbRecord(raw);
+  } else if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (typeof entry === 'string' && entry.trim() !== '') absorbPath(entry);
+      else if (isPlainObject(entry)) absorbRecord(entry);
+    }
+  } else {
+    // No manifest declaration: fall back to the <root>/.lsp.json convention.
+    absorbPath('.lsp.json');
+  }
+  return {
+    file,
+    servers: Object.keys(servers).length > 0 ? servers : undefined,
+  };
+}
+
+/**
+ * Parse a raw settings object through the plugin allowlist (Claude parity:
+ * parsePluginSettings / PluginSettingsSchema.pick({agent}).strip()): only the
+ * `agent` key (a non-empty string) survives; every other key is stripped. Returns
+ * undefined when nothing allowlisted remains, so a plugin records settings only
+ * when it actually contributes one.
+ */
+export function parsePluginSettings(raw: unknown): PluginSettings | undefined {
+  if (!isPlainObject(raw)) return undefined;
+  const out: PluginSettings = {};
+  if (typeof raw.agent === 'string' && raw.agent.trim() !== '') out.agent = raw.agent;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Load a plugin's allowlisted settings (Claude parity: loadPluginSettings): a
+ * `<root>/settings.json` file takes priority over a manifest `settings` object;
+ * only allowlisted keys survive {@link parsePluginSettings}. Returns undefined
+ * when neither source yields an allowlisted setting.
+ */
+function loadPluginSettings(root: string, manifest: Record<string, unknown>): PluginSettings | undefined {
+  const settingsPath = hardenedResolve(root, 'settings.json');
+  if (settingsPath !== undefined) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as unknown;
+      const fromFile = parsePluginSettings(parsed);
+      if (fromFile !== undefined) return fromFile;
+    } catch {
+      /* missing/corrupt settings.json falls through to manifest.settings */
+    }
+  }
+  return parsePluginSettings(manifest.settings);
+}
+
+/**
  * Discover local plugin bundles under `dir`, ALSO returning structured load
  * failures (invalid JSON / failed manifest validation) so callers can surface
  * actionable guidance instead of silently dropping a broken plugin. A directory
@@ -1794,6 +2153,13 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     const name = typeof manifestName === 'string' && isNamespaceSafeName(manifestName) ? manifestName : entry;
     const description = typeof manifest.description === 'string' && manifest.description.trim() !== '' ? manifest.description.trim() : undefined;
     const author = manifestAuthorName(manifest.author);
+    // Availability gate (Claude parity: BuiltinPluginDefinition.isAvailable). A
+    // bundle whose declarative `requires` (platform/env/bin) are not met by the
+    // current environment is OMITTED ENTIRELY — not surfaced as a failure, exactly
+    // like Claude's getBuiltinPlugins `continue`.
+    const requires = parsePluginRequirements(manifest);
+    if (!isPluginAvailable(requires)) continue;
+    const lsp = parseManifestLspServers(root, manifest);
     bundles.push({
       name,
       version: (manifest.version as string | undefined) ?? '0.0.0',
@@ -1828,6 +2194,24 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // Per-command metadata object-mapping (Claude parity: commandsMetadata) — kept
       // only when it carries at least one well-formed entry.
       commandsMetadata: parseCommandsMetadata(manifest),
+      // Declarative availability requirements this bundle satisfied (see gate above).
+      requires,
+      // Inline MCP servers declared directly in the manifest (Claude parity:
+      // PluginManifestMcpServerSchema inline-record form) — contributed alongside
+      // any `.mcp.json` file at mcpServersFile.
+      mcpServers: parseInlineMcpServers(manifest),
+      // Plugin-contributed LSP servers (Claude parity: lspPluginIntegration): a
+      // .lsp.json file path and/or inline manifest records, validated against the
+      // canonical LspServerConfig schema.
+      lspServersFile: lsp.file,
+      lspServers: lsp.servers,
+      // Output styles a plugin contributes (Claude parity: loadPluginOutputStyles):
+      // the output-styles dir (+ manifest override) and extra outputStylesPaths.
+      outputStylesDir: resolveComponentDir(root, manifest, 'outputStyles', 'output-styles'),
+      outputStylesPaths: resolveManifestPathList(root, manifest, 'outputStylesPaths'),
+      // Allowlisted plugin-contributed settings (Claude parity: loadPluginSettings):
+      // settings.json over manifest.settings, only the `agent` key survives.
+      settings: loadPluginSettings(root, manifest),
     });
   }
   return { bundles, failures };
