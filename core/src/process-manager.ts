@@ -492,6 +492,17 @@ export interface BackgroundProcess {
   /** Cumulative token usage for background agents (undefined for bash tasks). */
   tokenCount?: number;
   /**
+   * Cumulative count of tool calls a background AGENT has made so far (undefined
+   * for bash/monitor tasks, which make no tool calls). Reported incrementally via
+   * {@link ProcessManager.updateEntry} from the agent's event stream and surfaced
+   * by `task_list` alongside {@link tokenCount}. Mirrors Claude Code's live
+   * `task.progress.toolCount` — the in-flight tool-use counter that, together with
+   * {@link tokenCount}, lets a reader gauge how much work a running agent has done.
+   * It is also the basis for incremental progress deltas (see
+   * {@link ProcessManager.reportProgressDelta}).
+   */
+  toolCount?: number;
+  /**
    * Dedicated error message for a FAILED task/agent (parity with Claude Code's
    * AsyncAgentDetailDialog error field). Set via {@link ProcessManager.updateEntry}
    * when a background agent ends in a 'failed' state, so a consumer (task_list,
@@ -629,6 +640,32 @@ interface InternalProcess extends BackgroundProcess {
    *  The stall watchdog only acts once (now - _lastGrowthAt) exceeds
    *  STALL_THRESHOLD_MS, decoupling the poll cadence from the no-growth threshold. */
   _lastGrowthAt?: number;
+  /** Last {@link BackgroundProcess.toolCount} surfaced by {@link ProcessManager.reportProgressDelta},
+   *  so the next report can emit only the CHANGE since then. */
+  _lastReportedToolCount?: number;
+  /** Last {@link BackgroundProcess.tokenCount} surfaced by {@link ProcessManager.reportProgressDelta}. */
+  _lastReportedTokenCount?: number;
+  /** Latched true once {@link ProcessManager.reportProgressDelta} has established a
+   *  baseline for this task, so the FIRST report returns zero deltas (nothing to
+   *  compare against yet) instead of reporting the whole current count as "new". */
+  _progressBaselined?: boolean;
+}
+
+/**
+ * Incremental progress delta for a background agent, returned by
+ * {@link ProcessManager.reportProgressDelta}. Reports the CHANGE in tool-call and
+ * token counts since the previous report, so a consumer (e.g. `task_list`) can show
+ * "+N tools, +M tokens since last check" without re-deriving absolute totals.
+ * Mirrors Claude Code's `lastReportedToolCount` / `lastReportedTokenCount` delta
+ * caching used "for computing deltas in notifications".
+ */
+export interface ProgressDelta {
+  /** Tool calls made since the previous report (0 on the first/baseline report, never negative). */
+  toolCountDelta: number;
+  /** Tokens consumed since the previous report (0 on the first/baseline report, never negative). */
+  tokenCountDelta: number;
+  /** True on the first report for a task — a baseline was just latched and the deltas are 0. */
+  firstReport: boolean;
 }
 
 export class ProcessManager extends EventEmitter {
@@ -1653,7 +1690,7 @@ export class ProcessManager extends EventEmitter {
     return true;
   }
 
-  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'error'>>): void {
+  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'toolCount' | 'error'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
     if (updates.status !== undefined) {
@@ -1668,8 +1705,44 @@ export class ProcessManager extends EventEmitter {
     }
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;
     if (updates.tokenCount !== undefined) entry.tokenCount = updates.tokenCount;
+    // Live tool-call progress counter for a background agent (see
+    // BackgroundProcess.toolCount) — surfaced by task_list and the basis for the
+    // incremental deltas computed by reportProgressDelta.
+    if (updates.toolCount !== undefined) entry.toolCount = updates.toolCount;
     // Dedicated failure-reason channel for a failed agent (see BackgroundProcess.error).
     if (updates.error !== undefined) entry.error = updates.error;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's `lastReportedToolCount` /
+   * `lastReportedTokenCount`): return the CHANGE in a background agent's tool-call
+   * and token counts since the previous call, latching the current totals as the
+   * new baseline. Lets a consumer surface "+N tools, +M tokens since last check"
+   * for a still-running agent (incremental progress notifications) without
+   * re-deriving absolute totals or re-reporting unchanged work.
+   *
+   * The FIRST call for a task establishes the baseline and returns zero deltas
+   * (`firstReport: true`) — there is nothing to compare against yet, so a consumer
+   * shows no "since last check" clause on the first listing. Deltas are clamped at
+   * 0 (a count can only grow; a reset/reorder never yields a negative delta).
+   * Returns `undefined` for an unknown task.
+   */
+  reportProgressDelta(taskId: string): ProgressDelta | undefined {
+    const entry = this.processes.get(taskId);
+    if (!entry) return undefined;
+    const curTool = entry.toolCount ?? 0;
+    const curTok = entry.tokenCount ?? 0;
+    const firstReport = entry._progressBaselined !== true;
+    const prevTool = entry._lastReportedToolCount ?? 0;
+    const prevTok = entry._lastReportedTokenCount ?? 0;
+    entry._lastReportedToolCount = curTool;
+    entry._lastReportedTokenCount = curTok;
+    entry._progressBaselined = true;
+    return {
+      toolCountDelta: firstReport ? 0 : Math.max(0, curTool - prevTool),
+      tokenCountDelta: firstReport ? 0 : Math.max(0, curTok - prevTok),
+      firstReport,
+    };
   }
 
   monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {

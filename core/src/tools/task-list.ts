@@ -228,6 +228,30 @@ export const taskListTool: ToolDefinition = {
         if (typeof t.tokenCount === 'number' && t.tokenCount > 0) {
           parts.push(formatTokenCount(t.tokenCount));
         }
+        // Live tool-call progress counter (parity: Claude Code's
+        // task.progress.toolCount) — how many tool calls this background agent has
+        // made so far. Gated on >0 so a just-spawned agent shows no noise tag.
+        if (typeof t.toolCount === 'number' && t.toolCount > 0) {
+          parts.push(`${t.toolCount} ${t.toolCount === 1 ? 'tool' : 'tools'}`);
+        }
+        // Incremental progress since the previous task_list (parity: Claude's
+        // lastReportedToolCount/lastReportedTokenCount delta caching "for computing
+        // deltas in notifications"). For a still-RUNNING agent, surface what changed
+        // since the last listing so the model sees forward progress at a glance. The
+        // first listing establishes the baseline (firstReport ⇒ no clause).
+        // Optional-chained so a minimal manager stub without reportProgressDelta
+        // simply omits the clause.
+        if (t.status === 'running') {
+          const delta = context.processManager!.reportProgressDelta?.(t.taskId);
+          if (delta && !delta.firstReport && (delta.toolCountDelta > 0 || delta.tokenCountDelta > 0)) {
+            const bits: string[] = [];
+            if (delta.toolCountDelta > 0) {
+              bits.push(`+${delta.toolCountDelta} ${delta.toolCountDelta === 1 ? 'tool' : 'tools'}`);
+            }
+            if (delta.tokenCountDelta > 0) bits.push(`+${formatTokenCount(delta.tokenCountDelta)}`);
+            parts.push(`(${bits.join(', ')} since last check)`);
+          }
+        }
       } else {
         parts.push(t.description);
       }

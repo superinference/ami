@@ -1213,6 +1213,11 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       }
       if (event.type === 'tool_use_start') {
         bgToolUseCount++;
+        // Live tool-call progress: surface the running count on the task entry so
+        // task_list can show how much work this background agent has done and the
+        // model can see incremental deltas (reportProgressDelta). Mirrors Claude
+        // Code's live task.progress.toolCount counter.
+        context.processManager?.updateEntry(taskId, { toolCount: bgToolUseCount });
         const summary = typeof event.input?.command === 'string'
           ? event.input.command
           : typeof event.input?.file_path === 'string'
