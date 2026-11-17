@@ -15,6 +15,7 @@ import {
   validateCommandSubstitution,
   detectGitInternalWrite,
   detectPowerShellExecution,
+  detectDangerousDeclare,
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
@@ -187,5 +188,71 @@ describe('bash-security parity: PowerShell encoded / download-exec guard', () =>
   });
   it('GREEN: allows a plain pwsh -Command', () => {
     assert.equal(detectPowerShellExecution('pwsh -Command Get-Date').blocked, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Win32 CreateFileW trailing dot/space normalization for the git-internal
+// matcher (gap U015-12, ref PowerShellTool/gitSafety.ts:L66-87). On Windows a
+// trailing dot/space on a path component is stripped before the write lands, so
+// `.git./hooks` opens the real `.git/hooks`; the literal matcher must see the
+// normalized form. On POSIX a trailing dot is a distinct real directory and
+// must NOT be normalized (no false-positive block).
+// ---------------------------------------------------------------------------
+describe('bash-security parity: git-internal Win32 trailing dot/space normalization', () => {
+  it('RED: blocks a cp into `.git./hooks` on win32 (CreateFileW strips the trailing dot)', () => {
+    assert.equal(detectGitInternalWrite('cp evil .git./hooks/pre-commit', 'win32').blocked, true);
+    assert.equal(validateBashSecurity('cp evil .git./hooks/pre-commit', { platform: 'win32' }).safe, false);
+  });
+  it('RED: blocks a `.git/hooks./x` component-trailing-dot variant on win32', () => {
+    assert.equal(detectGitInternalWrite('cp evil .git/hooks./pre-commit', 'win32').blocked, true);
+  });
+  it('RED: blocks a root-level `refs.` plant before a git run on win32', () => {
+    assert.equal(detectGitInternalWrite('cp evil refs./heads/x && git status', 'win32').blocked, true);
+  });
+  it('GREEN: on POSIX `.git./hooks` is a distinct real directory — not blocked', () => {
+    assert.equal(detectGitInternalWrite('cp evil .git./hooks/pre-commit', 'linux').blocked, false);
+    assert.equal(validateBashSecurity('cp evil .git./hooks/pre-commit', { platform: 'linux' }).safe, true);
+  });
+  it('GREEN: the literal `.git/hooks` form still blocks on win32 (no regression)', () => {
+    assert.equal(detectGitInternalWrite('cp evil .git/hooks/pre-commit', 'win32').blocked, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// declare/typeset/local arithmetic-evaluation RCE guard (gap U015-37, ref
+// utils/bash/ast.ts:L609-654). The -i/-a/-A/-n flags and a bare array subscript
+// arithmetically evaluate a (possibly single-quoted) RHS at assignment time,
+// running `$(cmd)` where the $()/backtick detectors — which skip single-quoted
+// content — see nothing.
+// ---------------------------------------------------------------------------
+describe('bash-security parity: dangerous declare/typeset/local assignment', () => {
+  it('RED: blocks `declare -i X=\'a[$(id)]\'` (integer flag → arithmetic eval of $())', () => {
+    assert.equal(detectDangerousDeclare("declare -i X='a[$(id)]'").blocked, true);
+    assert.equal(validateBashSecurity("declare -i X='a[$(id)]'").safe, false);
+  });
+  it('RED: blocks a bare positional array-subscript assignment with no flag', () => {
+    assert.equal(detectDangerousDeclare("declare 'x[$(id)]=1'").blocked, true);
+    assert.equal(validateBashSecurity("declare 'x[$(id)]=1'").safe, false);
+  });
+  it('RED: blocks `declare -n` nameref (static-model bypass)', () => {
+    assert.equal(detectDangerousDeclare('declare -n ref=PATH').blocked, true);
+  });
+  it('RED: handles typeset and combined flags (`typeset -ai`)', () => {
+    assert.equal(detectDangerousDeclare("typeset -ai y='b[$(whoami)]'").blocked, true);
+  });
+  it('RED: fires on a later compound segment too', () => {
+    assert.equal(validateBashSecurity("ls && declare -i X='a[$(id)]'").safe, false);
+  });
+  it('GREEN: inert flags (-r/-x/-p) are allowed', () => {
+    assert.equal(detectDangerousDeclare('declare -r CONST=5').blocked, false);
+    assert.equal(detectDangerousDeclare('declare -x FOO=bar').blocked, false);
+    assert.equal(detectDangerousDeclare('declare -p').blocked, false);
+  });
+  it('GREEN: a plain `local x=1` is allowed', () => {
+    assert.equal(detectDangerousDeclare('local x=1').blocked, false);
+  });
+  it('GREEN: `export -n` (remove export attr, not nameref) is not matched', () => {
+    assert.equal(detectDangerousDeclare('export -n FOO').blocked, false);
   });
 });

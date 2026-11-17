@@ -72,6 +72,7 @@ const CHECK_IDS = {
   DESTRUCTIVE_TMUX: 69,
   UNC_PATH: 70,
   WRAPPER_FLAG_EVASION: 71,
+  DANGEROUS_DECLARE: 72,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1640,6 +1641,16 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
     }
   }
 
+  // Dangerous declare/typeset/local — the -i/-a/-A/-n flags and bare array
+  // subscripts arithmetically evaluate a (possibly single-quoted) RHS at
+  // assignment time, a command-substitution RCE the $()/backtick detectors miss.
+  {
+    const decl = detectDangerousDeclare(command);
+    if (decl.blocked) {
+      return fail(CHECK_IDS.DANGEROUS_DECLARE, decl.reason!);
+    }
+  }
+
   const detached = options?.detachedMode === true;
   // Validator relaxation in detached mode is OPT-IN. By default detached mode
   // runs the EXACT SAME validators as interactive mode — an unsupervised agent
@@ -1714,7 +1725,7 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   // metadata dir (hooks/config/objects/refs/HEAD/index), core.hooksPath overrides,
   // and root-level HEAD/objects/refs plants that make git run attacker hooks.
   {
-    const gitInternal = detectGitInternalWrite(command);
+    const gitInternal = detectGitInternalWrite(command, platform);
     if (gitInternal.blocked) {
       return fail(CHECK_IDS.GIT_INTERNAL_WRITE, gitInternal.reason!);
     }
@@ -3040,6 +3051,50 @@ export function detectPs4TraceRce(command: string): { blocked: boolean; reason?:
     const m = VALUE_RE.exec(body);
     if (m && EXPANSION_RE.test(m[1] ?? '')) {
       return { blocked: true, reason: 'PS4 assignment carrying a command substitution/expansion executes at trace time (`set -x`) — code-execution vector' };
+    }
+  }
+  return { blocked: false };
+}
+
+/**
+ * Detect `declare`/`typeset`/`local` assignments whose flags or subscripts
+ * change assignment semantics into a code-execution primitive — the bash
+ * builtins' arithmetic-evaluation escape hatch (mirrors Claude Code's
+ * walkArgument declaration-command guard, utils/bash/ast.ts:609-654).
+ *
+ *   - `-i` (integer): `declare -i X='a[$(cmd)]'` arithmetically evaluates the
+ *     RHS at assignment time, running `$(cmd)` EVEN from a single-quoted
+ *     raw_string. AMI's `$()`/backtick detectors skip single-quoted content,
+ *     so this slips past them.
+ *   - `-a` / `-A` (array): subscript arithmetic on assignment — same eval.
+ *   - `-n` (nameref): `declare -n X=Y; $X` dereferences to $Y's value; argv
+ *     shows `Y` while bash runs whatever $Y holds — a static-model bypass.
+ *   - A bare positional assignment carrying a subscript (`declare 'x[$(id)]=1'`)
+ *     implicitly creates an array element, arithmetically evaluating the
+ *     subscript and running `$(id)` with NO flag at all.
+ *
+ * Scoped to declare/typeset/local only: `export -n` means "remove the export
+ * attribute" (not nameref), and export/readonly reject `[` in identifiers
+ * before any evaluation, so they carry none of these primitives.
+ */
+export function detectDangerousDeclare(command: string): { blocked: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  for (const seg of splitShellSegments(stripped)) {
+    const tokens = tokenizeSegmentArgs(stripSafeWrappers(seg.trim()).trim());
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++; // skip env assignments
+    const base = (tokens[i] ?? '').replace(/^.*\//, '');
+    if (base !== 'declare' && base !== 'typeset' && base !== 'local') continue;
+    for (const arg of tokens.slice(i + 1)) {
+      // -n (nameref) / -i (integer) / -a / -A (array) flags, possibly combined
+      // (e.g. `-ai`). -r/-x/-g/-p/-f/-F are inert and do not match.
+      if (/^-[a-zA-Z]*[niaA]/.test(arg)) {
+        return { blocked: true, reason: `declare flag ${arg} changes assignment semantics (nameref/integer/array subscript) and can arithmetically evaluate command substitutions at assignment time` };
+      }
+      // Bare positional assignment carrying an array subscript.
+      if (arg[0] !== '-' && /^[^=]*\[/.test(arg)) {
+        return { blocked: true, reason: `declare positional '${arg}' contains an array subscript — bash evaluates $(cmd) inside subscripts at assignment time` };
+      }
     }
   }
   return { blocked: false };
@@ -4738,7 +4793,37 @@ const GIT_INTERNAL_PATH_RE =
 const GIT_INTERNAL_SHORTNAME_RE =
   /(?:^|\/)GIT~1\/(?:hooks|config|objects|refs|HEAD|index|info)\b/i;
 
-export function detectGitInternalWrite(command: string): { blocked: boolean; reason?: string } {
+// Win32 CreateFileW strips trailing spaces and dots from every path component
+// before it reaches the filesystem, so `.git./hooks/pre-commit`, `.git /hooks`,
+// and `.git/hooks./pre-commit` all open the *same* real `.git/hooks/pre-commit`
+// as the literal form. Our git-internal matcher keys on the literal `.git/`
+// component, so those trailing-dot/space variants silently bypass it on Windows.
+// Mirror the reference normalizeGitPathArg (PowerShellTool/gitSafety.ts): strip
+// trailing spaces then trailing dots from each component, iterating per
+// component, but never collapse the special `.`/`..` segments. POSIX treats a
+// trailing dot/space as a distinct real directory, so this normalization is
+// applied ONLY when validating as win32.
+function normalizeWin32PathComponents(path: string): string {
+  return path
+    .split('/')
+    .map(c => {
+      if (c === '') return c;
+      let prev;
+      do {
+        prev = c;
+        c = c.replace(/ +$/, '');
+        if (c === '.' || c === '..') return c;
+        c = c.replace(/\.+$/, '');
+      } while (c !== prev);
+      return c;
+    })
+    .join('/');
+}
+
+export function detectGitInternalWrite(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
 
   // 1. core.hooksPath override (git config / git -c) — repoints hook execution.
@@ -4747,11 +4832,19 @@ export function detectGitInternalWrite(command: string): { blocked: boolean; rea
   }
 
   const targets = collectWriteTargets(stripped).map(t => t.replace(/\\/g, '/'));
+  const win32 = platform === 'win32';
+  // On Windows, also match the CreateFileW-normalized form so trailing-dot/space
+  // variants (`.git./hooks`, `.git /hooks`) that resolve to the same file cannot
+  // slip past the literal `.git/` matcher.
+  const matchForms = (t: string): string[] =>
+    win32 ? [t, normalizeWin32PathComponents(t)] : [t];
 
   // 2. Writes into any .git/ metadata directory.
   for (const t of targets) {
-    if (GIT_INTERNAL_PATH_RE.test(t) || GIT_INTERNAL_SHORTNAME_RE.test(t)) {
-      return { blocked: true, reason: `write to git-internal path "${t}" can plant hooks or corrupt the repository` };
+    for (const form of matchForms(t)) {
+      if (GIT_INTERNAL_PATH_RE.test(form) || GIT_INTERNAL_SHORTNAME_RE.test(form)) {
+        return { blocked: true, reason: `write to git-internal path "${t}" can plant hooks or corrupt the repository` };
+      }
     }
   }
 
@@ -4759,9 +4852,11 @@ export function detectGitInternalWrite(command: string): { blocked: boolean; rea
   //    (unambiguous git-internal names) in a command that also runs git.
   if (/\bgit\b/.test(stripped)) {
     for (const t of targets) {
-      const n = t.replace(/^\.\//, '');
-      if (/^HEAD$/.test(n) || /^(?:objects|refs)\//.test(n)) {
-        return { blocked: true, reason: `write to bare-repo git-internal path "${t}" before a git invocation can execute planted hooks` };
+      for (const form of matchForms(t)) {
+        const n = form.replace(/^\.\//, '');
+        if (/^HEAD$/.test(n) || /^(?:objects|refs)\//.test(n)) {
+          return { blocked: true, reason: `write to bare-repo git-internal path "${t}" before a git invocation can execute planted hooks` };
+        }
       }
     }
   }
