@@ -2162,6 +2162,9 @@ export const taskTool: ToolDefinition = {
       type: 'subagent_start', nodeId: taskId, depth: relayDepth,
       agentName: agentName || undefined, model: subConfig.provider?.model, prompt,
       color: effectiveColor,
+      // The spawned KIND (parity: Claude's task_started.task_type): the named agent
+      // definition when one was requested, else the built-in mode it runs as.
+      taskType: subagentType || mode,
     });
 
     let toolUseCount = 0;

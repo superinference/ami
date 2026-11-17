@@ -1018,7 +1018,13 @@ export type EngineEvent =
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'skill_activated'; skill: string; description: string; hasMcpServers: boolean; source: 'model' | 'user' }
-  | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string; color?: string }
+  | { type: 'subagent_start'; nodeId: string; depth: number; agentName?: string; model?: string; prompt: string; color?: string;
+      /** The resolved sub-agent KIND this task was spawned as (`subagent_type`): a built-in
+       *  mode (`explore`/`plan`/`general`) or a named agent definition. Distinct from
+       *  {@link agentName} (a per-spawn display/identity name) — two agents can share a name
+       *  but differ in type. Lets a roster surface the classification at a glance. Parity:
+       *  Claude's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
+      taskType?: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number }
   | { type: 'todo_update'; todos: TodoItemView[] }
