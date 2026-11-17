@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -3499,7 +3499,14 @@ export class PermissionManager {
         if (filePath && hasSuspiciousPathPattern(filePath)) return 'ask';
         return 'allow';
       }
-      if (toolName === 'bash' && typeof input.command === 'string') {
+      // A compound TOCTOU shape (archive-before-git, symlink, or cwd-desync) must
+      // never be silently auto-allowed even when its segments individually classify
+      // 'safe' / edit-adjacent — a `cd ~/.ssh && cat id_rsa` reads 'safe' (cat) but
+      // resolves the relative operand against the just-entered secret dir. Skip the
+      // acceptEdits early-allow for those and fall through to the shared toctou guard
+      // below, which forces an explicit ask.
+      if (toolName === 'bash' && typeof input.command === 'string' &&
+          this.bashToctouEscalation(input.command) === null) {
         const classification = this.classifyBashCommand(input.command);
         if (classification === 'safe') return 'allow';
         // acceptEdits also auto-allows benign edit-adjacent filesystem mutations
@@ -3814,6 +3821,8 @@ export class PermissionManager {
     if (archive.escalate) return archive.reason ?? 'archive-extraction TOCTOU';
     const symlink = detectSymlinkCreateCompound(command);
     if (symlink.escalate) return symlink.reason ?? 'symlink-creation TOCTOU';
+    const cdDesync = detectCdSensitiveDesync(command);
+    if (cdDesync.escalate) return cdDesync.reason ?? 'cwd-desync TOCTOU';
     return null;
   }
 

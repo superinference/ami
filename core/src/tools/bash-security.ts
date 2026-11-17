@@ -5021,6 +5021,139 @@ export function detectSymlinkCreateCompound(command: string): { escalate: boolea
   return { escalate: false };
 }
 
+/**
+ * Credential/secret DIRECTORY components that, as a `cd`/`pushd`/`Set-Location`
+ * TARGET, mean the compound has stepped INTO a secret directory — so a relative
+ * operand in a later segment (`cat id_rsa`) resolves at runtime to a secret while
+ * the permission layer only ever saw the bare `id_rsa` token. These mirror the
+ * credential families in CREDENTIAL_PATH_PATTERNS but are matched as a trailing
+ * directory component, which the file-oriented isCredentialPath() patterns (which
+ * require a `/file` suffix) deliberately do not cover.
+ */
+const SENSITIVE_DIR_RE =
+  /(^|\/)(?:\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.config\/(?:gcloud|gh|glab-cli|git)|\.ami\/provision)\/?$/;
+
+/**
+ * Absolute system directories that hold secrets/host configuration. A `cd` into
+ * one of these means later relative operands resolve against a sensitive system
+ * location (`cd /etc && cat shadow`). Narrower than SYSTEM_DIR_PREFIXES (which
+ * also lists /usr, /var, /opt — ordinary enough to `cd` into) to keep the
+ * cwd-desync escalation high-signal.
+ */
+const SENSITIVE_SYSTEM_DIRS = ['/etc', '/root', '/proc', '/sys', '/boot'];
+
+/**
+ * Return the target directory of a `cd`/`pushd`/`chdir`/PowerShell `Set-Location`
+ * segment: the path string for `cd foo`, `''` for a bare `cd` (→ $HOME, not
+ * sensitive), or `null` when the segment is not a directory-change command.
+ */
+function cdTargetOfSegment(seg: string): string | null {
+  const toks = seg.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_]\w*=/.test(toks[i]!)) i++;
+  const base = (toks[i] ?? '').replace(/^.*\//, '').toLowerCase();
+  if (base !== 'cd' && base !== 'pushd' && base !== 'chdir' && base !== 'set-location') {
+    return null;
+  }
+  for (i++; i < toks.length; i++) {
+    const t = toks[i]!.replace(/^["']|["']$/g, '');
+    if (!t || t.startsWith('-')) continue;
+    return t;
+  }
+  return '';
+}
+
+/** True when a `cd` TARGET resolves to a credential or sensitive system dir. */
+function isSensitiveCdTarget(dir: string): boolean {
+  if (!dir) return false;
+  const norm = dir.replace(/\\/g, '/').replace(/\/+$/, '') || dir;
+  if (SENSITIVE_DIR_RE.test(norm)) return true;
+  if (norm.startsWith('/')) {
+    const resolved = require('path').resolve(norm) as string;
+    return SENSITIVE_SYSTEM_DIRS.some(sd => resolved === sd || resolved.startsWith(sd + '/'));
+  }
+  return false;
+}
+
+/**
+ * File-reading/writing commands whose relative operand IS a filesystem path — so
+ * a relative operand after a sensitive `cd` reads/writes a secret. Excludes
+ * commands whose operands are not paths (echo/printf) and bare directory listing
+ * (ls), keeping the cwd-desync escalation from over-asking on harmless tails.
+ */
+const CD_DESYNC_FILE_COMMANDS: ReadonlySet<string> = new Set([
+  'cat', 'less', 'more', 'head', 'tail', 'nl', 'od', 'xxd', 'hexdump', 'strings',
+  'file', 'stat', 'realpath', 'readlink', 'wc', 'sort', 'uniq', 'cut', 'tr',
+  'cmp', 'diff', 'grep', 'egrep', 'fgrep', 'rg', 'awk', 'gawk', 'mawk', 'sed',
+  'cp', 'mv', 'tee', 'dd', 'install', 'ln', 'truncate', 'chmod', 'chown', 'touch',
+  'rm', 'base64', 'base32', 'openssl', 'gpg', 'gpg2', 'scp', 'sftp', 'rsync',
+  'md5sum', 'sha1sum', 'sha256sum', 'sha512sum',
+]);
+
+/** True when a segment carries at least one cwd-relative (non-absolute) operand. */
+function hasRelativeOperand(seg: string): boolean {
+  const toks = stripSafeWrappers(seg.trim()).trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_]\w*=/.test(toks[i]!)) i++;
+  for (i++; i < toks.length; i++) {
+    const t = toks[i]!.replace(/^["']|["']$/g, '');
+    if (!t) continue;
+    if (t.startsWith('-')) continue;   // flag
+    if (t.includes('=')) continue;     // key=value option
+    if (t.startsWith('/')) continue;   // absolute — cwd-independent
+    if (t.startsWith('~')) continue;   // home-relative — cwd-independent
+    if (t.startsWith('$')) continue;   // variable — not statically resolvable
+    return true;                       // a cwd-relative operand
+  }
+  return false;
+}
+
+/**
+ * Detect a compound command that FIRST changes directory into a credential or
+ * sensitive system directory and THEN runs a file command with a relative-path
+ * operand — `cd ~/.ssh && cat id_rsa`, `cd /etc && cat shadow`,
+ * `cd ~/.ssh; grep key id_rsa`. The relative operand is validated by the
+ * permission layer against the LAUNCH cwd (just the literal `id_rsa`/`shadow`
+ * token, which matches no credential/system path), but at runtime bash resolves
+ * it against the just-entered secret directory — a check/use (TOCTOU) desync.
+ * Returns `escalate` so the permission layer can force an `ask` even under a
+ * matching allow rule. Parity with Claude Code's compoundCommandHasCd cwd-desync
+ * guard (PowerShellTool/modeValidation.ts L192-224, pathValidation.ts
+ * L1599-1617), which gates reads AND writes once a statement changes directory.
+ *
+ * Deliberately high-signal: only fires when the cd TARGET itself is sensitive, so
+ * a benign `cd build && cat log` (ordinary dir) stays auto-allowed — consistent
+ * with the existing commandHasCdWriteDesync read exemption. A later `cd` to a
+ * non-sensitive directory clears the entered-sensitive state (it changed cwd
+ * again), so `cd ~/.ssh && cd /tmp && cat a` does not escalate.
+ */
+export function detectCdSensitiveDesync(command: string): { escalate: boolean; reason?: string } {
+  const stripped = stripInvisibleUnicode(command);
+  const segments = splitShellSegments(stripped);
+  if (segments.length <= 1) return { escalate: false };
+  let sensitiveDir: string | null = null;
+  for (const seg of segments) {
+    const target = cdTargetOfSegment(seg.trim());
+    if (target !== null) {
+      sensitiveDir = isSensitiveCdTarget(target) ? target : null;
+      continue;
+    }
+    if (sensitiveDir === null) continue;
+    const base = segmentBaseCommand(seg);
+    if (base && CD_DESYNC_FILE_COMMANDS.has(base) && hasRelativeOperand(seg)) {
+      return {
+        escalate: true,
+        reason:
+          `compound command changes directory into a sensitive location ('${sensitiveDir}') ` +
+          `before '${base}' accesses a relative path — the operand resolves against the ` +
+          `changed cwd (a credential/system file) while the permission check only saw the ` +
+          `literal token (cwd-desync TOCTOU)`,
+      };
+    }
+  }
+  return { escalate: false };
+}
+
 // ---------------------------------------------------------------------------
 // PowerShell encoded / download-and-execute guard
 // ---------------------------------------------------------------------------
