@@ -179,15 +179,20 @@ describe('processMcpContent', () => {
     assert.equal(out!.metadata, undefined);
   });
 
-  it('inlines a text resource verbatim', () => {
+  it('inlines a text resource with a provenance prefix (default MCP label)', () => {
     const out = processMcpContent({ content: [{ type: 'resource', resource: { uri: 'file:///a.txt', text: 'inline body' } }] });
-    assert.equal(out!.text, 'inline body');
+    assert.equal(out!.text, '[Resource from MCP at file:///a.txt] inline body');
   });
 
-  it('decodes a text-ish MIME base64 blob', () => {
+  it('inlines a text resource with the originating server name when provided', () => {
+    const out = processMcpContent({ content: [{ type: 'resource', resource: { uri: 'file:///a.txt', text: 'inline body' } }], }, undefined, 'docs-server');
+    assert.equal(out!.text, '[Resource from docs-server at file:///a.txt] inline body');
+  });
+
+  it('decodes a text-ish MIME base64 blob with a provenance prefix', () => {
     const blob = Buffer.from('decoded json', 'utf-8').toString('base64');
-    const out = processMcpContent({ content: [{ type: 'resource', resource: { mimeType: 'application/json', blob } }] });
-    assert.equal(out!.text, 'decoded json');
+    const out = processMcpContent({ content: [{ type: 'resource', resource: { uri: 'res://cfg', mimeType: 'application/json', blob } }], }, undefined, 'cfg-server');
+    assert.equal(out!.text, '[Resource from cfg-server at res://cfg] decoded json');
   });
 
   it('reports a binary resource blob by size with its uri and mime', () => {
@@ -212,7 +217,9 @@ describe('processMcpContent', () => {
       { type: 'text', text: 'alpha' },
       { type: 'resource', resource: { text: 'beta' } },
     ] });
-    assert.equal(out!.text, 'alpha\nbeta');
+    // The plain text block is unlabeled; the resource block carries its
+    // provenance prefix (uri falls back to `unknown` when the resource omits it).
+    assert.equal(out!.text, 'alpha\n[Resource from MCP at unknown] beta');
   });
 
   // --- audio content block (previously silently dropped) ---

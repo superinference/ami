@@ -218,8 +218,9 @@ export function createMcpTool(
 
         // Try structured content processing before falling back to JSON. Pass the
         // workspace cwd so binary resource blobs are persisted to the tool-results
-        // dir (and the model gets a readable path) rather than reported size-only.
-        const processed = processMcpContent(result, context.cwd);
+        // dir (and the model gets a readable path) rather than reported size-only,
+        // and the server name so inlined resource blocks carry their provenance.
+        const processed = processMcpContent(result, context.cwd, serverName);
         const raw = processed ? processed.text : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         // Prefer the server's explicit per-result hint; otherwise fall back to the
         // token-budget-derived default (MAX_MCP_OUTPUT_TOKENS × 4 chars) so every
@@ -304,8 +305,13 @@ const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
  *  Result shapes are checked in Claude-compatible priority order: a legacy
  *  `toolResult` string, then a `structuredContent` object, then the `content`
  *  array. The first two are otherwise lost to a raw stringify of the whole
- *  wrapper object (empty content array / _meta and all). */
-export function processMcpContent(result: unknown, cwd?: string): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
+ *  wrapper object (empty content array / _meta and all).
+ *
+ *  `serverName` (when given) labels every inlined resource block with its
+ *  provenance — `[Resource from <server> at <uri>] …` — mirroring Claude Code's
+ *  `transformResultContent` (services/mcp/client.ts:L2526-2534) so the model can
+ *  tell which MCP server/resource an inlined block came from. */
+export function processMcpContent(result: unknown, cwd?: string, serverName?: string): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
   const obj = result as Record<string, unknown>;
 
@@ -357,14 +363,23 @@ export function processMcpContent(result: unknown, cwd?: string): { text: string
       const resource = item.resource as Record<string, unknown> | undefined;
       if (resource) {
         const mime = (resource.mimeType as string) || '';
+        // Provenance prefix: every inlined MCP resource is labeled with the
+        // originating server and resource URI so the model knows the content's
+        // source (Claude parity, services/mcp/client.ts:L2526-2534 — the same
+        // `[Resource from <server> at <uri>] ` prefix is applied to text, decoded
+        // text-ish, and persisted-binary resource blocks). `serverName` is the
+        // real server for live tool calls; pure-function callers that omit it get
+        // the neutral `MCP` label.
+        const resourceUri = (resource.uri as string) ?? 'unknown';
+        const provenance = `[Resource from ${serverName ?? 'MCP'} at ${resourceUri}] `;
         if (typeof resource.text === 'string') {
-          // Text resource — include inline
-          parts.push(resource.text);
+          // Text resource — include inline, labeled with its provenance.
+          parts.push(`${provenance}${resource.text}`);
         } else if (TEXT_RESOURCE_PATTERN.test(mime) && typeof resource.blob === 'string') {
-          // Text-ish MIME with base64 blob — decode
+          // Text-ish MIME with base64 blob — decode, labeled with its provenance.
           try {
             const decoded = Buffer.from(resource.blob as string, 'base64').toString('utf-8');
-            parts.push(decoded);
+            parts.push(`${provenance}${decoded}`);
           } catch {
             parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime})]`);
           }
@@ -378,8 +393,7 @@ export function processMcpContent(result: unknown, cwd?: string): { text: string
           try { bytes = Buffer.from(resource.blob as string, 'base64'); } catch { bytes = null; }
           const persisted = cwd && bytes ? persistBinaryContent(cwd, bytes, mime || undefined) : undefined;
           if (persisted && !('error' in persisted)) {
-            const source = `[Resource from MCP at ${resource.uri ?? 'unknown'}] `;
-            parts.push(getBinaryBlobSavedMessage(persisted.filepath, mime || undefined, persisted.size, source));
+            parts.push(getBinaryBlobSavedMessage(persisted.filepath, mime || undefined, persisted.size, provenance));
           } else {
             const sizeBytes = bytes ? bytes.length : Math.ceil(((resource.blob as string).length * 3) / 4);
             parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${sizeBytes} bytes)]`);

@@ -233,3 +233,33 @@ describe('createMcpTool.execute binary blob e2e', () => {
     assert.ok(fs.existsSync(saved));
   });
 });
+
+// ---------------------------------------------------------------------------
+// E2E: an inlined text resource returned by a tool call is labeled with the
+// originating server + resource URI (Claude parity, client.ts:L2526-2534).
+// ---------------------------------------------------------------------------
+
+describe('createMcpTool.execute resource provenance e2e', () => {
+  it('prefixes an inlined text resource with its originating server and uri', async () => {
+    const mgr = new MockManager(async () => ({
+      content: [{ type: 'resource', resource: { uri: 'res://notes.md', mimeType: 'text/markdown', text: '# release notes' } }],
+    }));
+    const tool = createMcpTool('knowledge-base', 'fetch', 'desc', {});
+    const res = await tool.execute({}, makeContext(mgr));
+    assert.ok(!res.isError, res.output);
+    // Both the server name and the resource uri reach the model-visible output,
+    // and the original resource body is preserved after the provenance prefix.
+    assert.match(res.output, /\[Resource from knowledge-base at res:\/\/notes\.md\] # release notes/);
+  });
+
+  it('labels a persisted binary resource blob with the originating server', async () => {
+    const blob = Buffer.from('%PDF-1.4 fake').toString('base64');
+    const mgr = new MockManager(async () => ({
+      content: [{ type: 'resource', resource: { uri: 'res://report.pdf', mimeType: 'application/pdf', blob } }],
+    }));
+    const tool = createMcpTool('reporting', 'export', 'desc', {});
+    const res = await tool.execute({}, makeContext(mgr));
+    assert.ok(!res.isError, res.output);
+    assert.match(res.output, /\[Resource from reporting at res:\/\/report\.pdf\] Binary content \(application\/pdf, .*\) saved to .*\.pdf/);
+  });
+});
