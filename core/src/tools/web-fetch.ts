@@ -10,6 +10,7 @@ import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
 import { isSandboxNetworkAskEnabled, requestSandboxHostAccess } from './sandbox-permission-registry';
 import { parseEnvBool } from '../utils/env';
+import { createCombinedAbortSignal } from '../utils/combined-abort-signal';
 import { resolveToolOutputMaxChars, loadProjectConfig } from '../config';
 
 const MAX_RESPONSE_LENGTH = 50000;
@@ -544,7 +545,12 @@ export const webFetchTool: ToolDefinition = {
     }
 
     const deadlineMs = (context as any)._fetchDeadlineMs ?? MAX_FETCH_DEADLINE_MS;
-    const deadlineSignal = AbortSignal.timeout(deadlineMs);
+    // Use the combined-signal helper's setTimeout/clearTimeout deadline instead of
+    // `AbortSignal.timeout(deadlineMs)`: its timer would otherwise linger in native
+    // memory for the full (up to 5-minute) deadline even after the fetch settles.
+    // `deadline.cleanup()` in the finally frees it the instant the fetch returns.
+    const deadline = createCombinedAbortSignal(undefined, { timeoutMs: deadlineMs });
+    const deadlineSignal = deadline.signal;
     const fetchSignal = context.abortSignal
       ? AbortSignal.any([context.abortSignal, deadlineSignal])
       : deadlineSignal;
@@ -845,6 +851,10 @@ export const webFetchTool: ToolDefinition = {
         output: `Error fetching ${sanitizedUrl}: ${message}`,
         isError: true,
       };
+    } finally {
+      // Free the deadline timer immediately now that the fetch has settled,
+      // rather than letting it linger in native memory until it would fire.
+      deadline.cleanup();
     }
   },
 };

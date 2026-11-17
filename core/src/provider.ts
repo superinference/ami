@@ -24,6 +24,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
+import { createCombinedAbortSignal } from './utils/combined-abort-signal';
 import { sleep } from './utils/sleep';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong, parseMockRateLimit, MOCK_RATE_LIMIT_ENV, type MockRateLimitConfig } from './error-classifier';
@@ -375,6 +376,28 @@ function inferProviderFromEnv(): InferredProvider | null {
   return null;
 }
 
+/**
+ * `fetch` with a leak-free timeout. Combines an optional caller `init.signal` with
+ * a `setTimeout`/`clearTimeout` deadline via the shared
+ * {@link createCombinedAbortSignal} helper and frees the timer the instant the
+ * request settles — instead of `AbortSignal.timeout(ms)`, whose timer is pinned
+ * in native memory for the full duration even after the fetch has resolved. Every
+ * short provider probe (model-list, HF metadata) routes through here so the single
+ * canonical timeout discipline (no accumulating native timers) applies uniformly.
+ */
+async function fetchWithTimeout(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const { signal, cleanup } = createCombinedAbortSignal(init.signal ?? undefined, { timeoutMs });
+  try {
+    return await fetch(input, { ...init, signal });
+  } finally {
+    cleanup();
+  }
+}
+
 async function resolveAvailableModel(
   provider: ProviderName | string,
   apiKey: string,
@@ -384,19 +407,19 @@ async function resolveAvailableModel(
     let availableModels: string[] = [];
 
     if (provider === 'google' || provider === 'google-vertex') {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         'https://generativelanguage.googleapis.com/v1beta/models',
-        { headers: { 'x-goog-api-key': apiKey }, signal: AbortSignal.timeout(5000) },
+        { headers: { 'x-goog-api-key': apiKey } },
+        5000,
       );
       if (res.ok) {
         const data = await res.json() as { models?: Array<{ name: string }> };
         availableModels = (data.models || []).map(m => m.name.replace('models/', ''));
       }
     } else if (provider === 'anthropic') {
-      const res = await fetch('https://api.anthropic.com/v1/models', {
+      const res = await fetchWithTimeout('https://api.anthropic.com/v1/models', {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        signal: AbortSignal.timeout(5000),
-      });
+      }, 5000);
       if (res.ok) {
         const data = await res.json() as { data?: Array<{ id: string }> };
         availableModels = (data.data || []).map(m => m.id);
@@ -404,10 +427,9 @@ async function resolveAvailableModel(
     } else {
       // OpenAI-compatible providers all support GET /models
       const baseUrl = PROVIDER_BASE_URLS[provider as ProviderName] || 'https://api.openai.com/v1';
-      const res = await fetch(`${baseUrl}/models`, {
+      const res = await fetchWithTimeout(`${baseUrl}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(5000),
-      });
+      }, 5000);
       if (res.ok) {
         const data = await res.json() as { data?: Array<{ id: string }> };
         availableModels = (data.data || []).map(m => m.id);
@@ -555,7 +577,7 @@ export function resolveModelForProvider(
  */
 const loadModelRecordsCached = memoizeWithTTLAsync(
   async (url: string, headers: Record<string, string>): Promise<Record<string, unknown>[]> => {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(1500) });
+    const res = await fetchWithTimeout(url, { headers }, 1500);
     if (!res.ok) throw new Error(`model list fetch failed: ${res.status}`);
     return collectModelRecords(await res.json());
   },
@@ -664,7 +686,7 @@ function huggingFaceToken(config: ProviderConfig): string | undefined {
 
 async function readHuggingFaceFile(url: string, headers: Record<string, string>): Promise<number | 'missing' | 'failed'> {
   try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(1000) });
+    const res = await fetchWithTimeout(url, { headers }, 1000);
     if (!res.ok) return 'missing';
     return readHuggingFaceContextWindow(await res.json()) ?? 'missing';
   } catch {
