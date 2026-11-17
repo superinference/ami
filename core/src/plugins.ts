@@ -190,6 +190,24 @@ export interface PluginBundle {
   commandsDir?: string;
   hooksFile?: string;
   /**
+   * ADDITIONAL hook files declared by the manifest `hooks` field (Claude parity:
+   * pluginLoader's `manifest.hooks` string / string[] forms, L1652-1755) — loaded
+   * and merged ON TOP of the standard {@link hooksFile}. Each entry is a resolved,
+   * existing, path-traversal-hardened file, DEDUPED by realpath against the standard
+   * hooks file and against each other (so a manifest entry that just re-points at
+   * `hooks/hooks.json` is dropped, not double-loaded). `undefined` when the manifest
+   * declares no additional files (or none survive). Produced by
+   * {@link resolvePluginManifestHooks}.
+   */
+  hookFiles?: string[];
+  /**
+   * INLINE hook objects declared directly in the manifest `hooks` field (Claude
+   * parity: pluginLoader's `manifest.hooks` inline-object form — an entry that is an
+   * object rather than a file-path string is merged verbatim). Contributed alongside
+   * {@link hooksFile}/{@link hookFiles}. `undefined` when the manifest declares none.
+   */
+  inlineHooks?: Record<string, unknown>[];
+  /**
    * Bundled MCP server config file (Claude parity). A plugin may ship an
    * `.mcp.json` at its root (or a manifest-declared `mcpServers` path) declaring
    * MCP servers it contributes. Path-traversal/symlink hardened like every other
@@ -366,6 +384,35 @@ export interface PluginSettings {
 }
 
 /**
+ * A command's declaration that it recommends installing a plugin (Claude parity:
+ * PluginHintMenu's Props — a `<sourceCommand>` command suggests installing
+ * `<pluginName>` from `<marketplaceName>`). A command/skill file declares
+ * `recommend-plugin`/`recommend-marketplace` (+ optional `recommend-plugin-description`)
+ * so the frontend can surface a command-driven plugin recommendation. Both the
+ * plugin name and the marketplace are required for the recommendation to be usable.
+ */
+export interface PluginRecommendation {
+  /** The plugin the command recommends installing. */
+  pluginName: string;
+  /** The marketplace the plugin is installed from. */
+  marketplaceName: string;
+  /** Optional human-readable blurb shown in the recommendation. */
+  pluginDescription?: string;
+}
+
+/**
+ * A fully-resolved plugin recommendation with its PROVENANCE (Claude parity:
+ * PluginHintMenu's full `Props`, incl. `sourceCommand`). {@link buildPluginRecommendation}
+ * stamps the originating command's user-facing name onto a command's
+ * {@link PluginRecommendation} so the frontend can render
+ * "the <sourceCommand> command suggests installing <pluginName> from <marketplaceName>".
+ */
+export interface PluginRecommendationHint extends PluginRecommendation {
+  /** The command that triggered the recommendation (its user-facing name). */
+  sourceCommand: string;
+}
+
+/**
  * A slash-command definition loaded from a TOML file in a plugin's commands/ dir.
  * Beyond the required name/description/prompt, a command may declare the same
  * behavioral knobs as a Claude Code command (all optional).
@@ -468,6 +515,36 @@ export interface CommandDefinition {
    * {@link redactSensitiveCommandArgs}; omitted (treated as non-sensitive) otherwise.
    */
   isSensitive?: boolean;
+  /**
+   * A plugin this command recommends installing (Claude parity: PluginHintMenu). A
+   * command file declares `recommend-plugin` + `recommend-marketplace` (and an
+   * optional `recommend-plugin-description`); both the plugin name and marketplace
+   * are required, so a command declaring only one yields no recommendation.
+   * Surfaced with provenance via {@link buildPluginRecommendation}. Omitted when the
+   * command declares none.
+   */
+  recommendsPlugin?: PluginRecommendation;
+}
+
+/**
+ * Resolve a command's plugin recommendation WITH provenance (Claude parity:
+ * assembling PluginHintMenu's `Props`). Returns the command's
+ * {@link CommandDefinition.recommendsPlugin} stamped with `sourceCommand` (the
+ * command's user-facing name via {@link getCommandDisplayName}), or undefined when
+ * the command recommends no plugin — so a caller can render the hint without
+ * re-deriving the trigger.
+ */
+export function buildPluginRecommendation(
+  cmd: Pick<CommandDefinition, 'name' | 'displayName' | 'recommendsPlugin'>,
+): PluginRecommendationHint | undefined {
+  const rec = cmd.recommendsPlugin;
+  if (!rec) return undefined;
+  return {
+    pluginName: rec.pluginName,
+    marketplaceName: rec.marketplaceName,
+    ...(rec.pluginDescription !== undefined ? { pluginDescription: rec.pluginDescription } : {}),
+    sourceCommand: getCommandDisplayName(cmd),
+  };
 }
 
 /**
@@ -651,6 +728,93 @@ function resolvePluginHooksFromManifest(root: string, manifest: Record<string, u
   return override ? hardenedResolve(root, override) : resolvePluginHooksFile(root);
 }
 
+/** Options for {@link resolvePluginManifestHooks}. `strict` turns a duplicate hook
+ *  file into a {@link PluginError} (Claude parity: the `strict` flag the marketplace/
+ *  install context passes into the loader); `standardHooksFile` is the automatically-
+ *  loaded `hooks.json`/`hooks/hooks.json` whose realpath seeds the dedup set so a
+ *  manifest entry pointing back at it is never double-loaded. */
+export interface ManifestHooksOptions {
+  source?: string;
+  pluginName?: string;
+  strict?: boolean;
+  standardHooksFile?: string;
+}
+
+/** The canonical realpath of `file`, falling back to the raw path when it cannot be
+ *  resolved (ENOENT / broken symlink) — the SINGLE spelling used for hook-file dedup
+ *  (Claude parity: loadedHookPaths keyed by realpath). */
+function canonicalPath(file: string): string {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return file;
+  }
+}
+
+/**
+ * Resolve a manifest's `hooks` field across EVERY form Claude Code accepts (parity:
+ * pluginLoader L1652-1755): a single value, or an array mixing additional-hooks-file
+ * path STRINGS with INLINE hook objects. The standard `hooks.json`/`hooks/hooks.json`
+ * is loaded automatically (passed as `standardHooksFile`), so `manifest.hooks` only
+ * contributes EXTRA sources:
+ *  - a string → a path to an additional hooks file, resolved + path-traversal
+ *    hardened under `root`; a missing/escaping path yields a `path-not-found`
+ *    {@link PluginError}; a file whose realpath duplicates the standard file (or an
+ *    earlier entry) is dropped, and under `strict` that duplicate becomes a
+ *    `hook-load-failed` error (Claude parity).
+ *  - an object → inline hooks, collected verbatim to be merged.
+ * Returns the ordered, deduped `hookFiles`, the `inlineHooks`, and any `errors`.
+ */
+export function resolvePluginManifestHooks(
+  root: string,
+  manifest: Record<string, unknown>,
+  opts: ManifestHooksOptions = {},
+): { hookFiles: string[]; inlineHooks: Record<string, unknown>[]; errors: PluginError[] } {
+  const hookFiles: string[] = [];
+  const inlineHooks: Record<string, unknown>[] = [];
+  const errors: PluginError[] = [];
+  const raw = manifest.hooks;
+  // A manifest `hooks` STRING names the standard override and is already handled by
+  // resolvePluginHooksFromManifest — only the ARRAY / inline-OBJECT forms add extra
+  // sources here, so a bare string contributes nothing additional.
+  if (raw === undefined || typeof raw === 'string') {
+    return { hookFiles, inlineHooks, errors };
+  }
+  const source = opts.source ?? root;
+  const plugin = opts.pluginName ?? '';
+  const loaded = new Set<string>();
+  if (opts.standardHooksFile) loaded.add(canonicalPath(opts.standardHooksFile));
+  const entries = Array.isArray(raw) ? raw : [raw];
+  for (const entry of entries) {
+    if (typeof entry === 'string') {
+      if (entry.trim() === '') continue;
+      const resolved = hardenedResolve(root, entry);
+      if (resolved === undefined) {
+        errors.push({ type: 'path-not-found', source, plugin, path: path.join(root, entry), component: 'hooks' });
+        continue;
+      }
+      const canonical = canonicalPath(resolved);
+      if (loaded.has(canonical)) {
+        if (opts.strict) {
+          errors.push({
+            type: 'hook-load-failed',
+            source,
+            plugin,
+            hookPath: resolved,
+            reason: `Duplicate hooks file: "${entry}" resolves to an already-loaded file (${canonical}). The standard hooks.json is loaded automatically, so manifest.hooks should only reference ADDITIONAL hook files.`,
+          });
+        }
+        continue;
+      }
+      loaded.add(canonical);
+      hookFiles.push(resolved);
+    } else if (isPlainObject(entry)) {
+      inlineHooks.push(entry);
+    }
+  }
+  return { hookFiles, inlineHooks, errors };
+}
+
 /**
  * Decode the backslash escapes (\n, \t, \\, \") inside a TOML basic-string body.
  * When `stopAtQuote` is set (single-line basic string) an unescaped `"` ends the
@@ -807,6 +971,19 @@ function applyCommandKnobs(
   if (isHidden !== undefined) cmd.isHidden = isHidden;
   const isSensitive = getBool('sensitive') ?? getBool('is-sensitive');
   if (isSensitive !== undefined) cmd.isSensitive = isSensitive;
+  // Plugin recommendation (Claude parity: PluginHintMenu) — a command may suggest
+  // installing a plugin. Both the plugin name AND the marketplace are required; a
+  // command declaring only one of them produces no recommendation.
+  const recPlugin = getStr('recommend-plugin') ?? getStr('recommend_plugin');
+  const recMarketplace = getStr('recommend-marketplace') ?? getStr('recommend_marketplace');
+  if (recPlugin && recMarketplace) {
+    const recDesc = getStr('recommend-plugin-description') ?? getStr('recommend_plugin_description');
+    cmd.recommendsPlugin = {
+      pluginName: recPlugin,
+      marketplaceName: recMarketplace,
+      ...(recDesc ? { pluginDescription: recDesc } : {}),
+    };
+  }
   // Provenance/type discriminators: honor a declared value only when it is a
   // recognized enum member (an unknown string is ignored rather than written
   // through, so a consumer can trust the field's type).
@@ -1239,7 +1416,7 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict'
  *  loadPluginOutputStyles) are all traversal-validated. The server-declaration
  *  fields (mcpServers/lspServers) accept inline-record forms too and are validated
  *  separately via {@link validateServerDeclarations}. */
-const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'hooks', 'agentsPaths', 'outputStyles', 'outputStylesPaths'];
+const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'agentsPaths', 'outputStyles', 'outputStylesPaths'];
 
 /** Manifest fields that declare servers either by FILE PATH (traversal-checked) or
  *  by INLINE RECORD (structurally opaque here): mcpServers (Claude parity:
@@ -1339,6 +1516,33 @@ function validateInlineLspServers(label: string, rec: Record<string, unknown>, e
     } catch (err) {
       errors.push({ path: `${label}.${serverName}`, message: errMessage(err) });
     }
+  }
+}
+
+/**
+ * Validate a manifest's optional `hooks` field across EVERY form Claude accepts
+ * (parity: pluginLoader's `manifest.hooks` — a single additional-hooks-file path
+ * STRING, an ARRAY mixing such path strings with INLINE hook objects, or a single
+ * inline hook OBJECT). A path string is traversal-checked via
+ * {@link validateComponentPathString}; an inline object is structurally opaque here
+ * (its event→matcher shape is linted at load time by {@link validatePluginHooks}).
+ * A non-string / non-object array entry is flagged. This supersedes the generic
+ * component-path check so a legitimate inline-hooks entry is not rejected as "must
+ * be a string".
+ */
+function validateManifestHooks(val: unknown, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (typeof val === 'string') {
+    validateComponentPathString('hooks', val, errors);
+  } else if (Array.isArray(val)) {
+    val.forEach((el, i) => {
+      if (typeof el === 'string') validateComponentPathString(`hooks[${i}]`, el, errors);
+      else if (!isPlainObject(el)) {
+        errors.push({ path: `hooks[${i}]`, message: `Hooks entry must be a file-path string or an inline hooks object (got ${Array.isArray(el) ? 'array' : typeof el}).` });
+      }
+    });
+  } else if (!isPlainObject(val)) {
+    errors.push({ path: 'hooks', message: 'Plugin "hooks" must be a file-path string, an inline hooks object, or an array mixing the two.' });
   }
 }
 
@@ -1900,6 +2104,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   validatePluginChannels(obj.channels, obj, errors);
   validatePluginRequirements(obj.requires, errors);
   validatePluginSettings(obj.settings, errors, warnings);
+  validateManifestHooks(obj.hooks, errors);
 
   for (const field of COMPONENT_PATH_FIELDS) {
     validateComponentPathField(field, obj[field], errors);
@@ -2854,6 +3059,15 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       const err: PluginError = { type: 'path-traversal-blocked', source: root, plugin: name, declaredPath: rel, component };
       failures.push({ root, reason: getPluginErrorMessage(err), error: err });
     };
+    // Additional/inline hooks declared by the manifest `hooks` field (Claude parity:
+    // pluginLoader's string/array/inline forms) merged ON TOP of the standard
+    // hooks.json. The standard file seeds the realpath dedup so a manifest entry
+    // re-pointing at it is dropped. `strict` is a marketplace/install-context input
+    // (not a plugin.json field), so discovery resolves non-strict; the strict path is
+    // exercised by callers that own that context via resolvePluginManifestHooks.
+    const standardHooks = resolvePluginHooksFromManifest(root, manifest);
+    const manifestHooks = resolvePluginManifestHooks(root, manifest, { source: root, pluginName: name, standardHooksFile: standardHooks });
+    for (const err of manifestHooks.errors) failures.push({ root, reason: getPluginErrorMessage(err), error: err });
     bundles.push({
       name,
       version: (manifest.version as string | undefined) ?? '0.0.0',
@@ -2874,7 +3088,11 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       commandsDir: resolveComponentDir(root, manifest, 'commands', 'commands', reportViolation('commands')),
       // Hooks: a manifest-declared `hooks` file path overrides the convention of
       // <root>/hooks.json OR <root>/hooks/hooks.json (the Claude Code layout).
-      hooksFile: resolvePluginHooksFromManifest(root, manifest),
+      hooksFile: standardHooks,
+      // Additional/inline hooks from the manifest `hooks` array/object form (Claude
+      // parity), merged on top of the standard hooks file. Kept only when non-empty.
+      hookFiles: manifestHooks.hookFiles.length > 0 ? manifestHooks.hookFiles : undefined,
+      inlineHooks: manifestHooks.inlineHooks.length > 0 ? manifestHooks.inlineHooks : undefined,
       // MCP servers: a manifest-declared `mcpServers` file path overrides the
       // <root>/.mcp.json convention (Claude Code layout). Hardened like the rest.
       mcpServersFile: resolveComponentDir(root, manifest, 'mcpServers', '.mcp.json'),
