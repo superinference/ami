@@ -18,7 +18,7 @@ import {
   type HookTier,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
-import { sanitizePluginIdSegment } from './plugins';
+import { sanitizePluginIdSegment, readPluginOptionValues, substituteUserConfigValues, buildPluginOptionEnv } from './plugins';
 import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass, categorizeLoadFailure } from './error-classifier';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
@@ -5456,8 +5456,20 @@ export class HookManager extends EventEmitter {
           hookEnv.AMI_PLUGIN_DATA = pluginDataDir;
           coreLog('hooks', `Command hook plugin data dir: ${pluginDataDir}`);
         }
-        const command = substitutePluginData(substitutePluginRoot(config.command, pluginRoot), pluginDataDir);
-        const args = config.args?.map(a => substitutePluginData(substitutePluginRoot(a, pluginRoot), pluginDataDir));
+        // A plugin command hook ALSO receives its user-configured option VALUES
+        // (read from the bundle's `.options.json` sidecar): each value is exported
+        // as CLAUDE_PLUGIN_OPTION_<KEY> (+ the AMI_PLUGIN_OPTION_<KEY> alias) and
+        // the `${user_config.X}` placeholders in the command + args are substituted,
+        // so a hook can resolve configuration without reading the sidecar itself
+        // (Claude Code's CLAUDE_PLUGIN_OPTION_<KEY> + ${user_config.X} substitution,
+        // utils/hooks.ts). Absent/empty for a non-plugin or unconfigured hook.
+        const pluginOptions = pluginRoot ? readPluginOptionValues(pluginRoot) : undefined;
+        if (pluginOptions && Object.keys(pluginOptions).length > 0) {
+          Object.assign(hookEnv, buildPluginOptionEnv(pluginOptions));
+          coreLog('hooks', `Command hook plugin options: ${Object.keys(pluginOptions).join(', ')}`);
+        }
+        const command = substituteUserConfigValues(substitutePluginData(substitutePluginRoot(config.command, pluginRoot), pluginDataDir), pluginOptions);
+        const args = config.args?.map(a => substituteUserConfigValues(substitutePluginData(substitutePluginRoot(a, pluginRoot), pluginDataDir), pluginOptions));
         try {
           const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler);
           // Claude Code exit-code contract:

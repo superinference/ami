@@ -2067,6 +2067,102 @@ export function coercePluginOptionBool(value: string): boolean {
   return PLUGIN_OPTION_TRUTHY.has(value.trim().toLowerCase());
 }
 
+/** Canonical filename of a plugin's saved `userConfig` VALUES sidecar, co-located
+ *  with the plugin bundle root (Claude parity: pluginOptionsStorage's per-plugin
+ *  options file). The sole source of truth for the marker — both the installer's
+ *  option persistence and the hook-env plugin-option injection resolve it here so
+ *  the name is never re-declared. */
+export const PLUGIN_OPTIONS_FILE = '.options.json';
+
+/**
+ * Read a plugin's saved `userConfig` VALUES sidecar at `<dir>/.options.json`,
+ * keeping only primitive values (string/number/boolean). Returns `{}` when the
+ * file is absent, is not a regular file, is unreadable, or contains invalid JSON.
+ *
+ * Reads THROUGH a regular-file guard (`statSync().isFile()` before opening) so a
+ * hostile bundle that plants a FIFO, directory, socket, or device at the sidecar
+ * path can neither block the reader on a pipe nor smuggle a non-object. Canonical
+ * reader (Claude parity: loadPluginOptions / pluginOptionsStorage) — the plugin
+ * installer and the hook-env plugin-option injection both call this; never
+ * re-implement the parse/guard per site.
+ */
+export function readPluginOptionValues(dir: string): Record<string, string | number | boolean> {
+  const file = path.join(dir, PLUGIN_OPTIONS_FILE);
+  let st: fs.Stats;
+  try {
+    // statSync resolves symlinks but does NOT open the node, so it never blocks on
+    // a FIFO the way readFileSync would — the whole point of the guard.
+    st = fs.statSync(file);
+  } catch {
+    return {}; // absent / broken symlink / inaccessible
+  }
+  if (!st.isFile()) return {}; // directory, FIFO, socket, char/block device — never read
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return {};
+  }
+  try {
+    const raw = JSON.parse(content) as unknown;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const out: Record<string, string | number | boolean> = {};
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+      }
+      return out;
+    }
+  } catch {
+    // corrupt JSON → {} (same fail-open contract as an absent sidecar)
+  }
+  return {};
+}
+
+/**
+ * Substitute `${user_config.<key>}` placeholders in a plugin command-hook string
+ * (command or an arg) with the plugin's saved `userConfig` values. An unknown or
+ * absent key resolves to the empty string so a stale placeholder never leaks the
+ * literal `${user_config.x}` onto a command line (Claude parity:
+ * substituteUserConfigVariables). Returns the string unchanged when there are no
+ * values. Only the `user_config.` namespace is touched — every other `${...}`
+ * reference (CLAUDE_PLUGIN_ROOT/DATA, shell env) is left for its own substitution
+ * tier, so this composes with {@link substitutePluginRoot}/{@link substitutePluginData}.
+ */
+export function substituteUserConfigValues(
+  text: string,
+  values: Record<string, string | number | boolean> | undefined,
+): string {
+  if (!text || !values) return text;
+  return text.replace(/\$\{user_config\.([A-Za-z0-9_]+)\}/g, (_match, key: string) => {
+    const v = values[key];
+    return v === undefined ? '' : String(v);
+  });
+}
+
+/**
+ * Build the `CLAUDE_PLUGIN_OPTION_<KEY>` (plus the AMI-native `AMI_PLUGIN_OPTION_<KEY>`
+ * alias) environment variables that expose a plugin's saved `userConfig` values to
+ * its command hooks, so a hook can read configuration from the environment without a
+ * `${user_config.X}` placeholder (Claude parity: CLAUDE_PLUGIN_OPTION_<KEY>, utils/hooks.ts).
+ * Each key is upper-cased with non-identifier characters replaced by `_` so the value
+ * is always shell-referenceable (`$CLAUDE_PLUGIN_OPTION_API_KEY`). Values are stringified.
+ * Returns `{}` when there are no values. Sensitive values ARE included — a command hook
+ * runs the user's own code, the same trust boundary as the hook reading the sidecar directly.
+ */
+export function buildPluginOptionEnv(
+  values: Record<string, string | number | boolean> | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (!values) return env;
+  for (const [key, value] of Object.entries(values)) {
+    const envKey = key.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+    const str = String(value);
+    env[`CLAUDE_PLUGIN_OPTION_${envKey}`] = str;
+    env[`AMI_PLUGIN_OPTION_${envKey}`] = str;
+  }
+  return env;
+}
+
 /**
  * Build the save payload from the raw string inputs the config dialog collected,
  * coercing each by its declared type (Claude parity: PluginOptionsDialog
