@@ -831,6 +831,143 @@ export function matchWorktreeForProjectDir(
   return null;
 }
 
+/**
+ * Minimum interval between two housekeeping (retention) sweeps for one store: 24h.
+ * Mirrors the reference's once-per-day cleanup cadence (backgroundHousekeeping's
+ * `setInterval(..., 24h)` + marker throttle).
+ */
+export const HOUSEKEEPING_PERIOD_MS = 24 * 60 * 60 * 1000;
+
+/** Marker file (under the store dir) recording the epoch-ms of the last completed
+ *  housekeeping sweep, used to throttle the sweep to once per {@link HOUSEKEEPING_PERIOD_MS}
+ *  across concurrent processes. Named with a leading dot + non-`.json` suffix so it is
+ *  never picked up by {@link SessionManager.list}'s `.json` filter. */
+export const HOUSEKEEPING_MARKER_FILE = '.housekeeping.marker';
+
+/** Sub-directory of the store dir whose {@link SESSION_LOCK_FILE} serializes the
+ *  housekeeping sweep across processes (reuses {@link acquireSessionLock} rather
+ *  than a second lock primitive — §0b.6). */
+export const HOUSEKEEPING_LOCK_SUBDIR = '.housekeeping';
+
+/**
+ * True when session retention cleanup is enabled for `cleanupPeriodDays`: a finite,
+ * strictly-positive day count. A missing / non-finite / non-positive value DISABLES
+ * cleanup (parity: Claude's `cleanupPeriodDays === 0` keeps everything). The ONE
+ * acceptance boundary shared by {@link SessionManager.cleanupOldSessions} and the
+ * throttled housekeeping runner so the "is cleanup on?" rule lives in one place.
+ */
+export function isSessionCleanupEnabled(cleanupPeriodDays?: number): boolean {
+  return (
+    cleanupPeriodDays !== undefined &&
+    Number.isFinite(cleanupPeriodDays) &&
+    cleanupPeriodDays > 0
+  );
+}
+
+/**
+ * Decide whether a daily housekeeping sweep is due given the last-run timestamp
+ * (`null` when never run / no marker) and the current time. Due when: never run,
+ * at least `periodMs` has elapsed since the last run, OR the recorded timestamp is
+ * in the FUTURE relative to `now` (a corrupt / clock-skewed marker — treated as due
+ * so a bad marker self-heals on the next sweep instead of wedging cleanup forever).
+ * Pure — the single throttle predicate used by {@link maybeRunDailyHousekeeping}.
+ */
+export function isHousekeepingDue(
+  lastRunMs: number | null,
+  now: number,
+  periodMs: number = HOUSEKEEPING_PERIOD_MS,
+): boolean {
+  if (lastRunMs === null) return true;
+  if (lastRunMs > now) return true; // future/corrupt marker — self-heal
+  return now - lastRunMs >= periodMs;
+}
+
+/**
+ * Injectable dependencies for {@link maybeRunDailyHousekeeping} so the throttle +
+ * cross-process-skip boundary is unit-testable without real time, real marker I/O,
+ * or a real cross-process lock race.
+ */
+export interface HousekeepingDeps {
+  /** Current time source (epoch ms). */
+  now: () => number;
+  /** Throttle period (defaults to {@link HOUSEKEEPING_PERIOD_MS}). */
+  periodMs: number;
+  /** Read the last-run timestamp (epoch ms) from the marker, or `null` when
+   *  absent/unreadable/non-numeric. */
+  readMarker: (markerPath: string) => number | null;
+  /** Persist the last-run timestamp to the marker (best-effort). */
+  writeMarker: (markerPath: string, ts: number) => void;
+  /** Acquire the cross-process housekeeping lock; `acquired:false` means another
+   *  live process holds it (skip this sweep). */
+  acquireLock: (lockDir: string) => { acquired: boolean; release: () => void };
+}
+
+function defaultReadHousekeepingMarker(markerPath: string): number | null {
+  try {
+    const n = parseInt(fs.readFileSync(markerPath, 'utf-8').trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null; // absent / unreadable — treat as never-run
+  }
+}
+
+function defaultWriteHousekeepingMarker(markerPath: string, ts: number): void {
+  try {
+    atomicWriteFileSync(markerPath, String(ts));
+  } catch {
+    /* best-effort — a failed marker write just means the next process re-runs */
+  }
+}
+
+/**
+ * Run `task` AT MOST once per {@link HousekeepingDeps.periodMs} across all processes
+ * sharing `markerDir`, skipping immediately when another process is already running
+ * it. This reproduces the reference's recurring-cleanup concurrency boundary
+ * ("marker files and locks to throttle to once per day and skip immediately if
+ * another process holds the lock", backgroundHousekeeping):
+ *   1. read the day-marker — if a sweep ran within the period, skip (`false`);
+ *   2. try to take the cross-process housekeeping lock — if another live process
+ *      holds it, skip (`false`) rather than piling on a concurrent sweep;
+ *   3. re-check the marker UNDER the lock (a racer may have finished between the
+ *      first check and winning the lock) — skip if no longer due;
+ *   4. run `task()`, stamp the marker with the completion time, release the lock.
+ * Returns `true` only when `task` actually ran. Reuses {@link acquireSessionLock}
+ * (pointed at a dedicated {@link HOUSEKEEPING_LOCK_SUBDIR}) so the stale-lock
+ * reclaim / cross-host logic is shared, not re-implemented (§0b.6).
+ */
+export function maybeRunDailyHousekeeping(
+  markerDir: string,
+  task: () => void,
+  depsOverride: Partial<HousekeepingDeps> = {},
+): boolean {
+  const deps: HousekeepingDeps = {
+    now: Date.now,
+    periodMs: HOUSEKEEPING_PERIOD_MS,
+    readMarker: defaultReadHousekeepingMarker,
+    writeMarker: defaultWriteHousekeepingMarker,
+    acquireLock: (lockDir) => acquireSessionLock(lockDir),
+    ...depsOverride,
+  };
+  const markerPath = path.join(markerDir, HOUSEKEEPING_MARKER_FILE);
+  if (!isHousekeepingDue(deps.readMarker(markerPath), deps.now(), deps.periodMs)) {
+    return false;
+  }
+  const lock = deps.acquireLock(path.join(markerDir, HOUSEKEEPING_LOCK_SUBDIR));
+  if (!lock.acquired) return false; // another process is already sweeping
+  try {
+    // Double-check under the lock: a racer may have completed the sweep (and
+    // stamped the marker) between our due-check above and winning the lock.
+    if (!isHousekeepingDue(deps.readMarker(markerPath), deps.now(), deps.periodMs)) {
+      return false;
+    }
+    task();
+    deps.writeMarker(markerPath, deps.now());
+    return true;
+  } finally {
+    lock.release();
+  }
+}
+
 export class SessionManager {
   private sessionDir: string;
   private cwd: string;
@@ -1246,14 +1383,10 @@ export class SessionManager {
    * cleaned up alongside the JSON. Parity: Claude's cleanupPeriodDays retention.
    */
   cleanupOldSessions(cleanupPeriodDays?: number): number {
-    if (
-      cleanupPeriodDays === undefined ||
-      !Number.isFinite(cleanupPeriodDays) ||
-      cleanupPeriodDays <= 0
-    ) {
+    if (!isSessionCleanupEnabled(cleanupPeriodDays)) {
       return 0;
     }
-    const cutoff = Date.now() - cleanupPeriodDays * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - cleanupPeriodDays! * 24 * 60 * 60 * 1000;
     let removed = 0;
     for (const file of this.listFiles()) {
       let mtimeMs: number;
@@ -1280,6 +1413,34 @@ export class SessionManager {
       } catch { /* best effort — one undeletable file must not abort the sweep */ }
     }
     return removed;
+  }
+
+  /**
+   * Throttled, cross-process-safe variant of {@link cleanupOldSessions}: run the
+   * retention sweep for THIS store AT MOST once per {@link HOUSEKEEPING_PERIOD_MS},
+   * skipping immediately when another process is already sweeping. Without this,
+   * every engine start (and every one of N concurrent processes) ran a full sweep;
+   * now a day-marker + lock in the store dir throttle it to once per day per store
+   * with no concurrent pile-up (parity: Claude's backgroundHousekeeping marker +
+   * lock-skip boundary). Returns `{ ran, removed }`: `ran` is false when the sweep
+   * was throttled or another process held the lock (in which case `removed` is 0).
+   * Retention still DISABLED (no `cleanupPeriodDays`) short-circuits before touching
+   * the marker/lock, so the default keep-everything behaviour is unchanged.
+   */
+  cleanupOldSessionsThrottled(
+    cleanupPeriodDays?: number,
+    depsOverride?: Partial<HousekeepingDeps>,
+  ): { ran: boolean; removed: number } {
+    if (!isSessionCleanupEnabled(cleanupPeriodDays)) {
+      return { ran: false, removed: 0 };
+    }
+    let removed = 0;
+    const ran = maybeRunDailyHousekeeping(
+      this.sessionDir,
+      () => { removed = this.cleanupOldSessions(cleanupPeriodDays); },
+      depsOverride,
+    );
+    return { ran, removed };
   }
 
   /**
