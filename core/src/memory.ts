@@ -401,6 +401,31 @@ export interface MemoryEntry {
 }
 
 /**
+ * Lightweight header record for one stored memory file — its identity and
+ * frontmatter metadata WITHOUT the (potentially large) body. Produced by
+ * {@link MemoryManager.scanMemoryHeaders} for listing/manifest surfaces that only
+ * need names/descriptions/types (e.g. the `/memory` menu) and must not pay to read
+ * every body. Parity with Claude Code's `MemoryHeader` (memdir/memoryScan.ts).
+ */
+export interface MemoryHeader {
+  path: string;
+  name: string;
+  description?: string;
+  memoryType?: MemoryType;
+  mtimeMs: number;
+  bytes: number;
+}
+
+/**
+ * How many leading lines to read when scanning a memory file for its YAML
+ * frontmatter header only (parity with Claude Code's `FRONTMATTER_MAX_LINES`,
+ * memdir/memoryScan.ts). A header scan reads a bounded prefix instead of the whole
+ * file so a manifest/listing over many memories stays cheap and can never be forced
+ * to slurp a runaway body.
+ */
+export const FRONTMATTER_MAX_LINES = 30;
+
+/**
  * The unified memory-source taxonomy — WHERE an instruction/memory originated,
  * as a first-class label distinct from its {@link MemoryType}. Parity with Claude
  * Code's `MEMORY_TYPE_VALUES` (utils/memory/types.ts): User, Project, Local,
@@ -589,6 +614,57 @@ const MEMORY_EXTRA_GUIDELINES_ENV = 'AMI_MEMORY_EXTRA_GUIDELINES';
 export function resolveMemoryExtraGuidelines(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env[MEMORY_EXTRA_GUIDELINES_ENV];
   return raw && raw.trim() ? sanitizeMemoryContent(raw.trim()) : '';
+}
+
+/**
+ * Tunable parameters of the BM25 memory-relevance scorer ({@link computeRelevanceScore}),
+ * the ranking {@link MemoryManager.selectRelevantMemories} uses to pick which stored
+ * memories to surface for a query. Parity with Claude Code's relevance-selection
+ * config knobs (memdir/findRelevantMemories.ts: model/max_tokens/output_format are
+ * exposed so the selection step is tunable rather than hard-coded); AMI's recall is
+ * a local BM25 pass, so the equivalent knobs are the BM25 constants themselves.
+ * - `k1`  — term-frequency saturation (higher ⇒ raw frequency matters more).
+ * - `b`   — length normalization strength, 0‥1 (1 ⇒ fully penalize long memories).
+ * - `avgDl` — assumed average memory length in tokens, the normalization anchor.
+ */
+export interface MemoryRelevanceConfig {
+  k1: number;
+  b: number;
+  avgDl: number;
+}
+
+/** The default BM25 constants used when no env override is set. */
+export const DEFAULT_MEMORY_RELEVANCE: MemoryRelevanceConfig = { k1: 1.2, b: 0.75, avgDl: 50 };
+
+const MEMORY_BM25_K1_ENV = 'AMI_MEMORY_BM25_K1';
+const MEMORY_BM25_B_ENV = 'AMI_MEMORY_BM25_B';
+const MEMORY_BM25_AVGDL_ENV = 'AMI_MEMORY_BM25_AVGDL';
+
+/**
+ * Parse one numeric BM25 env override, clamping it into `[min, max]` and falling
+ * back to `fallback` when unset / non-finite. A malformed or out-of-range knob can
+ * never corrupt the scorer (e.g. a zero `avgDl` would divide by zero, a negative
+ * `k1` would invert the saturation curve) — it is coerced to a safe value instead.
+ */
+function parseBm25Knob(raw: string | undefined, fallback: number, min: number, max: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * Resolve the {@link MemoryRelevanceConfig} from `AMI_MEMORY_BM25_K1` / `_B` /
+ * `_AVGDL`, each clamped to a safe range and defaulting to
+ * {@link DEFAULT_MEMORY_RELEVANCE}. Lets an operator tune memory recall precision
+ * without a code change (and keeps the scorer robust to a hostile/typo'd value).
+ */
+export function resolveMemoryRelevanceConfig(env: NodeJS.ProcessEnv = process.env): MemoryRelevanceConfig {
+  return {
+    k1: parseBm25Knob(env[MEMORY_BM25_K1_ENV], DEFAULT_MEMORY_RELEVANCE.k1, 0, 10),
+    b: parseBm25Knob(env[MEMORY_BM25_B_ENV], DEFAULT_MEMORY_RELEVANCE.b, 0, 1),
+    avgDl: parseBm25Knob(env[MEMORY_BM25_AVGDL_ENV], DEFAULT_MEMORY_RELEVANCE.avgDl, 1, 100_000),
+  };
 }
 
 /**
@@ -1513,6 +1589,29 @@ export function clampIndexEntry(entry: string): string {
 const MAX_MEMORY_FILE_BYTES = 256 * 1024;
 
 /**
+ * Read only the first `maxLines` lines of a file via a BOUNDED byte read (open +
+ * single `readSync` of a fixed window), never loading the whole file. Backs the
+ * header-only {@link MemoryManager.scanMemoryHeaders} so a frontmatter scan over
+ * many memories can't be forced to slurp a runaway body. A YAML frontmatter block
+ * is tiny, so a generous byte window comfortably contains `maxLines` lines; the
+ * window is clamped to {@link MAX_MEMORY_FILE_BYTES} and the result trimmed to
+ * `maxLines`. The fd is always closed, even on a partial/failed read.
+ */
+function readFileHeadBounded(filePath: string, maxLines: number): string {
+  // ~512 bytes/line is a generous upper bound for a frontmatter line; cap the
+  // whole window so even a pathological single-line file can't blow the read.
+  const windowBytes = Math.min(MAX_MEMORY_FILE_BYTES, Math.max(4096, maxLines * 512));
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(windowBytes);
+    const bytesRead = fs.readSync(fd, buf, 0, windowBytes, 0);
+    return buf.toString('utf-8', 0, bytesRead).split('\n').slice(0, maxLines).join('\n');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Aggregate file-count ceiling for the shared TEAM memory store. Team memories are
  * committed to version control and contributed by everyone in the project, so —
  * unlike the private store — there is no per-author limit on how many accumulate.
@@ -1558,7 +1657,12 @@ function isSuppressedToolReference(mem: MemoryEntry, recentTools: readonly strin
   return !TOOL_WARNING_SIGNAL_RE.test(hay);
 }
 
-function computeRelevanceScore(memoryText: string, queryTokens: string[], idfMap: Map<string, number>): number {
+function computeRelevanceScore(
+  memoryText: string,
+  queryTokens: string[],
+  idfMap: Map<string, number>,
+  cfg: MemoryRelevanceConfig = DEFAULT_MEMORY_RELEVANCE,
+): number {
   const memTokens = tokenize(memoryText);
   if (memTokens.length === 0) return 0;
 
@@ -1568,9 +1672,7 @@ function computeRelevanceScore(memoryText: string, queryTokens: string[], idfMap
   }
 
   let score = 0;
-  const k1 = 1.2;
-  const b = 0.75;
-  const avgDl = 50;
+  const { k1, b, avgDl } = cfg;
 
   for (const qt of queryTokens) {
     const freq = tf.get(qt) || 0;
@@ -2128,6 +2230,57 @@ export class MemoryManager {
     // Cap AFTER the recency sort so the newest memories are kept, not an
     // arbitrary alphabetical (chronological-ascending) prefix of the dir.
     return entries.slice(0, MAX_MEMORY_FILES);
+  }
+
+  /**
+   * Single-pass, header-ONLY scan of the stored-memory directory: for every memory
+   * file, read a BOUNDED prefix ({@link FRONTMATTER_MAX_LINES} lines) to parse its
+   * frontmatter and reuse the mtime/size from the SAME stat call — never slurping the
+   * body. Parity with Claude Code's `scanMemoryFiles` (memdir/memoryScan.ts): a
+   * listing/manifest surface (the `/memory` menu) that only needs names, descriptions
+   * and types must not pay to read every body, and a runaway body can never force a
+   * giant read. Returns headers sorted newest-first, capped like {@link loadMemories};
+   * the `team/` subtree and the `MEMORY.md` index are excluded (both loaded elsewhere).
+   */
+  scanMemoryHeaders(): MemoryHeader[] {
+    const memoryDir = this.getMemoryDir();
+    let files: string[];
+    try {
+      files = (fs.readdirSync(memoryDir, { recursive: true }) as string[])
+        .filter(f =>
+          typeof f === 'string' &&
+          f.endsWith('.md') &&
+          path.basename(f) !== MEMORY_INDEX_FILENAME &&
+          f.split(/[\\/]/)[0] !== 'team');
+    } catch (err) {
+      logUnexpectedReadError(err, memoryDir);
+      return [];
+    }
+
+    const MAX_MEMORY_FILES = 200;
+    const headers: MemoryHeader[] = [];
+    for (const file of files) {
+      const filePath = path.join(memoryDir, file);
+      try {
+        const stat = this._statSync(filePath);
+        if (!stat.isFile()) continue;
+        const head = readFileHeadBounded(filePath, FRONTMATTER_MAX_LINES);
+        const { frontmatter } = parseFrontmatter(head, filePath);
+        headers.push({
+          path: filePath,
+          name: frontmatter.name || path.basename(file, '.md'),
+          description: frontmatter.description || undefined,
+          memoryType: parseMemoryType(frontmatter.type),
+          mtimeMs: stat.mtimeMs,
+          bytes: stat.size,
+        });
+      } catch {
+        // Per-file graceful failure — skip an unreadable file rather than aborting
+        // the whole scan (mirrors scanMemoryFiles' per-file allSettled filtering).
+      }
+    }
+    headers.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return headers.slice(0, MAX_MEMORY_FILES);
   }
 
   /**
@@ -2701,11 +2854,20 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * reference memory is noise (the conversation already demonstrates it), so
    * such `reference`-type memories are dropped; warning/gotcha/known-issue
    * memories about the same tool are preserved (mirrors the `recentTools` rule).
+   *
+   * `opts.relevance` — override the BM25 scoring constants for this call; any
+   * omitted field falls back to the env-resolved {@link resolveMemoryRelevanceConfig}
+   * (`AMI_MEMORY_BM25_K1` / `_B` / `_AVGDL`), so recall precision is tunable
+   * per-call or per-deployment without changing the scorer.
    */
   selectRelevantMemories(
     query: string,
     maxResults: number = 5,
-    opts?: { recentTools?: readonly string[]; alreadySurfaced?: ReadonlySet<string> },
+    opts?: {
+      recentTools?: readonly string[];
+      alreadySurfaced?: ReadonlySet<string>;
+      relevance?: Partial<MemoryRelevanceConfig>;
+    },
   ): MemoryEntry[] {
     let all = this.loadMemories();
 
@@ -2753,9 +2915,14 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         idfMap.set(qt, Math.log((N - df + 0.5) / (df + 0.5) + 1));
       }
 
+      // BM25 constants: env-resolved defaults, overridable per-call via opts.relevance.
+      const relevanceCfg: MemoryRelevanceConfig = {
+        ...resolveMemoryRelevanceConfig(),
+        ...opts?.relevance,
+      };
       const scored = all.map((mem, i) => ({
         mem,
-        score: computeRelevanceScore(allMemTexts[i], queryTokens, idfMap),
+        score: computeRelevanceScore(allMemTexts[i], queryTokens, idfMap, relevanceCfg),
       }));
 
       scored.sort((a, b) => b.score - a.score);
@@ -2896,6 +3063,26 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   }
 
   /**
+   * Snapshot of the shared TEAM-memory subsystem for introspection surfaces
+   * (`/memory`, `/doctor`). Parity with Claude Code's team-memory entrypoint
+   * reporting (memdir/teamMemPaths.ts `isTeamMemoryEnabled` + `getTeamMemPath` /
+   * `getTeamMemEntrypoint`): tells the user WHETHER the team store is active, WHERE
+   * it lives, its always-loaded `MEMORY.md` entrypoint, and HOW MANY shared memory
+   * files it currently holds — so a disabled or empty team store is visible rather
+   * than silently contributing nothing. `fileCount` reuses the canonical
+   * {@link countMemoriesByScope} team tally (no second traversal/definition).
+   */
+  getTeamMemoryState(): { enabled: boolean; dir: string; entrypoint: string; fileCount: number } {
+    const dir = this.getTeamMemoryDir();
+    return {
+      enabled: isTeamMemoryEnabled(),
+      dir,
+      entrypoint: path.join(dir, MEMORY_INDEX_FILENAME),
+      fileCount: this.countMemoriesByScope().team,
+    };
+  }
+
+  /**
    * Count persisted memory topic files split by scope, for the save-confirmation
    * summary surfaced by the `write_memory` tool. Mirrors Claude Code's
    * teamMemSaved count split (team vs private). The `MEMORY.md` index is a table
@@ -2969,6 +3156,34 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       checkedIn,
       description: `${checkedIn ? 'Checked in at' : 'Saved in'} ${display}`,
     };
+  }
+
+  /**
+   * Enumerate the canonical USER and PROJECT instruction-file entrypoints with an
+   * `exists` flag — so the `/memory` surface can offer a "(new)" affordance for an
+   * absent one, telling the user they CAN create it (parity with Claude Code's
+   * MemoryFileSelector, which synthesizes non-existent User/Project CLAUDE.md rows
+   * labeled `(new)`). When a tier already has an instruction file it is reported as
+   * existing at its real discovered path (reusing {@link findInstructionFile} — the
+   * same primitive the loader uses, so this can never diverge from what is actually
+   * loaded); otherwise the canonical creatable path (`CLAUDE.md`) is returned with
+   * `exists:false`. User tier checks `~/.ami` then `~/.claude`; project tier checks
+   * the cwd.
+   */
+  enumerateInstructionCandidates(): { scope: 'user' | 'project'; path: string; relativePath: string; exists: boolean }[] {
+    const canonical = INSTRUCTION_FILES[0]; // 'CLAUDE.md' — highest-priority creatable entrypoint
+    const userBase = path.join(os.homedir(), '.ami');
+    const existingUser = this.findInstructionFile(userBase)
+      ?? this.findInstructionFile(path.join(os.homedir(), '.claude'));
+    const userPath = existingUser ?? path.join(userBase, canonical);
+    const cwd = path.resolve(this.cwd);
+    const existingProject = this.findInstructionFile(cwd);
+    const projectPath = existingProject ?? path.join(cwd, canonical);
+    const projectRel = path.relative(this.cwd, projectPath) || path.basename(projectPath);
+    return [
+      { scope: 'user', path: userPath, relativePath: abbreviateHome(userPath), exists: existingUser !== null },
+      { scope: 'project', path: projectPath, relativePath: projectRel, exists: existingProject !== null },
+    ];
   }
 
   /**
