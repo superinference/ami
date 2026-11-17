@@ -1215,6 +1215,15 @@ export interface EngineConfig {
   /** Centralized permission prompt handler. Both CLI and VSCode implement this interface. */
   permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   /**
+   * Name of a registered tool to DELEGATE every non-interactive ("ask") permission decision
+   * to (parity: Claude Code's `--permission-prompt-tool <name>`). In a headless/detached run,
+   * instead of auto-denying an `ask`, the engine invokes this tool with
+   * `{ tool_name, input, tool_use_id }` and parses its JSON result into an allow/deny decision
+   * (see core `parsePermissionPromptToolResult`). The named tool is removed from the advertised
+   * toolset so the model cannot call it directly. Absent → the standard headless policy applies.
+   */
+  permissionPromptToolName?: string;
+  /**
    * Resolve an MCP server elicitation request (2025-06-18). Interactive
    * frontends prompt the user; absent this handler the engine declines, so a
    * detached run never blocks. Receives the server name and the request.

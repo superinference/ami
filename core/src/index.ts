@@ -83,6 +83,15 @@ export {
 } from './permissions';
 export type { PermissionRuleValue, FileOperationType, ConfigFolderScope } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
+// Delegated permission-prompt tool result parsing (parity: --permission-prompt-tool).
+// Wired through common/tool-executor; re-exported here so the building block is part of
+// the public core surface and reachable in the core import graph.
+export { parsePermissionPromptToolResult, buildPermissionPromptToolInput } from './permission-prompt-tool';
+export type {
+  PermissionPromptToolDecision,
+  ParsePermissionPromptToolResult,
+  PermissionPromptToolInput,
+} from './permission-prompt-tool';
 export {
   SessionMemoryExtractor,
   selectIncrementalWindow,
