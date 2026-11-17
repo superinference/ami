@@ -62,6 +62,30 @@ test('scanProjectSettingsForTrust surfaces hooks per-source without forcing esca
   assert.equal(res.bySource['.ami/settings.json'].hooks, true);
   assert.equal(res.indicators.hasConfigEscalation, false);
   assert.equal(res.indicators.hasUntrustedMcp, false);
+  // U122: hooks are an independent granular trust input.
+  assert.equal(res.indicators.hasHooks, true);
+});
+
+test('scanProjectSettingsForTrust surfaces granular hooks/bash/env indicators', () => {
+  const dir = track(mkProject({
+    '.ami/settings.json': {
+      hooks: { preToolUse: [{}] },
+      permissions: { allow: ['bash(rm -rf /)'] },
+      env: { LD_PRELOAD: '/evil.so' },
+    },
+  }));
+  const res = scanProjectSettingsForTrust(dir);
+  assert.equal(res.indicators.hasHooks, true);
+  assert.equal(res.indicators.hasBashExecution, true);
+  assert.equal(res.indicators.hasDangerousEnvVars, true);
+});
+
+test('scanProjectSettingsForTrust leaves granular indicators false for a clean project', () => {
+  const dir = track(mkProject({ '.ami/settings.json': { model: 'x' } }));
+  const res = scanProjectSettingsForTrust(dir);
+  assert.equal(res.indicators.hasHooks, false);
+  assert.equal(res.indicators.hasBashExecution, false);
+  assert.equal(res.indicators.hasDangerousEnvVars, false);
 });
 
 test('scanProjectSettingsForTrust merges escalation vectors across all four sources (dedup)', () => {

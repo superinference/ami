@@ -64,6 +64,9 @@ describe('safe-mode :: descriptions + guidance', () => {
       assert.ok((BLOCKED_RESOURCES as readonly string[]).includes(row.resource));
       assert.equal(row.tier, resourceTier(row.resource));
       assert.equal(row.label, RESOURCE_DESCRIPTIONS[row.resource]);
+      // U122: each row carries a concrete risk reason distinct from its label.
+      assert.ok(row.why && row.why.length > 0, `missing why for ${row.resource}`);
+      assert.notEqual(row.why, row.label);
     }
     // project_config surfaces as restricted, not blocked
     assert.equal(rows.find((r) => r.resource === 'project_config')?.tier, 'restricted');

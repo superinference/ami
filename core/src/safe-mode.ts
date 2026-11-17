@@ -187,6 +187,15 @@ export interface TrustIndicators {
   /** Project settings flag a config-sourced escalation vector (apiKeyHelper, aws/
    *  gcp/otel helper, or a non-allowlisted env var) — treat as untrusted. */
   hasConfigEscalation?: boolean;
+  /** Project settings declare lifecycle hooks (shell out on tool/session events).
+   *  An independent dangerous source: present alone it engages safe mode. */
+  hasHooks?: boolean;
+  /** Project settings pre-grant the bash tool via a permission `allow` rule (auto
+   *  arbitrary-shell execution). An independent dangerous source. */
+  hasBashExecution?: boolean;
+  /** Project settings inject `env` vars outside the SAFE_ENV_VARS allowlist
+   *  (PATH/LD_PRELOAD/NODE_OPTIONS/… hijack). An independent dangerous source. */
+  hasDangerousEnvVars?: boolean;
   /** Roots the user has already trusted (e.g. the git-root/original project path).
    *  If `cwd` is one of these or a descendant, safe mode is NOT forced for the
    *  trust indicators (inheritance), mirroring computeTrustDialogAccepted. */
@@ -245,12 +254,22 @@ export function scanProjectSettingsForTrust(cwd: string): SafeModeScanResult {
     new Set(Object.values(sources).flatMap(s => detectConfigEscalationVectors(s))),
   );
   const hasUntrustedMcp = Object.values(bySource).some(sig => sig.mcpServers.length > 0);
+  // Granular, independently-detected trust inputs (parity: Claude's TrustDialog
+  // per-category risk signals). Each is surfaced on the derived indicators so the
+  // trust gate can both DECIDE on any single dangerous source and DISCLOSE exactly
+  // which category is present — not just the coarse escalation/MCP pair.
+  const hasHooks = Object.values(bySource).some(sig => sig.hooks);
+  const hasBashExecution = Object.values(bySource).some(sig => sig.bashPermissions.length > 0);
+  const hasDangerousEnvVars = Object.values(bySource).some(sig => sig.dangerousEnvVars.length > 0);
   return {
     bySource,
     escalationVectors,
     indicators: {
       hasConfigEscalation: escalationVectors.length > 0,
       hasUntrustedMcp,
+      hasHooks,
+      hasBashExecution,
+      hasDangerousEnvVars,
     },
   };
 }
@@ -330,6 +349,23 @@ export const RESOURCE_DESCRIPTIONS: Record<BlockedResource, string> = {
 };
 
 /**
+ * The concrete risk each governed resource poses when honored from an untrusted
+ * project — the "why it is withheld" paired with the {@link RESOURCE_DESCRIPTIONS}
+ * "what it is". Distinct from the label so a frontend can show both the resource
+ * and the specific threat, mirroring Claude's TrustDialog per-vector risk prose.
+ */
+export const RESOURCE_WHY: Record<BlockedResource, string> = {
+  prompt_override: 'Can silently rewrite the agent\'s instructions to act against you',
+  project_memory: 'Can inject hidden directives the agent treats as trusted guidance',
+  project_skills: 'Can run arbitrary tool calls (shell, file edits, network) on load',
+  project_config: 'Can redirect the model/provider or widen permissions without consent',
+  mcp_servers: 'Each server is an external process that can execute arbitrary code',
+  hooks: 'Shell out automatically on tool/session events before you can intervene',
+  plugins: 'Bundle untrusted skills, commands, and hooks that run on load',
+  dangerous_env_vars: 'Can hijack process behavior (PATH/LD_PRELOAD/NODE_OPTIONS) to run code',
+};
+
+/**
  * Actionable next-step shown with the blocked-resource notice: how to review the
  * project and opt back in once trusted. Parity with Claude's TrustDialog
  * "Security guide" affordance / "take a moment to review what's in this folder".
@@ -339,11 +375,13 @@ export const SAFE_MODE_GUIDANCE =
   + '.ami/.claude settings, hooks, and MCP config before trusting this folder, then set '
   + '"safeMode": false in your config to load them.';
 
-/** One disclosure row per governed resource: its tier and a human-readable label. */
+/** One disclosure row per governed resource: its tier, a human-readable label
+ *  (what it is), and the concrete risk it poses (why it is withheld). */
 export interface BlockedResourceInfo {
   resource: BlockedResource;
   tier: ResourceTier;
   label: string;
+  why: string;
 }
 
 /**
@@ -358,21 +396,52 @@ export function describeBlocked(): BlockedResourceInfo[] {
     resource,
     tier: resourceTier(resource),
     label: RESOURCE_DESCRIPTIONS[resource],
+    why: RESOURCE_WHY[resource],
   }));
 }
 
-export function shouldEnableSafeMode(cwd: string, indicators: TrustIndicators): boolean {
-  // Ancestor/git-root trust inheritance: a cwd inside an already-trusted root is
-  // not re-flagged as untrusted. Hard escalation signals (prompt-override+MCP,
-  // config escalation) still engage safe mode even inside a trusted root.
+/** The reasoned verdict of {@link evaluateSafeMode}: whether safe mode should
+ *  engage and, if so, the specific triggering source (for user-facing explanation). */
+export interface SafeModeDecision {
+  enabled: boolean;
+  reason?: string;
+}
+
+/**
+ * Decide whether safe mode should engage for `cwd` AND name the specific source
+ * that triggered it. Unlike the bare boolean {@link shouldEnableSafeMode}, this
+ * returns the triggering reason so a caller can tell the user exactly WHY safe mode
+ * turned on, instead of a generic "safe mode active".
+ *
+ * Every independently-detected dangerous source is OR-combined — ANY one present
+ * engages safe mode (parity with Claude's TrustDialog, which forces a trust
+ * decision when ANY of hooks / bash execution / credential helpers / dangerous
+ * env vars / MCP servers is present). Ancestor/git-root trust inheritance still
+ * suppresses the untrusted-project / cloned-from-unknown flags for a cwd inside an
+ * already-trusted root; the hard config/hook/bash/env escalation signals engage
+ * safe mode even there. The legacy prompt-override+MCP pairing is retained as a
+ * deliberate AMI design (MCP servers are a normal configured capability, so MCP
+ * alone does not force safe mode) and is evaluated last.
+ */
+export function evaluateSafeMode(cwd: string, indicators: TrustIndicators): SafeModeDecision {
   const inherited = indicators.trustedRoots ? isTrustedByAncestor(cwd, indicators.trustedRoots) : false;
   if (!inherited) {
-    if (indicators.untrustedProject) return true;
-    if (indicators.clonedFromUnknown) return true;
+    if (indicators.untrustedProject) return { enabled: true, reason: 'untrusted project directory' };
+    if (indicators.clonedFromUnknown) return { enabled: true, reason: 'cloned from an unknown source' };
   }
-  if (indicators.hasConfigEscalation) return true;
-  if (indicators.hasPromptOverride && indicators.hasUntrustedMcp) return true;
-  return false;
+  if (indicators.hasConfigEscalation) return { enabled: true, reason: 'project settings run a credential/command helper or inject a dangerous environment variable' };
+  if (indicators.hasDangerousEnvVars) return { enabled: true, reason: 'project settings inject environment variables outside the safe allowlist' };
+  if (indicators.hasHooks) return { enabled: true, reason: 'project settings declare lifecycle hooks that shell out on events' };
+  if (indicators.hasBashExecution) return { enabled: true, reason: 'project settings pre-grant the bash tool' };
+  if (indicators.hasPromptOverride && indicators.hasUntrustedMcp) return { enabled: true, reason: 'untrusted prompt override combined with project-declared MCP servers' };
+  return { enabled: false };
+}
+
+/** Boolean convenience wrapper over {@link evaluateSafeMode} — true when safe mode
+ *  should engage for `cwd`. Single source of truth: the decision logic lives in
+ *  {@link evaluateSafeMode}; this discards the reason for boolean callers. */
+export function shouldEnableSafeMode(cwd: string, indicators: TrustIndicators): boolean {
+  return evaluateSafeMode(cwd, indicators).enabled;
 }
 
 export class SafeModeGuard {
