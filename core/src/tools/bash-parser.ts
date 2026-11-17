@@ -17,6 +17,16 @@ export interface CommandNode {
    * Mirrors Claude Code's `OutputRedirection[]` on a parsed command.
    */
   redirections?: OutputRedirection[];
+  /**
+   * Variable assignments that PREFIX this simple command (`FOO=bar cmd`) or that
+   * ARE the command (a bare `FOO=bar`), as a name→resolved-value map. Only present
+   * on `simple` nodes that carry at least one assignment. {@link extractCommands}
+   * reads these to track a static variable scope so a `$VAR` later used as a
+   * command NAME resolves to its assigned value — defeating the
+   * `A=nc; $A -e …` blocklist-evasion. Mirrors Claude Code's `varScope` tracking
+   * in utils/bash/ast.ts (collectCommands).
+   */
+  assignments?: Record<string, string>;
   raw: string;
 }
 
@@ -502,9 +512,15 @@ function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState):
   if (words.length === 0) return null;
 
   const envVars: string[] = [];
+  const assignments: Record<string, string> = {};
   let cmdIdx = 0;
   while (cmdIdx < words.length && /^[A-Za-z_]\w*=/.test(words[cmdIdx])) {
-    envVars.push(words[cmdIdx]);
+    const w = words[cmdIdx];
+    envVars.push(w);
+    const eq = w.indexOf('=');
+    // Resolve quoting/escapes on the VALUE so a quoted alias (`A="nc"`) tracks the
+    // literal `nc` the shell would run — the same unquoting applied to command names.
+    assignments[w.slice(0, eq)] = resolveShellWord(w.slice(eq + 1));
     cmdIdx++;
   }
 
@@ -526,6 +542,7 @@ function parseSimpleCommand(lexer: BashLexer, depth: number, state: ParseState):
     redirections: redirections.length > 0
       ? redirections.map(({ target, operator }) => ({ target, operator }))
       : undefined,
+    assignments: Object.keys(assignments).length > 0 ? assignments : undefined,
     raw: lexer.getRemaining().length < startPos ? command : words.join(' '),
   };
 }
@@ -690,12 +707,39 @@ function recoverHiddenCommand(tokens: string[]): string | null {
   return null;
 }
 
+/**
+ * If `token` is a plain variable reference used where a command NAME is expected
+ * — `$VAR` or `${VAR}` with a `[A-Za-z_]\w*` name and nothing else — return the
+ * variable name; otherwise null. Special parameters (`$?`, `$$`, `$!`, `$#`,
+ * `$0`, `$@`, `$*`, `$-`) and expansions with operators (`${X:-y}`, `$VAR/sub`)
+ * do not match — only a bare indirect command invocation does. Used by
+ * {@link extractCommands} to resolve `$VAR` command names against the tracked
+ * assignment scope. Mirrors Claude Code's indirect-command resolution.
+ */
+function parseVariableReference(token: string): string | null {
+  const m = /^\$\{([A-Za-z_]\w*)\}$/.exec(token) ?? /^\$([A-Za-z_]\w*)$/.exec(token);
+  return m ? m[1] : null;
+}
+
 export function extractCommands(node: CommandNode): string[] {
   const commands: string[] = [];
 
-  function walk(n: CommandNode): void {
+  // `scope` is a static map of variable name → assigned value, tracked so a
+  // `$VAR` later used as a command name resolves to the literal the shell would
+  // run. The scope is CARRIED across `&&`/`;` (both clauses run with the prior
+  // assignment visible) but RESET across `||`, `|` and `&` and NOT propagated
+  // out of a subshell/command-substitution — clauses that may not run, or run in
+  // a subshell, must not leak a value. Mirrors Claude's varScope reset rules.
+  function walk(n: CommandNode, scope: Map<string, string>): void {
     if (n.type === 'simple' && n.command) {
-      commands.push(n.command);
+      if (n.assignments) {
+        for (const [k, v] of Object.entries(n.assignments)) scope.set(k, v);
+      }
+      const varName = parseVariableReference(n.command);
+      const resolved = varName !== null && scope.has(varName)
+        ? scope.get(varName) as string
+        : n.command;
+      commands.push(resolved);
       // When a simple node leads with a shell keyword, the real command is hidden
       // behind it (control-flow body or brace command group). Surface it so
       // AST-based blockers see `if …; then nc …; fi`, `{ socat …; }`,
@@ -706,13 +750,34 @@ export function extractCommands(node: CommandNode): string[] {
         // quoting/escapes too — `{ "insmod" x; }` must surface `insmod`.
         if (recovered) commands.push(resolveShellWord(recovered));
       }
+      return;
     }
-    if (n.children) {
-      for (const child of n.children) walk(child);
+    if (n.type === 'list') {
+      const kids = n.children ?? [];
+      const ops = (n.operator ?? '').split(',');
+      const snapshot = new Map(scope);
+      let cur = scope;
+      for (let i = 0; i < kids.length; i++) {
+        walk(kids[i], cur);
+        // Reset the tracked scope entering a clause that bash runs conditionally
+        // (`||` RHS), in the background (`&`), so assignments before it do not
+        // falsely attribute to it. `&&`/`;` carry the accumulated scope forward.
+        const op = ops[i];
+        if (op === '||' || op === '&') cur = new Map(snapshot);
+      }
+      return;
     }
+    if (n.type === 'pipeline') {
+      // Each pipe stage is its own subshell — assignments never cross a `|`.
+      for (const child of n.children ?? []) walk(child, new Map(scope));
+      return;
+    }
+    // subshell / command_substitution: inherits a COPY of the outer scope but its
+    // own assignments do not leak back out.
+    for (const child of n.children ?? []) walk(child, new Map(scope));
   }
 
-  walk(node);
+  walk(node, new Map());
   return commands;
 }
 
