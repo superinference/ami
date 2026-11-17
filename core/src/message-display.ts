@@ -1,0 +1,156 @@
+/**
+ * Message / tool-call / tool-result DISPLAY DISCRIMINATORS (pure, platform-free).
+ *
+ * Building blocks that classify how a message, tool call, or tool result should be
+ * rendered — the branching logic a frontend needs, kept out of any UI layer so both
+ * the CLI and any other frontend derive identical states from the same source.
+ *
+ * Parity targets (Claude Code):
+ *  - `UserToolResultMessage` 4-way result discrimination (canceled/rejected/interrupted/error/success)
+ *  - `AssistantToolUseMessage` queued (requested-but-not-started) tool-call state
+ *  - `SystemTextMessage` severity-level styling + verbose-gated info suppression
+ *  - `AssistantRedactedThinkingMessage` redacted/encrypted reasoning placeholder
+ */
+
+import type { ToolResult } from './types';
+import { SYNTHETIC_TOOL_RESULT_PLACEHOLDER } from './provider-transform';
+
+// ---------------------------------------------------------------------------
+// Tool-result state (parity: UserToolResultMessage.tsx L40-L104)
+// ---------------------------------------------------------------------------
+
+export const TOOL_RESULT_STATES = ['canceled', 'rejected', 'interrupted', 'error', 'success'] as const;
+export type ToolResultState = (typeof TOOL_RESULT_STATES)[number];
+
+/**
+ * Discriminate a {@link ToolResult} into one of five mutually-exclusive render
+ * states, instead of collapsing everything non-successful into a single `isError`.
+ *
+ * Precedence mirrors Claude's component order: an explicit `canceled` marker wins,
+ * then `rejected` (user denied at a permission prompt), then `interrupted`
+ * (stop/abort with no real result — also inferred from the synthetic interrupt
+ * placeholder content so a result that only carries the sentinel text is still
+ * classified correctly), then a plain `isError`, else `success`.
+ */
+export function classifyToolResultState(result: ToolResult): ToolResultState {
+  if (result.canceled) return 'canceled';
+  if (result.rejected) return 'rejected';
+  if (result.interrupted || result.output === SYNTHETIC_TOOL_RESULT_PLACEHOLDER) return 'interrupted';
+  if (result.isError) return 'error';
+  return 'success';
+}
+
+/** Whether a result state represents a failed/aborted call (anything but success). */
+export function isUnsuccessfulToolResult(state: ToolResultState): boolean {
+  return state !== 'success';
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call display state (parity: AssistantToolUseMessage.tsx L110-L121,L186)
+// ---------------------------------------------------------------------------
+
+export const TOOL_CALL_DISPLAY_STATES = ['queued', 'running', 'resolved'] as const;
+export type ToolCallDisplayState = (typeof TOOL_CALL_DISPLAY_STATES)[number];
+
+/**
+ * Derive the per-block display state of a tool call from the two lookup sets a
+ * frontend maintains, exactly as Claude does:
+ *  - `resolved`  — the id is in `resolvedToolUseIds` (it has a result);
+ *  - `running`   — not resolved, but in `inProgressToolUseIds` (executing now);
+ *  - `queued`    — neither: requested in the assistant message but not yet started
+ *                  (rendered as a dim dot so a whole batch of pending calls is visible).
+ *
+ * Resolved takes precedence over in-progress so a stale in-progress entry can never
+ * mask a completed call.
+ */
+export function deriveToolCallDisplayState(
+  toolCallId: string,
+  inProgressToolUseIds: ReadonlySet<string>,
+  resolvedToolUseIds: ReadonlySet<string>,
+): ToolCallDisplayState {
+  if (resolvedToolUseIds.has(toolCallId)) return 'resolved';
+  if (inProgressToolUseIds.has(toolCallId)) return 'running';
+  return 'queued';
+}
+
+// ---------------------------------------------------------------------------
+// System-message severity display (parity: SystemTextMessage.tsx L200-L239)
+// ---------------------------------------------------------------------------
+
+export type SystemMessageLevel = 'info' | 'warning' | 'error';
+
+export interface SystemMessageDisplay {
+  /** When true the message must not be rendered at all (info-level, non-verbose). */
+  suppressed: boolean;
+  /** Show the leading severity dot (every level except info). */
+  showDot: boolean;
+  /** Text color token: `'warning'` for warning level, else undefined (default). */
+  color: 'warning' | undefined;
+  /** Dim the text (info-level only). */
+  dimColor: boolean;
+}
+
+export interface SystemMessageDisplayOptions {
+  /** Verbose mode renders info-level messages that would otherwise be suppressed. */
+  verbose?: boolean;
+  /** A stop-hook summary is always shown regardless of level/verbose. */
+  isStopHookSummary?: boolean;
+}
+
+/**
+ * Compute how a system message of a given severity `level` should render.
+ *
+ * Mirrors Claude's `SystemTextMessage`: info-level messages are suppressed unless
+ * verbose (or it is a stop-hook summary); the dot shows for every level except info;
+ * color is `'warning'` only for warnings; dimColor applies only to info. An absent
+ * level is treated as `info` (AMI's default low-importance notice).
+ */
+export function systemMessageDisplay(
+  level: SystemMessageLevel | undefined,
+  opts: SystemMessageDisplayOptions = {},
+): SystemMessageDisplay {
+  const effective: SystemMessageLevel = level ?? 'info';
+  const isInfo = effective === 'info';
+  const suppressed = isInfo && !opts.verbose && !opts.isStopHookSummary;
+  return {
+    suppressed,
+    showDot: !isInfo,
+    color: effective === 'warning' ? 'warning' : undefined,
+    dimColor: isInfo,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Redacted/encrypted reasoning placeholder (parity: AssistantRedactedThinkingMessage.tsx)
+// ---------------------------------------------------------------------------
+
+/** Dim-italic placeholder shown when the model produced an encrypted/redacted
+ *  thinking block with no displayable plaintext, so the user still sees that
+ *  reasoning happened. Parity: Claude's `✻ Thinking…` redacted-thinking affordance. */
+export const REDACTED_THINKING_PLACEHOLDER = '✻ Thinking…';
+
+/** A minimal structural view of a provider content block, enough to detect the
+ *  `redacted_thinking` variant without depending on any provider SDK type. */
+interface MaybeContentBlock {
+  type?: unknown;
+}
+
+/** True when `block` is an encrypted/redacted thinking content block (the model
+ *  reasoned but the plaintext was withheld). Such a block has no renderable text
+ *  and must surface {@link REDACTED_THINKING_PLACEHOLDER} instead. */
+export function isRedactedThinkingBlock(block: unknown): boolean {
+  return (
+    typeof block === 'object' &&
+    block !== null &&
+    (block as MaybeContentBlock).type === 'redacted_thinking'
+  );
+}
+
+/** Resolve the display text for a thinking block: the redacted placeholder when the
+ *  block is encrypted, otherwise the provided plaintext (trimmed to undefined when
+ *  empty so a caller can skip rendering an empty thinking line). */
+export function thinkingDisplayText(block: unknown, plaintext?: string): string | undefined {
+  if (isRedactedThinkingBlock(block)) return REDACTED_THINKING_PLACEHOLDER;
+  const text = (plaintext ?? '').trim();
+  return text.length > 0 ? text : undefined;
+}

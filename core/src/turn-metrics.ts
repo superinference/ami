@@ -62,6 +62,30 @@ export interface TurnBudgetStatus {
   nudges: number;
 }
 
+/**
+ * Render a per-turn token-budget suffix for the turn-completion line, matching
+ * Claude's `TurnDurationMessage` budget display:
+ *  - within budget: `{tokens} / {limit} ({pct}%)`
+ *  - once exceeded: `{tokens} used ({limit} min ✓)` (the limit was a minimum and met)
+ *  - a trailing ` · {n} nudge(s)` is appended when the model was nudged about the
+ *    budget (singular `nudge` for 1, plural otherwise).
+ *
+ * Returns an empty string when there is no budget (`limit <= 0`), so a caller can
+ * unconditionally append the result. Numbers are grouped with thousands separators.
+ */
+export function formatTurnBudget(status: TurnBudgetStatus): string {
+  if (status.limit <= 0) return '';
+  const tokens = status.tokens.toLocaleString('en-US');
+  const limit = status.limit.toLocaleString('en-US');
+  const base = status.exceeded
+    ? `${tokens} used (${limit} min ✓)`
+    : `${tokens} / ${limit} (${status.pct}%)`;
+  if (status.nudges > 0) {
+    return `${base} · ${status.nudges} ${status.nudges === 1 ? 'nudge' : 'nudges'}`;
+  }
+  return base;
+}
+
 export interface TurnSummary {
   turnCount: number;
   totalToolCalls: number;

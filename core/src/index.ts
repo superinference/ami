@@ -235,7 +235,7 @@ export type {
   TokenBreakdown,
   TurnMetricsSnapshot,
 } from './turn-metrics';
-export { TurnMetrics } from './turn-metrics';
+export { TurnMetrics, formatTurnBudget } from './turn-metrics';
 export { isGrepNoMatchExit, stripGrepFlags, grepLineFilePath } from './tools/grep';
 export {
   resolveRipgrepConfig,
@@ -339,6 +339,39 @@ export {
   isGitOpBashCommand,
 } from './tool-group-counts';
 export type { ToolGroupClassifyOptions } from './tool-group-counts';
+export {
+  TOOL_RESULT_STATES,
+  classifyToolResultState,
+  isUnsuccessfulToolResult,
+  TOOL_CALL_DISPLAY_STATES,
+  deriveToolCallDisplayState,
+  systemMessageDisplay,
+  REDACTED_THINKING_PLACEHOLDER,
+  isRedactedThinkingBlock,
+  thinkingDisplayText,
+} from './message-display';
+export type {
+  ToolResultState,
+  ToolCallDisplayState,
+  SystemMessageLevel,
+  SystemMessageDisplay,
+  SystemMessageDisplayOptions,
+} from './message-display';
+export {
+  SESSION_STATES,
+  isSessionState,
+  SessionStateMachine,
+  STATUS_CATEGORIES,
+  isStatusCategory,
+  validatePostTurnStatus,
+} from './session-state';
+export type {
+  SessionState,
+  RequiresActionDetails,
+  SessionExternalMetadata,
+  StatusCategory,
+  PostTurnStatusSummary,
+} from './session-state';
 export {
   LSPClient,
   getLSPClient,

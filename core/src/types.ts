@@ -278,6 +278,19 @@ export interface ToolResult {
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
   structuredPatch?: DiffHunk[];
+  /** The tool call was canceled before/while running (e.g. the surrounding batch
+   *  was aborted) — distinct from a tool that ran and errored. Parity: Claude's
+   *  `CANCEL_MESSAGE` content marker. Drives a dedicated "canceled" render state
+   *  via {@link classifyToolResultState}. */
+  canceled?: boolean;
+  /** The user actively rejected this tool call at a permission prompt (deny), so it
+   *  never ran. Parity: Claude's `REJECT_MESSAGE` content marker. Distinct from an
+   *  execution error. Drives the "rejected" render state. */
+  rejected?: boolean;
+  /** The tool call was interrupted (user pressed stop / server abort) with no real
+   *  result. Parity: Claude's `INTERRUPT_MESSAGE_FOR_TOOL_USE`. Distinct from a tool
+   *  that produced an error output. Drives the "interrupted" render state. */
+  interrupted?: boolean;
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
