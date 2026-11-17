@@ -108,9 +108,15 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     assert.ok(submittedPrompt!.startsWith(SUBAGENT_RETURN_DIRECTIVE));
     assert.match(submittedPrompt!, /do the thing$/);
 
-    // finish('completed', ...) updated the entry and wrote the output file.
-    assert.equal(calls.updates.length, 1);
-    assert.deepEqual(calls.updates[0].updates, { status: 'completed', exitCode: 0 });
+    // A live tool-count progress update fires on tool_use_start, then finish('completed')
+    // writes the terminal entry carrying the result-stat totals (resultToolCount/
+    // resultTokenCount — the final-vs-progress split).
+    assert.equal(calls.updates.length, 2);
+    const finalUpdate = calls.updates[calls.updates.length - 1].updates;
+    assert.equal(finalUpdate.status, 'completed');
+    assert.equal(finalUpdate.exitCode, 0);
+    assert.equal(finalUpdate.resultToolCount, 1);
+    assert.equal(finalUpdate.resultTokenCount, 0);
     const outFile = path.join(projectStateDir(cwd, 'tasks'), `${reg.taskId}.out`);
     assert.equal(fs.readFileSync(outFile, 'utf-8'), 'Hello world');
   });
@@ -147,7 +153,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
     // finish('failed', ...) marked the entry failed with exitCode 1 and surfaced
     // the sub-engine failure reason on the dedicated error channel.
     assert.equal(calls.updates.length, 1);
-    assert.deepEqual(calls.updates[0].updates, { status: 'failed', exitCode: 1, error: 'stream exploded' });
+    assert.deepEqual(calls.updates[0].updates, { status: 'failed', exitCode: 1, resultToolCount: 0, resultTokenCount: 0, error: 'stream exploded' });
 
     // The failed agent still wrote its (empty) output as '(no output)'.
     const reg = calls.registered[0];

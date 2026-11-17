@@ -255,10 +255,23 @@ describe('resolveCommitAttribution', () => {
   });
 
   it('suppresses the trailer when SUPERINFERENCE_DISABLE_CO_AUTHOR=1', () => {
-    writeProjectConfig({ attribution: { commit: 'Should be ignored' } });
+    // No config attribution.commit here: an explicit config attribution takes
+    // PRECEDENCE over this deprecated binary env opt-out (parity with Claude Code,
+    // whose `attribution` setting overrides the legacy toggle). The env opt-out is
+    // exercised on its own so it genuinely suppresses the trailer.
     process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = '1';
     try {
       assert.equal(resolveCommitAttribution(tmpDir), null);
+    } finally {
+      delete process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR;
+    }
+  });
+
+  it('config attribution.commit takes precedence over the deprecated env opt-out', () => {
+    writeProjectConfig({ attribution: { commit: 'Co-Authored-By: Custom <x@y.z>' } });
+    process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = '1';
+    try {
+      assert.equal(resolveCommitAttribution(tmpDir), 'Co-Authored-By: Custom <x@y.z>');
     } finally {
       delete process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR;
     }
