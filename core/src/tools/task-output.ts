@@ -28,6 +28,13 @@ const DEFAULT_TAIL_LINES = 50;
  * normal output while still reporting how much earlier output was elided.
  */
 const TASK_OUTPUT_READ_BYTES = 512 * 1024;
+/**
+ * Hard ceiling for a per-call `tail_bytes` byte window. A model can request a
+ * larger or smaller on-disk tail read than the default window, but never above
+ * this cap — mirrors Claude Code's DEFAULT_MAX_READ_BYTES (~8MB) upper bound so a
+ * single read can't be asked to slurp an unbounded log into memory.
+ */
+const MAX_READ_BYTES = 8 * 1024 * 1024;
 
 /** Max length of a recognizable task id in an agent-output file path. */
 const AGENT_OUTPUT_TASK_ID_MAX = 20;
@@ -162,6 +169,18 @@ export const taskOutputTool: ToolDefinition = {
         // one-shot non-blocking status snapshot of a still-running task.
         description: 'Block until the task reaches a terminal state (completed/failed/killed), then return its final output (default true). Pass false for a quick non-blocking status snapshot.',
       },
+      tail_bytes: {
+        type: 'number',
+        // PARITY (additive): mirror Claude Code's byte-bounded tail read
+        // (ShellDetailDialog reads only the last N bytes / DEFAULT_MAX_READ_BYTES).
+        // Lets the model peek at just the last few KB of a huge log, or widen the
+        // window, without pulling the whole file. Clamped to [1, MAX_READ_BYTES].
+        minimum: 1,
+        maximum: MAX_READ_BYTES,
+        description: 'Read only the last N BYTES of the on-disk output log (a byte-bounded tail). ' +
+          'Defaults to a 512KB window; use a small value (e.g. 8192) for a cheap last-few-KB peek at a ' +
+          'large log, applied before the line tail. Clamped to a hard ceiling of 8MB.',
+      },
       timeout_ms: {
         type: 'number',
         // PARITY: mirror Claude Code's `timeout: z.number().min(0).max(600000)`
@@ -227,7 +246,17 @@ export const taskOutputTool: ToolDefinition = {
       ? input.timeout_ms : DEFAULT_WAIT_TIMEOUT_MS;
     const waitTimeoutMs = Math.min(requestedTimeout, MAX_WAIT_TIMEOUT_MS);
 
-    let result = context.processManager.getOutput(taskId, tail, filterRe, TASK_OUTPUT_READ_BYTES);
+    // FUNCTIONAL (parity, additive): optional per-call byte window for the on-disk
+    // tail read. Defaults to the standard TASK_OUTPUT_READ_BYTES window; a supplied
+    // value is floored to an int and clamped to [1, MAX_READ_BYTES] (a 0/garbage
+    // value falls back to the default). Mirrors Claude Code's byte-bounded tail read.
+    const readBytes = coerceNumber(input.tail_bytes, TASK_OUTPUT_READ_BYTES, {
+      integer: true,
+      min: 1,
+      max: MAX_READ_BYTES,
+    });
+
+    let result = context.processManager.getOutput(taskId, tail, filterRe, readBytes);
     if (!result) {
       return { output: `Error: No background task found with ID "${taskId}". Use task_list to see all tasks.`, isError: true };
     }
@@ -251,7 +280,7 @@ export const taskOutputTool: ToolDefinition = {
         // wait looking like an opaque hang.
         context.onProgress?.(`waiting for task ${taskId} (${result.status}, ${secs}s elapsed; esc to give additional instructions)`);
         await new Promise(r => setTimeout(r, WAIT_POLL_INTERVAL_MS));
-        result = context.processManager.getOutput(taskId, tail, filterRe, TASK_OUTPUT_READ_BYTES);
+        result = context.processManager.getOutput(taskId, tail, filterRe, readBytes);
       }
       if (!result) {
         return { output: `Error: background task "${taskId}" disappeared while waiting.`, isError: true };
