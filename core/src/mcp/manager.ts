@@ -16,6 +16,7 @@ import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
 import { classifyMcpToolForCollapse } from './classify-collapse';
+import { McpToolPoller, type McpToolPollSpec } from './tool-polling';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
@@ -528,6 +529,15 @@ export interface McpServerConfig {
    * `ScopedMcpServerConfig.pluginSource`, mcpPluginIntegration.ts:L341-360).
    */
   pluginSource?: string;
+  /**
+   * Tools on this server to poll periodically. Each spec names a bare (server-local)
+   * tool, a poll cadence, and optional fixed arguments; whenever a polled tool's
+   * output *changes* between polls the manager emits `tool-polling-update` and the
+   * engine surfaces it to the model as an `<mcp-polling-update type="tool" …>` block
+   * (parity: Claude Code's `UserResourceUpdateMessage` polling branch). Polling runs
+   * only while the server is connected (started on `ready`, stopped on close/remove).
+   */
+  pollTools?: McpToolPollSpec[];
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
   oauth?: {
     redirectUri?: string;
@@ -800,6 +810,18 @@ export class McpManager extends EventEmitter {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Per-server count of consecutive failed reconnect attempts (for backoff). */
   private reconnectAttempts = new Map<string, number>();
+  /**
+   * Tool-polling scheduler (parity: Claude Code's `mcp-polling-update`). Started
+   * per-server from {@link McpServerConfig.pollTools} on `ready`, stopped on
+   * close/remove, and torn down with {@link disconnectAll}. Change-detected polls
+   * re-emit as a `tool-polling-update` event the engine drains and injects.
+   */
+  private _toolPoller = new McpToolPoller({
+    call: (server, tool, args) => this.callTool(`${server}:${tool}`, args),
+    onUpdate: (u) => this.emit('tool-polling-update', u.server, u.tool, u.reason),
+    onError: (server, tool, err) =>
+      coreLog('mcp', `tool-polling '${server}:${tool}' failed: ${err instanceof Error ? err.message : String(err)}`),
+  });
   /**
    * Names currently being torn down intentionally (stop/remove/disconnectAll), so
    * the transport 'close' handler does NOT auto-reconnect a server the user just
@@ -1368,6 +1390,9 @@ export class McpManager extends EventEmitter {
       this.emit('server-error', name, err);
     });
     client.on('close', (code, uptimeMs) => {
+      // Pause polling while the transport is down — a disconnected server cannot be
+      // polled; `ready` re-registers on reconnect so no poll is orphaned or leaked.
+      this._toolPoller.unregister(name);
       this.emit('server-close', name, code, uptimeMs);
       // Close-triggered auto-reconnect for REMOTE (http/sse) transports: a dropped
       // network stream should recover immediately, not wait for the next 30s
@@ -1390,6 +1415,9 @@ export class McpManager extends EventEmitter {
       // Record the first-ever successful connect (gates startup connectivity
       // notifications — a server that has NEVER connected is not nagged about).
       this.markEverConnected(name);
+      // Start (or, on reconnect, cleanly restart) this server's configured tool
+      // polls now that its tools are callable (parity: Claude's mcp-polling-update).
+      this._toolPoller.register(name, this.configs.get(name)?.pollTools);
       this.emit('server-ready', name);
     });
     // An unrecoverable auth failure on a live tool call flips the client to the
@@ -2314,6 +2342,8 @@ export class McpManager extends EventEmitter {
   }
 
   removeServer(name: string): void {
+    // Stop any tool polling for the server being forgotten.
+    this._toolPoller.unregister(name);
     // Cancel any in-flight OAuth flow for this server before teardown.
     this._oauthAbort.get(name)?.abort();
     this._oauthAbort.delete(name);
@@ -3063,6 +3093,7 @@ export class McpManager extends EventEmitter {
   disconnectAll(): void {
     this.stopHealthChecks();
     this.stopIdleChecker();
+    this._toolPoller.stopAll();
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }

@@ -9,6 +9,8 @@ export { McpManager, findMcpConfigPaths, findMcpConfigScopes, mcpScopeLabel, MCP
 export type { McpServerConfig, McpServerStatus, McpConfigError, McpServerScope } from './manager';
 export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './resource-update-notice';
 export type { McpResourceUpdateNotice, McpResourceNoticeBuffer, McpResourceEventSource } from './resource-update-notice';
+export { McpToolPoller, createMcpToolPollingNoticeBuffer, formatToolPollingNotice, TOOL_POLLING_CHANGED_REASON } from './tool-polling';
+export type { McpToolPollSpec, McpToolPollingUpdate, McpToolPollingNotice, McpToolPollingEventSource, McpToolPollingNoticeBuffer, McpToolPollerDeps, PollTimerHandle } from './tool-polling';
 export { createMcpConnectionNoticeBuffer, formatMcpConnectionChange } from './connection-notice';
 export type { McpConnectionChange, McpConnectionState, McpConnectionNoticeBuffer, McpConnectionEventSource } from './connection-notice';
 export {

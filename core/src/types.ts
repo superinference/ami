@@ -1035,7 +1035,7 @@ export const ENGINE_EVENT_TYPES = [
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
-  'mcp_resource_update', 'mcp_connection_changed',
+  'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
   'external_import_blocked', 'peer_message', 'background_task_complete', 'done',
 ] as const;
 
@@ -1199,6 +1199,12 @@ export type EngineEvent =
    *  changed WHAT (and why, for a list change). Parity: Claude's
    *  `UserResourceUpdateMessage`. `uri` is empty for a whole-list change. */
   | { type: 'mcp_resource_update'; server: string; uri: string; reason?: string }
+  /** A polled MCP tool's output changed between polls. Carries server + tool
+   *  provenance so the user has an audit trail of WHICH polled tool (on WHICH server)
+   *  produced new output. The engine also injects a model-facing
+   *  `<mcp-polling-update type="tool" …>` user turn. Parity: Claude's
+   *  `UserResourceUpdateMessage` polling branch. */
+  | { type: 'mcp_polling_update'; server: string; tool: string; reason?: string }
   /** An MCP server's connection state changed mid-session in a user-relevant way:
    *  `'lost'` (a ready server dropped), `'recovered'` (it came back after a drop), or
    *  `'failed'` (reconnection was abandoned). Carries server provenance + an optional
