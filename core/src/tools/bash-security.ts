@@ -1124,6 +1124,61 @@ function validateSedDangerous(command: string): SecurityCheckResult {
   return PASS;
 }
 
+/**
+ * Tokenization-based read-only classification for `sed` commands used by the bash
+ * permission classifier's auto-approve gate. A sed invocation is read-only when it
+ * only prints to stdout — i.e. it carries NO in-place write flag (`-i` /
+ * `--in-place`, the `--in-place=SUFFIX` form, the inline backup form `-i.bak`, or
+ * `i` fused into a short-flag cluster such as `-ni`). Each shell segment is
+ * tokenized with AMI's quote-aware tokenizer ({@link tokenizeSegmentArgs}) rather
+ * than substring-matched, so:
+ *   - an in-place flag belonging to a DIFFERENT command in a compound
+ *     (`ls -li && sed 's/a/b/' f`) no longer forces the sed to look mutating;
+ *   - a quoted `-i` inside the script (`sed 's/-i/X/' f`) is not mistaken for a
+ *     flag; and
+ *   - a file literally named `-i.txt` after `--` (`sed 's/x/y/' -- -i.txt`) is
+ *     treated as a positional, not an in-place flag.
+ * Parity with Claude Code's shell-quote-tokenized isReadOnlySed
+ * (BashTool/sedValidation.ts), replacing the previous raw-string `-...i` regex in
+ * {@link PermissionManager.classifyBashCommand}.
+ *
+ * Returns true only when the command actually contains at least one sed invocation
+ * AND every sed invocation is stdout-only; returns false otherwise (no sed, any
+ * in-place write, or a sed segment whose quoting cannot be tokenized — fail
+ * closed). Write/execute sed scripts (`w`/`e`) are rejected upstream by
+ * {@link validateBashSecurity}; this is strictly the read-only auto-approve gate.
+ */
+export function isReadOnlySedCommand(command: string): boolean {
+  let sawSed = false;
+  for (const seg of splitShellSegments(command)) {
+    if (segmentBaseCommand(seg) !== 'sed') continue;
+    sawSed = true;
+    if (sedSegmentWritesInPlace(seg)) return false;
+  }
+  return sawSed;
+}
+
+/**
+ * True when a single `sed` segment carries an in-place write flag. Fails closed
+ * (returns true — "writes") on an unbalanced-quote segment that cannot be
+ * tokenized reliably, matching {@link checkSedSegment}'s deny-on-unparseable
+ * posture.
+ */
+function sedSegmentWritesInPlace(seg: string): boolean {
+  const trimmed = stripSafeWrappers(seg.trim()).trim();
+  const sedTail = trimmed.replace(/^.*?\bsed\b\s*/, '');
+  if (hasUnbalancedQuotes(sedTail)) return true;
+  for (const tok of tokenizeSegmentArgs(sedTail)) {
+    if (tok === '--') break; // end of options: remaining tokens are positionals
+    if (tok === '-i' || tok === '--in-place') return true;
+    if (tok.startsWith('--in-place=')) return true;
+    if (tok.startsWith('-i')) return true; // inline backup suffix: -i.bak
+    // Fused short-flag cluster containing `i` (e.g. -ni, -nri, -ri).
+    if (/^-[A-Za-z]+$/.test(tok) && tok.includes('i')) return true;
+  }
+  return false;
+}
+
 function validateJqDangerous(command: string): SecurityCheckResult {
   if (/\bjq\b/.test(command) && /\bsystem\s*\(/.test(command)) {
     return fail(CHECK_IDS.JQ_DANGEROUS, 'jq system() calls can execute arbitrary commands');

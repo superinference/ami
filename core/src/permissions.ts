@@ -4,7 +4,7 @@ import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -5241,8 +5241,11 @@ export class PermissionManager {
       }
     }
 
-    // sed without -i is read-only (prints to stdout)
-    if (/\bsed\b/.test(trimmed) && !/\bsed\s+.*-[^\s]*i/.test(trimmed)) return 'safe';
+    // sed without an in-place write flag is read-only (prints to stdout). Uses a
+    // per-segment, quote-aware tokenized check so a `-...i` flag belonging to a
+    // different command in a compound, or a quoted `-i` inside the sed script, no
+    // longer forces a misclassification (parity: Claude's tokenized isReadOnlySed).
+    if (isReadOnlySedCommand(trimmed)) return 'safe';
     // find is read-only only without any command-running primary
     // (-delete, -exec, -execdir, -ok, -okdir).
     if (/\bfind\b/.test(trimmed) && !/(^|\s)-delete\b/.test(trimmed) && !/(^|\s)-exec(dir)?\b/.test(trimmed) && !/(^|\s)-ok(dir)?\b/.test(trimmed)) return 'safe';
