@@ -1047,6 +1047,30 @@ function enqueue(to: string, msg: AgentMessage): void {
 }
 
 /**
+ * Delivery-state affordance for a plain-text DM's receipt, so the sender knows
+ * HOW its message will be picked up. Mirrors Claude Code's call() branching on
+ * the recipient's lifecycle (SendMessageTool.ts L800-874: queue-to-running vs
+ * injecting into an actively-listening agent):
+ *  - the recipient has a live eager-delivery notifier → it is actively listening
+ *    and `enqueue` just fired that notifier, so it picks the message up now;
+ *  - otherwise it is a tracked, still-running task with no live notifier → the
+ *    message simply waits in its mailbox until its next tool round;
+ *  - otherwise (untracked / not yet online) → no affordance (the separate
+ *    unreachable warning covers a likely-dead/typo recipient).
+ * `to` is the resolved recipient key (agentId or bare name) the message was
+ * enqueued under — the same key `enqueue`/`notifyMailbox` and `getStatus` use.
+ */
+function deliveryAffordance(toRaw: string, to: string, context: ToolContext): string {
+  if (mailboxNotifiers.has(to)) {
+    return ` — ${toRaw} is listening and was notified; it will pick this up now`;
+  }
+  if (context.processManager && context.processManager.getStatus(to) === 'running') {
+    return ` — queued for ${toRaw}'s next tool round`;
+  }
+  return '';
+}
+
+/**
  * A recipient is "reachable" if it is a registered agent, has a live notifier,
  * or already owns a mailbox. Used to warn on a likely-dead/typo recipient.
  */
@@ -1494,8 +1518,9 @@ export const sendMessageTool: ToolDefinition = {
     recordOutboundDm(from, toRaw, summary && summary.trim() ? summary : content.slice(0, 80));
 
     const summaryTag = summary ? ` — "${summary}"` : '';
+    const affordance = deliveryAffordance(toRaw, to, context);
     return {
-      output: `Message sent to "${toRaw}"${summaryTag} [from: ${from}] (${content.length} chars)${unreachableWarn}`,
+      output: `Message sent to "${toRaw}"${summaryTag} [from: ${from}] (${content.length} chars)${affordance}${unreachableWarn}`,
     };
   },
 };
