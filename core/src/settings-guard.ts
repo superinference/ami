@@ -1,7 +1,17 @@
 import { isDangerousSettingsEnvVar } from './env-protection';
 import { CUSTOMIZATION_SURFACES } from './plugin-only-policy';
 
-export const SETTINGS_TIERS = ['managed', 'global', 'project', 'local', 'env', 'cli'] as const;
+// Tier order is the human display/listing order (managed first, cli last — a
+// convention several surfaces assert). The ACTUAL precedence is defined by the
+// two priority maps below ({@link NORMAL_PRIORITY} / {@link LOCK_PRIORITY}), not
+// by this array's index. Two tiers beyond the file/env/cli cascade:
+//   - `plugin` — the lowest-priority BASE layer: an installed plugin bundle may
+//     seed default config knobs (env/permissions/hooks defaults) that every other
+//     tier overrides. Parity: Claude's settingsCache plugin settings base.
+//   - `flag`   — an arbitrary settings file passed with `--settings <file>`,
+//     layered ABOVE local and BELOW managed policy. Parity: Claude's
+//     SETTING_SOURCES `flagSettings` layer.
+export const SETTINGS_TIERS = ['managed', 'plugin', 'global', 'project', 'local', 'flag', 'env', 'cli'] as const;
 export type SettingsTier = (typeof SETTINGS_TIERS)[number];
 
 // ---------------------------------------------------------------------------
@@ -21,9 +31,11 @@ const SETTINGS_TIER_DISPLAY: Record<
   { short: string; lower: string; capitalized: string }
 > = {
   managed: { short: 'Managed', lower: 'enterprise managed settings', capitalized: 'Enterprise managed settings' },
+  plugin: { short: 'Plugin', lower: 'plugin-contributed default settings', capitalized: 'Plugin-contributed default settings' },
   global: { short: 'User', lower: 'user settings', capitalized: 'User settings' },
   project: { short: 'Project', lower: 'shared project settings', capitalized: 'Shared project settings' },
   local: { short: 'Local', lower: 'project local settings', capitalized: 'Project local settings' },
+  flag: { short: 'Flag', lower: 'command-line settings file', capitalized: 'Command-line settings file' },
   env: { short: 'Env', lower: 'environment variables', capitalized: 'Environment variables' },
   cli: { short: 'CLI', lower: 'command line arguments', capitalized: 'Command line arguments' },
 };
@@ -661,14 +673,60 @@ export function getSettingsJSONSchema(): SettingsJSONSchema {
   };
 }
 
-const TIER_PRIORITY: Record<SettingsTier, number> = {
-  managed: 0,
-  global: 1,
-  project: 2,
-  local: 3,
-  env: 4,
-  cli: 5,
+// ---------------------------------------------------------------------------
+// Two precedence scales (AMI deliberately governs normal and locked keys with
+// OPPOSITE authority). The original single TIER_PRIORITY map exploited the fact
+// that `managed` sat at one extreme; adding the `plugin` BASE tier breaks that
+// coincidence (plugin must be the weakest in BOTH senses), so the two scales are
+// now explicit:
+//
+//   - NORMAL_PRIORITY — for ordinary (non-governed) keys the LAST-wins cascade:
+//     a HIGHER number overrides a lower one. plugin(0) is the base default layer;
+//     cli(7) wins. managed sits just above the plugin base (its non-policy values
+//     are defaults a user file overrides) — unchanged from before.
+//   - LOCK_PRIORITY — for tier-locked keys the authority order: a LOWER number is
+//     MORE authoritative (managed(0) can never be overridden). plugin(7) is the
+//     LEAST authoritative, so a plugin-seeded locked value yields to every tier
+//     and a plugin can never lock a key against a higher tier. `flag` is the most
+//     authoritative non-policy source (Claude: flagSettings sits just below policy).
+//
+// For the pre-existing tiers (managed/global/project/local/env/cli) the relative
+// order of BOTH scales is identical to the old single map, so prior behavior is
+// unchanged; plugin + flag are the only additions.
+// ---------------------------------------------------------------------------
+
+const NORMAL_PRIORITY: Record<SettingsTier, number> = {
+  plugin: 0,
+  managed: 1,
+  global: 2,
+  project: 3,
+  local: 4,
+  flag: 5,
+  env: 6,
+  cli: 7,
 };
+
+const LOCK_PRIORITY: Record<SettingsTier, number> = {
+  managed: 0,
+  flag: 1,
+  global: 2,
+  project: 3,
+  local: 4,
+  env: 5,
+  cli: 6,
+  plugin: 7,
+};
+
+/**
+ * The settings tiers in explicit LOW→HIGH merge order (the base `plugin` layer
+ * first, `cli` last), i.e. a later tier's ordinary value overrides an earlier
+ * one's. This is the documented cascade ordering surfaced via `/settings-guard`
+ * and `ami --introspect` so the precedence is machine- and human-readable rather
+ * than implied by code. Parity: Claude's SETTING_SOURCES low→high ordering.
+ */
+export function getSettingsLayerOrder(): SettingsTier[] {
+  return [...SETTINGS_TIERS].sort((a, b) => NORMAL_PRIORITY[a] - NORMAL_PRIORITY[b]);
+}
 
 export function canOverride(key: string, source: SettingsTier, existing: SettingsTier): boolean {
   // Nested-aware: a dotted sub-key (or a sub-key of a managed/locked container) is
@@ -676,7 +734,7 @@ export function canOverride(key: string, source: SettingsTier, existing: Setting
   // isTierLockedKey}. For a flat key these reduce to the original Set.has checks,
   // so top-level behavior is identical.
   if (isManagedOnlyKey(key) && source !== 'managed') return false;
-  if (isTierLockedKey(key) && TIER_PRIORITY[source] > TIER_PRIORITY[existing]) return false;
+  if (isTierLockedKey(key) && LOCK_PRIORITY[source] > LOCK_PRIORITY[existing]) return false;
   return true;
 }
 
@@ -689,21 +747,46 @@ export function getEffectiveTier(key: string, sources: SettingsSource[]): Settin
   // `sources` is guaranteed non-empty here (the length-0 case returned above),
   // so `sources[0]` is a safe seed and `best` is never null — no `?? null` arm.
   if (isTierLockedKey(key)) {
+    // Tier-locked: the MOST authoritative (lowest LOCK_PRIORITY) source wins.
     let best = sources[0];
     for (const s of sources) {
-      if (TIER_PRIORITY[s.tier] < TIER_PRIORITY[best.tier]) {
+      if (LOCK_PRIORITY[s.tier] < LOCK_PRIORITY[best.tier]) {
         best = s;
       }
     }
     return best.tier;
   }
+  // Normal key: the highest-precedence (highest NORMAL_PRIORITY) source wins.
   let best = sources[0];
   for (const s of sources) {
-    if (TIER_PRIORITY[s.tier] > TIER_PRIORITY[best.tier]) {
+    if (NORMAL_PRIORITY[s.tier] > NORMAL_PRIORITY[best.tier]) {
       best = s;
     }
   }
   return best.tier;
+}
+
+/** Disk-merged settings paired with the runtime-resolved values actually used. */
+export interface EffectiveAppliedSettings<E extends Record<string, unknown>, A extends Record<string, unknown>> {
+  /** The pure disk/tier merge (what the settings FILES resolve to). */
+  effective: E;
+  /** The merge with runtime overrides overlaid (model/effort after env, session, defaults). */
+  applied: E & A;
+}
+
+/**
+ * Split the two-phase settings resolution Claude's SDK `get_settings` exposes: the
+ * disk-merged `effective` config versus the runtime-`applied` values actually sent
+ * to the API after env overrides / session state / model-specific defaults are
+ * layered on top. `effective` is returned untouched (not mutated); `applied` is a
+ * shallow overlay of `runtime` over `effective` so a caller can show "configured
+ * X, running with Y". Parity: Claude's effective≠applied distinction.
+ */
+export function resolveAppliedSettings<E extends Record<string, unknown>, A extends Record<string, unknown>>(
+  effective: E,
+  runtime: A,
+): EffectiveAppliedSettings<E, A> {
+  return { effective, applied: { ...effective, ...runtime } };
 }
 
 export function filterManagedKeys(config: Record<string, unknown>, sourceTier: SettingsTier): { filtered: Record<string, unknown>; rejected: string[] } {

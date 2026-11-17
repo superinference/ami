@@ -1805,6 +1805,29 @@ export function isSpecialFileStats(stats: fs.Stats): boolean {
 }
 
 /**
+ * Env var the CLI `--settings <file>` flag bridges to: an ABSOLUTE path to an
+ * arbitrary settings JSON file loaded into the `flag` settings tier. Bridged (not
+ * passed as an arg) so both the interactive TUI and the detached runner — which
+ * both route through the engine factory — pick it up identically (TUI↔CLI parity).
+ */
+export const FLAG_SETTINGS_ENV = 'SUPERINFERENCE_SETTINGS';
+
+/**
+ * Load the `--settings <file>` flag-tier config (parity: Claude's `flagSettings`
+ * SETTING_SOURCES layer), from the absolute path bridged onto {@link
+ * FLAG_SETTINGS_ENV}. The flag file layers ABOVE local/project/user and BELOW
+ * managed policy (see {@link mergeConfigs}). Returns null when unset/blank or the
+ * file is absent/corrupt — a bad flag file never crashes startup; managed-only
+ * keys it carries are ignored (the merge omits them). Reuses the canonical
+ * {@link loadConfigFileChecked} loader (no parallel parse path).
+ */
+export function loadFlagSettingsConfig(env: NodeJS.ProcessEnv = process.env): ProjectConfig | null {
+  const raw = env[FLAG_SETTINGS_ENV];
+  if (!raw || raw.trim() === '') return null;
+  return loadConfigFileChecked(raw.trim()).config;
+}
+
+/**
  * Load a config file, distinguishing three outcomes:
  *  - file absent / unreadable → `{ config: null }` (no diagnostic);
  *  - present but corrupt (bad JSON / not an object) → `{ config: null, diagnostic }`,
@@ -2492,10 +2515,21 @@ export class ConfigService {
  * Priority (highest first):
  *   1. `cliArgs`       — flags passed on the command line
  *   2. `envVars`       — values derived from environment variables
- *   3. `localConfig`   — `.ami/config.local.json` (gitignored)
- *   4. `projectConfig` — `.ami/config.json` in the project
- *   5. `globalConfig`  — `~/.ami/config.json`
- *   6. `managedConfig` — `/etc/superinference/config.json`
+ *   3. `flagConfig`    — an arbitrary file passed with `--settings <file>`
+ *   4. `localConfig`   — `.ami/config.local.json` (gitignored)
+ *   5. `projectConfig` — `.ami/config.json` in the project
+ *   6. `globalConfig`  — `~/.ami/config.json`
+ *   7. `managedConfig` — `/etc/superinference/config.json`
+ *   8. `pluginConfig`  — plugin-contributed BASE defaults (lowest priority)
+ *
+ * `flagConfig` (parity: Claude's `flagSettings`) layers a one-off settings file
+ * ABOVE local/project/user but BELOW the managed-policy overrides applied after
+ * the loop. `pluginConfig` (parity: Claude's settingsCache plugin base) is the
+ * LOWEST layer: an installed plugin seeds default knobs that every file tier
+ * overrides. Both are managed-only-key-free by construction (the per-field loop
+ * omits managed-only keys, which are re-applied authoritatively from
+ * `managedConfig` below), so a plugin or a `--settings` file can never grant
+ * itself an admin/policy key.
  *
  * Only defined (non-undefined) values participate in the merge.
  */
@@ -2506,12 +2540,16 @@ export function mergeConfigs(
   globalConfig: ProjectConfig | null,
   localConfig?: ProjectConfig | null,
   managedConfig?: ProjectConfig | null,
+  flagConfig?: ProjectConfig | null,
+  pluginConfig?: ProjectConfig | null,
 ): ProjectConfig {
   const layers: Array<Partial<ProjectConfig>> = [
+    pluginConfig ?? {},
     managedConfig ?? {},
     globalConfig ?? {},
     projectConfig ?? {},
     localConfig ?? {},
+    flagConfig ?? {},
     envVars,
     cliArgs,
   ];
