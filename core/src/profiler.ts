@@ -1,4 +1,15 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { percentile as linearPercentile, Reservoir, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+
+/**
+ * Render milliseconds as seconds with one fixed decimal place (e.g. `1234` → `"1.2s"`).
+ * Unlike a composite duration string, this ALWAYS keeps the decimal — use it for
+ * sub-minute timings where the fractional second is meaningful (TTFT, hook durations,
+ * slow-op lines). Mirrors Claude's utils/format.ts `formatSecondsShort`.
+ */
+export function formatSecondsShort(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
 export interface TimingStatistics {
   count: number;
@@ -183,6 +194,83 @@ export interface TraceEvent {
 }
 
 /**
+ * Declarative startup phase-boundary config: each named phase is a
+ * `[startCheckpoint, endCheckpoint]` pair of {@link Profiler.mark} labels, mirroring
+ * Claude's startupProfiler `PHASE_DEFINITIONS`. {@link Profiler.getPhaseDurations}
+ * resolves it into named elapsed-ms numbers.
+ */
+export type PhaseDefinitions = Record<string, readonly [string, string]>;
+
+/** TTFT decomposed into pre-request overhead vs on-the-wire network latency. */
+export interface TtftBreakdown {
+  /** Total time-to-first-token (ms). */
+  totalMs: number;
+  /** Everything before the request hit the wire (setup + query overhead, ms). */
+  preRequestMs: number;
+  /** Time on the wire until the first streamed chunk (ms, clamped >= 0). */
+  networkMs: number;
+  /** Pre-request overhead as a percentage of total TTFT (0..100, 1 decimal). */
+  preRequestPercent: number;
+  /** Network latency as a percentage of total TTFT (0..100, 1 decimal). */
+  networkPercent: number;
+}
+
+/** One phase of a single request's lifecycle (Request Setup / First Token / Sampling / retries). */
+export interface RequestPhase {
+  phase: string;
+  durationMs: number;
+}
+
+/** The hierarchy level of a trace span (free-form; the well-known kinds mirror Claude). */
+export type SpanType = 'interaction' | 'llm_request' | 'tool' | 'tool.execution' | 'tool.blocked_on_user' | string;
+
+/** Opaque handle returned by {@link Profiler.beginSpan}; consumed by {@link Profiler.endSpan}. */
+export interface SpanHandle {
+  id: string;
+  type: SpanType;
+  name: string;
+}
+
+/** One node in the reconstructed span tree (nested children, memory-safe deep copy). */
+export interface SpanNode {
+  id: string;
+  type: SpanType;
+  name: string;
+  /** Start time (ms, performance.now()-relative). */
+  startMs: number;
+  /** End time (ms); undefined while the span is still open. */
+  endMs?: number;
+  /** Elapsed ms (endMs - startMs); undefined while open. */
+  durationMs?: number;
+  /** Owning agent id ('main' when unspecified) for swimlane grouping. */
+  agentId: string;
+  /** Parent agent id for cross-agent (subagent/teammate) hierarchy. */
+  parentAgentId?: string;
+  attrs: Record<string, unknown>;
+  children: SpanNode[];
+}
+
+/** One per-agent swimlane: all spans owned by an agent, with its parent-agent link. */
+export interface AgentTrack {
+  agentId: string;
+  parentAgentId?: string;
+  spans: SpanNode[];
+}
+
+/** Internal mutable span record (the tree is reconstructed on demand from these). */
+interface SpanRecord {
+  id: string;
+  type: SpanType;
+  name: string;
+  startMs: number;
+  endMs?: number;
+  agentId: string;
+  parentAgentId?: string;
+  parentId?: string;
+  attrs: Record<string, unknown>;
+}
+
+/**
  * Bounded-memory timing aggregate: keeps count/sum/min/max (and sum-of-squares for
  * stddev) EXACT while retaining at most `size` raw samples via Algorithm R, so
  * percentiles are estimated without memory growing with the number of observations.
@@ -292,10 +380,16 @@ export class Profiler {
   private _maxSlowOps: number;
   private _slowExcludePrefixes: string[];
 
-  // --- generic counter / gauge / set metrics ---
+  // --- generic counter / gauge / set / histogram metrics ---
   private _counters = new Map<string, number>();
   private _gauges = new Map<string, number>();
   private _sets = new Map<string, Set<string>>();
+  private _histograms = new Map<string, TimingAggregate>();
+
+  // --- hierarchical span tree (interaction -> llm_request/tool -> execution) ---
+  private _spans = new Map<string, SpanRecord>();
+  private _spanSeq = 0;
+  private _spanAls = new AsyncLocalStorage<string | undefined>();
 
   constructor(opts?: ProfilerOpts) {
     this._slowThresholdMs = opts?.slowThresholdMs ?? 1000;
@@ -429,6 +523,19 @@ export class Profiler {
     return limit && limit > 0 ? all.slice(-limit) : all;
   }
 
+  /**
+   * Render the most-recent slow operations as a single human-readable line for a live
+   * diagnostic bar, mirroring Claude's DevBar (`slow sync: op (1.2s) · op (0.3s)`).
+   * Returns '' when no slow op falls in the window, so a frontend can hide the line
+   * entirely. UI-agnostic: no colour/glyph — the frontend adds its own chrome.
+   */
+  formatSlowOperations(limit = 3, maxAgeMs?: number): string {
+    const ops = this.getSlowOperations(limit, maxAgeMs);
+    if (ops.length === 0) return '';
+    const parts = ops.map(o => `${o.operation} (${formatSecondsShort(o.durationMs)})`);
+    return `slow sync: ${parts.join(' · ')}`;
+  }
+
   // --- memory-annotated timeline --------------------------------------------
 
   /** Mark a named checkpoint, capturing wall-clock time + a memory snapshot. */
@@ -498,6 +605,29 @@ export class Profiler {
     return out;
   }
 
+  /**
+   * Resolve a declarative {@link PhaseDefinitions} map into named elapsed-ms numbers
+   * by pairing each phase's `[startCheckpoint, endCheckpoint]` against the FIRST
+   * occurrence of each checkpoint label in the recorded timeline (mirrors Claude's
+   * startupProfiler PHASE_DEFINITIONS). A phase whose start OR end checkpoint was
+   * never marked is omitted, so the caller only sees measurable phases.
+   */
+  getPhaseDurations(defs: PhaseDefinitions): Record<string, number> {
+    // First-occurrence index of each checkpoint label (some fire more than once;
+    // the first is the authoritative boundary, matching Claude's ordered marks).
+    const firstTime = new Map<string, number>();
+    for (const cp of this._checkpoints) {
+      if (!firstTime.has(cp.label)) firstTime.set(cp.label, cp.time);
+    }
+    const out: Record<string, number> = {};
+    for (const [phase, [startLabel, endLabel]] of Object.entries(defs)) {
+      const s = firstTime.get(startLabel);
+      const e = firstTime.get(endLabel);
+      if (s !== undefined && e !== undefined) out[phase] = e - s;
+    }
+    return out;
+  }
+
   // --- generic metrics ------------------------------------------------------
 
   incrementCounter(name: string, by = 1): void {
@@ -522,6 +652,43 @@ export class Profiler {
     const sets: Record<string, number> = {};
     for (const [k, v] of this._sets) sets[k] = v.size;
     return { counters, gauges, sets };
+  }
+
+  /**
+   * Observe one value into a named histogram (bounded reservoir, reusing the same
+   * {@link TimingAggregate} store the timing path uses so there is ONE sampling
+   * implementation). Mirrors Claude's stats.tsx `observe`. NaN is ignored.
+   */
+  observe(name: string, value: number): void {
+    if (Number.isNaN(value)) return;
+    let agg = this._histograms.get(name);
+    if (!agg) { agg = new TimingAggregate(this._maxSamples, this._rand); this._histograms.set(name, agg); }
+    agg.add(value);
+  }
+
+  /**
+   * Flat O(1) snapshot of every generic metric as one numeric record — counters and
+   * gauges verbatim, sets as cardinality, and each non-empty histogram expanded into
+   * `<name>_count/_min/_max/_avg/_p50/_p95/_p99`. Mirrors Claude's stats.tsx `getAll()`
+   * (e.g. for a `lastSessionMetrics` dump) so a consumer needs no post-hoc aggregation.
+   */
+  getAll(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of this._counters) out[k] = v;
+    for (const [k, v] of this._gauges) out[k] = v;
+    for (const [name, agg] of this._histograms) {
+      if (agg.count === 0) continue;
+      const s = agg.statistics();
+      out[`${name}_count`] = s.count;
+      out[`${name}_min`] = s.minMs;
+      out[`${name}_max`] = s.maxMs;
+      out[`${name}_avg`] = s.avgMs;
+      out[`${name}_p50`] = s.p50Ms;
+      out[`${name}_p95`] = s.p95Ms;
+      out[`${name}_p99`] = s.p99Ms;
+    }
+    for (const [k, v] of this._sets) out[k] = v.size;
+    return out;
   }
 
   /** Record a time-to-first-token measurement for a labelled operation (bounded reservoir). */
@@ -759,6 +926,52 @@ export class Profiler {
   }
 
   /**
+   * Decompose a turn's TTFT into pre-request overhead (everything before the request
+   * hit the wire = requestSetupMs + queryOverheadMs) vs network latency (the remaining
+   * time on the wire until the first streamed chunk), with each as a percentage of the
+   * total — mirroring Claude's queryProfiler TTFT report split. Network is clamped >= 0
+   * (overhead can exceed a tiny TTFT). Returns null for an unknown turn or when TTFT
+   * isn't meaningful (<= 0).
+   */
+  getTtftBreakdown(turnIndex: number): TtftBreakdown | null {
+    const t = this.turns.get(turnIndex);
+    if (!t || t.ttftMs <= 0) return null;
+    const totalMs = t.ttftMs;
+    const preRequestMs = t.requestSetupMs + t.queryOverheadMs;
+    const networkMs = Math.max(0, totalMs - preRequestMs);
+    const pct = (part: number) => Math.round((part / totalMs) * 1000) / 10;
+    return {
+      totalMs,
+      preRequestMs,
+      networkMs,
+      preRequestPercent: pct(preRequestMs),
+      networkPercent: pct(networkMs),
+    };
+  }
+
+  /**
+   * Decompose a turn's single LLM request into labelled phases — `request_setup`
+   * (build time before the wire), `first_token` (setup-end → first streamed chunk),
+   * `sampling` (first chunk → stream end), and a `retries` count derived from
+   * attemptStartTimes — mirroring Claude's perfetto per-request sub-spans so a
+   * consumer can see where the time inside a request went. Returns null for an
+   * unknown turn. (ITPS/OTPS/cache-hit-rate are already on {@link TurnTiming}.)
+   */
+  getRequestPhases(turnIndex: number): RequestPhase[] | null {
+    const t = this.turns.get(turnIndex);
+    if (!t) return null;
+    const phases: RequestPhase[] = [
+      { phase: 'request_setup', durationMs: t.requestSetupMs },
+      { phase: 'first_token', durationMs: Math.max(0, t.ttftMs - t.requestSetupMs) },
+      { phase: 'sampling', durationMs: Math.max(0, t.apiLatency - t.ttftMs) },
+    ];
+    if (t.attemptStartTimes.length > 1) {
+      phases.push({ phase: 'retries', durationMs: t.attemptStartTimes.length - 1 });
+    }
+    return phases;
+  }
+
+  /**
    * Export recorded checkpoints + turns as Chrome-Trace-Event-format records
    * (viewable in ui.perfetto.dev / chrome://tracing). Checkpoints become instant
    * ('i') events on a "timeline" track; each turn becomes a complete ('X') event
@@ -813,6 +1026,118 @@ export class Profiler {
     return JSON.stringify({ traceEvents: this.toTraceEvents(opts), displayTimeUnit: 'ms' });
   }
 
+  // --- hierarchical span tree -----------------------------------------------
+
+  /**
+   * Open a trace span. Its parent is `opts.parentId` when given, else the span that is
+   * currently active on this async call-stack (propagated via AsyncLocalStorage inside
+   * {@link withSpan}) — so nested timings reconstruct a per-turn tree
+   * (interaction → llm_request/tool → execution) WITHOUT threading handles. Each call
+   * gets a unique id, so two parallel same-name requests are disambiguated by handle
+   * (not by ordering). Returns the handle {@link endSpan} consumes.
+   */
+  beginSpan(type: SpanType, name: string, opts?: { agentId?: string; parentAgentId?: string; parentId?: string; attrs?: Record<string, unknown> }): SpanHandle {
+    const id = `span_${++this._spanSeq}`;
+    const parentId = opts?.parentId ?? this._spanAls.getStore();
+    const parent = parentId !== undefined ? this._spans.get(parentId) : undefined;
+    const agentId = opts?.agentId ?? parent?.agentId ?? 'main';
+    this._spans.set(id, {
+      id, type, name,
+      startMs: performance.now(),
+      agentId,
+      parentAgentId: opts?.parentAgentId ?? parent?.parentAgentId,
+      parentId,
+      attrs: { ...(opts?.attrs ?? {}) },
+    });
+    return { id, type, name };
+  }
+
+  /**
+   * Close a span by its handle, recording its duration and merging any final attrs.
+   * Idempotent and defensive: an unknown handle or a second end() is a no-op (so a
+   * double-finally or a stale handle can't corrupt the tree).
+   */
+  endSpan(handle: SpanHandle, attrs?: Record<string, unknown>): void {
+    const rec = this._spans.get(handle.id);
+    if (!rec || rec.endMs !== undefined) return;
+    rec.endMs = performance.now();
+    if (attrs) Object.assign(rec.attrs, attrs);
+  }
+
+  /**
+   * Run `fn` inside a new span whose id is propagated via AsyncLocalStorage, so any
+   * span opened during `fn` nests under it automatically. The span is closed in a
+   * finally so its duration is recorded even when `fn` throws (the error re-throws).
+   */
+  async withSpan<T>(type: SpanType, name: string, fn: (handle: SpanHandle) => Promise<T> | T, opts?: { agentId?: string; parentAgentId?: string; attrs?: Record<string, unknown> }): Promise<T> {
+    const handle = this.beginSpan(type, name, opts);
+    try {
+      return await this._spanAls.run(handle.id, () => fn(handle));
+    } finally {
+      this.endSpan(handle);
+    }
+  }
+
+  /** The raw span record for a handle id (deep-copied node), or undefined. */
+  getSpan(id: string): SpanNode | undefined {
+    const rec = this._spans.get(id);
+    return rec ? this._nodeFor(rec, () => false) : undefined;
+  }
+
+  /** Build a {@link SpanNode} for a record, recursively including children that pass `include`. */
+  private _nodeFor(rec: SpanRecord, include: (child: SpanRecord) => boolean): SpanNode {
+    const children: SpanNode[] = [];
+    for (const r of this._spans.values()) {
+      if (r.parentId === rec.id && include(r)) children.push(this._nodeFor(r, include));
+    }
+    return {
+      id: rec.id, type: rec.type, name: rec.name,
+      startMs: rec.startMs, endMs: rec.endMs,
+      durationMs: rec.endMs !== undefined ? rec.endMs - rec.startMs : undefined,
+      agentId: rec.agentId, parentAgentId: rec.parentAgentId,
+      attrs: { ...rec.attrs },
+      children,
+    };
+  }
+
+  /**
+   * Reconstruct the full span forest: every root span (one with no in-tree parent)
+   * with its nested children across all agents. Mirrors Claude's sessionTracing span
+   * tree so a report can show which llm_request/tool ran inside which interaction.
+   */
+  getSpanTree(): SpanNode[] {
+    const roots: SpanNode[] = [];
+    for (const rec of this._spans.values()) {
+      if (rec.parentId === undefined || !this._spans.has(rec.parentId)) {
+        roots.push(this._nodeFor(rec, () => true));
+      }
+    }
+    return roots;
+  }
+
+  /**
+   * Group spans into per-agent swimlane tracks (parity with Claude's perfetto
+   * per-agent process/thread tracks). Each track holds the spans OWNED by that agent
+   * (same-agent children nested; cross-agent children surface as their own agent's
+   * roots) plus the agent's parent-agent link, so a swarm's teammate/subagent timings
+   * can render on distinct tracks with a parent hierarchy.
+   */
+  getAgentTracks(): AgentTrack[] {
+    const byAgent = new Map<string, AgentTrack>();
+    for (const rec of this._spans.values()) {
+      let track = byAgent.get(rec.agentId);
+      if (!track) { track = { agentId: rec.agentId, parentAgentId: rec.parentAgentId, spans: [] }; byAgent.set(rec.agentId, track); }
+      if (track.parentAgentId === undefined && rec.parentAgentId !== undefined) track.parentAgentId = rec.parentAgentId;
+      // A span is a root of its agent's track when its in-tree parent belongs to a
+      // DIFFERENT agent (or it has none) — same-agent parents nest it as a child.
+      const parent = rec.parentId !== undefined ? this._spans.get(rec.parentId) : undefined;
+      if (!parent || parent.agentId !== rec.agentId) {
+        track.spans.push(this._nodeFor(rec, child => child.agentId === rec.agentId));
+      }
+    }
+    return [...byAgent.values()];
+  }
+
   /** Clear all recorded timings. */
   reset(): void {
     this.timings.clear();
@@ -825,6 +1150,9 @@ export class Profiler {
     this._counters.clear();
     this._gauges.clear();
     this._sets.clear();
+    this._histograms.clear();
+    this._spans.clear();
+    this._spanSeq = 0;
   }
 }
 
