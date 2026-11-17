@@ -344,8 +344,8 @@ export { isModAllowed, isModBlockedByPolicy, getManagedPluginNames, parseModId, 
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
 export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS, PROVENANCE_TIER_INFO, PROVENANCE_INTEGRITY_INFO, PROVENANCE_INTEGRITY_ORDER, RISK_CAPABILITIES, describeTier, describeIntegrity, provenanceWarning, elevatedCapabilities, hasElevatedCapabilities, assessProvenanceRisk } from './provenance';
 export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary, ProvenanceIntegrity, ProvenanceSeverity, ProvenanceTierInfo, ProvenanceIntegrityInfo, RiskCapabilityName, RiskCapabilities, SourceCapabilities, ProvenanceRiskAssessment } from './provenance';
-export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, isHardRateLimited, suggestedWaitMs, formatResetTime, formatRateLimitReset } from './rate-limit-parser';
-export type { RateLimitInfo } from './rate-limit-parser';
+export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, isHardRateLimited, suggestedWaitMs, formatResetTime, formatRateLimitReset, computeEarlyWarning, computeTimeProgress, getRateLimitDisplayName, DEFAULT_EARLY_WARNING_CONFIGS } from './rate-limit-parser';
+export type { RateLimitInfo, UnifiedWindow, EarlyWarning, EarlyWarningConfig, EarlyWarningThreshold } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';
 export type { SettingsTier, SettingsSource } from './settings-guard';
 export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, isAllHooksDisabled, isManagedHooksOnly } from './settings-guard';

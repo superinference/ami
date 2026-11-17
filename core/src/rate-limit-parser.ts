@@ -26,7 +26,30 @@ export interface RateLimitInfo {
    * e.g. `'seven_day_opus'`; null when absent.
    */
   representativeClaim?: string | null;
+  /**
+   * Per-window unified utilization snapshots parsed from the Anthropic
+   * `anthropic-ratelimit-unified-<5h|7d>-{utilization,reset,surpassed-threshold}`
+   * headers. Drives proactive early-warning ({@link computeEarlyWarning}). Empty
+   * when the server reported no unified window headers. Optional so hand-built
+   * literals stay valid.
+   */
+  unifiedWindows?: UnifiedWindow[];
 }
+
+/**
+ * A single unified rate-limit window (parity: Claude's per-claim utilization
+ * headers). `claimAbbrev` is the header segment (`'5h'` / `'7d'`); fields are
+ * null when the corresponding header was absent.
+ */
+export interface UnifiedWindow {
+  claimAbbrev: string;
+  utilization: number | null;
+  resetAt: Date | null;
+  surpassedThreshold: number | null;
+}
+
+/** Abbreviations of the unified windows Anthropic reports utilization for. */
+const UNIFIED_WINDOW_ABBREVS = ['5h', '7d'] as const;
 
 export function parseRateLimitHeaders(headers: Record<string, string | string[] | undefined>): RateLimitInfo {
   const get = (name: string): string | undefined => {
@@ -37,6 +60,22 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
   const unifiedStatus = get('anthropic-ratelimit-unified-status');
   const overageStatus = get('anthropic-ratelimit-unified-overage-status');
   const representativeClaim = get('anthropic-ratelimit-unified-representative-claim');
+
+  const unifiedWindows: UnifiedWindow[] = [];
+  for (const abbrev of UNIFIED_WINDOW_ABBREVS) {
+    const util = get(`anthropic-ratelimit-unified-${abbrev}-utilization`);
+    const reset = get(`anthropic-ratelimit-unified-${abbrev}-reset`);
+    const surpassed = get(`anthropic-ratelimit-unified-${abbrev}-surpassed-threshold`);
+    // Only record a window the server actually reported at least one field for,
+    // so an all-absent window never masquerades as a zero-utilization snapshot.
+    if (util === undefined && reset === undefined && surpassed === undefined) continue;
+    unifiedWindows.push({
+      claimAbbrev: abbrev,
+      utilization: parseFloatHeader(util),
+      resetAt: parseResetHeader(reset),
+      surpassedThreshold: parseFloatHeader(surpassed),
+    });
+  }
 
   return {
     retryAfterMs: parseRetryAfterHeader(get('retry-after')),
@@ -50,6 +89,7 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
     overageStatus: overageStatus ? overageStatus.trim() : null,
     overageResetAt: parseResetHeader(get('anthropic-ratelimit-unified-overage-reset')),
     representativeClaim: representativeClaim ? representativeClaim.trim() : null,
+    unifiedWindows,
   };
 }
 
@@ -82,6 +122,15 @@ function parseIntHeader(value: string | undefined): number | null {
   if (!value) return null;
   const n = parseInt(value.trim(), 10);
   return Number.isNaN(n) ? null : n;
+}
+
+/** Parse a fractional header (e.g. a 0–1 utilization) to a finite number, or null. */
+function parseFloatHeader(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -207,4 +256,160 @@ export function formatRateLimitReset(info: RateLimitInfo, showTimezone = false):
   const reset = info.resetAt ?? info.resetAtTokens;
   if (!reset) return undefined;
   return formatResetTime(Math.floor(reset.getTime() / 1000), showTimezone);
+}
+
+// ---------------------------------------------------------------------------
+// Proactive early-warning (parity: Claude's claudeAiLimits getEarlyWarning*).
+// Warns BEFORE a hard limit when quota is burning faster than the time window
+// allows — e.g. 75% of the weekly window consumed in the first 60% of the week.
+// ---------------------------------------------------------------------------
+
+/**
+ * One proactive warning threshold: fire when utilization is at/above
+ * `utilization` AND no more than `timePct` of the time window has elapsed (i.e.
+ * high usage *early* in the window). Both are fractions in [0, 1].
+ */
+export interface EarlyWarningThreshold {
+  utilization: number;
+  timePct: number;
+}
+
+/** A known rate-limit window and its proactive warning ladder. */
+export interface EarlyWarningConfig {
+  /** Canonical rate-limit type, e.g. `'five_hour'` / `'seven_day'`. */
+  rateLimitType: string;
+  /** Header abbreviation matching {@link UnifiedWindow.claimAbbrev}. */
+  claimAbbrev: string;
+  /** Fixed duration of the window in seconds (not the observed remaining time). */
+  windowSeconds: number;
+  /** Thresholds in priority order; the first satisfied one fires. */
+  thresholds: EarlyWarningThreshold[];
+}
+
+/**
+ * Default warning ladders (parity: Claude's EARLY_WARNING_CONFIGS). The 7-day
+ * window intentionally carries aggressive low tiers that only make sense with a
+ * KNOWN fixed window — the observed-window burn-rate heuristic in
+ * `rate-limiter.ts` cannot use them because a single observation can't tell how
+ * much of a 7-day window has elapsed.
+ */
+export const DEFAULT_EARLY_WARNING_CONFIGS: readonly EarlyWarningConfig[] = [
+  {
+    rateLimitType: 'five_hour',
+    claimAbbrev: '5h',
+    windowSeconds: 5 * 60 * 60,
+    thresholds: [{ utilization: 0.9, timePct: 0.72 }],
+  },
+  {
+    rateLimitType: 'seven_day',
+    claimAbbrev: '7d',
+    windowSeconds: 7 * 24 * 60 * 60,
+    thresholds: [
+      { utilization: 0.75, timePct: 0.6 },
+      { utilization: 0.5, timePct: 0.35 },
+      { utilization: 0.25, timePct: 0.15 },
+    ],
+  },
+];
+
+/** Human-readable names for the known rate-limit types (parity: RATE_LIMIT_DISPLAY_NAMES). */
+const RATE_LIMIT_DISPLAY_NAMES: Record<string, string> = {
+  five_hour: 'session limit',
+  seven_day: 'weekly limit',
+  seven_day_opus: 'Opus weekly limit',
+  seven_day_sonnet: 'Sonnet weekly limit',
+  overage: 'extra usage limit',
+};
+
+/** Map a rate-limit type to a user-facing name, falling back to the raw type. */
+export function getRateLimitDisplayName(type: string): string {
+  return RATE_LIMIT_DISPLAY_NAMES[type] || type;
+}
+
+/**
+ * Fraction (0–1) of a fixed window that has elapsed, given the window's reset
+ * instant (Unix epoch SECONDS) and its total duration. Parity: Claude's
+ * computeTimeProgress. Clamped to [0, 1]; a non-positive window yields 0.
+ */
+export function computeTimeProgress(
+  resetAtSeconds: number,
+  windowSeconds: number,
+  nowMs: number = Date.now(),
+): number {
+  if (!(windowSeconds > 0)) return 0;
+  const nowSeconds = nowMs / 1000;
+  const windowStart = resetAtSeconds - windowSeconds;
+  const elapsed = nowSeconds - windowStart;
+  return Math.max(0, Math.min(1, elapsed / windowSeconds));
+}
+
+/** A fired proactive early warning (parity: Claude's allowed_warning limits). */
+export interface EarlyWarning {
+  /** Canonical rate-limit type whose threshold fired. */
+  rateLimitType: string;
+  /** Header abbreviation of the firing window. */
+  claimAbbrev: string;
+  /** Utilization (0–1) reported for the window, when known. */
+  utilization: number | null;
+  /** Reset instant of the window, when known. */
+  resetAt: Date | null;
+  /** Server-reported surpassed threshold (header-driven path), else null. */
+  surpassedThreshold: number | null;
+  /** How the warning was derived. */
+  source: 'header' | 'time-relative';
+}
+
+/**
+ * Decide whether to raise a proactive early warning from parsed unified windows,
+ * mirroring Claude's getEarlyWarningFromHeaders:
+ *  1. Header-based: any window carrying a `surpassed-threshold` wins immediately.
+ *  2. Time-relative fallback: for each configured window (priority order), fire
+ *     when utilization is high relative to how little of the fixed window has
+ *     elapsed.
+ * Returns null when no threshold is surpassed.
+ */
+export function computeEarlyWarning(
+  windows: readonly UnifiedWindow[] | undefined,
+  configs: readonly EarlyWarningConfig[] = DEFAULT_EARLY_WARNING_CONFIGS,
+  nowMs: number = Date.now(),
+): EarlyWarning | null {
+  if (!windows || windows.length === 0) return null;
+
+  // 1. Header-based detection (authoritative when the server sends it).
+  for (const w of windows) {
+    if (w.surpassedThreshold !== null) {
+      const cfg = configs.find(c => c.claimAbbrev === w.claimAbbrev);
+      return {
+        rateLimitType: cfg ? cfg.rateLimitType : w.claimAbbrev,
+        claimAbbrev: w.claimAbbrev,
+        utilization: w.utilization,
+        resetAt: w.resetAt,
+        surpassedThreshold: w.surpassedThreshold,
+        source: 'header',
+      };
+    }
+  }
+
+  // 2. Time-relative fallback (client-side burn-rate against the fixed window).
+  for (const cfg of configs) {
+    const w = windows.find(x => x.claimAbbrev === cfg.claimAbbrev);
+    if (!w || w.utilization === null || !w.resetAt) continue;
+    const resetAtSeconds = w.resetAt.getTime() / 1000;
+    const timeProgress = computeTimeProgress(resetAtSeconds, cfg.windowSeconds, nowMs);
+    const fired = cfg.thresholds.some(
+      t => w.utilization! >= t.utilization && timeProgress <= t.timePct,
+    );
+    if (fired) {
+      return {
+        rateLimitType: cfg.rateLimitType,
+        claimAbbrev: cfg.claimAbbrev,
+        utilization: w.utilization,
+        resetAt: w.resetAt,
+        surpassedThreshold: null,
+        source: 'time-relative',
+      };
+    }
+  }
+
+  return null;
 }

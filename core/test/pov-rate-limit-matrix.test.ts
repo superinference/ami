@@ -95,6 +95,7 @@ describe('pov-rate-limit-matrix: parseRateLimitHeaders (x-ratelimit-* variants)'
       overageStatus: null,
       overageResetAt: null,
       representativeClaim: null,
+      unifiedWindows: [],
     } satisfies RateLimitInfo);
   });
 

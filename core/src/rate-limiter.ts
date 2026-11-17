@@ -1,4 +1,12 @@
-import { parseRateLimitHeaders, formatResetTime } from './rate-limit-parser';
+import {
+  parseRateLimitHeaders,
+  formatResetTime,
+  computeEarlyWarning,
+  getRateLimitDisplayName,
+  DEFAULT_EARLY_WARNING_CONFIGS,
+  type UnifiedWindow,
+  type EarlyWarningConfig,
+} from './rate-limit-parser';
 
 export interface RateLimitBucket {
   limit: number;
@@ -63,6 +71,14 @@ export interface RateLimitStatus {
   isUsingOverage?: boolean;
   /** Scope the unified limit applies to (e.g. `'seven_day_opus'`), when reported. */
   representativeClaim?: string;
+  /**
+   * True when `shouldWarn` was raised PROACTIVELY by a unified-window early
+   * warning (burning quota faster than the time window allows) rather than by a
+   * per-bucket utilization/burn threshold. Lets consumers phrase it as a
+   * heads-up rather than an at-limit alert. Absent when no warning, or when the
+   * warning came from the per-bucket path.
+   */
+  proactive?: boolean;
 }
 
 /** Tunable thresholds for a {@link RateLimitTracker}. */
@@ -78,6 +94,13 @@ export interface RateLimitTrackerOptions {
    * rather than `warning`. Defaults to {@link ERROR_THRESHOLD} (0.95).
    */
   errorThreshold?: number;
+  /**
+   * Proactive early-warning ladders keyed by unified-window (parity: Claude's
+   * EARLY_WARNING_CONFIGS). Defaults to {@link DEFAULT_EARLY_WARNING_CONFIGS}.
+   * Supply custom windows/thresholds to tune when a proactive heads-up fires;
+   * an empty array disables proactive early warnings entirely.
+   */
+  earlyWarningConfigs?: readonly EarlyWarningConfig[];
 }
 
 /** Default utilization at/above which a warning is produced. */
@@ -121,12 +144,17 @@ export class RateLimitTracker {
   private unifiedStatus: string | null = null;
   private overage: RateLimitOverage | null = null;
   private representativeClaim: string | null = null;
+  // Unified per-window utilization snapshots from the most recent response, used
+  // for proactive early warnings. Cleared on a response that reports none.
+  private unifiedWindows: UnifiedWindow[] = [];
   private readonly warnThreshold: number;
   private readonly errorThreshold: number;
+  private readonly earlyWarningConfigs: readonly EarlyWarningConfig[];
 
   constructor(options: RateLimitTrackerOptions = {}) {
     this.warnThreshold = clampFraction(options.warnThreshold, WARN_THRESHOLD);
     this.errorThreshold = clampFraction(options.errorThreshold, ERROR_THRESHOLD);
+    this.earlyWarningConfigs = options.earlyWarningConfigs ?? DEFAULT_EARLY_WARNING_CONFIGS;
   }
 
   update(headers: Record<string, string>): void {
@@ -139,6 +167,9 @@ export class RateLimitTracker {
     // response without these clears them so a stale directive never lingers.
     this.unifiedStatus = info.unifiedStatus ?? null;
     this.representativeClaim = info.representativeClaim ?? null;
+    // Capture unified per-window utilization for proactive early warnings; a
+    // response without these clears them so a stale snapshot never lingers.
+    this.unifiedWindows = info.unifiedWindows ?? [];
     this.overage = info.overageStatus
       ? {
           status: info.overageStatus,
@@ -195,7 +226,14 @@ export class RateLimitTracker {
 
     const reqWarn = reqPct >= this.warnThreshold || reqBurn;
     const tokWarn = tokPct >= this.warnThreshold || tokBurn;
-    const shouldWarn = reqWarn || tokWarn;
+    const bucketWarn = reqWarn || tokWarn;
+
+    // Proactive early warning from the unified per-window utilization headers
+    // (parity: Claude's getEarlyWarningFromHeaders). Uses the FIXED provider
+    // window, so the aggressive 7-day tiers — which the observed-window burn-rate
+    // heuristic above cannot evaluate — can fire here.
+    const earlyWarn = computeEarlyWarning(this.unifiedWindows, this.earlyWarningConfigs);
+    const shouldWarn = bucketWarn || earlyWarn !== null;
 
     const status: RateLimitStatus = {
       requests: this.requests,
@@ -213,7 +251,7 @@ export class RateLimitTracker {
     }
     if (this.representativeClaim) status.representativeClaim = this.representativeClaim;
 
-    if (shouldWarn) {
+    if (bucketWarn) {
       // Surface whichever dimension is closer to its limit.
       const useReq = reqWarn && (!tokWarn || reqPct >= tokPct);
       const pct = useReq ? reqPct : tokPct;
@@ -225,6 +263,18 @@ export class RateLimitTracker {
         : undefined;
       status.warnMessage =
         `You've used ${Math.round(pct * 100)}% of your ${dimension} rate limit` +
+        (resetText ? ` — resets ${resetText}.` : '.');
+    } else if (earlyWarn) {
+      // Proactive heads-up: high utilization early in a known window.
+      status.proactive = true;
+      const util = earlyWarn.utilization;
+      status.severity = util !== null && util >= this.errorThreshold ? 'error' : 'warning';
+      const resetText = earlyWarn.resetAt && earlyWarn.resetAt.getTime() > Date.now()
+        ? formatResetTime(Math.floor(earlyWarn.resetAt.getTime() / 1000))
+        : undefined;
+      const usedClause = util !== null ? `used ${Math.round(util * 100)}% of ` : 'nearly reached ';
+      status.warnMessage =
+        `Heads up: you've ${usedClause}your ${getRateLimitDisplayName(earlyWarn.rateLimitType)}` +
         (resetText ? ` — resets ${resetText}.` : '.');
     }
 
