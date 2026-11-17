@@ -14,6 +14,63 @@ export function coerceBool(v: unknown): boolean {
   return false;
 }
 
+/**
+ * Discriminated result of {@link coerceBoolStrict}: either a recognized boolean
+ * (`ok: true` with its `value`) or an unrecognized input (`ok: false` carrying
+ * the original `raw` value so a caller can report it).
+ */
+export type CoerceBoolResult =
+  | { ok: true; value: boolean }
+  | { ok: false; raw: unknown };
+
+/**
+ * STRICT boolean coercion that distinguishes a legitimate `false` from garbage.
+ *
+ * FUNCTIONAL CHANGE (additive): new helper. The lenient {@link coerceBool}
+ * collapses EVERY non-true input to `false` — so a malformed tool-call arg like
+ * `run_in_background: "yes"` (or `1`, `{}`, `"maybe"`) is silently treated as a
+ * deliberate `false`, hiding the model's mistake. Mirroring the reference's
+ * `semanticBoolean` (which maps only the `"true"`/`"false"` literals and leaves
+ * everything else for the schema to REJECT rather than coercing it), this
+ * variant recognizes ONLY the known boolean spellings — a real `true`/`false`
+ * or the (case/space-insensitive) strings `"true"`/`"false"` — and returns
+ * `{ ok: false }` for anything else, letting callers detect malformed args
+ * instead of swallowing them. For recognized inputs it agrees with
+ * {@link coerceBool} exactly.
+ */
+export function coerceBoolStrict(v: unknown): CoerceBoolResult {
+  if (v === true) return { ok: true, value: true };
+  if (v === false) return { ok: true, value: false };
+  if (typeof v === 'string') {
+    const t = v.trim().toLowerCase();
+    if (t === 'true') return { ok: true, value: true };
+    if (t === 'false') return { ok: true, value: false };
+  }
+  return { ok: false, raw: v };
+}
+
+/**
+ * Parse an OPTIONAL boolean tool-call flag strictly, returning either the
+ * coerced `value` or an `error` message a tool can surface verbatim.
+ *
+ * FUNCTIONAL CHANGE (additive): new helper built on {@link coerceBoolStrict}.
+ * Absence (`undefined`/`null`) yields `{ value: fallback }` so an unset optional
+ * flag defaults cleanly; a recognized spelling yields its `{ value }`; a
+ * present-but-unrecognized value yields `{ error }` naming the `field`, so the
+ * caller can reject the malformed arg (e.g. `run_in_background: "yes"`) instead
+ * of silently running in the wrong mode (the trap of lenient {@link coerceBool}).
+ */
+export function parseOptionalBool(
+  v: unknown,
+  field: string,
+  fallback = false,
+): { value: boolean } | { error: string } {
+  if (v === undefined || v === null) return { value: fallback };
+  const r = coerceBoolStrict(v);
+  if (r.ok) return { value: r.value };
+  return { error: `${field} must be a boolean (true/false); received ${JSON.stringify(v)}` };
+}
+
 /** Options for {@link coerceNumber}. */
 export interface CoerceNumberOptions {
   /** Inclusive lower bound; the result is clamped up to this value. */

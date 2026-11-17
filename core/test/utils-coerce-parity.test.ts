@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   coerceBool,
+  coerceBoolStrict,
+  parseOptionalBool,
   coerceNumber,
   coerceString,
   coerceArray,
@@ -18,6 +20,69 @@ describe('coerceBool (regression guard — unchanged)', () => {
     assert.equal(coerceBool('true'), true);
     assert.equal(coerceBool('false'), false);
     assert.equal(coerceBool(undefined), false);
+  });
+});
+
+describe('coerceBoolStrict (distinguishes legit false from garbage)', () => {
+  it('real booleans are recognized', () => {
+    assert.deepEqual(coerceBoolStrict(true), { ok: true, value: true });
+    assert.deepEqual(coerceBoolStrict(false), { ok: true, value: false });
+  });
+
+  it('string "true"/"false" spellings are recognized (case/space-insensitive)', () => {
+    assert.deepEqual(coerceBoolStrict('true'), { ok: true, value: true });
+    assert.deepEqual(coerceBoolStrict('  TRUE  '), { ok: true, value: true });
+    assert.deepEqual(coerceBoolStrict('false'), { ok: true, value: false });
+    assert.deepEqual(coerceBoolStrict(' False '), { ok: true, value: false });
+  });
+
+  // RED vs lenient coerceBool (which collapses ALL of these to a legit `false`):
+  // strict must flag them as NOT a recognized boolean so callers can reject them.
+  it('garbage inputs are NOT a recognized boolean (ok:false, raw preserved)', () => {
+    for (const g of ['yes', 'no', '1', '0', '', 'maybe', 1, 0, {}, [], null, undefined]) {
+      const r = coerceBoolStrict(g);
+      assert.equal(r.ok, false, `expected ${JSON.stringify(g)} to be unrecognized`);
+      if (!r.ok) assert.equal(r.raw, g);
+    }
+  });
+
+  it('agrees with lenient coerceBool on every recognized input', () => {
+    for (const v of [true, false, 'true', 'false', 'TRUE', '  false ']) {
+      const r = coerceBoolStrict(v);
+      assert.equal(r.ok, true);
+      if (r.ok) assert.equal(r.value, coerceBool(v));
+    }
+  });
+});
+
+describe('parseOptionalBool (strict optional flag parse)', () => {
+  it('absent (undefined/null) returns the fallback with no error', () => {
+    assert.deepEqual(parseOptionalBool(undefined, 'flag'), { value: false });
+    assert.deepEqual(parseOptionalBool(null, 'flag'), { value: false });
+    assert.deepEqual(parseOptionalBool(undefined, 'flag', true), { value: true });
+  });
+
+  it('recognized spellings return the coerced value', () => {
+    assert.deepEqual(parseOptionalBool('true', 'flag'), { value: true });
+    assert.deepEqual(parseOptionalBool('false', 'flag', true), { value: false });
+    assert.deepEqual(parseOptionalBool(false, 'flag', true), { value: false });
+  });
+
+  // RED vs lenient coerceBool: a present-but-garbage flag must ERROR, not silently
+  // become false.
+  it('present-but-unrecognized value returns a field-named error', () => {
+    const r = parseOptionalBool('yes', 'run_in_background');
+    assert.ok('error' in r);
+    if ('error' in r) {
+      assert.match(r.error, /run_in_background must be a boolean/);
+      assert.match(r.error, /"yes"/);
+    }
+  });
+
+  it('non-string garbage is reported with its JSON form', () => {
+    const r = parseOptionalBool(1, 'flag');
+    assert.ok('error' in r);
+    if ('error' in r) assert.match(r.error, /received 1/);
   });
 });
 

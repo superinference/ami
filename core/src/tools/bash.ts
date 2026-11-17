@@ -7,7 +7,7 @@ import { getSessionEnvironmentScript } from '../session-environment';
 import { sessionEnvOverrides } from '../session-env-vars';
 import { execCommand, resolveTmpBase, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
-import { coerceBool, coerceNumber } from '../utils/coerce';
+import { coerceBool, coerceNumber, parseOptionalBool } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, sandboxBashDisplayName, type SandboxExemptionOptions } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
@@ -1643,13 +1643,20 @@ export const bashTool: ToolDefinition = {
       return { output: `Error: blocked — ${exfil.reason} (data exfiltration risk)`, isError: true };
     }
 
-    // coerceBool: providers serialize booleans as strings; a naive truthy check
-    // would background on the STRING "false". Shared with task.ts.
+    // parseOptionalBool: providers serialize booleans as strings; a naive truthy
+    // check would background on the STRING "false". Strict parse also REJECTS a
+    // malformed flag (e.g. "yes"/1) instead of silently treating it as false, so
+    // the model learns its arg was wrong (parity: semanticBoolean leaves non-
+    // boolean-ish input for schema rejection). Shared with task.ts.
+    const ribParsed = parseOptionalBool(input.run_in_background, 'run_in_background');
+    if ('error' in ribParsed) {
+      return { output: `Error: ${ribParsed.error}`, isError: true };
+    }
     // When background tasks are disabled (AMI_DISABLE_BACKGROUND_TASKS), force the
     // command to run in the foreground even if the model still requested a
     // background run — the capability is fully off (parity: Claude runs such
     // commands in the foreground when CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is set).
-    const runInBackground = coerceBool(input.run_in_background) && !isBackgroundTasksDisabled();
+    const runInBackground = ribParsed.value && !isBackgroundTasksDisabled();
     const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
 

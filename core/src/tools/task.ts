@@ -8,7 +8,7 @@ import { createDefaultTools } from './index';
 import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
 import { isReadOnlyBashCommand } from './bash-cache';
-import { coerceBool } from '../utils/coerce';
+import { coerceBool, parseOptionalBool } from '../utils/coerce';
 import { createBoundedAbortController, raiseAbortListenerCap } from '../utils/abort';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
@@ -2612,11 +2612,19 @@ export const taskTool: ToolDefinition = {
       };
     }
 
+    // Strict-parse the optional run_in_background flag so a malformed value (e.g.
+    // "yes"/1) is REJECTED rather than silently treated as false (the trap of the
+    // lenient coerceBool). Shared with bash.ts for consistent coercion.
+    const ribParsed = parseOptionalBool(input.run_in_background, 'run_in_background');
+    if ('error' in ribParsed) {
+      return { output: `Error: ${ribParsed.error}`, isError: true };
+    }
+
     // Background tasks can be globally disabled by CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.
     // The flag is already omitted from the advertised schema when disabled; a stale /
     // replayed call that still sets it is rejected here so it cannot silently spawn a
     // detached agent in an environment that forbids them.
-    if (coerceBool(input.run_in_background) && isBackgroundTasksDisabled()) {
+    if (ribParsed.value && isBackgroundTasksDisabled()) {
       return {
         output: `Error: background subagents are disabled (${DISABLE_BACKGROUND_TASKS_ENV} is set). ` +
           'Run this task in the foreground (omit run_in_background), or unset the env knob.',
@@ -2936,13 +2944,13 @@ export const taskTool: ToolDefinition = {
     }
 
     // Providers often serialize booleans as the STRING "true"/"false" in tool-call
-    // args; coerceBool handles both (a strict `=== true` silently dropped
-    // `run_in_background: "true"` to foreground, serializing a batch the model
-    // meant to run concurrently). Shared with bash.ts for consistent coercion.
-    // An explicit run_in_background (even "false") wins; otherwise fall back to the
-    // agent definition's `background: true` default (parity: Claude's agent background).
+    // args; parseOptionalBool (strict-parsed above) handles both (a strict `=== true`
+    // silently dropped `run_in_background: "true"` to foreground, serializing a batch
+    // the model meant to run concurrently). An explicit run_in_background (even
+    // "false") wins; otherwise fall back to the agent definition's `background: true`
+    // default (parity: Claude's agent background).
     const runInBackground = input.run_in_background !== undefined
-      ? coerceBool(input.run_in_background)
+      ? ribParsed.value
       : agentBackgroundDefault;
 
     // Async/background allowlist — a detached background agent has no live parent
