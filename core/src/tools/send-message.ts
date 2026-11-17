@@ -1642,6 +1642,75 @@ function validationError(message: string): ToolResult {
   return { output: `Error: ${message}`, isError: true, metadata: { errorCode: SEND_MESSAGE_VALIDATION_ERROR_CODE } };
 }
 
+// --- User-facing @agent-name direct message (bypasses the model) ------------
+// A human can hand a message straight to a named teammate's mailbox from the
+// prompt box WITHOUT spending a model turn, mirroring Claude Code's
+// utils/directMemberMessage.ts (parseDirectMemberMessage + sendDirectMemberMessage).
+// AMI exposes teammate messaging to the MODEL via send_message; this is the
+// complementary USER fast path. The parsing/detection lives in common
+// (direct-member-mode.ts, the input-mode convention); THIS is the real mailbox
+// delivery leg, reusing the canonical in-session transport (enqueue +
+// recordOutboundDm + isReachable/roster), so there is no second messaging path.
+
+/**
+ * Result of a user-initiated direct member message. Mirrors Claude Code's
+ * DirectMessageResult discriminants:
+ *  - `success` — delivered to the named teammate's mailbox (from the lead/user);
+ *  - `no_team_context`  — no team roster is established and no agent is live, so
+ *    there is nobody to direct-message;
+ *  - `unknown_recipient` — a team IS active but the name is not a reachable member
+ *    (a likely typo). Unlike the MODEL tool (which soft-queues to a coming-online
+ *    teammate), the user fast path HARD-fails an unknown name: the CLI then falls
+ *    through to a normal model turn, so AMI's `@agent-<name>` composer mention is
+ *    never hijacked by this shortcut.
+ */
+export type DirectMessageResult =
+  | { success: true; recipientName: string; from: string }
+  | { success: false; error: 'no_team_context' | 'unknown_recipient'; recipientName?: string };
+
+/**
+ * Deliver a user-typed `@agent-name message` straight to that teammate's mailbox,
+ * bypassing the model. The sender is the lead/user ({@link TEAM_LEAD_NAME}) — the
+ * human drives the lead session — so the message classifies as a `user` source and
+ * the teammate receives it exactly like a lead-authored send. Routes through the
+ * canonical {@link enqueue} (so it bumps the recipient's revision and resolves any
+ * pending waiter) and records it as an outbound DM for idle-summary derivation —
+ * identical delivery semantics to the model tool's plain-text path, never a parallel
+ * transport. Returns a typed {@link DirectMessageResult}: a HARD unknown/no-team
+ * result when the name is not a reachable teammate, so the CLI can fall through to a
+ * normal model turn and preserve AMI's `@`-mention differentiator.
+ */
+export function deliverDirectMemberMessage(recipientName: string, message: string): DirectMessageResult {
+  const to = (recipientName || '').trim();
+  const body = (message || '').trim();
+  const hasRoster = rosterMemberNames().length > 0;
+  const liveOrRoster = hasRoster || mailboxNotifiers.size > 0 || mailboxes.size > 0;
+  const failKind: 'no_team_context' | 'unknown_recipient' = liveOrRoster ? 'unknown_recipient' : 'no_team_context';
+  if (!to || !body) {
+    return { success: false, error: failKind, recipientName: to || undefined };
+  }
+  // Resolve a display name to its stable agentId when the task layer knows it, so
+  // the message lands under the same key the teammate's engine drains.
+  let resolved = to;
+  try {
+    const { getAgentByName } = require('./task');
+    resolved = getAgentByName(to) || to;
+  } catch { /* task module optional */ }
+  // The user cannot direct-message itself / the lead through this path.
+  if (to.toLowerCase() === TEAM_LEAD_NAME.toLowerCase()) {
+    return { success: false, error: failKind, recipientName: to };
+  }
+  if (!isReachable(resolved) && !isReachable(to)) {
+    return { success: false, error: failKind, recipientName: to };
+  }
+  const from = TEAM_LEAD_NAME;
+  const summary = deriveSummary(body);
+  enqueue(resolved, { from, to: resolved, content: body, summary: summary || undefined, timestamp: Date.now() });
+  recordOutboundDm(from, to, summary || body.slice(0, 80));
+  traceMailbox('direct-member', { to, from });
+  return { success: true, recipientName: to, from };
+}
+
 export const sendMessageTool: ToolDefinition = {
   name: 'send_message',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
