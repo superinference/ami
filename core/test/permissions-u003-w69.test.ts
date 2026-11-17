@@ -112,12 +112,17 @@ test('buildPermissionSuggestions: read-shaped file tool widens the read boundary
   assert.deepEqual(aliased, sugg);
 });
 
-test('buildPermissionSuggestions: mutating file tool suggests a path allow rule', () => {
+test('buildPermissionSuggestions: mutating file tool suggests a path allow rule + a switch-to-acceptEdits affordance', () => {
+  // w96/G9: an edit-capable tool now ALSO offers a one-tap "switch to acceptEdits"
+  // (setMode) affordance alongside the path allow rule (additive, not a replace).
   const sugg = buildPermissionSuggestions('file_edit', { file_path: '/repo/x.ts' });
-  assert.equal(sugg.length, 1);
-  const u = sugg[0]!;
-  assert.ok(u.type === 'addRules');
-  assert.deepEqual(u.rules, [{ toolName: 'file_edit', ruleContent: '/repo/x.ts' }]);
+  assert.equal(sugg.length, 2);
+  const addRule = sugg.find(s => s.type === 'addRules') as Extract<PermissionUpdate, { type: 'addRules' }>;
+  assert.ok(addRule, 'the path allow rule affordance is still offered');
+  assert.deepEqual(addRule.rules, [{ toolName: 'file_edit', ruleContent: '/repo/x.ts' }]);
+  const setMode = sugg.find(s => s.type === 'setMode') as Extract<PermissionUpdate, { type: 'setMode' }>;
+  assert.ok(setMode, 'a switch-to-acceptEdits affordance is offered');
+  assert.equal(setMode.mode, 'acceptEdits');
 });
 
 test('checkWithReason: attaches suggestions to an ask decision through the Engine path', async () => {

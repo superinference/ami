@@ -106,8 +106,9 @@ test('buildPermissionSuggestions: config-folder edit offers a session folder gra
   try {
     const target = path.join(tmp, '.ami', 'settings.json');
     const sugg = buildPermissionSuggestions('file_edit', { file_path: target });
-    assert.equal(sugg.length, 2, 'folder grant + file grant');
-    const [folderGrant, fileGrant] = sugg as [PermissionUpdate, PermissionUpdate];
+    // w96/G9: folder grant + file grant + a switch-to-acceptEdits affordance.
+    assert.equal(sugg.length, 3, 'folder grant + file grant + setMode acceptEdits');
+    const [folderGrant, fileGrant, setMode] = sugg as [PermissionUpdate, PermissionUpdate, PermissionUpdate];
     assert.equal(folderGrant.type, 'addRules');
     assert.equal(folderGrant.destination, 'session', 'folder grant must be session-only (never persisted)');
     const expectedRoot = `${path.resolve(tmp, '.ami')}${path.sep}*`;
@@ -119,6 +120,8 @@ test('buildPermissionSuggestions: config-folder edit offers a session folder gra
       (fileGrant as { rules: { toolName: string; ruleContent?: string }[] }).rules,
       [{ toolName: 'file_edit', ruleContent: target }],
     );
+    assert.equal(setMode.type, 'setMode');
+    assert.equal((setMode as Extract<PermissionUpdate, { type: 'setMode' }>).mode, 'acceptEdits');
   } finally {
     process.chdir(prevCwd);
   }
@@ -130,11 +133,15 @@ test('buildPermissionSuggestions: ordinary (non-config) edit still yields a sing
   try {
     const target = path.join(tmp, 'src', 'a.ts');
     const sugg = buildPermissionSuggestions('file_edit', { file_path: target });
-    assert.equal(sugg.length, 1, 'no config-folder grant for an ordinary path');
+    // w96/G9: specific-file grant + the switch-to-acceptEdits affordance (no
+    // config-folder grant for an ordinary path).
+    assert.equal(sugg.length, 2, 'file grant + setMode acceptEdits, no config-folder grant');
+    const fileGrant = sugg.find(s => s.type === 'addRules') as Extract<PermissionUpdate, { type: 'addRules' }>;
     assert.deepEqual(
-      (sugg[0] as { rules: { toolName: string; ruleContent?: string }[] }).rules,
+      fileGrant.rules,
       [{ toolName: 'file_edit', ruleContent: target }],
     );
+    assert.ok(sugg.some(s => s.type === 'setMode'), 'offers switch-to-acceptEdits');
   } finally {
     process.chdir(prevCwd);
   }

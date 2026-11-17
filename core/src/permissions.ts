@@ -2526,6 +2526,15 @@ function allSegmentsKnown(command: string): boolean {
 const ACCEPT_EDITS_FS_COMMANDS = new Set(['mkdir', 'touch', 'mv', 'cp', 'sed']);
 
 /**
+ * The file-mutating tools that `acceptEdits` mode auto-allows. SINGLE source of
+ * truth shared by {@link PermissionManager.check} (the acceptEdits fast-path) and
+ * {@link buildPermissionSuggestions} (the "switch to acceptEdits" blocked-edit
+ * affordance), so the set a suggestion offers to unlock can never drift from the
+ * set the mode actually unlocks.
+ */
+const ACCEPT_EDITS_EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
+
+/**
  * True when EVERY sub-command of `command` is a benign filesystem-mutation base
  * command ({@link ACCEPT_EDITS_FS_COMMANDS}). Used by `acceptEdits` mode to
  * auto-allow file-edit-adjacent shell work (`mkdir`, `touch`, `mv`, `cp`,
@@ -4103,6 +4112,15 @@ export function buildPermissionSuggestions(
       type: 'addRules', behavior: 'allow', destination: 'session',
       rules: [{ toolName: canonical, ruleContent: filePath }],
     });
+    // A one-tap "switch to acceptEdits" affordance for an edit-capable tool, so the
+    // user can unblock ALL future edits for the session rather than granting one
+    // path rule at a time (parity: Claude's blocked-write `{ type:'setMode',
+    // mode:'acceptEdits' }` suggestion, pathValidation.ts L1792-1798). Offered only
+    // for the tools acceptEdits actually auto-allows ({@link ACCEPT_EDITS_EDIT_TOOLS})
+    // — it is a no-op for a read or a bash command, which have their own affordances.
+    if (ACCEPT_EDITS_EDIT_TOOLS.has(canonical)) {
+      suggestions.push({ type: 'setMode', mode: 'acceptEdits', destination: 'session' });
+    }
     return suggestions;
   }
   return [];
@@ -5005,8 +5023,7 @@ export class PermissionManager {
 
     // acceptEdits: auto-allow file-mutating tools and safe bash
     if (this.mode === 'acceptEdits') {
-      const editTools = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
-      if (editTools.has(toolName)) {
+      if (ACCEPT_EDITS_EDIT_TOOLS.has(toolName)) {
         // Build-config files can be weaponized for supply-chain attacks —
         // require explicit approval even in acceptEdits mode.
         const filePath = (input.file_path || input.path || '') as string;
@@ -5196,18 +5213,56 @@ export class PermissionManager {
      * (PermissionResultSchema). Omitted otherwise.
      */
     interrupt?: boolean;
+    /**
+     * For a COMPOUND bash command (`a && b | c`) that did not auto-allow, the
+     * per-segment verdict map: each pipe/`&&`/`;` segment evaluated INDEPENDENTLY
+     * through {@link check} so a prompt/executor can show WHICH specific segment
+     * forced the ask/deny instead of collapsing the whole chain to one verdict.
+     * The aggregate `decision` above stays authoritative (deny-wins); this map is
+     * purely additive diagnostics. Omitted for single (non-compound) commands,
+     * non-bash tools, and the auto-allow fast path. Mirrors Claude's
+     * BashPermissionRequest `subcommandResults: Map<string, PermissionResult>`
+     * (tools/BashTool/bashCommandHelpers.ts L84-156).
+     */
+    subcommandResults?: Record<string, 'allow' | 'deny' | 'ask'>;
   }> {
     const decision = await this.check(toolName, input);
     if (decision === 'allow') return { decision };
     const reason = this.deriveDecisionReason(toolName, input, decision);
     const suggestions = buildPermissionSuggestions(toolName, input);
+    const subcommandResults = await this.evaluateCompoundSubcommands(toolName, input);
     return {
       decision,
       reason,
       message: createPermissionRequestMessage(reason),
       ...(suggestions.length > 0 ? { suggestions } : {}),
       ...(decision === 'deny' && reason.type === 'hardline' ? { interrupt: true } : {}),
+      ...(subcommandResults ? { subcommandResults } : {}),
     };
+  }
+
+  /**
+   * Evaluate EACH segment of a compound bash command independently through
+   * {@link check}, returning a `{ segment: verdict }` map — the data a UI/executor
+   * needs to attribute a compound command's ask/deny to the exact offending
+   * segment (parity: Claude's per-segment `subcommandResults`, deny-wins
+   * aggregation). Returns `undefined` for a non-bash tool, a non-string command,
+   * or a single (non-compound) command — cases with nothing to disambiguate.
+   * Segments are de-duplicated (a repeated segment is evaluated once).
+   */
+  private async evaluateCompoundSubcommands(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<Record<string, 'allow' | 'deny' | 'ask'> | undefined> {
+    if (toolName !== 'bash' || typeof input.command !== 'string') return undefined;
+    const segments = splitCompoundCommand(input.command);
+    if (segments.length <= 1) return undefined;
+    const results: Record<string, 'allow' | 'deny' | 'ask'> = {};
+    for (const segment of segments) {
+      if (segment in results) continue;
+      results[segment] = await this.check('bash', { ...input, command: segment });
+    }
+    return results;
   }
 
   /** Best-effort attribution of a deny/ask verdict to a structured reason. */
