@@ -80,6 +80,7 @@ const CHECK_IDS = {
   TILDE_EXPANSION_VARIANT: 74,
   DANGEROUS_REDIRECT_TARGET: 75,
   ASSIGNMENT_TILDE_EXPANSION: 76,
+  HOMOGLYPH_COMMAND_NAME: 77,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1865,6 +1866,18 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
   // because zero-width characters can split tokens and evade all regexes below.
   result = validateInvisibleUnicode(command);
   if (!result.safe) return result;
+
+  // Non-ASCII homoglyph command name — a command-name token written with
+  // look-alike non-ASCII letters (ſ→s, ı→i, Cyrillic/Greek homoglyphs) resolves
+  // to the real command at runtime while evading every ASCII-anchored deny regex.
+  // Runs right after the invisible-unicode gate so only VISIBLE homoglyphs reach
+  // here, and before any content extraction / auto-allow classification.
+  {
+    const homoglyph = detectHomoglyphCommandName(command);
+    if (homoglyph.blocked) {
+      return fail(CHECK_IDS.HOMOGLYPH_COMMAND_NAME, homoglyph.reason!);
+    }
+  }
 
   // Windows UNC path — must run early, before any read-only auto-allow
   // classification, because resolving a UNC host triggers SMB/WebDAV auth
@@ -4911,6 +4924,68 @@ export function detectZshRegexConditional(command: string): { blocked: boolean; 
       blocked: true,
       reason: 'Command substitution inside [[ =~ ]] regex conditional can execute arbitrary commands',
     };
+  }
+  return { blocked: false };
+}
+
+// ---------------------------------------------------------------------------
+// Non-ASCII homoglyph command-name folding
+// ---------------------------------------------------------------------------
+// A command NAME written with non-ASCII look-alike letters masquerades as a
+// different command at runtime: the OS/resolver folds characters like U+017F (ſ)
+// → 's' and U+0131 (ı) → 'i' (and Cyrillic/Greek homoglyphs render identically
+// to ASCII), so `ſudo rm -rf /`, `ѕudo …` (Cyrillic es) or `ſtart-proceſſ`
+// resolve to the real `sudo` / `Start-Process` while every ASCII-anchored deny
+// regex above (`\bsudo\b`, `\brm\b`, …) misses them. ASCII command names are the
+// only legitimate case, so a command-name token carrying ANY char outside the
+// ASCII range can never be auto-approved — it must be surfaced for approval.
+// (Parity with Claude Code's parser.ts forcing nameType='application' for any
+// command name containing U+0080–U+FFFF, utils/powershell/parser.ts L872-886.)
+// Invisible/zero-width chars are already rejected upstream by
+// validateInvisibleUnicode, so this targets the VISIBLE homoglyph case.
+
+const NON_ASCII_CHAR_RE = /[^\u0000-\u007F]/;
+const COMMAND_NAME_SEGMENT_SPLIT_RE = /[\n;|&]+/;
+
+/**
+ * Extract the executable/command-name token from each `;`/`|`/`&`/newline
+ * separated segment, skipping leading subshell/group/negation markers, env-var
+ * assignments (`FOO=bar cmd`) and leading redirections so the token returned is
+ * the actual command name, never an argument or assignment value.
+ */
+function extractCommandNameTokens(command: string): string[] {
+  const names: string[] = [];
+  for (const rawSeg of command.split(COMMAND_NAME_SEGMENT_SPLIT_RE)) {
+    const seg = rawSeg.replace(/^[\s({!]+/, '').trim();
+    if (!seg) continue;
+    const tokens = seg.split(/\s+/).filter(Boolean);
+    let idx = 0;
+    while (idx < tokens.length) {
+      const t = tokens[idx];
+      // leading VAR=value assignment → the command name is a later token
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { idx++; continue; }
+      // leading redirection operator (`>file`, `2>`, `<`, `>>`) → skip
+      if (/^\d*[<>]/.test(t)) { idx++; continue; }
+      break;
+    }
+    if (idx < tokens.length) {
+      // strip surrounding quotes so `"ѕudo"` is still inspected
+      names.push(tokens[idx].replace(/^['"]+|['"]+$/g, ''));
+    }
+  }
+  return names;
+}
+
+export function detectHomoglyphCommandName(command: string): { blocked: boolean; reason?: string } {
+  for (const name of extractCommandNameTokens(command)) {
+    if (NON_ASCII_CHAR_RE.test(name)) {
+      const ch = [...name].find(c => c.codePointAt(0)! > 0x7f)!;
+      const cp = ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0');
+      return {
+        blocked: true,
+        reason: `Command name "${name}" contains a non-ASCII character (U+${cp}) that can homoglyph-masquerade as a different command at runtime — cannot be auto-approved`,
+      };
+    }
   }
   return { blocked: false };
 }
