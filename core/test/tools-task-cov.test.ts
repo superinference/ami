@@ -1066,10 +1066,18 @@ describe('teamCreateTool / teamDeleteTool', () => {
     assert.ok(r.output.includes('already exists'));
   });
 
-  it('rejects an invalid team name', async () => {
-    const r = await teamCreateTool.execute({ team_name: 'bad/name' }, ctx({ cwd: tmp }));
+  it('rejects a team name that normalizes to empty', async () => {
+    // U038: names are normalized to a filesystem-safe slug rather than rejected;
+    // only a name that normalizes to EMPTY (all-unsafe chars) is still rejected.
+    const r = await teamCreateTool.execute({ team_name: '...' }, ctx({ cwd: tmp }));
     assert.ok(r.isError);
     assert.ok(r.output.includes('alphanumeric'));
+  });
+
+  it('normalizes an unsafe team name to a filesystem-safe slug (U038)', async () => {
+    const r = await teamCreateTool.execute({ team_name: 'bad/name' }, ctx({ cwd: tmp }));
+    assert.ok(!r.isError, r.output);
+    assert.ok(r.output.includes('bad-name'), r.output);
   });
 
   it('delete is a graceful no-op when there is no active team', async () => {

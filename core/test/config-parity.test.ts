@@ -75,6 +75,11 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       extraCaCerts: '/etc/ca.pem', plansDirectory: 'plans', respectGitignore: true,
       autoCompactEnabled: false, fastMode: true, redactThinking: true,
       additionalDirectories: ['/srv/data'],
+      // Round-2 engine-behavior knobs (w80): memory/dream/session-memory toggles,
+      // title generation, worktree tools, OSC 9;4 progress bar, turn-duration.
+      autoMemoryEnabled: true, autoDreamEnabled: false, sessionMemoryEnabled: true,
+      enableTitleGeneration: true, worktreeToolsEnabled: false,
+      terminalProgressBarEnabled: true, showTurnDuration: false,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
