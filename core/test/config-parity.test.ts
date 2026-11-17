@@ -107,6 +107,10 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // merged so a config-file value takes effect.
       showClearContextOnPlanAccept: true, prStatusFooterEnabled: false,
       lastReleaseNotesSeen: '1.2.3',
+      // Update-channel knobs (U010 gap 14): the self-updater/launcher release channel
+      // and the managed minimum-version floor — declared/validated/merged so a
+      // config-file value is recognized (autoUpdatesChannel is an enum).
+      autoUpdatesChannel: 'stable', minimumVersion: '1.2.3',
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

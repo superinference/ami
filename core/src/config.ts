@@ -9,6 +9,7 @@ import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { levenshteinDistance } from './tools/path-suggest';
 import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT } from './tools/tool-gates';
 import { TIER_LOCKED_KEYS } from './settings-guard';
+import { readNativeManagedPolicy } from './managed-policy-source';
 
 /**
  * One entry of the MCP allowlist ({@link ProjectConfig.allowedMcpServers}). A plain
@@ -797,6 +798,21 @@ export interface ProjectConfig {
    * Persisted user STATE (like {@link preferencesShown}), not a cross-layer policy knob.
    */
   lastReleaseNotesSeen?: string;
+  /**
+   * Release channel the self-updater/launcher installs from: `latest` (newest build)
+   * or `stable` (vetted releases only). A merged config knob, recognized + value-
+   * validated here (enum) so an enterprise/global config pinning a channel is honored
+   * by the update path rather than flagged as an unknown key. Parity: Claude Code's
+   * `autoUpdatesChannel` setting.
+   */
+  autoUpdatesChannel?: 'latest' | 'stable';
+  /**
+   * Minimum acceptable version the launcher must satisfy before running (a managed/
+   * enterprise floor; a below-floor install is upgraded/blocked by the update path).
+   * A merged config knob, recognized + base-type validated here. Parity: Claude Code's
+   * `minimumVersion` policy setting paired with {@link autoUpdatesChannel}.
+   */
+  minimumVersion?: string;
 }
 
 /**
@@ -1222,6 +1238,28 @@ export function loadManagedConfig(): ProjectConfig | null {
     const dropIn = parseManagedFile(path.join(dropInDir, name));
     merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
   }
+  // OS-NATIVE managed policy (macOS configuration profile / Windows Group Policy) is
+  // the strongest trust anchor — an admin-only OS store (/Library/Managed Preferences
+  // plist, HKLM\SOFTWARE\Policies) an end user cannot redirect. When present it wins
+  // over the file-based managed layer (merged LAST). The read is timeout-bounded and
+  // never-throwing (see managed-policy-source.ts), so a broken policy source can never
+  // stall or fail the loader; a malformed/non-object payload is simply ignored. Each
+  // valid field is value-SALVAGED like a file-based managed source. Parity: Claude's
+  // native-MDM (plutil / reg query) acquisition taking precedence over file settings.
+  const native = readNativeManagedPolicy();
+  if (native) {
+    let parsed: unknown;
+    try {
+      parsed = parseJsonc(native.raw);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const salvaged = salvageManagedConfig(parsed as ProjectConfig, native.source);
+      merged = merged === null ? salvaged : mergeManagedLayer(merged, salvaged);
+      coreLog('config', `applied native managed policy from ${native.source} (${Object.keys(salvaged).length} key(s))`);
+    }
+  }
   // Success breadcrumb: unlike the per-tier loadConfigFile ("loaded <path>"),
   // loadManagedConfig was previously silent on success, so an operator had no way to
   // confirm an enterprise policy was actually picked up or which keys it contributed.
@@ -1355,6 +1393,7 @@ export interface ConfigDiagnostic {
 const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonly string[]]> = [
   ['permissionMode', ['ask', 'auto-allow', 'deny-all']],
   ['cacheTtl', ['5m', '1h']],
+  ['autoUpdatesChannel', ['latest', 'stable']],
 ];
 
 /** The expected runtime base-type of each typed ProjectConfig field. */
@@ -1444,6 +1483,11 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // unknown-key warning) + base-type validated + emitted in the JSON schema.
   ['showClearContextOnPlanAccept', 'boolean'], ['prStatusFooterEnabled', 'boolean'],
   ['lastReleaseNotesSeen', 'string'],
+  // Update-channel knobs (see ProjectConfig) consumed by the self-updater/launcher —
+  // declared here so they are recognized + value-validated (autoUpdatesChannel is an
+  // enum in PROJECT_CONFIG_ENUMS) + emitted in the JSON schema. Parity: Claude's
+  // autoUpdatesChannel / minimumVersion settings.
+  ['minimumVersion', 'string'],
 ];
 
 /**
@@ -3111,6 +3155,8 @@ export function mergeConfigs(
     if (layer.showClearContextOnPlanAccept !== undefined) merged.showClearContextOnPlanAccept = layer.showClearContextOnPlanAccept;
     if (layer.prStatusFooterEnabled !== undefined) merged.prStatusFooterEnabled = layer.prStatusFooterEnabled;
     if (layer.lastReleaseNotesSeen !== undefined) merged.lastReleaseNotesSeen = layer.lastReleaseNotesSeen;
+    if (layer.autoUpdatesChannel !== undefined) merged.autoUpdatesChannel = layer.autoUpdatesChannel;
+    if (layer.minimumVersion !== undefined) merged.minimumVersion = layer.minimumVersion;
     // Admin-policy / engine knobs (round 3): the policy maps deep-merge across layers
     // (a higher layer ADDS denies/entries, never silently drops a lower layer's), the
     // marketplace policy lists ACCUMULATE (deny/allow-wins union), and the remaining
