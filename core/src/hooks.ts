@@ -221,6 +221,11 @@ export interface SubagentContext {
   subagentSessionId: string;
   prompt: string;
   mode?: string;
+  /** Parent cancellation signal (user Ctrl-C / turn abort). When aborted, the
+   *  SubagentStop hook chain stops immediately (Claude Code's abort-signal
+   *  cancellation of in-flight Stop/SubagentStop hook chains). Optional so
+   *  non-cancellable call sites may omit it. */
+  abortSignal?: AbortSignal;
 }
 
 export interface CompactContext {
@@ -910,7 +915,28 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   durationMs: 'duration_ms', turnCount: 'turn_count', messageCount: 'message_count',
   agentType: 'agent_type', teammateName: 'teammate_name', teamName: 'team_name',
   loadReason: 'load_reason', memoryType: 'memory_type',
+  notificationType: 'notification_type',
 };
+
+/**
+ * Substitute a plugin/skill bundle's base directory into a command-hook string
+ * (command or an arg). Replaces the `${CLAUDE_PLUGIN_ROOT}` placeholder (and the
+ * AMI-native `${AMI_PLUGIN_ROOT}` alias) with `pluginRoot`, so a plugin- or
+ * skill-registered command hook can reference files co-located with its bundle
+ * (`${CLAUDE_PLUGIN_ROOT}/scripts/check.sh`) regardless of the session cwd —
+ * Claude Code's CLAUDE_PLUGIN_ROOT command substitution (utils/hooks.ts) and
+ * registerSkillHooks skillRoot. Both `${VAR}` and bare `$VAR` forms are handled.
+ * Returns the string unchanged when `pluginRoot` is empty. Canonical — reused by
+ * every command-hook call site; never re-implement the substitution per site.
+ */
+export function substitutePluginRoot(text: string, pluginRoot: string | undefined): string {
+  if (!pluginRoot || !text) return text;
+  return text
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot)
+    .replace(/\$\{AMI_PLUGIN_ROOT\}/g, pluginRoot)
+    .replace(/\$CLAUDE_PLUGIN_ROOT\b/g, pluginRoot)
+    .replace(/\$AMI_PLUGIN_ROOT\b/g, pluginRoot);
+}
 
 export function serializeHookEvent(obj: Record<string, unknown>): string {
   const out: Record<string, unknown> = { ...obj };
@@ -1385,6 +1411,15 @@ export interface CommandHookConfig {
    *  raw command (Claude Code's getHookDisplayText `statusMessage`). Lets a hook
    *  present e.g. 'Running security scan…' instead of leaking the shell command. */
   statusMessage?: string;
+  /** Filesystem base directory of the plugin bundle (or skill) that contributed
+   *  this command hook. When set, the command/args have `${CLAUDE_PLUGIN_ROOT}`
+   *  (and the `${AMI_PLUGIN_ROOT}` alias) substituted to this path, and the hook
+   *  child process receives `CLAUDE_PLUGIN_ROOT`/`AMI_PLUGIN_ROOT` env vars so a
+   *  plugin/skill-registered hook can locate its own co-located files regardless of
+   *  the session cwd (Claude Code's CLAUDE_PLUGIN_ROOT / registerSkillHooks
+   *  skillRoot). Populated by loadFromFile's plugin-discovery block; absent for
+   *  filesystem (.ami/.claude/config) hooks. */
+  pluginRoot?: string;
 }
 
 export interface PromptHookConfig {
@@ -2101,7 +2136,7 @@ export class HookManager extends EventEmitter {
     // that the managed-only policy filter consults. `managed` = admin/policy
     // settings; `plugin` = plugin-bundle contributed. Both are admin-trusted
     // sources that bypass the strictPluginOnlyCustomization hooks lock.
-    const sources: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName?: string }> = [];
+    const sources: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName?: string; pluginRoot?: string }> = [];
     // Admin/managed settings (highest authority) — the ONLY source honored when
     // allowManagedHooksOnly is set.
     const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
@@ -2133,7 +2168,7 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
             continue;
           }
-          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name });
+          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name, pluginRoot: bundle.root });
         }
       }
     } catch { /* plugins module optional */ }
@@ -2160,7 +2195,7 @@ export class HookManager extends EventEmitter {
     const alreadyAccepted = (entry: HookConfigEntry): boolean =>
       accepted.some(a => a.event === entry.event && entry.hook && isHookEqual(a.hook, entry.hook));
 
-    for (const { path: p, source, pluginName } of effectiveSources) {
+    for (const { path: p, source, pluginName, pluginRoot } of effectiveSources) {
       let raw: string;
       try {
         raw = fs.readFileSync(p, 'utf-8');
@@ -2180,6 +2215,10 @@ export class HookManager extends EventEmitter {
           // Carry the plugin bundle's name onto each entry it contributed so the
           // retained descriptor can attribute the hook to its plugin.
           if (pluginName) entry.pluginName = pluginName;
+          // Carry the plugin bundle's base directory onto a command hook so its
+          // `${CLAUDE_PLUGIN_ROOT}` placeholders / CLAUDE_PLUGIN_ROOT env resolve to
+          // the bundle root at execution time (Claude Code plugin-hook substitution).
+          if (pluginRoot && entry.hook && entry.hook.type === 'command') entry.hook.pluginRoot = pluginRoot;
           if (source === 'project' && !this._workspaceTrusted) {
             coreLog('hooks', `Skipping project hook (workspace not trusted): ${entry.event}`);
             continue;
@@ -2521,7 +2560,7 @@ export class HookManager extends EventEmitter {
         case 'notification': {
           const fn: NotificationHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('notification', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'notification', message: ctx.message, title: ctx.title });
+            const eventData = serializeHookEvent({ event: 'notification', message: ctx.message, title: ctx.title, notificationType: ctx.notificationType });
             await this.runArmHook(hookConfig, cwd, eventData, undefined, this.notificationHooks, fn, 'notification');
           };
           this.onNotification(fn);
@@ -2736,6 +2775,16 @@ export class HookManager extends EventEmitter {
       let stopReason: string | undefined;
       try {
         for (let i = 0; i < this.stopHooks.length; i++) {
+          // Abort-signal awareness (Claude Code's stopHooks abort check): a user
+          // interrupt (Ctrl-C / turn abort) mid-chain stops the Stop-hook chain
+          // immediately — no further hooks run — and the in-flight per-hook child
+          // is torn down via the abortSignal threaded into runArmHook. The partial
+          // result accumulated so far is returned (not discarded), matching the
+          // "aborting yields an interruption and stops the chain" contract.
+          if (ctx.abortSignal?.aborted) {
+            coreLog('hooks', 'Stop hooks interrupted by abort signal');
+            break;
+          }
           try {
             const r = await this.stopHooks[i](ctx);
             if (r) {
@@ -2890,6 +2939,12 @@ export class HookManager extends EventEmitter {
   async executeSubagentStop(ctx: SubagentContext): Promise<void> {
     return this.withConcurrencyGate('subagentStop', async () => {
       for (const hook of this.subagentStopHooks) {
+        // Abort-signal awareness: a user interrupt stops the SubagentStop chain
+        // mid-flight (Claude Code parity) — no further hooks run.
+        if (ctx.abortSignal?.aborted) {
+          coreLog('hooks', 'SubagentStop hooks interrupted by abort signal');
+          break;
+        }
         try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
     });
@@ -3390,8 +3445,20 @@ export class HookManager extends EventEmitter {
           'command',
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
         );
+        // Plugin/skill-contributed command hooks resolve their own base directory:
+        // inject CLAUDE_PLUGIN_ROOT (+ AMI_PLUGIN_ROOT alias) into the child env and
+        // substitute the `${CLAUDE_PLUGIN_ROOT}` placeholder in the command + args so
+        // the hook can reference files co-located with its bundle regardless of the
+        // session cwd (Claude Code plugin-hook env/substitution + skillRoot parity).
+        const pluginRoot = config.pluginRoot;
+        if (pluginRoot) {
+          hookEnv.CLAUDE_PLUGIN_ROOT = pluginRoot;
+          hookEnv.AMI_PLUGIN_ROOT = pluginRoot;
+        }
+        const command = substitutePluginRoot(config.command, pluginRoot);
+        const args = config.args?.map(a => substitutePluginRoot(a, pluginRoot));
         try {
-          const { exitCode, stdout, stderr } = await runCommandHookAsync(config.command, cwd, hookEnv, timeout, eventData, config.args, signal, config.shell);
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell);
           // Claude Code exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
