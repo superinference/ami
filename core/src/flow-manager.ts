@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import { toAgentId } from './types';
+import { isTerminalTaskStatus } from './process-manager';
 
 export interface FlowInfo {
   flowId: string;
@@ -106,6 +107,38 @@ export class FlowManager {
     return this.flows.get(flowId);
   }
 
+  /** Attention states that warrant a user call-to-action affordance (parity: Claude's
+   *  pillNeedsCta — ONLY the two attention states surface the CTA, never plain
+   *  'working'). Mirrors the attention subset of TaskAttentionState. */
+  private static readonly ATTENTION_STATES = new Set(['needs_input', 'plan_ready']);
+
+  /** FUNCTIONAL (parity: Claude's getPillLabel / RemoteSessionProgress): the SINGLE
+   *  source of truth for a flow's count-aware, failure-aware summary wording, so every
+   *  surface (inspector list row, flow-detail header, footer) agrees instead of each
+   *  recomputing `completed/total` inline and drifting. Reports `completed/total` and,
+   *  when any agent ended UNHEALTHILY (failed|killed), appends a ` · K failed` segment
+   *  — omitted when K === 0, so a clean flow keeps the plain fraction (no look change).
+   *  `statuses` are the flow's tracked agent statuses; an unknown/undefined status
+   *  counts toward the total but is neither completed nor failed. Pure/static so the
+   *  renderer and tests share one decision. */
+  static summarize(statuses: readonly (string | undefined)[]): string {
+    const total = statuses.length;
+    const completed = statuses.filter(s => s === 'completed').length;
+    const failed = statuses.filter(s => s === 'failed' || s === 'killed').length;
+    const base = `${completed}/${total}`;
+    return failed > 0 ? `${base} · ${failed} failed` : base;
+  }
+
+  /** FUNCTIONAL (parity: Claude's pillNeedsCta): whether any agent in a flow is awaiting
+   *  the user's attention (attention state 'needs_input' or 'plan_ready'). Lets a surface
+   *  render an affordance call-to-action (e.g. ' · ↵ to view') for EXACTLY the flows
+   *  waiting on the user and nothing for a flow that is merely progressing ('working').
+   *  `attentionStates` are the flow's tracked agent attention states (undefined ⇒ none).
+   *  Pure/static so the inspector and tests share one decision. */
+  static needsAttention(attentionStates: readonly (string | undefined)[]): boolean {
+    return attentionStates.some(s => s !== undefined && FlowManager.ATTENTION_STATES.has(s));
+  }
+
   /** All flows, oldest-first (stable ordering for the inspector). Reading also sweeps
    *  terminal flows whose grace window has elapsed, so lingering rows disappear once
    *  the inspector next renders them (end-to-end wiring for the grace window). */
@@ -118,7 +151,15 @@ export class FlowManager {
     const flow = this.flows.get(flowId);
     if (!flow || flow.agentIds.length === 0) return;
     const statuses = flow.agentIds.map(id => getAgentStatus(id) || 'unknown');
-    const allDone = statuses.every(s => s !== 'running');
+    // Terminal boundary (parity: Claude's isTerminalTaskStatus — only
+    // completed|failed|killed are terminal; Task.ts:26-28). A flow resolves to a
+    // terminal status ONLY when EVERY tracked agent is terminal. Both a still-queued
+    // 'pending' agent (spawned-but-not-started — Claude's isBackgroundTask counts it
+    // as active) and a temporarily unresolvable 'unknown' agent (evicted/orphaned
+    // lookup) are NON-terminal, so the flow stays active and is reopened on a later
+    // tick instead of being prematurely sealed to completed/partial/failed and
+    // permanently removed from every activeByKey target.
+    const allDone = statuses.every(isTerminalTaskStatus);
     if (!allDone) return;
     const isFail = (s: string) => s === 'failed' || s === 'killed';
     const allFailed = statuses.every(isFail);

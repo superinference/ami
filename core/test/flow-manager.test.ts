@@ -207,11 +207,48 @@ describe('FlowManager', () => {
       assert.equal(fm.getFlow(flowId)?.status, 'active');
     });
 
-    it('treats unknown agent status as non-running', () => {
-      const flowId = fm.getOrCreateActiveFlow('test');
+    it('keeps the flow ACTIVE while an agent is unresolved (unknown), never prematurely sealed', () => {
+      // An unresolved lookup (evicted/orphaned → undefined ⇒ 'unknown') is NON-terminal:
+      // Claude's isTerminalTaskStatus treats ONLY completed/failed/killed as terminal, so
+      // an unknown agent must not fold the flow into 'completed'. It stays active and can
+      // reopen once the agent resolves.
+      const flowId = fm.getOrCreateActiveFlow('test', 10);
       fm.addAgent(flowId, 'agent-1');
       fm.updateFlowStatus(flowId, () => undefined);
-      assert.equal(fm.getFlow(flowId)?.status, 'completed');
+      assert.equal(fm.getFlow(flowId)?.status, 'active', 'unknown keeps the flow active');
+      assert.equal(fm.getFlow(flowId)?.completedAt, undefined, 'no terminal timestamp recorded');
+    });
+
+    it('keeps the flow ACTIVE while an agent is still PENDING (spawned, not yet started)', () => {
+      // 'pending' is active (Claude's isBackgroundTask counts running AND pending as
+      // in-flight); a pending agent must not resolve its group early.
+      const flowId = fm.getOrCreateActiveFlow('test', 10);
+      fm.addAgent(flowId, 'agent-1');
+      fm.addAgent(flowId, 'agent-2');
+      const statuses: Record<string, string> = { 'agent-1': 'completed', 'agent-2': 'pending' };
+      fm.updateFlowStatus(flowId, id => statuses[id]);
+      assert.equal(fm.getFlow(flowId)?.status, 'active', 'pending agent keeps the flow active');
+    });
+
+    it('a pending agent that later resolves lets the flow seal (reopened, not permanently sealed)', () => {
+      const flowId = fm.getOrCreateActiveFlow('test', 10);
+      fm.addAgent(flowId, 'agent-1');
+      const live: Record<string, string> = { 'agent-1': 'pending' };
+      fm.updateFlowStatus(flowId, id => live[id]);
+      assert.equal(fm.getFlow(flowId)?.status, 'active', 'still pending → active');
+      live['agent-1'] = 'completed';
+      fm.updateFlowStatus(flowId, id => live[id]);
+      assert.equal(fm.getFlow(flowId)?.status, 'completed', 'seals once the pending agent finishes');
+    });
+
+    it('seals only when EVERY agent is terminal (completed/failed/killed)', () => {
+      const flowId = fm.getOrCreateActiveFlow('test', 10);
+      fm.addAgent(flowId, 'agent-1');
+      fm.addAgent(flowId, 'agent-2');
+      fm.addAgent(flowId, 'agent-3');
+      const statuses: Record<string, string> = { 'agent-1': 'completed', 'agent-2': 'failed', 'agent-3': 'killed' };
+      fm.updateFlowStatus(flowId, id => statuses[id]);
+      assert.equal(fm.getFlow(flowId)?.status, 'partial', 'all-terminal mix resolves (partial here)');
     });
   });
 
@@ -624,6 +661,50 @@ describe('FlowManager', () => {
       // After reset there is no viewed flow; declaring one does not try to release 'a'.
       const b = fm.createFlow('b'); terminate(b);
       assert.equal(fm.setViewedFlow(b), undefined, 'no stale previous view after reset');
+    });
+  });
+
+  describe('summarize (centralized count-aware, failure-aware flow label)', () => {
+    it('reports completed/total for a clean (no-failure) flow', () => {
+      assert.equal(FlowManager.summarize(['completed', 'running', 'running']), '1/3');
+      assert.equal(FlowManager.summarize(['completed', 'completed']), '2/2');
+    });
+
+    it('appends a · K failed segment when any agent failed or was killed', () => {
+      assert.equal(FlowManager.summarize(['completed', 'failed']), '1/2 · 1 failed');
+      assert.equal(FlowManager.summarize(['completed', 'failed', 'killed']), '1/3 · 2 failed');
+    });
+
+    it('omits the failed segment entirely at zero failures (no look change for clean flows)', () => {
+      const label = FlowManager.summarize(['completed', 'running']);
+      assert.ok(!label.includes('failed'), 'clean flow keeps the plain fraction');
+    });
+
+    it('counts unknown/undefined toward the total but neither completed nor failed', () => {
+      assert.equal(FlowManager.summarize(['completed', undefined, 'unknown']), '1/3');
+    });
+
+    it('handles the empty set', () => {
+      assert.equal(FlowManager.summarize([]), '0/0');
+    });
+  });
+
+  describe('needsAttention (flow CTA / attention affordance)', () => {
+    it('is true when an agent awaits input (needs_input) or a plan (plan_ready)', () => {
+      assert.equal(FlowManager.needsAttention(['working', 'needs_input']), true);
+      assert.equal(FlowManager.needsAttention(['working', 'plan_ready']), true);
+    });
+
+    it('is false when every agent is merely working (parity: pillNeedsCta skips working)', () => {
+      assert.equal(FlowManager.needsAttention(['working', 'working']), false);
+    });
+
+    it('ignores undefined/unknown attention states', () => {
+      assert.equal(FlowManager.needsAttention([undefined, 'working', 'completed']), false);
+    });
+
+    it('is false for an empty flow', () => {
+      assert.equal(FlowManager.needsAttention([]), false);
     });
   });
 });
