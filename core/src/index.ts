@@ -464,6 +464,7 @@ export {
   assertNoAutoFetch,
   validateLspServerConfig,
   loadLspServersFromFile,
+  resolvePluginLspEnvironment,
   DiagnosticTracker,
   mapLspSeverity,
   convertPublishDiagnostics,
@@ -496,6 +497,7 @@ export {
 } from './lsp';
 export type {
   LspServerConfig,
+  LspPluginEnvironment,
   NotificationHandler,
   RequestHandler,
   LspServerState,

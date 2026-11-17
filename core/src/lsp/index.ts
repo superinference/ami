@@ -25,8 +25,9 @@ export {
   assertNoAutoFetch,
   validateLspServerConfig,
   loadLspServersFromFile,
+  resolvePluginLspEnvironment,
 } from './config';
-export type { LspServerConfig } from './config';
+export type { LspServerConfig, LspPluginEnvironment } from './config';
 export { getSymbolAtPosition, MAX_READ_BYTES, MAX_SYMBOL_LENGTH } from './symbol-context';
 export {
   LSPDiagnosticRegistry,

@@ -14,6 +14,7 @@
  * so the (out-of-core) plugin loader can feed validated configs in.
  */
 import * as fs from 'fs';
+import { expandEnvVarsTracked, substitutePluginMcpVars, type PluginMcpVars } from '../mcp/manager';
 
 /**
  * Communication transport between the client and the language-server process.
@@ -323,4 +324,81 @@ export function loadLspServersFromFile(filePath: string): Record<string, LspServ
     out[name] = validateLspServerConfig(name, raw);
   }
   return out;
+}
+
+/**
+ * The plugin-scoped resolution context for a plugin-contributed LSP server:
+ * the bundle install root (`${CLAUDE_PLUGIN_ROOT}`), the persistent per-plugin
+ * data dir (`${CLAUDE_PLUGIN_DATA}`), and the user's saved `userConfig` values
+ * (`${user_config.<key>}`). Mirrors Claude Code's `resolvePluginLspEnvironment`
+ * context (lspPluginIntegration.ts:L229-292).
+ */
+export interface LspPluginEnvironment {
+  /** Plugin install dir → `${CLAUDE_PLUGIN_ROOT}` + injected into the server env. */
+  pluginRoot: string;
+  /** Persistent per-plugin data dir → `${CLAUDE_PLUGIN_DATA}` + injected env. */
+  pluginDataDir: string;
+  /** `${user_config.<key>}` values from the plugin's userConfig schema (defaults
+   *  already folded in by the caller). Absent keys resolve to an empty string. */
+  userConfig?: Record<string, string>;
+}
+
+/**
+ * Resolve variable references in a plugin-contributed LSP server config, matching
+ * Claude Code's `resolvePluginLspEnvironment` (lspPluginIntegration.ts:L229-292).
+ *
+ * Substitution runs in the SAME precedence order as the MCP path (reusing the
+ * canonical {@link substitutePluginMcpVars} + {@link expandEnvVarsTracked} so LSP
+ * and MCP never drift): FIRST the plugin-scoped tier (`${CLAUDE_PLUGIN_ROOT}`,
+ * `${CLAUDE_PLUGIN_DATA}`, `${user_config.<key>}`), THEN the general `${ENV}` /
+ * `$VAR` / `${VAR:-default}` tier — so a plugin/user value wins over a same-named
+ * process env var. It resolves `command`, `args`, `workspaceFolder`, and every
+ * `env` VALUE, and injects `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA` as literal
+ * paths into the server env (an author-declared `env` entry of the same name wins,
+ * matching the reference spread order). The two injected path keys are NOT run
+ * through expansion — they are already resolved absolute paths.
+ *
+ * Returns a NEW config (never mutates input) plus the de-duplicated names of
+ * referenced env vars that were undefined and had no `:-default`, so the caller
+ * can surface a missing-var diagnostic (parity: the reference logs them).
+ */
+export function resolvePluginLspEnvironment(
+  config: LspServerConfig,
+  plugin: LspPluginEnvironment,
+): { resolved: LspServerConfig; missingVars: string[] } {
+  const missing = new Set<string>();
+  const vars: PluginMcpVars = {
+    userConfig: plugin.userConfig,
+    pluginRoot: plugin.pluginRoot,
+    pluginDataDir: plugin.pluginDataDir,
+  };
+  const resolveValue = (value: string): string => {
+    const substituted = substitutePluginMcpVars(value, vars);
+    const { expanded, missingVars } = expandEnvVarsTracked(substituted);
+    for (const m of missingVars) missing.add(m);
+    return expanded;
+  };
+
+  const resolved: LspServerConfig = { ...config };
+  if (resolved.command) resolved.command = resolveValue(resolved.command);
+  if (resolved.args) resolved.args = resolved.args.map(resolveValue);
+
+  // Inject the plugin root/data dir as literal paths, then let an author-declared
+  // `env` entry of the same name override (reference spread order), and resolve
+  // every OTHER env value through the two substitution tiers.
+  const resolvedEnv: Record<string, string> = {
+    CLAUDE_PLUGIN_ROOT: plugin.pluginRoot,
+    CLAUDE_PLUGIN_DATA: plugin.pluginDataDir,
+    ...(resolved.env ?? {}),
+  };
+  for (const [key, value] of Object.entries(resolvedEnv)) {
+    if (key !== 'CLAUDE_PLUGIN_ROOT' && key !== 'CLAUDE_PLUGIN_DATA') {
+      resolvedEnv[key] = resolveValue(value);
+    }
+  }
+  resolved.env = resolvedEnv;
+
+  if (resolved.workspaceFolder) resolved.workspaceFolder = resolveValue(resolved.workspaceFolder);
+
+  return { resolved, missingVars: [...missing] };
 }
