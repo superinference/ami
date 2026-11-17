@@ -9,6 +9,7 @@ import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, is
 import { suggestSimilarPaths } from './path-suggest';
 import { isEagainStderr } from './grep';
 import { resolveRipgrepConfig } from './ripgrep-config';
+import { toAnyDepthGlob } from './read-ignore';
 import { collectGitignoreGlobs } from '../workspace-indexer';
 
 const MAX_RESULTS = 100;
@@ -268,6 +269,12 @@ export const globTool: ToolDefinition = {
     if (globRespectsGitignore()) {
       ignore.push(...await collectGitignoreGlobs(resolved, ignore));
     }
+
+    // File-READ deny globs from the permission layer: never ENUMERATE a file the user
+    // forbade reading (its path alone leaks via a directory listing). Applied to BOTH
+    // the ripgrep route (negated to `-g !glob`) and the in-process tinyglobby `ignore`.
+    // Parity: Claude feeds getFileReadIgnorePatterns into glob/ls exclusions too.
+    for (const p of context.readIgnorePatterns ?? []) ignore.push(toAnyDepthGlob(p));
 
     try {
       // G5: opt-in ripgrep route (fast parallel walk); falls back to tinyglobby when

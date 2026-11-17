@@ -482,6 +482,13 @@ export interface ToolContext {
    *  it reflects the just-granted dir. Absent/empty → confined to cwd only (the default
    *  for bare engines and tests with no permission manager). */
   allowedReadRoots?: string[];
+  /** File-READ deny GLOBS from the permission layer (PermissionManager.getFileReadIgnorePatterns()).
+   *  The search tools (grep, glob) EXCLUDE any file matching one of these so a denied file's
+   *  matching lines — or even its path — never leak into results, in every output mode. Populated
+   *  by the tool executor from the permission manager right after the per-call check (same seam as
+   *  allowedReadRoots). Absent/empty → only the hardcoded VCS exclusions apply (bare engines/tests
+   *  with no permission manager). Mirrors Claude Code's read-deny → `--glob !pattern` injection. */
+  readIgnorePatterns?: string[];
   /** Env vars exported into the `bash` tool's subprocess for the active skill — notably
    *  CLAUDE_SKILL_DIR (and CLAUDE_PLUGIN_ROOT for plugin-packaged skills), so imported
    *  Claude-Code skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */

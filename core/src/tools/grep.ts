@@ -7,6 +7,7 @@ import { validatePatternAndPath, assertReadableTarget, rejectEscapingPattern, is
 import { suggestSimilarPaths } from './path-suggest';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { resolveRipgrepConfig } from './ripgrep-config';
+import { toRgIgnoreGlob, toGrepExcludeGlob, matchesReadIgnore } from './read-ignore';
 
 /**
  * Optional numeric tool-arg: tolerate a model-quoted number ("5") via the shared
@@ -330,7 +331,12 @@ Usage:
     // Resolve which ripgrep binary to spawn (honors USE_BUILTIN_RIPGREP /
     // AMI_RIPGREP_PATH, shared with the glob tool). Falls back to the bare name `rg`.
     const rgCommand = resolveRipgrepConfig().command;
-    const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings);
+    // File-READ deny globs the permission layer wants excluded from search output, so a
+    // file the user forbade reading never surfaces (its path OR its matching lines) in any
+    // output mode. Threaded into every search path (rg, grep, in-process). Parity: Claude's
+    // getFileReadIgnorePatterns → `--glob !pattern` injection.
+    const readIgnore = context.readIgnorePatterns ?? [];
+    const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings, readIgnore);
     let rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
 
     if (rgOutcome.eagain) {
@@ -362,7 +368,7 @@ Usage:
 
     // Fallback to grep
     const grepOutcome = await runSearch(
-      buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, fixedStrings),
+      buildGrepArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, fixedStrings, readIgnore),
       'grep',
       context,
       grepHooks.timeoutMs,
@@ -396,6 +402,7 @@ Usage:
         caseInsensitive,
         headLimit,
         offset,
+        readIgnore,
       });
       return formatResult(fallback, pattern, headLimit, offset, outputMode);
     } catch (err) {
@@ -429,8 +436,9 @@ const FALLBACK_MAX_FILE_BYTES = 1_000_000;
 export function searchFilesForPattern(
   root: string,
   pattern: string,
-  opts: { include?: string; caseInsensitive?: boolean; headLimit?: number; offset?: number },
+  opts: { include?: string; caseInsensitive?: boolean; headLimit?: number; offset?: number; readIgnore?: readonly string[] },
 ): string {
+  const readIgnore = opts.readIgnore ?? [];
   let re: RegExp;
   try {
     re = new RegExp(pattern, opts.caseInsensitive ? 'i' : '');
@@ -475,6 +483,11 @@ export function searchFilesForPattern(
         continue;
       }
       const filePath = path.join(dir, entry.name);
+      // Drop files the permission layer forbids reading BEFORE they are stat'd/read, so a
+      // denied file never surfaces (path or contents) on the in-process fallback path.
+      if (readIgnore.length > 0 && matchesReadIgnore(path.relative(root, filePath) || entry.name, readIgnore)) {
+        continue;
+      }
       try {
         // TOCTOU guard: `lstat` (not `stat`) so a regular file swapped for a symlink
         // between readdir and now is detected and skipped — we never follow a symlink
@@ -518,6 +531,8 @@ export function searchFilesForPattern(
     return '';
   }
   if (rootStat.isFile()) {
+    // A single denied file passed directly as the search path yields nothing.
+    if (readIgnore.length > 0 && matchesReadIgnore(path.basename(root), readIgnore)) return '';
     const text = fs.readFileSync(root, 'utf8');
     const rel = path.basename(root);
     text.split('\n').forEach((line, i) => {
@@ -551,6 +566,7 @@ function buildRgArgs(
   headLimit?: number,
   lineNumbers?: boolean,
   fixedStrings?: boolean,
+  readIgnore?: readonly string[],
 ): string[] {
   // `--no-config` neutralizes ripgrep config injection: a planted RIPGREP_CONFIG_PATH
   // (or ~/.ripgreprc) could otherwise inject flags (e.g. extra include globs) into
@@ -564,6 +580,12 @@ function buildRgArgs(
   // over a Sapling checkout would walk the internal object store (noise + possible
   // leakage of packed content). Mirrors Claude Code's full VCS exclusion set.
   args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj', '--glob', '!.sl');
+  // Read-deny exclusions: hide files the permission layer forbids reading from EVERY
+  // output mode (including content, which would otherwise print their lines). Negated
+  // globs anchored per ripgrep's cwd-relative ignore rule. Parity: Claude GrepTool.
+  if (readIgnore) {
+    for (const p of readIgnore) args.push('--glob', toRgIgnoreGlob(p));
+  }
 
   if (outputMode === 'files_with_matches') {
     args.push('--files-with-matches');
@@ -616,6 +638,7 @@ function buildGrepArgs(
   caseInsensitive: boolean,
   contextLines?: number,
   fixedStrings?: boolean,
+  readIgnore?: readonly string[],
 ): string[] {
   // -E so `|` is alternation. Basic grep treats it as a literal, which made
   // `BLP|Bell` and `blp_model|blp_policy` report no matches in the testbed.
@@ -639,6 +662,15 @@ function buildGrepArgs(
 
   if (include) {
     args.push(`--include=${include}`);
+  }
+
+  // Read-deny exclusions (best-effort basename globs — GNU grep's --exclude matches the
+  // final path component only). Keeps a forbidden file (e.g. `.env`) out of grep output.
+  if (readIgnore) {
+    for (const p of readIgnore) {
+      const g = toGrepExcludeGlob(p);
+      if (g) args.push(`--exclude=${g}`);
+    }
   }
 
   args.push('--', pattern, searchPath);

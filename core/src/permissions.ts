@@ -1747,7 +1747,7 @@ export function wildcardMatch(pattern: string, value: string): boolean {
  * before any other character stays a literal backslash (back-compat). Every
  * other regex metacharacter is escaped.
  */
-function globToRegexSource(pattern: string): string {
+export function globToRegexSource(pattern: string): string {
   let out = '';
   let unescapedStars = 0;
   for (let i = 0; i < pattern.length; i++) {
@@ -2697,6 +2697,28 @@ export class PermissionManager {
   /** The user-granted read roots (absolute, normalized). For inspection/tests. */
   getAllowedReadRoots(): string[] {
     return [...this.allowedReadRoots];
+  }
+
+  /**
+   * The file-READ deny GLOBS configured in the permission layer, so listing/search
+   * tools (grep, glob) can EXCLUDE files the user forbade reading — the denied file's
+   * matching lines (and even its path) never surface in results, in every output mode.
+   * Collected from every `deny` rule targeting the read tool (`file_read`, its Claude
+   * alias `Read`, or a tool-wide `*`) that carries a path glob; param-shaped rules
+   * (`paramPattern`) and allow/ask rules are skipped. De-duped, order-preserving.
+   * Mirrors Claude Code's `getFileReadIgnorePatterns(toolPermissionContext)`.
+   */
+  getFileReadIgnorePatterns(): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const rule of this.rules) {
+      if (rule.action !== 'deny' || !rule.pattern || rule.paramPattern) continue;
+      if (!this.toolNameMatches(rule.tool, 'file_read')) continue;
+      if (seen.has(rule.pattern)) continue;
+      seen.add(rule.pattern);
+      out.push(rule.pattern);
+    }
+    return out;
   }
 
   /**
