@@ -35,10 +35,22 @@ describe('U015 compound-command TOCTOU permission guard', () => {
     assert.equal(await pm.check('bash', { command: 'mkdir d && ln -s ../secret d/x' }), 'ask');
   });
 
+  it('forces ask for a cp/link coreutil link-creating compound under a tool-wide allow rule (w92)', async () => {
+    const pm = toolWideAllow();
+    // cp -s / --symbolic-link / -l / --link and the `link` coreutil create a link
+    // just like `ln`, so the same read-through-a-just-created-link TOCTOU applies.
+    assert.equal(await pm.check('bash', { command: 'cp -s a b && cat b' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'cp --symbolic-link a b; cat b' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'cp -l a b && cat b' }), 'ask');
+    assert.equal(await pm.check('bash', { command: 'link a b && cat b' }), 'ask');
+  });
+
   it('still auto-allows non-TOCTOU commands under the same rule (guard does not over-reach)', async () => {
     const pm = toolWideAllow();
     assert.equal(await pm.check('bash', { command: 'tar -cf out.tar dir' }), 'allow'); // archive, no git
     assert.equal(await pm.check('bash', { command: 'ln -s a b' }), 'allow');           // single segment
+    assert.equal(await pm.check('bash', { command: 'cp a b && cat a' }), 'allow');     // plain copy, not a link
+    assert.equal(await pm.check('bash', { command: 'cp -r a b && cat a' }), 'allow');  // recursive copy, no link flag
     assert.equal(await pm.check('bash', { command: 'echo hi && git status' }), 'allow'); // git, no archive/symlink
   });
 

@@ -5839,12 +5839,48 @@ export function detectArchiveExtractionWithGit(command: string): { escalate: boo
  * `hasSymlinkCreate` / `isSymlinkCreatingCommand` gate (PowerShellTool/
  * powershellPermissions.ts), scoped to the POSIX `ln` link creator.
  */
+/**
+ * True when a `cp` segment is actually CREATING a filesystem link rather than
+ * copying bytes: GNU `cp -s`/`--symbolic-link` (symbolic) or `cp -l`/`--link`
+ * (hard). Short flags may be bundled (`-sf`, `-rl`), so any lowercase `s`/`l`
+ * in a single-dash group counts. Case matters: `-L` (uppercase) merely
+ * dereferences symlinks while copying and does NOT create a link, so only
+ * lowercase `s`/`l` are treated as link-creating.
+ */
+function cpCreatesLink(seg: string): boolean {
+  const toks = stripSafeWrappers(seg.trim()).trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_]\w*=/.test(toks[i]!)) i++;
+  // toks[i] is the base command (cp); scan its option tokens for a link flag.
+  for (i++; i < toks.length; i++) {
+    const t = toks[i]!;
+    if (t === '--symbolic-link' || t === '--link') return true;
+    if (t === '--') break;                // POSIX end-of-options
+    if (t.startsWith('--')) continue;     // other long option
+    if (t.startsWith('-') && t.length > 1 && /[sl]/.test(t.slice(1))) return true;
+  }
+  return false;
+}
+
+/**
+ * True when a compound segment CREATES a filesystem link (symbolic or hard).
+ * Mirrors Claude Code's isSymlinkCreatingCommand breadth (SymbolicLink /
+ * Junction / HardLink): on bash the link creators are `ln`, the `link` coreutil
+ * (hard link), and `cp` with a link flag (`-s`/`--symbolic-link`/`-l`/`--link`).
+ */
+function segmentCreatesLink(seg: string): boolean {
+  const base = segmentBaseCommand(seg);
+  if (base === 'ln' || base === 'link') return true;
+  if (base === 'cp') return cpCreatesLink(seg);
+  return false;
+}
+
 export function detectSymlinkCreateCompound(command: string): { escalate: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
   const segments = splitShellSegments(stripped);
   if (segments.length <= 1) return { escalate: false };
   for (const seg of segments) {
-    if (segmentBaseCommand(seg) === 'ln') {
+    if (segmentCreatesLink(seg)) {
       return {
         escalate: true,
         reason:
