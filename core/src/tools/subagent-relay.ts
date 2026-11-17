@@ -9,6 +9,52 @@ import type { EngineEvent, TaskUsageSnapshot } from '../types';
 const SYNTHETIC_OUTPUT_TOOL_NAME = 'structured_output';
 
 /**
+ * Map an AMI tool name to a human-readable action verb for the live-roster activity
+ * line. Parity: Claude Code's `TOOL_VERBS` table (bridge/sessionRunner.ts) keyed to
+ * AMI's snake_case tool names (vs Claude's PascalCase). A tool with no mapped verb
+ * falls back to its own name (parity: Claude's `TOOL_VERBS[name] ?? name`).
+ */
+const TOOL_VERBS: Record<string, string> = {
+  file_read: 'Reading',
+  read_memory: 'Reading',
+  file_edit: 'Editing',
+  notebook_edit: 'Editing notebook',
+  write_memory: 'Writing',
+  bash: 'Running',
+  grep: 'Searching',
+  glob: 'Searching',
+  web_search: 'Searching',
+  scout: 'Searching',
+  find_references: 'Searching',
+  search_symbols: 'Searching',
+  web_fetch: 'Fetching',
+  agentic_fetch: 'Fetching',
+  list_dir: 'Listing',
+  task: 'Running task',
+  lsp: 'LSP',
+  diagnostics: 'LSP',
+};
+
+/** The action verb for a tool, falling back to the bare tool name when unmapped. */
+export function toolVerb(toolName: string): string {
+  return TOOL_VERBS[toolName] ?? toolName;
+}
+
+/**
+ * Build a human-readable "verb + target" activity line for a sub-agent's tool call
+ * so the live roster reads "Running npm test" / "Reading src/x.ts" / "Searching TODO"
+ * instead of the bare tool name. Parity: Claude Code's `toolSummary(name, input)`
+ * (bridge/sessionRunner.ts) — a verb from {@link TOOL_VERBS} plus the most salient
+ * target pulled from the input via {@link summarizeToolInput}. Returns just the verb
+ * when the input carries no salient target.
+ */
+export function toolActivitySummary(toolName: string, input: unknown): string {
+  const verb = toolVerb(toolName);
+  const target = summarizeToolInput(toolName, input);
+  return target ? `${verb} ${target}` : verb;
+}
+
+/**
  * Build a compact, human-readable argument summary for a sub-agent's tool call so
  * the live roster shows "bash npm test" or "file_read src/x.ts" instead of just
  * the tool name. Picks the most salient field per tool and truncates. Returns ''
@@ -68,20 +114,23 @@ export function mapChildToSubagentEvent(
       // Omit the internal synthetic-output tool from the activity preview — it is a
       // result-emission call, not visible work (parity: Claude's recentActivities skip).
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
-      const arg = summarizeToolInput(child.toolName, child.input);
+      // Human-readable verb + target (parity: Claude's toolSummary), e.g.
+      // "Running npm test" / "Reading src/x.ts" instead of the bare tool name.
       // Carry the structured tool name (parity: Claude's progress `last_tool_name`) so the
       // roster can collapse a read/search burst without re-parsing the free-text detail.
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
-        detail: arg ? `${child.toolName} ${arg}` : child.toolName,
+        detail: toolActivitySummary(child.toolName, child.input),
         lastToolName: child.toolName,
       };
     }
     case 'tool_use_result':
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
+      // Same verb as the matching start (parity: Claude's toolSummary verb) plus the
+      // outcome glyph, e.g. "Running ✓" / "Searching ✗"; lastToolName keeps identity.
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
-        detail: `${child.toolName} ${child.isError ? '✗' : '✓'}`,
+        detail: `${toolVerb(child.toolName)} ${child.isError ? '✗' : '✓'}`,
         lastToolName: child.toolName,
       };
     case 'error':
