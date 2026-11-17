@@ -33,6 +33,19 @@ export const MAX_LSP_FILE_SIZE_BYTES = 10_000_000;
 export const MAX_DIAGNOSTICS_PER_FILE = 10;
 export const MAX_TOTAL_DIAGNOSTICS = 30;
 
+/**
+ * PARITY (additive, resource-exhaustion boundary): max number of distinct files
+ * whose baseline the {@link DiagnosticTracker} retains at once. Mirrors Claude
+ * Code's `LRUCache({ max: MAX_DELIVERED_FILES })` (LSPDiagnosticRegistry.ts
+ * L46-56) — "prevents unbounded memory growth in long sessions". AMI tracks a
+ * per-file diagnostic baseline (an array of `Diagnostic` objects) keyed by
+ * normalized path; without a bound, a long session that edits thousands of
+ * distinct files would retain every baseline forever (the Map is only cleared by
+ * an explicit `reset()`), growing memory without limit. The tracker evicts the
+ * least-recently-used baseline once this many files are tracked.
+ */
+export const MAX_TRACKED_BASELINE_FILES = 500;
+
 /** Char budget for a rendered diagnostics block (Claude's 4000) + marker. */
 export const MAX_DIAGNOSTICS_SUMMARY_CHARS = 4000;
 
@@ -235,7 +248,41 @@ export interface DiagnosticSource {
 export class DiagnosticTracker {
   private baseline: Map<string, Diagnostic[]> = new Map();
 
-  constructor(private readonly source: DiagnosticSource) {}
+  /**
+   * Max distinct file baselines retained before least-recently-used eviction.
+   * Overridable (constructor arg) so tests can exercise eviction deterministically
+   * without inserting the production default ({@link MAX_TRACKED_BASELINE_FILES}).
+   */
+  private readonly maxFiles: number;
+
+  constructor(private readonly source: DiagnosticSource, maxFiles: number = MAX_TRACKED_BASELINE_FILES) {
+    // A non-finite or non-positive cap would disable the bound entirely (or wedge
+    // the eviction loop); clamp to at least one tracked file.
+    this.maxFiles = Number.isFinite(maxFiles) && maxFiles >= 1 ? Math.floor(maxFiles) : MAX_TRACKED_BASELINE_FILES;
+  }
+
+  /** Number of distinct files whose baseline is currently retained (introspection). */
+  get trackedFileCount(): number {
+    return this.baseline.size;
+  }
+
+  /**
+   * PARITY (additive): store a baseline with LRU recency + bounded retention.
+   * A re-store deletes then re-inserts the key so it becomes the most-recently
+   * used (Map preserves insertion order); once the retained count exceeds
+   * {@link maxFiles}, the least-recently-used baselines are evicted. This bounds
+   * memory in long sessions exactly like Claude's `LRUCache` without changing the
+   * delta semantics for the files that remain tracked.
+   */
+  private storeBaseline(key: string, diagnostics: Diagnostic[]): void {
+    this.baseline.delete(key);
+    this.baseline.set(key, diagnostics);
+    while (this.baseline.size > this.maxFiles) {
+      const lru = this.baseline.keys().next().value;
+      if (lru === undefined) break;
+      this.baseline.delete(lru);
+    }
+  }
 
   /**
    * Snapshot a file's diagnostics into the baseline before it is edited.
@@ -258,9 +305,9 @@ export class DiagnosticTracker {
         // Wrong file returned — do not poison the baseline.
         return;
       }
-      this.baseline.set(key, file.diagnostics);
+      this.storeBaseline(key, file.diagnostics);
     } else {
-      this.baseline.set(key, []);
+      this.storeBaseline(key, []);
     }
   }
 
@@ -309,8 +356,8 @@ export class DiagnosticTracker {
       if (fresh.length > 0) {
         out.push({ uri: file ? file.uri : `file://${key}`, diagnostics: fresh });
       }
-      // Roll the baseline forward.
-      this.baseline.set(key, current);
+      // Roll the baseline forward (also refreshes LRU recency + bounds memory).
+      this.storeBaseline(key, current);
     }
     return out;
   }

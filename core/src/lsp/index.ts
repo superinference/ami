@@ -40,6 +40,7 @@ export {
   MAX_DIAGNOSTICS_PER_FILE,
   MAX_TOTAL_DIAGNOSTICS,
   MAX_DIAGNOSTICS_SUMMARY_CHARS,
+  MAX_TRACKED_BASELINE_FILES,
 } from './diagnostic-tracking';
 export type {
   Diagnostic,
