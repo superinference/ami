@@ -607,6 +607,44 @@ export function checkCrossProjectResume(
   return { isCrossProject: true, isSameRepoWorktree: false, command, projectPath };
 }
 
+/**
+ * What the resume path should do with a session's persisted {@link Session.worktreeState}:
+ *  - `'reenter'` — re-enter the recorded worktree (its coordinates are returned);
+ *  - `'cleared'` — the worktree was recorded but its directory no longer exists on
+ *    disk (e.g. removed by an `/exit` dialog between sessions), so the worktree
+ *    binding must be dropped gracefully rather than cd'ing into a missing path;
+ *  - `'none'` — the session was never inside a worktree (`undefined`) or explicitly
+ *    EXITED it (`null`), so there is nothing to restore.
+ */
+export type WorktreeResumeResolution =
+  | { action: 'none' }
+  | { action: 'cleared' }
+  | { action: 'reenter'; worktreePath: string; originalCwd: string; branch?: string };
+
+/**
+ * Resolve how to restore a session's worktree binding on `--resume`, applying the
+ * disk-existence fallback that distinguishes a live worktree from a stale one
+ * (parity: Claude's `restoreWorktreeForResume`, which re-enters the worktree ONLY
+ * if its path still exists — "the /exit dialog may have removed it"). Pure: the
+ * existence probe is injected (defaults to {@link fs.existsSync}) so the tri-state
+ * boundary (`undefined` never-entered / `null` exited / present-but-gone) is
+ * testable without touching the real filesystem.
+ */
+export function resolveWorktreeStateForResume(
+  state: Session['worktreeState'],
+  existsOnDisk: (p: string) => boolean = (p) => fs.existsSync(p),
+): WorktreeResumeResolution {
+  // `undefined` = never entered a worktree; `null` = explicitly exited one.
+  if (state === undefined || state === null) return { action: 'none' };
+  if (!existsOnDisk(state.worktreePath)) return { action: 'cleared' };
+  return {
+    action: 'reenter',
+    worktreePath: state.worktreePath,
+    originalCwd: state.originalCwd,
+    branch: state.branch,
+  };
+}
+
 export function safeCharSlice(s: string, start: number, end?: number): string {
   let result = s.slice(start, end);
   if (result.length === 0) return result;
@@ -910,7 +948,17 @@ export class SessionManager {
   /**
    * Load the most recently modified session file.
    */
-  loadLatest(opts: { skipBackground?: boolean } = {}): Session | null {
+  loadLatest(opts: { skipBackground?: boolean; skipLocked?: boolean; lockDeps?: Partial<SessionLockDeps> } = {}): Session | null {
+    // Liveness guard for a no-arg `--continue`: when another live engine is
+    // actively holding THIS store's lock, auto-resuming its newest session would
+    // interleave two engines onto the same transcript/blob dir and corrupt it.
+    // `checkSessionLock` returns `'blocked'` ONLY for a live, verified OTHER holder
+    // (a dead / reused / cross-host-stale lock is reclaimed in-place and reads as
+    // free), so a crashed session never wedges --continue (parity: Claude's
+    // --continue skip of a session another live process is writing).
+    if (opts.skipLocked && checkSessionLock(this.sessionDir, opts.lockDeps).kind === 'blocked') {
+      return null;
+    }
     const files = this.listFiles();
     if (files.length === 0) return null;
 
@@ -1478,6 +1526,27 @@ export class SessionManager {
       : merged.slice(offset, offset + Math.max(0, opts.limit));
   }
 
+  /**
+   * Resolve a session by id when its owning project directory is unknown: scan
+   * every project's session store under the global projects root
+   * ({@link listProjectSessionDirs}) and return the first VALID copy found (a
+   * zero-byte/corrupt copy is skipped via {@link readSessionFile}'s guards, so a
+   * crash-truncated copy in one project never shadows a good copy in another).
+   * Returns `null` for a malformed id ({@link isValidSessionId}) or when no project
+   * holds it. This is the all-projects branch of Claude's `resolveSessionFilePath`
+   * (and the sibling-worktree fallback, since every worktree of one repo shares a
+   * single canonical-git-root slug store) — reused by a cross-project `--resume <id>`
+   * so a session recorded under another directory is still resumable.
+   */
+  static loadAcrossProjects(id: string, env: NodeJS.ProcessEnv = process.env): Session | null {
+    if (!isValidSessionId(id)) return null;
+    for (const dir of SessionManager.listProjectSessionDirs(env)) {
+      const session = new SessionManager('', dir).load(id);
+      if (session) return session;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
@@ -1505,7 +1574,11 @@ export class SessionManager {
     try {
       // OOM boundary: never read a pathologically large session file into memory
       // (a corrupt/hostile file must not crash --resume). Skip it as unreadable.
-      if (fs.statSync(filePath).size > MAX_SESSION_READ_BYTES) return null;
+      // A zero-byte file (a crash-truncated/empty copy) is likewise treated as
+      // NOT-found so it never shadows a valid sibling/cross-project copy (parity:
+      // Claude's resolveSessionFilePath `if (s.size > 0)` guard).
+      const size = fs.statSync(filePath).size;
+      if (size === 0 || size > MAX_SESSION_READ_BYTES) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
       const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
       if (rehydrate && Array.isArray(parsed.messages)) {
@@ -1525,7 +1598,8 @@ export class SessionManager {
   private async readSessionFileAsync(filePath: string, rehydrate = true): Promise<Session | null> {
     try {
       const st = await fs.promises.stat(filePath);
-      if (st.size > MAX_SESSION_READ_BYTES) return null;
+      // Zero-byte-as-not-found + OOM boundary, identical to the sync reader.
+      if (st.size === 0 || st.size > MAX_SESSION_READ_BYTES) return null;
       const raw = await fs.promises.readFile(filePath, 'utf-8');
       const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
       if (rehydrate && Array.isArray(parsed.messages)) {
@@ -1649,7 +1723,18 @@ export function buildConversationChain(messages: Message[], leafUuid?: string): 
       seen.add(id);
     }
     chain.push(cur);
-    cur = typeof cur.parentUuid === 'string' ? byUuid.get(cur.parentUuid) : undefined;
+    let next: Message | undefined = typeof cur.parentUuid === 'string' ? byUuid.get(cur.parentUuid) : undefined;
+    // Session-break continuation: when `parentUuid` was deliberately nullified (or
+    // points outside the loaded set) to mark a session break, fall back to
+    // `logicalParentUuid` so lineage spanning the break is still reconstructed into
+    // one thread instead of fragmenting into two roots (parity: Claude's
+    // TranscriptMessage.logicalParentUuid preservation across session-break
+    // nullification). The `seen` cycle guard above bounds this just like the
+    // parentUuid walk, so a logical-link loop returns a partial chain, never spins.
+    if (!next && typeof cur.logicalParentUuid === 'string') {
+      next = byUuid.get(cur.logicalParentUuid);
+    }
+    cur = next;
   }
   chain.reverse();
   return chain;
