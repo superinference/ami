@@ -90,6 +90,31 @@ export const taskKillTool: ToolDefinition = {
     },
     required: ['task_id'],
   },
+  // PARITY (additive): structured-result schema describing the machine-readable
+  // stop outcome AMI carries on `ToolResult.metadata` ({@link TaskKillMetadata}).
+  // Mirrors Claude Code's TaskStopTool `outputSchema` (message / task_id /
+  // task_type / command) so a resume/SDK/non-LLM caller can branch on the fields
+  // without parsing the human message string. Object-rooted so it passes the
+  // provider's object-root-only exposure guard (toolDefinitionsToOpenAI).
+  outputSchema: {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        description:
+          'Stable outcome discriminator present on every result: invalid_input | ' +
+          'manager_unavailable | not_found | already_terminal | killed | kill_failed.',
+      },
+      taskId: { type: 'string', description: 'The task ID the stop targeted, when known.' },
+      taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: Claude's task_type)." },
+      kind: { type: 'string', description: "Full task-kind discriminator ('bash' | 'monitor' | 'agent') when the manager exposes it." },
+      command: { type: 'string', description: 'The FULL (untruncated) command/description of the stopped task.' },
+      status: { type: 'string', description: 'Terminal status of the task (e.g. completed/failed/killed) when it was not running.' },
+      pid: { type: 'number', description: 'OS process ID of the killed task, when known.' },
+      exitCode: { type: ['number', 'null'], description: 'Exit code of an already-terminal task, when known.' },
+    },
+    required: ['reason'],
+  },
   isReadOnly: false,
   // PARITY (additive): stopping a task never mutates shared state the way a file
   // edit does, so it may run alongside other concurrency-safe tools. Mirrors
