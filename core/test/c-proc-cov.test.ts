@@ -112,16 +112,19 @@ describe('process-manager — defensive catch / boundary branches', () => {
     return pm;
   }
 
-  it('swallows the write error in the process-error handler when the fd is closed', async () => {
+  it('swallows the write error in the output path when the fd is closed', async () => {
     const pm = mk();
     const badCwd = path.join((pm as any).tasksDir, 'no', 'such', 'dir');
     const id = pm.spawn('echo never', { cwd: badCwd });
-    // Close the backing fd before the asynchronous ENOENT error arrives, so the
-    // error handler's fs.writeSync throws and hits its defensive catch.
+    // Close the backing fd mid-flight so the manager's fs.writeSync on the output
+    // path throws and must hit its defensive catch (never escaping). U031 added
+    // resolveSpawnCwd: a non-existent cwd now RECOVERS to the manager root and the
+    // command runs to completion (parity: Claude's spawn cwd recovery), instead of
+    // surfacing an async ENOENT failure — so the task completes rather than fails.
     fs.closeSync((pm as any).processes.get(id).outputFd);
     const event = await waitForComplete(pm, id);
-    assert.equal(event.exitCode, null);
-    assert.equal(pm.get(id)!.status, 'failed');
+    assert.equal(event.exitCode, 0);
+    assert.equal(pm.get(id)!.status, 'completed');
   });
 
   it('inner kill catch: both the group kill and the proc.kill fallback throw', () => {
