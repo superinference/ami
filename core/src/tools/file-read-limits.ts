@@ -35,6 +35,59 @@ export const FILE_READ_MAX_TOKENS_ENV = 'AMI_FILE_READ_MAX_OUTPUT_TOKENS';
 /** Operator override for the pre-read size gate in bytes (positive integer). */
 export const FILE_READ_MAX_SIZE_BYTES_ENV = 'AMI_FILE_READ_MAX_SIZE_BYTES';
 
+/**
+ * Operator toggle for whether the Read tool's SELF-DESCRIPTION surfaces the
+ * concrete size cap (the `256KB size limit` phrase in the `allow_large` schema
+ * description). Set to a falsy token (0/false/no/off) to drop the specific cap
+ * figure from the prompt. Mirrors Claude Code's `includeMaxSizeInPrompt` limit
+ * (tools/FileReadTool/limits.ts).
+ */
+export const FILE_READ_SHOW_SIZE_CAP_ENV = 'AMI_FILE_READ_SHOW_SIZE_CAP';
+/**
+ * Operator toggle for whether the Read tool's schema NUDGES the model toward
+ * targeted (offset/limit) range reads. Set to a falsy token (0/false/no/off) to
+ * drop the "prefer whole file / use offset+limit for large files" guidance from
+ * the offset/limit parameter descriptions. Mirrors Claude Code's
+ * `targetedRangeNudge` limit (tools/FileReadTool/limits.ts).
+ */
+export const FILE_READ_RANGE_NUDGE_ENV = 'AMI_FILE_READ_RANGE_NUDGE';
+
+/**
+ * Prompt-shaping flags that control which optional guidance the Read tool's
+ * static description/schema surfaces. Independent of the numeric caps above —
+ * these only affect the text the model sees, never the enforced limits.
+ */
+export interface FileReadPromptFlags {
+  /** Surface the concrete `256KB size limit` figure in the allow_large schema. */
+  includeMaxSizeInPrompt: boolean;
+  /** Surface the offset/limit targeted-range-read nudge in the schema. */
+  targetedRangeNudge: boolean;
+}
+
+/**
+ * Interpret an env toggle that DEFAULTS ON: only an explicitly falsy token
+ * (0/false/no/off, case-insensitive) turns it off; unset/empty/any other value
+ * keeps it on. Mirrors the default-on env gates elsewhere in the tool layer.
+ */
+function isOnByDefault(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  return !/^(0|false|no|off)$/i.test(raw.trim());
+}
+
+/**
+ * Resolve the {@link FileReadPromptFlags} from the environment. Both default ON,
+ * so an operator can only ever REMOVE guidance, never silently add misleading
+ * text. Surfaced in `ami --introspect` (experimentalEnvFlags).
+ */
+export function getFileReadPromptFlags(
+  env: NodeJS.ProcessEnv = process.env,
+): FileReadPromptFlags {
+  return {
+    includeMaxSizeInPrompt: isOnByDefault(env[FILE_READ_SHOW_SIZE_CAP_ENV]),
+    targetedRangeNudge: isOnByDefault(env[FILE_READ_RANGE_NUDGE_ENV]),
+  };
+}
+
 export interface FileReadingLimits {
   /** Max estimated output tokens before the read content is truncated. */
   maxTokens: number;

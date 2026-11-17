@@ -13,7 +13,7 @@ import { suggestSimilarPaths, suggestPathUnderCwd, suggestPathCorrection } from 
 import { formatFileSize } from '../utils/format';
 import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
 import { memoryFreshnessReminder } from '../memory';
-import { getFileReadingLimits } from './file-read-limits';
+import { getFileReadingLimits, getFileReadPromptFlags, type FileReadPromptFlags } from './file-read-limits';
 import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
 import { log } from '../logger';
 
@@ -69,6 +69,7 @@ export function resetPdftoppmCache(): void {
 export const pdfHooks: {
   execFile: (cmd: string, args: string[], opts: { timeout: number }) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   loadPdfParse: () => { PDFParse: new (opts: { data: Buffer }) => { getText: (o?: Record<string, unknown>) => Promise<{ text?: string; total?: number }>; destroy: () => Promise<void> } };
+  isPdfParseResolvable: () => boolean;
 } = {
   execFile: (cmd, args, opts) => new Promise((resolve) => {
     execFile(cmd, args, { timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -82,7 +83,30 @@ export const pdfHooks: {
   // page-count guard / error-classification branches without a real multi-page
   // PDF; production resolves pdf-parse from the working directory.
   loadPdfParse: () => createRequire(path.join(process.cwd(), '_'))('pdf-parse'),
+  // Capability probe: whether the optional `pdf-parse` dependency RESOLVES from
+  // the working directory (resolve-only — never executes the module). Mirrors the
+  // same resolution root as loadPdfParse so the advertised capability matches the
+  // runtime read path. Tests swap this to assert the capability-gated description.
+  isPdfParseResolvable: (): boolean => {
+    try {
+      createRequire(path.join(process.cwd(), '_')).resolve('pdf-parse');
+      return true;
+    } catch {
+      return false;
+    }
+  },
 };
+
+/**
+ * Whether the runtime can actually extract PDF text — i.e. the optional
+ * `pdf-parse` dependency resolves. The Read tool's description is gated on this
+ * so its self-description is an honest introspection surface that reflects the
+ * real capability instead of advertising PDF reads that would fail at runtime
+ * with "Error reading PDF". Mirrors Claude Code's isPDFSupported() (FileReadTool/prompt.ts).
+ */
+export function isPDFSupported(): boolean {
+  return pdfHooks.isPdfParseResolvable();
+}
 
 /**
  * Whether `pdftoppm` is available (cached for the process lifetime). pdftoppm
@@ -419,9 +443,53 @@ export function unwrapDefault<T>(mod: T | { default: T }): T {
  * instead of crashing with "sharp is not a function". Behavior is unchanged when
  * sharp resolves as plain CommonJS.
  */
-export const imageHooks: { loadSharp: () => any } = {
+export const imageHooks: {
+  loadSharp: () => any;
+  /**
+   * Optional ORDERED chain of image-processor loaders, tried in order by
+   * {@link loadImageProcessor} with the first one that loads winning. A bundled
+   * build can prepend a faster native processor (e.g. an `image-processor-napi`
+   * loader) and keep `loadSharp` as the portable fallback, so a packaged
+   * distribution whose native binding is missing on a given platform still
+   * downscales images instead of only being able to pass raw bytes. When unset,
+   * the chain defaults to `[loadSharp]` (unchanged single-engine behavior).
+   * Mirrors Claude Code's getImageProcessor() native-first ordered fallback.
+   */
+  loaders?: Array<() => any>;
+} = {
   loadSharp: () => unwrapDefault(require('sharp')),
 };
+
+/**
+ * Load an image processor from the ordered {@link imageHooks.loaders} chain,
+ * returning the first loader that succeeds. Each loader's failure is tolerated
+ * (the next is tried); only when EVERY loader fails does the last error
+ * propagate, so the caller's existing sharp-unavailable fallback still runs. When
+ * no chain is configured, the single canonical `loadSharp` loader is used — so a
+ * default build behaves exactly as before and a test that mocks `imageHooks.loadSharp`
+ * is still honored. Mirrors Claude Code's getImageProcessor() (native-first, sharp fallback).
+ */
+export function loadImageProcessor(): any {
+  const chain = imageHooks.loaders && imageHooks.loaders.length > 0
+    ? imageHooks.loaders
+    : [imageHooks.loadSharp];
+  let lastErr: unknown;
+  for (const loader of chain) {
+    try {
+      const processor = loader();
+      if (processor) return processor;
+    } catch (err) {
+      lastErr = err;
+      // Try the next processor in the chain. Surface the degrade at debug level so
+      // an operator tracing a slow/raw-bytes image read can see which processor
+      // tier failed to load. Mirrors Claude Code's getImageProcessor() warn-and-fallthrough.
+      log('file-read', `Image processor loader failed, trying next: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error('No image processor available');
+}
 
 /**
  * Max pixel dimensions the provider accepts for an image. Larger images are
@@ -496,7 +564,7 @@ export async function compressImageBuffer(
     || originalMediaType
     || 'application/octet-stream';
   try {
-    const sharp = imageHooks.loadSharp();
+    const sharp = loadImageProcessor();
     const metadata = await sharp(imageBuffer).metadata();
     const format: string = metadata.format || sniffedType.split('/')[1] || 'jpeg';
     const isPng = format === 'png';
@@ -666,7 +734,7 @@ export async function encodeImageFile(
   // WSL2/Windows clipboard BMP handling; left untouched when sharp is unavailable.
   if (mediaType === 'image/bmp') {
     try {
-      const sharp = imageHooks.loadSharp();
+      const sharp = loadImageProcessor();
       buffer = await sharp(imageBuffer).png().toBuffer();
       mediaType = 'image/png';
     } catch (err) {
@@ -803,11 +871,59 @@ export function convertLeadingTabsToSpaces(content: string): string {
   return content.replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length));
 }
 
-export const fileReadTool: ToolDefinition = {
-  name: 'file_read',
-  description:
-    'Read a file from the filesystem. Returns file content with line numbers (cat -n format). For image files (.png, .jpg, .jpeg, .gif, .webp) returns base64-encoded content presented visually. Can read PDF files (.pdf) — for large PDFs (more than 10 pages) you MUST provide the pages parameter to read a specific page range (e.g. pages: "1-5"); maximum 20 pages per request. Can read Jupyter notebooks (.ipynb) and returns all cells with their outputs, combining code, text, and visualizations. This tool reads files only, not directories — to list a directory, use an ls command via the bash tool.',
-  inputSchema: {
+/**
+ * Options that shape the Read tool's self-description/schema so it HONESTLY
+ * reflects the runtime's real capabilities and the operator's prompt-shaping
+ * knobs. Defaults mirror a fully-capable runtime with all guidance on, so the
+ * advertised description equals the historical static string. Mirrors Claude
+ * Code's prompt.ts (isPDFSupported) + limits.ts (includeMaxSizeInPrompt /
+ * targetedRangeNudge) description gating.
+ */
+export interface FileReadDescriptionOptions extends FileReadPromptFlags {
+  /** Whether the runtime can extract PDF text (see {@link isPDFSupported}). */
+  pdfSupported: boolean;
+}
+
+/** Resolve the description options from the live runtime + environment. */
+export function resolveFileReadDescriptionOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): FileReadDescriptionOptions {
+  return { pdfSupported: isPDFSupported(), ...getFileReadPromptFlags(env) };
+}
+
+/**
+ * Build the Read tool's description. The PDF clause is included ONLY when the
+ * runtime can actually read PDFs, so the tool never advertises a capability that
+ * would fail with "Error reading PDF". Mirrors Claude Code's isPDFSupported()
+ * gating of the PDF instruction block.
+ */
+export function buildFileReadDescription(opts: FileReadDescriptionOptions): string {
+  const pdfClause = opts.pdfSupported
+    ? 'Can read PDF files (.pdf) — for large PDFs (more than 10 pages) you MUST provide the pages parameter to read a specific page range (e.g. pages: "1-5"); maximum 20 pages per request. '
+    : '';
+  return 'Read a file from the filesystem. Returns file content with line numbers (cat -n format). '
+    + 'For image files (.png, .jpg, .jpeg, .gif, .webp) returns base64-encoded content presented visually. '
+    + pdfClause
+    + 'Can read Jupyter notebooks (.ipynb) and returns all cells with their outputs, combining code, text, and visualizations. '
+    + 'This tool reads files only, not directories — to list a directory, use an ls command via the bash tool.';
+}
+
+/**
+ * Build the Read tool's inputSchema. The offset/limit targeted-range-read nudge
+ * (gated by {@link FileReadPromptFlags.targetedRangeNudge}) and the concrete
+ * 256KB size-cap figure in `allow_large` (gated by
+ * {@link FileReadPromptFlags.includeMaxSizeInPrompt}) are surfaced only when the
+ * corresponding knob is on. Mirrors Claude Code's limits.ts prompt toggles.
+ */
+export function buildFileReadInputSchema(opts: FileReadDescriptionOptions): ToolDefinition['inputSchema'] {
+  const offsetNudge = opts.targetedRangeNudge
+    ? ' Prefer reading the whole file by omitting offset/limit; use offset/limit only when you already know which part of the file you need (important for large files).'
+    : '';
+  const limitNudge = opts.targetedRangeNudge
+    ? ' When you know the exact region you need, pass offset+limit to read just that part instead of the whole file — this matters most for large files.'
+    : '';
+  const sizeCap = opts.includeMaxSizeInPrompt ? ' 256KB' : '';
+  return {
     type: 'object',
     properties: {
       file_path: {
@@ -816,12 +932,16 @@ export const fileReadTool: ToolDefinition = {
       },
       offset: {
         type: 'number',
-        description: 'Line number to start reading from (0-based, non-negative integer). Defaults to 0. Prefer reading the whole file by omitting offset/limit; use offset/limit only when you already know which part of the file you need (important for large files).',
+        description: `Line number to start reading from (0-based, non-negative integer). Defaults to 0.${offsetNudge}`,
       },
       limit: {
         type: 'number',
         description:
-          'Maximum number of lines to read (positive integer). Defaults to 2000. When you know the exact region you need, pass offset+limit to read just that part instead of the whole file — this matters most for large files.',
+          `Maximum number of lines to read (positive integer). Defaults to 2000.${limitNudge}`,
+      },
+      tail: {
+        type: 'number',
+        description: 'Read the LAST N lines of the file instead of from the start (positive integer) — use for logs or appended files when only the end matters. Mutually exclusive with offset/limit. Only the final portion of a very large file is scanned, so tailing a huge log does not load the whole file.',
       },
       pages: {
         type: 'string',
@@ -829,7 +949,7 @@ export const fileReadTool: ToolDefinition = {
       },
       allow_large: {
         type: 'boolean',
-        description: 'Read a text file past the usual 256KB size limit in one call. Still subject to the token budget.',
+        description: `Read a text file past the usual${sizeCap} size limit in one call. Still subject to the token budget.`,
       },
       cell_id: {
         type: 'string',
@@ -837,7 +957,13 @@ export const fileReadTool: ToolDefinition = {
       },
     },
     required: ['file_path'],
-  },
+  };
+}
+
+export const fileReadTool: ToolDefinition = {
+  name: 'file_read',
+  description: buildFileReadDescription(resolveFileReadDescriptionOptions()),
+  inputSchema: buildFileReadInputSchema(resolveFileReadDescriptionOptions()),
   isReadOnly: true,
   isConcurrencySafe: true,
 
@@ -853,8 +979,17 @@ export const fileReadTool: ToolDefinition = {
     if (offsetParsed.error) return { output: offsetParsed.error, isError: true };
     const limitParsed = coerceReadLineParam(input.limit, { name: 'limit', min: 1 });
     if (limitParsed.error) return { output: limitParsed.error, isError: true };
+    const tailParsed = coerceReadLineParam(input.tail, { name: 'tail', min: 1 });
+    if (tailParsed.error) return { output: tailParsed.error, isError: true };
+    // `tail` selects from the END of the file; it is incompatible with a start-anchored
+    // offset/limit window (the two address opposite ends). Reject the ambiguous
+    // combination up front rather than silently preferring one.
+    if (tailParsed.value !== undefined && (input.offset !== undefined || input.limit !== undefined)) {
+      return { output: 'Error: tail cannot be combined with offset/limit — tail reads the last N lines from the end of the file, while offset/limit read a window from a start position.', isError: true };
+    }
     const offset = offsetParsed.value ?? 0;
     const limit = limitParsed.value ?? DEFAULT_LIMIT;
+    const tail = tailParsed.value;
 
     // Resolve the effective size/token caps: env override > per-call context
     // override (threaded via outputBudget) > hardcoded default. Strict per-field
@@ -1013,8 +1148,11 @@ export const fileReadTool: ToolDefinition = {
     const MAX_READ_SIZE = limits.maxSizeBytes; // default 256KB; env/context-overridable
     const PARTIAL_VIEW_LINES = 200;
     // PDFs have their own page/spill handling; allow_large opts past the cap.
+    // A `tail` read targets the END of the file, so it must NOT be short-circuited
+    // into a FIRST-slice partial view — fall through to the tail branch below.
     if (stat.size > MAX_READ_SIZE && !input.pages && !IMAGE_EXTENSIONS.has(ext)
-        && !isPDFExtension(ext) && input.offset === undefined && input.limit === undefined && !input.allow_large) {
+        && !isPDFExtension(ext) && input.offset === undefined && input.limit === undefined
+        && tail === undefined && !input.allow_large) {
       try {
         const fd = fs.openSync(resolved, 'r');
         const buf = Buffer.alloc(MAX_READ_SIZE);
@@ -1337,7 +1475,7 @@ export const fileReadTool: ToolDefinition = {
     // mtime-hit accelerator: we already statted the file above, so serve a full
     // re-read of an unchanged file from the cache WITHOUT re-reading/re-hashing
     // its (possibly large) bytes off disk. A range read still falls through.
-    const cached = input.offset === undefined && input.limit === undefined
+    const cached = input.offset === undefined && input.limit === undefined && tail === undefined
       ? fileCache.getCachedRead(resolved, stat.mtimeMs)
       : null;
     if (cached) {
@@ -1350,6 +1488,40 @@ export const fileReadTool: ToolDefinition = {
       // read file. Mirrors the range-unchanged short-circuit, which already adds.
       context.filesRead?.add(resolved);
       return { output: `${FILE_UNCHANGED_STUB} (${resolved}, ${lineCount} lines)` };
+    }
+
+    // Tail read: serve the LAST N lines. The shared reader is scanned once to get
+    // the accurate total line count (bounded memory — it accumulates nothing when
+    // maxLines is 0), then the range [totalLines-N, totalLines) is streamed with the
+    // same byte-budget-safe path a normal range read uses, so the returned lines keep
+    // their TRUE 1-based numbers. Mirrors Claude Code's tailFile last-N-from-end read.
+    if (!isBomText && tail !== undefined) {
+      fileCache.trackMtime(resolved, stat.mtimeMs);
+      const counted = await readFileInRange(resolved, 0, 0, limits.maxSizeBytes, context.abortSignal, { truncateOnByteLimit: true });
+      const totalLines = counted.totalLines;
+      if (totalLines === 0) {
+        return { output: '(empty file)' };
+      }
+      const tailStart = Math.max(0, totalLines - tail);
+      const range = await readFileInRange(
+        resolved, tailStart, tail, limits.maxSizeBytes, context.abortSignal, { truncateOnByteLimit: true },
+      );
+      const numbered = range.content
+        .split('\n')
+        .map((line, i) => `${tailStart + i + 1}\t${convertLeadingTabsToSpaces(line)}`)
+        .join('\n');
+      const rangeText = stripForgedSystemReminders(numbered);
+      const shownFrom = tailStart + 1;
+      let output = `File: ${resolved}\nShowing last ${range.lineCount} line${range.lineCount === 1 ? '' : 's'} (lines ${shownFrom}-${totalLines} of ${totalLines})\n\n${rangeText}`;
+      if (range.truncatedByBytes) {
+        output += `\n\n[... output clipped at the ${formatFileSize(limits.maxSizeBytes)} byte budget; request fewer tail lines to see them all.]`;
+      }
+      const estimatedTokens = estimateTokensForFileType(output, ext);
+      if (estimatedTokens > limits.maxTokens) {
+        output = output.slice(0, limits.maxTokens * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Request fewer tail lines.]`;
+      }
+      context.filesRead?.add(resolved);
+      return { output };
     }
 
     // Use streaming for explicit range reads to avoid loading entire file
