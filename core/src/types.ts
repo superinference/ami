@@ -725,7 +725,23 @@ export interface ToolContext {
   _mcpManager?: any;
   _parentMessages?: Message[];
   _engineAddSystemReminder?: (msg: string) => void;
-  _engineSetActiveSkill?: (name: string | undefined) => void;
+  /**
+   * Activate (or, with `undefined`, clear) the inline skill named `name`. The
+   * optional `scopedAllowRules` are the scoped command auto-allow rules the skill
+   * contributes from its frontmatter `allowed-tools` (e.g. `Bash(git:*)` →
+   * `{tool:'bash', pattern:'git:*', action:'allow'}`), computed via the canonical
+   * {@link scopedToolAllowRules}. The engine applies them to the SESSION permission
+   * context for as long as the inline skill stays active and removes them when it is
+   * deactivated or replaced — parity with Claude Code's security-review command,
+   * which injects a command's allowed-tools into `alwaysAllowRules.command` for the
+   * duration of that command. Decoupled from `isStanceSkill`, so a plain inline
+   * skill (or a skill-backed slash command) can pre-approve its own scoped commands
+   * without being promoted to a pinned stance.
+   */
+  _engineSetActiveSkill?: (
+    name: string | undefined,
+    scopedAllowRules?: Array<{ tool: string; pattern?: string; action: 'allow' }>,
+  ) => void;
   /** Signal the engine to load a deferred tool into the active set (tool_search select). */
   _loadDeferredTool?: (name: string) => void;
   /** Relay a child (sub-engine) event up to the parent engine's event stream so

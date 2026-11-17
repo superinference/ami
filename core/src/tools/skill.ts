@@ -619,7 +619,21 @@ export const skillTool: ToolDefinition = {
 
     if (isInline && context._engineAddSystemReminder) {
       context._engineAddSystemReminder(`[Skill: ${resolvedName}]\n${withSkillBaseDir(skillContent, skill)}`);
-      context._engineSetActiveSkill?.(resolvedName);
+      // FUNCTIONAL (parity/security): contribute the inline skill's scoped command
+      // auto-allow rules (frontmatter `allowed-tools` entries like `Bash(git:*)`)
+      // to the SESSION permission context for as long as this skill stays active.
+      // An inline skill's instructions execute in the SAME session, so the parent
+      // engine runs its bash/tool calls — without this, a plain inline skill could
+      // not pre-approve its own scoped commands the way Claude's security-review
+      // command injects allowed-tools into alwaysAllowRules.command. Reuses the
+      // canonical scopedToolAllowRules helper (same derivation the forked-skill path
+      // applies to the sub-engine) and is decoupled from isStanceSkill, so granting
+      // this does NOT promote the skill to a pinned stance. The engine removes these
+      // rules when the skill is replaced or cleared (clear:true → undefined name).
+      context._engineSetActiveSkill?.(
+        resolvedName,
+        scopedToolAllowRules(skill?.allowedTools, normalizeToolName),
+      );
       // Report the skill's effective sandboxing (tool-restriction count + model
       // override) at activation, instead of a bare "activated inline" sentence, so
       // the user sees the skill scoped the toolset/model (parity with Claude's
