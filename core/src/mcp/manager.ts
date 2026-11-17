@@ -627,6 +627,25 @@ export interface McpConnectivitySummary {
   needsAuth: string[];
 }
 
+/**
+ * A tally of the live MCP servers bucketed by distinct connectivity state
+ * (Claude-parity `buildMcpProperties`, status.tsx:L89-115): a compact
+ * `{connected, pending, needsAuth, failed}` count for a status-pane summary line
+ * that stays ONE row no matter how many servers are configured (20+ servers would
+ * otherwise wrap over many rows and dominate the pane). The reserved `ide`
+ * pseudo-client ({@link IDE_MCP_SERVER_NAME}) is excluded — it is surfaced
+ * separately as the IDE badge ({@link McpManager.getIdeConnectionStatus}) — and
+ * the intentional user states (`disabled`/`stopped`/`disconnected`) are counted
+ * in NO bucket (they are not actionable connectivity states, not failures).
+ * Feeds {@link formatMcpStateSummary}.
+ */
+export interface McpServerStateSummary {
+  connected: number;
+  pending: number;
+  needsAuth: number;
+  failed: number;
+}
+
 export interface PendingServerInfo {
   name: string;
   config: McpServerConfig;
@@ -1217,6 +1236,33 @@ export class McpManager extends EventEmitter {
       else if (s.state === 'error') failed.push(s.name);
     }
     return { failed, needsAuth };
+  }
+
+  /**
+   * Bucket the live MCP servers by distinct connectivity state for a COMPACT
+   * one-line status-pane summary (Claude-parity `buildMcpProperties`,
+   * status.tsx:L89-115): `ready`→connected, `pending`/`connecting`→pending,
+   * `needs-auth`→needsAuth, `error`→failed. The reserved `ide` pseudo-client is
+   * excluded (surfaced as its own IDE badge via {@link getIdeConnectionStatus}),
+   * and the intentional `disabled`/`stopped`/`disconnected` states are counted in
+   * no bucket (not failures). Unlike {@link getConnectivitySummary} (which lists
+   * only the two actionable buckets for proactive banners) this is the full
+   * four-way COUNT the status pane renders via {@link formatMcpStateSummary}.
+   */
+  getServerStateSummary(): McpServerStateSummary {
+    const summary: McpServerStateSummary = { connected: 0, pending: 0, needsAuth: 0, failed: 0 };
+    for (const s of this.listAllServers()) {
+      if (s.name === IDE_MCP_SERVER_NAME) continue;
+      switch (s.state) {
+        case 'ready': summary.connected++; break;
+        case 'pending':
+        case 'connecting': summary.pending++; break;
+        case 'needs-auth': summary.needsAuth++; break;
+        case 'error': summary.failed++; break;
+        default: break; // disabled / stopped / disconnected: intentional, not an actionable bucket
+      }
+    }
+    return summary;
   }
 
   /** True when a server should be blocked by the denylist (by name, URL, URL
@@ -3386,6 +3432,36 @@ export function formatMcpConnectivitySummary(summary: McpConnectivitySummary): M
   return out;
 }
 
+/**
+ * One non-zero state bucket of a {@link McpServerStateSummary}, in the fixed
+ * severity-aware render order the status pane uses. `severity` is the color class a
+ * frontend maps to a theme color; `label` is the pre-pluralized count phrase.
+ */
+export interface McpStateSummaryPart {
+  state: 'connected' | 'needsAuth' | 'pending' | 'failed';
+  count: number;
+  label: string;
+  severity: 'success' | 'warning' | 'inactive' | 'error';
+}
+
+/**
+ * Format a {@link McpServerStateSummary} into the ordered, non-empty parts a status
+ * pane renders as a single compact "N connected, N need auth, N pending, N failed
+ * · /mcp" row (Claude-parity `buildMcpProperties`, status.tsx:L99-115). Only
+ * non-zero buckets appear, always in the fixed severity order
+ * connected→needsAuth→pending→failed so the row reads consistently regardless of
+ * which states are present. Returns `[]` when every bucket is zero (no actionable
+ * MCP servers → render nothing).
+ */
+export function formatMcpStateSummary(summary: McpServerStateSummary): McpStateSummaryPart[] {
+  const parts: McpStateSummaryPart[] = [];
+  if (summary.connected > 0) parts.push({ state: 'connected', count: summary.connected, label: `${summary.connected} connected`, severity: 'success' });
+  if (summary.needsAuth > 0) parts.push({ state: 'needsAuth', count: summary.needsAuth, label: `${summary.needsAuth} need auth`, severity: 'warning' });
+  if (summary.pending > 0) parts.push({ state: 'pending', count: summary.pending, label: `${summary.pending} pending`, severity: 'inactive' });
+  if (summary.failed > 0) parts.push({ state: 'failed', count: summary.failed, label: `${summary.failed} failed`, severity: 'error' });
+  return parts;
+}
+
 /** Transport values AMI understands (for config validation / `type` mapping).
  *  Includes the Claude-parity IDE discriminants (`sse-ide`/`ws-ide`) and the
  *  in-process `sdk` transport so a `{ "type": "sse-ide", … }` entry validates. */
@@ -3764,11 +3840,20 @@ export interface PluginMcpVars {
  *   - `${CLAUDE_PLUGIN_DATA}` → `vars.pluginDataDir`.
  * Any OTHER `${...}` reference is left untouched for {@link expandEnvVarsTracked}
  * to resolve, giving plugin/user values precedence over a same-named env var.
+ *
+ * On Windows the two plugin-PATH substitutions (`CLAUDE_PLUGIN_ROOT` /
+ * `CLAUDE_PLUGIN_DATA`) have their backslashes normalized to forward slashes
+ * (Claude-parity `substitutePluginVariables`, pluginOptionsStorage.ts:L312-345)
+ * so a path like `C:\Users\me\plugin` dropped into a shell command/arg is not
+ * mangled by backslash escape interpretation. `user_config` values are NOT
+ * normalized — they are opaque user data, not plugin install paths.
  */
 export function substitutePluginMcpVars(value: string, vars: PluginMcpVars): string {
+  const normalizePath = (p: string): string =>
+    process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
   return value.replace(/\$\{(user_config\.[A-Za-z0-9_]+|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA)\}/g, (_match, ref: string) => {
-    if (ref === 'CLAUDE_PLUGIN_ROOT') return vars.pluginRoot ?? '';
-    if (ref === 'CLAUDE_PLUGIN_DATA') return vars.pluginDataDir ?? '';
+    if (ref === 'CLAUDE_PLUGIN_ROOT') return normalizePath(vars.pluginRoot ?? '');
+    if (ref === 'CLAUDE_PLUGIN_DATA') return normalizePath(vars.pluginDataDir ?? '');
     const key = ref.slice('user_config.'.length);
     return vars.userConfig?.[key] ?? '';
   });
