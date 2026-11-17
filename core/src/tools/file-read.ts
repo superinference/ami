@@ -14,10 +14,19 @@ import { formatFileSize } from '../utils/format';
 import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
 import { memoryFreshnessReminder } from '../memory';
 import { getFileReadingLimits } from './file-read-limits';
+import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
 import { log } from '../logger';
 
 const DEFAULT_LIMIT = 2000;
 const BINARY_CHECK_BYTES = 8192;
+/**
+ * Hard OOM backstop for a FULL (un-ranged) text read, even when `allow_large`
+ * bypasses the 256KB partial-view cap. A read above this is rejected with a
+ * {@link FileTooLargeError} message instead of loading an unbounded file into
+ * memory. Mirrors Claude Code's maxBytes/FileTooLargeError hard stop on the
+ * read path (utils/readFileInRange.ts).
+ */
+const MAX_FULL_READ_BYTES = 50 * 1024 * 1024; // 50 MB
 /**
  * Per-cell combined-output size (chars of text + image base64) above which a
  * notebook cell's outputs are replaced with a `jq` escape-hatch hint instead of
@@ -762,47 +771,6 @@ export function parseImageToolMetadata(output: string): string | null {
   return null;
 }
 
-async function readFileInRange(
-  filePath: string,
-  offset: number,
-  limit: number,
-  signal?: AbortSignal,
-): Promise<{ text: string; hasMore: boolean; scannedLines: number }> {
-  const lines: string[] = [];
-  const stream = fs.createReadStream(filePath, { encoding: 'utf-8', signal });
-  // Attach an error handler so a stream-level failure (EIO, permission revoked
-  // mid-read) rejects the readline async-iterator instead of surfacing as an
-  // unhandled 'error' event that crashes the process. Mirrors Claude Code's
-  // once('error', reject) on its range stream (readFileInRange.ts).
-  stream.once('error', () => { /* propagated through the async iterator below */ });
-  const rl = require('readline').createInterface({ input: stream, crlfDelay: Infinity });
-  let lineNum = 0;
-  let hasMore = false;
-  // try/finally guarantees the stream is torn down even when the readline
-  // iteration throws mid-stream (decode error, abort, EIO) — without it a thrown
-  // iteration left the file descriptor open (a leak over many failed reads).
-  // Mirrors Claude Code's stream.destroy()-on-any-exit cleanup.
-  try {
-    for await (const line of rl) {
-      lineNum++;
-      // Reaching this line means at least one line exists past the window, so the
-      // output is being capped by `limit` (not EOF) — signal that to the caller.
-      if (lineNum > offset + limit) { hasMore = true; break; }
-      // Normalize leading tabs in the SOURCE line (not the gutter separator) so a
-      // streamed range renders indentation tab-width-independently, matching the
-      // full-read path. See convertLeadingTabsToSpaces.
-      if (lineNum > offset) lines.push(`${lineNum}\t${convertLeadingTabsToSpaces(line)}`);
-    }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
-  // `scannedLines` is the number of lines actually seen. When the window yields no
-  // text and we did not break early (hasMore=false), this equals the file's total
-  // line count — enough to tell "empty file" (0) apart from "offset overshot".
-  return { text: lines.join('\n'), hasMore, scannedLines: lineNum };
-}
-
 /**
  * Actionable stub returned when a FULL re-read hits the unchanged-file cache.
  * Beyond stating the fact, it tells the model what to DO — reuse the earlier
@@ -928,7 +896,20 @@ export const fileReadTool: ToolDefinition = {
     // Check file exists
     try {
       await fs.promises.access(resolved, fs.constants.R_OK);
-    } catch {
+    } catch (accessErr) {
+      // Errno-distinct diagnostics: a file that EXISTS but is unreadable
+      // (EACCES/EPERM) is a permission problem, not a missing path — surface it
+      // distinctly (with cwd context) rather than the misleading "not found", and
+      // skip the ENOENT-only screenshot/not-found recovery below (retrying an
+      // alternate name for a file that exists makes no sense). Mirrors Claude
+      // Code's errno-distinguished file validation (BriefTool/attachments.ts).
+      const errno = (accessErr as NodeJS.ErrnoException | undefined)?.code;
+      if (errno === 'EACCES' || errno === 'EPERM') {
+        return {
+          output: `Error: File is not accessible (permission denied): ${resolved}\n${FILE_NOT_FOUND_CWD_NOTE} ${context.cwd}.`,
+          isError: true,
+        };
+      }
       // macOS screenshots use either a regular space or a thin space (U+202F)
       // before AM/PM depending on the OS version; on a miss, retry the alternate
       // space variant before giving up (CC parity: getAlternateScreenshotPath).
@@ -1373,26 +1354,45 @@ export const fileReadTool: ToolDefinition = {
         return { output: `${FILE_UNCHANGED_STUB} (${resolved}, lines ${offset + 1}-${offset + limit})` };
       }
       fileCache.trackMtime(resolved, stat.mtimeMs);
-      const { text: rawRangeText, hasMore, scannedLines } = await readFileInRange(resolved, offset, limit, context.abortSignal);
-      // Neutralize forged <system-reminder> trust-boundary tags planted in the
-      // untrusted window before it enters the transcript.
-      const rangeText = stripForgedSystemReminders(rawRangeText);
-      if (!rawRangeText) {
-        // Distinguish a truly empty file from an offset that overshot the content:
-        // the latter should tell the model how many lines actually exist so it can
-        // retry with a valid offset, instead of the misleading "(empty file)".
-        if (scannedLines > 0 && offset >= scannedLines) {
+      // Memory-safe range read: the shared reader picks an in-memory fast path for
+      // small files and a bounded-memory streaming path for large/single-line
+      // files (reading line 1 of a 100 GB file never balloons RSS), and clips the
+      // SELECTED OUTPUT at the byte budget on a clean line boundary (truncate
+      // mode) rather than loading the whole window. See read-file-range.ts.
+      const range = await readFileInRange(
+        resolved, offset, limit, limits.maxSizeBytes, context.abortSignal, { truncateOnByteLimit: true },
+      );
+      if (range.lineCount === 0) {
+        // Nothing selected. Distinguish a truly empty file from an offset that
+        // overshot the content: the latter tells the model how many lines actually
+        // exist (accurate totalLines from the reader) so it can retry with a valid
+        // offset, instead of the misleading "(empty file)".
+        if (range.totalBytes > 0 && offset >= range.totalLines) {
           return {
-            output: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${offset}). The file has ${scannedLines} lines.</system-reminder>`,
+            output: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${offset}). The file has ${range.totalLines} lines.</system-reminder>`,
           };
         }
         return { output: '(empty file)' };
       }
+      // Number the selected lines (1-based display), normalizing leading tabs in
+      // the SOURCE line (not the gutter) for tab-width-independent indentation.
+      const numbered = range.content
+        .split('\n')
+        .map((line, i) => `${offset + i + 1}\t${convertLeadingTabsToSpaces(line)}`)
+        .join('\n');
+      // Neutralize forged <system-reminder> trust-boundary tags planted in the
+      // untrusted window before it enters the transcript.
+      const rangeText = stripForgedSystemReminders(numbered);
       let output = `File: ${resolved}\nShowing ${limit} lines from offset ${offset}\n\n${rangeText}`;
-      // Make a capped range visible: without this the model sees "Showing N lines
-      // from offset M" and cannot tell the window stopped short of the file's end.
-      if (hasMore) {
-        output += `\n\n[... output capped at ${limit} lines; more lines follow. Use offset=${offset + limit} to continue reading, or a larger limit.]`;
+      // Make a capped window visible: without this the model sees "Showing N lines
+      // from offset M" and cannot tell the window stopped short of the file's end,
+      // whether it was cut by the line limit or clipped at the byte budget.
+      const shown = offset + range.lineCount;
+      if (shown < range.totalLines) {
+        const cause = range.truncatedByBytes
+          ? `output clipped at the ${formatFileSize(limits.maxSizeBytes)} byte budget`
+          : `output capped at ${limit} lines`;
+        output += `\n\n[... ${cause}; more lines follow. Use offset=${shown} to continue reading${range.truncatedByBytes ? '' : ', or a larger limit'}.]`;
       }
       // File-type-aware token estimate (dense JSON ≈ 2 chars/token) so an
       // oversized JSON range is not under-counted past the budget; non-JSON
@@ -1408,10 +1408,26 @@ export const fileReadTool: ToolDefinition = {
       return { output };
     }
 
-    // Read file content (decode UTF-16/BOM in its original encoding)
-    const rawContent = isBomText
-      ? decodeBuffer(await fs.promises.readFile(resolved, { signal: context.abortSignal })).text
-      : await fs.promises.readFile(resolved, { encoding: 'utf-8', signal: context.abortSignal });
+    // Read file content (decode UTF-16/BOM in its original encoding). A large
+    // (>=10 MB) non-BOM full read is reachable only via allow_large (the 256KB
+    // partial-view guard above catches the rest); stream it through the shared
+    // reader with a hard FileTooLargeError ceiling instead of loading the whole
+    // file wholesale, so even allow_large can never OOM on an unbounded file.
+    let rawContent: string;
+    if (isBomText) {
+      rawContent = decodeBuffer(await fs.promises.readFile(resolved, { signal: context.abortSignal })).text;
+    } else if (stat.size >= FAST_PATH_MAX_SIZE) {
+      try {
+        rawContent = (await readFileInRange(resolved, 0, undefined, MAX_FULL_READ_BYTES, context.abortSignal)).content;
+      } catch (err) {
+        if (err instanceof FileTooLargeError) {
+          return { output: `Error: ${err.message}`, isError: true };
+        }
+        throw err;
+      }
+    } else {
+      rawContent = await fs.promises.readFile(resolved, { encoding: 'utf-8', signal: context.abortSignal });
+    }
 
     if (rawContent.length === 0) {
       return { output: '(empty file)' };
