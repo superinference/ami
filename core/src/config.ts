@@ -267,6 +267,64 @@ export interface ProjectConfig {
    * `resolveMemoryExcludes`.
    */
   memoryExcludes?: string[];
+  // -------------------------------------------------------------------------
+  // Engine-behavior knobs read off the MERGED config by the engine factory.
+  //
+  // Each of these was already READ by a `common/src/engine-factory.ts` /
+  // `feature-flags.ts` resolver off the config object the factory builds with
+  // {@link mergeConfigs}, yet NONE of them were copied by that merge — so a value
+  // set in `.ami/config.json` (or any file tier) was silently dropped and the
+  // documented "project-config <key>" knob never took effect (it only worked when a
+  // caller injected a `projectConfig` object directly, bypassing the file waterfall).
+  // Declaring them here (with their runtime base type in {@link PROJECT_CONFIG_FIELD_TYPES})
+  // makes them recognized keys (no spurious unknown-key typo warning), value-validated,
+  // and — paired with their new entries in {@link mergeConfigs} — actually honored from
+  // the config files. Parity: Claude Code's settings-schema keys that flow through the
+  // settings cascade into the running session.
+  // -------------------------------------------------------------------------
+  /** Opt out of the architect/advisor model slot (parity: engine-factory `architectEnabled:false`). */
+  architectEnabled?: boolean;
+  /** Explicit architect/advisor model id (parity: engine-factory `architectModel`). */
+  architectModel?: string;
+  /** Fold file search into another surface, dropping the standalone grep/glob tools. */
+  embeddedSearchTools?: boolean;
+  /** Teammate/subagent execution backend: `auto` | `in-process` | `tmux`. */
+  teammateExecutionMode?: string;
+  /** Opt in to the unattended-retry loop for a detached/autonomous run. */
+  unattendedRetry?: boolean;
+  /** Toggle file checkpointing/mutation snapshots (parity: Claude's fileCheckpointingEnabled). */
+  fileCheckpointingEnabled?: boolean;
+  /**
+   * Named capability feature-flags keyed by feature name (parity: Claude Code's
+   * `features` map / `feature()`): a `false` value disables a named feature, `true`
+   * force-enables it, overriding the per-feature default. Env flags
+   * (`SUPERINFERENCE_FEATURE_<NAME>` / `CLAUDE_CODE_FEATURE_<NAME>`) still win.
+   */
+  features?: Record<string, boolean>;
+  /** Provider errors (HTTP 529) tolerated before stepping to the fallback model chain. */
+  max529RetriesBeforeFallback?: number;
+  /** Route OpenRouter traffic through a zero-data-retention endpoint. */
+  openrouterZdr?: boolean;
+  /** Fail closed when an MCP server config is invalid instead of skipping it. */
+  strictMcpConfig?: boolean;
+  /** Require explicit approval before any MCP tool call. */
+  mcpRequireApproval?: boolean;
+  /** Cap (ms) on how long a 429/usage-limit wait may block before giving up. */
+  maxUsageLimitWaitMs?: number;
+  /** Turn interval (positive integer) at which session-memory extraction runs. */
+  sessionMemoryInterval?: number;
+  /** MCP server names to always keep connected even under lazy/deferred loading. */
+  alwaysLoadMcpServers?: string[];
+  /** Continue the launch on an invalid config file instead of exiting. */
+  continueOnInvalidConfig?: boolean;
+  /** Named output style/persona preset applied to the system prompt. */
+  outputStyle?: string;
+  /**
+   * Include the git guidance + dynamic git-context block in the system prompt
+   * (parity: Claude Code's `includeGitInstructions`). Defaults ON when unset; the
+   * `SUPERINFERENCE_DISABLE_GIT_INSTRUCTIONS` env var overrides this knob.
+   */
+  includeGitInstructions?: boolean;
 }
 
 /**
@@ -836,6 +894,17 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
   ['worktree', 'object'], ['attribution', 'object'],
   ['skillUsage', 'object'],
+  // Engine-behavior knobs (see ProjectConfig) — merged by {@link mergeConfigs} and
+  // read by the engine factory; declared here so they are recognized + value-validated.
+  ['architectEnabled', 'boolean'], ['architectModel', 'string'],
+  ['embeddedSearchTools', 'boolean'], ['teammateExecutionMode', 'string'],
+  ['unattendedRetry', 'boolean'], ['fileCheckpointingEnabled', 'boolean'],
+  ['features', 'object'], ['max529RetriesBeforeFallback', 'number'],
+  ['openrouterZdr', 'boolean'], ['strictMcpConfig', 'boolean'],
+  ['mcpRequireApproval', 'boolean'], ['maxUsageLimitWaitMs', 'number'],
+  ['sessionMemoryInterval', 'number'], ['alwaysLoadMcpServers', 'string[]'],
+  ['continueOnInvalidConfig', 'boolean'], ['outputStyle', 'string'],
+  ['includeGitInstructions', 'boolean'],
 ];
 
 /**
@@ -1942,6 +2011,29 @@ export function mergeConfigs(
     if (layer.composerHintsEnabled !== undefined) merged.composerHintsEnabled = layer.composerHintsEnabled;
     if (layer.composerHintsOverride !== undefined) merged.composerHintsOverride = deepMergeConfigObjects(merged.composerHintsOverride as Record<string, unknown> | undefined, layer.composerHintsOverride as Record<string, unknown>) as ProjectConfig['composerHintsOverride'];
     if (layer.attribution !== undefined) merged.attribution = deepMergeConfigObjects(merged.attribution as Record<string, unknown> | undefined, layer.attribution as Record<string, unknown>) as ProjectConfig['attribution'];
+    // Engine-behavior knobs: last-layer-wins for scalars (parity with the other
+    // scalar settings above), key-wise merge for the `features` map (a higher layer
+    // overrides a single feature rather than replacing the whole block), and
+    // array-accumulate for the MCP always-load list (a higher layer augments it).
+    // Before this, every one of these was READ by the engine factory off the merged
+    // config yet never COPIED here, so a `.ami/config.json` value was silently dropped.
+    if (layer.architectEnabled !== undefined) merged.architectEnabled = layer.architectEnabled;
+    if (layer.architectModel !== undefined) merged.architectModel = layer.architectModel;
+    if (layer.embeddedSearchTools !== undefined) merged.embeddedSearchTools = layer.embeddedSearchTools;
+    if (layer.teammateExecutionMode !== undefined) merged.teammateExecutionMode = layer.teammateExecutionMode;
+    if (layer.unattendedRetry !== undefined) merged.unattendedRetry = layer.unattendedRetry;
+    if (layer.fileCheckpointingEnabled !== undefined) merged.fileCheckpointingEnabled = layer.fileCheckpointingEnabled;
+    if (layer.features !== undefined) merged.features = deepMergeConfigObjects(merged.features as Record<string, unknown> | undefined, layer.features as Record<string, unknown>) as ProjectConfig['features'];
+    if (layer.max529RetriesBeforeFallback !== undefined) merged.max529RetriesBeforeFallback = layer.max529RetriesBeforeFallback;
+    if (layer.openrouterZdr !== undefined) merged.openrouterZdr = layer.openrouterZdr;
+    if (layer.strictMcpConfig !== undefined) merged.strictMcpConfig = layer.strictMcpConfig;
+    if (layer.mcpRequireApproval !== undefined) merged.mcpRequireApproval = layer.mcpRequireApproval;
+    if (layer.maxUsageLimitWaitMs !== undefined) merged.maxUsageLimitWaitMs = layer.maxUsageLimitWaitMs;
+    if (layer.sessionMemoryInterval !== undefined) merged.sessionMemoryInterval = layer.sessionMemoryInterval;
+    if (layer.alwaysLoadMcpServers !== undefined) merged.alwaysLoadMcpServers = mergeConfigArray(merged.alwaysLoadMcpServers, layer.alwaysLoadMcpServers);
+    if (layer.continueOnInvalidConfig !== undefined) merged.continueOnInvalidConfig = layer.continueOnInvalidConfig;
+    if (layer.outputStyle !== undefined) merged.outputStyle = layer.outputStyle;
+    if (layer.includeGitInstructions !== undefined) merged.includeGitInstructions = layer.includeGitInstructions;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower

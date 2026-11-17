@@ -60,6 +60,14 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       language: 'japanese', memoryExcludes: ['**/AGENTS.md'],
       allowManagedSandboxDomainsOnly: true, skillUsage: { demo: { usageCount: 1, lastUsedAt: 1 } },
       strictPluginOnlyCustomization: ['skills'],
+      // Engine-behavior knobs (U010 w78): read off the merged config by the engine
+      // factory, now declared/validated/merged so a config-file value takes effect.
+      architectEnabled: false, architectModel: 'arch', embeddedSearchTools: true,
+      teammateExecutionMode: 'in-process', unattendedRetry: true, fileCheckpointingEnabled: false,
+      features: { task_tracker: true }, max529RetriesBeforeFallback: 2, openrouterZdr: true,
+      strictMcpConfig: true, mcpRequireApproval: true, maxUsageLimitWaitMs: 1000,
+      sessionMemoryInterval: 5, alwaysLoadMcpServers: ['srv'], continueOnInvalidConfig: true,
+      outputStyle: 'concise', includeGitInstructions: false,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
