@@ -72,6 +72,40 @@ export function summarizeTasks(tasks: Pick<BackgroundProcess, 'status'>[]): Reco
   return counts;
 }
 
+/**
+ * PARITY (Claude Code's getPillLabel / LocalShellTask `kind`): count tasks by
+ * their authoritative {@link BackgroundProcess.kind} discriminator — the per-type
+ * label split ("1 shell, 1 monitor") that the footer pill shows. Branches on the
+ * `kind` FIELD, not the brittle command-string heuristics ({@link isAgentTask} /
+ * {@link isMonitorTask}) a misnamed command could fool. An entry whose kind is
+ * absent (an older mock stub that never set it) is skipped so the by-type line is
+ * simply omitted rather than miscounted.
+ */
+export function summarizeTaskKinds(
+  tasks: Pick<BackgroundProcess, 'kind'>[],
+): { bash: number; monitor: number; agent: number } {
+  const counts = { bash: 0, monitor: 0, agent: 0 };
+  for (const t of tasks) {
+    if (t.kind === 'bash' || t.kind === 'monitor' || t.kind === 'agent') counts[t.kind]++;
+  }
+  return counts;
+}
+
+/**
+ * PARITY (Claude Code's getPillLabel): render a per-type count summary using
+ * Claude's footer nouns and pluralisation — `1 shell` / `2 shells`, `1 agent` /
+ * `2 agents`, `1 monitor` / `2 monitors`. Zero-count kinds are dropped; an
+ * all-zero input renders the empty string so the caller can suppress the line.
+ */
+export function formatKindSummary(counts: { bash: number; monitor: number; agent: number }): string {
+  const plural = (n: number, noun: string): string => (n === 1 ? `1 ${noun}` : `${n} ${noun}s`);
+  const parts: string[] = [];
+  if (counts.bash > 0) parts.push(plural(counts.bash, 'shell'));
+  if (counts.agent > 0) parts.push(plural(counts.agent, 'agent'));
+  if (counts.monitor > 0) parts.push(plural(counts.monitor, 'monitor'));
+  return parts.join(', ');
+}
+
 /** A terminal task will never run again. */
 function isTerminal(status: TaskStatus): boolean {
   return status !== 'running';
@@ -206,6 +240,17 @@ export const taskListTool: ToolDefinition = {
       .map(s => `${counts[s]} ${s}`)
       .join(', ');
 
+    // PARITY (Claude getPillLabel): per-type breakdown from the authoritative
+    // `kind` field (shells/agents are drawn from the listed tasks). Internal MCP
+    // monitors are intentionally kept OUT of the per-task listing (an AMI
+    // differentiator — they are framework plumbing), but their running count is
+    // surfaced here from the unfiltered set so the model can still see "N monitor"
+    // without the noise lines, mirroring Claude's footer monitor count.
+    const kindCounts = summarizeTaskKinds(tasks);
+    kindCounts.monitor = all.filter(t => t.kind === 'monitor' && t.status === 'running').length;
+    const kindSummary = formatKindSummary(kindCounts);
+    const typeLine = kindSummary ? `By type: ${kindSummary}\n` : '';
+
     const header = tasks.length === visible.length
       ? `Background tasks (${tasks.length}):`
       : `Background tasks (${tasks.length} of ${visible.length}):`;
@@ -216,6 +261,6 @@ export const taskListTool: ToolDefinition = {
     if (body.length > MAX_OUTPUT_CHARS) {
       body = body.slice(0, MAX_OUTPUT_CHARS) + `\n... [task list truncated at ${MAX_OUTPUT_CHARS} chars]`;
     }
-    return { output: `${header}\n${summary}\n${body}`, isError: false };
+    return { output: `${header}\n${summary}\n${typeLine}${body}`, isError: false };
   },
 };

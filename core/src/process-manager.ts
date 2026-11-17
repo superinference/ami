@@ -1514,10 +1514,21 @@ export class ProcessManager extends EventEmitter {
     return taskId;
   }
 
+  /**
+   * FUNCTIONAL (parity with Claude Code's killShellTasksForAgent reap log): stop
+   * every still-running task at session end, REASON-bearing. Previously cleanup()
+   * killed each task SILENTLY — the emitted 'killed' event (consumed by the engine
+   * → `background_task_killed` analytics) carried no reason, so a developer tracing
+   * the lifecycle could not tell a session-end reap from an explicit user/model
+   * stop or an orphan-agent reap. We now pass an explicit `'session exiting'`
+   * reason, so the already-wired introspection surface records WHY each background
+   * process disappeared (mirroring Claude's "killing orphaned shell task …" line).
+   * The reason is scoped to shutdown — a plain task_kill still carries no reason.
+   */
   cleanup(): void {
     for (const entry of this.processes.values()) {
       if (entry.status === 'running') {
-        this.kill(entry.taskId);
+        this.kill(entry.taskId, { reason: 'session exiting' });
       }
     }
     this.removeAllListeners();
