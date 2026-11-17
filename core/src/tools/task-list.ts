@@ -147,9 +147,20 @@ function isTerminal(status: TaskStatus): boolean {
 
 export const taskListTool: ToolDefinition = {
   name: 'task_list',
+  // PARITY (Claude Code TaskListTool/prompt.ts:28-48): a tool description that
+  // teaches WHEN to call it plus closes the list→inspect/act loop by naming the
+  // follow-up tools the returned taskId feeds into. AMI's listing unlocks
+  // task_output (read/wait) and task_kill (stop); the model should learn that
+  // workflow from the wording alone rather than discovering it by trial.
   description:
     'List all background tasks and subagents with their status, PID, elapsed time, ' +
-    'token usage (agents), and command. Supports optional filtering by status or type.',
+    'token usage (agents), and command. Supports optional filtering by status or type.\n\n' +
+    'When to use: to check on long-running bash commands, subagents, or tasks started ' +
+    'with run_in_background — see what is still running, inspect progress, or find a ' +
+    'finished task to read or clean up.\n\n' +
+    'Each row starts with a taskId. Pass that taskId to task_output <taskId> to read a ' +
+    "task's output (or wait for it to finish), and to task_kill <taskId> to stop a " +
+    'running task.',
   inputSchema: {
     type: 'object',
     properties: {
