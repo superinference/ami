@@ -524,6 +524,10 @@ export class SessionMemoryExtractor {
         messages,
         [], // no tools
         abortController.signal,
+        // Background fact extraction: tag the request so a 529 overload bails
+        // immediately instead of amplifying a capacity cascade with retries the
+        // user never sees (shouldRetry529). All other statuses still retry.
+        { querySource: 'session_memory' },
       )) {
         if (chunk.type === 'content_delta' && chunk.text) {
           responseText += chunk.text;

@@ -2524,7 +2524,7 @@ export async function* streamChatCompletion(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; streamTextImpl?: typeof streamText },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; streamTextImpl?: typeof streamText; querySource?: QuerySource },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the AI SDK streamText entry point. Defaults to the real import so
   // production behavior is unchanged; tests inject a fake that drives the
@@ -2885,6 +2885,92 @@ function isOverloadedError(errorText: string): boolean {
   return /"type"\s*:\s*"overloaded_error"/i.test(errorText);
 }
 
+// ---------------------------------------------------------------------------
+// Query-source tagging + foreground/background overload (529) retry gating
+// ---------------------------------------------------------------------------
+
+/**
+ * Origin tag for a model request, mirroring Claude Code's `QuerySource`
+ * (constants/querySource.ts). It classifies WHO is blocking on the result so the
+ * retry layer can treat a capacity cascade (HTTP 529 overload) differently for a
+ * foreground turn — the user (or an in-flight turn) is waiting on it — versus a
+ * background/auxiliary call (summaries, memory extraction, titles, critic scoring)
+ * the user never sees fail. During an overload every background retry is pure
+ * gateway amplification (3-10× per attempt), so a KNOWN background source bails
+ * immediately on a 529 instead of hammering an already-overloaded endpoint.
+ *
+ * The union is open to AMI's own call sites; an untagged (`undefined`) source is
+ * treated conservatively as foreground (retried), so this is additive — existing
+ * callers that pass no source keep their current retry behavior.
+ */
+export type QuerySource =
+  // Foreground — a human or an in-flight turn is blocking on the result.
+  | 'repl_main_thread'   // interactive TUI turn
+  | 'detached'           // --prompt / autonomous run blocking on the turn
+  | 'sdk'                // programmatic SDK caller
+  | 'agent'              // a sub-agent turn the parent turn awaits
+  | 'compact'            // context compaction required to continue the turn
+  | 'side_question'      // forked side question the user explicitly asked for
+  | 'auto_mode'          // permission auto-mode classifier (must complete for correctness)
+  // Background — auxiliary work the user never directly waits on.
+  | 'session_memory'     // background fact extraction
+  | 'title'              // background conversation-title generation
+  | 'insights'           // background session-insights generation
+  | 'critic'             // background POMDP critic scoring
+  | 'skill_judge';       // background skill/stance selection
+
+/**
+ * Foreground query sources that retry on an overload (HTTP 529). Everything NOT in
+ * this set — and only a KNOWN source, never `undefined` — suppresses the 529 retry.
+ * New sources default to no-retry: add one here only when a human/turn is blocking
+ * on its result (parity: Claude Code's `FOREGROUND_529_RETRY_SOURCES`).
+ */
+export const FOREGROUND_529_RETRY_SOURCES: ReadonlySet<QuerySource> = new Set<QuerySource>([
+  'repl_main_thread',
+  'detached',
+  'sdk',
+  'agent',
+  'compact',
+  'side_question',
+  'auto_mode',
+]);
+
+/**
+ * Whether a 529 overload should be retried for the given query source. `undefined`
+ * (untagged call paths) → retry, matching Claude Code's `shouldRetry529`: only a
+ * known background source suppresses the overload retry. Does NOT affect 429 or any
+ * other status — those always retry per {@link RETRYABLE_STATUS_CODES}.
+ */
+export function shouldRetry529(querySource: QuerySource | undefined): boolean {
+  return querySource === undefined || FOREGROUND_529_RETRY_SOURCES.has(querySource);
+}
+
+/**
+ * Best-effort identification of the proxy/gateway in front of the API from a
+ * response's headers, so a retry/terminal diagnostic can name WHICH intermediary is
+ * failing — a Cloudflare 529 vs an Envoy 503 vs a bare origin error point at very
+ * different fixes. Returns a short label, or `undefined` when no known fingerprint
+ * matches. Header lookup is case-insensitive. Mirrors Claude Code's
+ * gateway-identification debug logging (services/api/logging.ts).
+ */
+export function identifyGateway(headers: Record<string, string> | undefined): string | undefined {
+  if (!headers) return undefined;
+  const h: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) h[k.toLowerCase()] = v;
+  const server = (h['server'] ?? '').toLowerCase();
+  if ('cf-ray' in h || server.includes('cloudflare')) return 'cloudflare';
+  if ('x-amz-cf-id' in h || 'x-amzn-requestid' in h || 'x-amzn-trace-id' in h || server.includes('awselb')) return 'aws';
+  if ('x-envoy-upstream-service-time' in h || server.includes('envoy')) return 'envoy';
+  if (server.includes('nginx')) return 'nginx';
+  if (server.includes('gunicorn')) return 'gunicorn';
+  const via = h['via'];
+  if (via) {
+    if (via.toLowerCase().includes('google')) return 'google-frontend';
+    return `via:${via.split(/[\s,]/).filter(Boolean)[0] ?? via}`;
+  }
+  return undefined;
+}
+
 // Context-overflow 400 auto-recovery (parity: Claude Code's withRetry.ts
 // parseMaxTokensContextOverflowError + maxTokensOverride). When the server reports
 // `input length and max_tokens exceed context limit: A + B > C`, recompute a smaller
@@ -3029,7 +3115,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the underlying single-attempt stream. Defaults to the real
   // streamChatCompletion so production behavior is unchanged; tests inject a
@@ -3157,9 +3243,22 @@ export async function* streamChatCompletionWithRetry(
         // sentinel) is a transient proxy failure — retry it with backoff, matching
         // Claude's non-streaming-fallback-on-empty-stream behavior.
         const emptyStream = statusCode === null && isEmptyStreamError(chunk.error);
+        // Overload (529) foreground/background gating: a 529 (parsed status OR a
+        // body-detected overloaded_error) is retried only for foreground sources.
+        // A KNOWN background source (summaries, memory extraction, titles, critic)
+        // bails immediately — during a capacity cascade each retry is pure gateway
+        // amplification and the user never sees it fail (parity: shouldRetry529).
+        // Untagged (undefined) sources stay conservative (retry), so existing
+        // callers are unaffected. The x-should-retry header still wins when set.
+        const is529Overload = statusCode === OVERLOADED_ERROR_STATUS || bodyOverloaded;
+        const overloadSuppressed = is529Overload && !shouldRetry529(options?.querySource);
         const retryAllowed = shouldRetryHdr === 'false'
           ? false
-          : (shouldRetryHdr === 'true' || bodyOverloaded || emptyStream || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
+          : shouldRetryHdr === 'true'
+          ? true
+          : overloadSuppressed
+          ? false
+          : (bodyOverloaded || emptyStream || (statusCode !== null && RETRYABLE_STATUS_CODES.has(statusCode)));
         if (retryAllowed && attempt < maxRetries) {
           if (maxTotalWait > 0 && (Date.now() - retryStart) >= maxTotalWait) {
             yield withRequestId(chunk);
@@ -3170,7 +3269,8 @@ export async function* streamChatCompletionWithRetry(
           // logForDebugging): record the status + sanitized reason tied to the attempt
           // number so a human reading the debug log can tell WHY it is retrying
           // (overloaded_error vs 429 vs ECONNRESET vs timeout), not just a number.
-          log('api', `API retry (attempt ${attempt + 1}/${maxRetries}): status=${statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 'none')} ${sanitizeErrorMessage(chunk.error ?? '')}`);
+          const gateway = identifyGateway(chunk.responseHeaders);
+          log('api', `API retry (attempt ${attempt + 1}/${maxRetries}): status=${statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 'none')} ${gateway ? `gateway=${gateway} ` : ''}${sanitizeErrorMessage(chunk.error ?? '')}`);
 
           let delayMs: number;
           const retryAfterSeconds = chunk.retryAfter;
