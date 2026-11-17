@@ -647,6 +647,42 @@ export interface StopHookSummary {
   preventContinuation: boolean;
   /** Reason surfaced when preventContinuation is set. */
   stopReason?: string;
+  /** Whether the chain produced any surfaced output worth showing the operator —
+   *  a blocking error, a hook error, or a prevented continuation (Claude Code's
+   *  `hasOutput` flag on createStopHookSummaryMessage). A silent, fast, non-blocking
+   *  chain has `hasOutput:false` and need not be rendered. */
+  hasOutput: boolean;
+}
+
+/**
+ * Render an operator-facing one-shot summary line for a completed Stop-hook chain
+ * (Claude Code's stop-hook run summary — stopHooks.ts createStopHookSummaryMessage):
+ * the hook count, the wall-clock total, each hook that was slow (over
+ * {@link HOOK_TIMING_DISPLAY_THRESHOLD_MS}) or errored with its duration, every
+ * error line, and a prevented-continuation note. NEVER fed to the model — this is a
+ * user/operator diagnostic so a broken or slow Stop hook is observable instead of
+ * silently swallowed. Returns an empty string when the summary has nothing worth
+ * surfacing ({@link StopHookSummary.hasOutput} false AND the chain ran under the
+ * display threshold). Pure; consumed by {@link HookManager.getLastStopHookSummaryMessage}.
+ */
+export function formatStopHookSummaryMessage(summary: StopHookSummary): string {
+  const slow = summary.totalDurationMs >= HOOK_TIMING_DISPLAY_THRESHOLD_MS;
+  if (!summary.hasOutput && !slow) return '';
+  const plural = summary.count === 1 ? '' : 's';
+  const lines: string[] = [`Ran ${summary.count} stop hook${plural} in ${summary.totalDurationMs}ms`];
+  summary.hookInfos.forEach((info, i) => {
+    // Only surface a per-hook row when it is interesting: it errored, or it was
+    // individually slow. A fast, clean hook adds no noise.
+    if (info.error) {
+      lines.push(`  • hook ${i + 1} (${info.durationMs}ms): ${info.error}`);
+    } else if (info.durationMs >= HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
+      lines.push(`  • hook ${i + 1}: ${info.durationMs}ms`);
+    }
+  });
+  if (summary.preventContinuation) {
+    lines.push(`Continuation prevented: ${formatHookStoppedContinuation(summary.stopReason)}`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -2109,6 +2145,29 @@ export interface HookLifecycleEvent {
 /** Bounded cap on buffered hook-lifecycle events (Claude Code's MAX_PENDING_EVENTS). */
 export const MAX_PENDING_HOOK_EVENTS = 100;
 
+/**
+ * Hook events whose lifecycle (`progress`/`resolved`) notifications are ALWAYS
+ * published to a {@link HookManager.registerHookEventHandler} subscriber,
+ * regardless of the all-events toggle (Claude Code's `ALWAYS_EMITTED_HOOK_EVENTS`
+ * in hookEvents.ts): the low-noise startup lifecycle events kept on for
+ * backwards-compatible observability even when the broader channel is quieted.
+ */
+export const ALWAYS_EMITTED_HOOK_EVENTS = ['sessionStart', 'setup'] as const;
+
+/**
+ * Whether a hook-lifecycle event for `event` should be published to subscribers,
+ * given whether all-events emission is enabled (Claude Code's hookEvents.ts
+ * `shouldEmit`): events on the {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist always
+ * pass; every other known {@link HOOK_EVENTS} event passes only when
+ * `allEnabled` is set; an unknown event name is never emitted. Pure; the gate used
+ * by {@link HookManager.publishHookLifecycle} together with
+ * {@link HookManager.setAllHookEventsEnabled}.
+ */
+export function shouldEmitHookLifecycle(event: string, allEnabled: boolean): boolean {
+  if ((ALWAYS_EMITTED_HOOK_EVENTS as readonly string[]).includes(event)) return true;
+  return allEnabled && (HOOK_EVENTS as readonly string[]).includes(event);
+}
+
 export interface HookConfigEntry {
   event: string;
   hook: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig;
@@ -2209,6 +2268,28 @@ export interface HookProgressEvent {
 }
 
 /**
+ * Canonical per-source-tier label set (Claude Code's three
+ * `hookSource*DisplayString` helpers in hooksSettings.ts), so the three UI forms —
+ * a full description WITH the backing file path, a Title-Case section HEADER, and a
+ * terse INLINE badge — can never drift from one another. One table; every form reads
+ * from it. `display` is the medium provenance form retained for
+ * {@link hookSourceDisplayString}. Paths use AMI's own `.ami`/`~/.ami` settings tree.
+ */
+const HOOK_SOURCE_LABELS: Record<string, { display: string; description: string; header: string; inline: string }> = {
+  project: { display: 'Project settings', description: 'Project settings (.ami/settings.json)', header: 'Project Settings', inline: 'Project' },
+  user: { display: 'User settings', description: 'User settings (~/.ami/settings.json)', header: 'User Settings', inline: 'User' },
+  config: { display: 'Project config', description: 'Project config (.ami/config.json)', header: 'Project Config', inline: 'Config' },
+  managed: { display: 'Managed policy', description: 'Managed policy (administrator-enforced settings)', header: 'Managed Policy', inline: 'Managed' },
+  plugin: { display: 'Plugin', description: 'Plugin hooks (installed plugin bundle)', header: 'Plugin Hooks', inline: 'Plugin' },
+};
+
+/** Append `(pluginName)` to a base label for a plugin-contributed hook so the user
+ *  sees WHICH plugin installed it (Claude Code's per-hook plugin attribution). */
+function withPluginSuffix(base: string, pluginName?: string): string {
+  return pluginName ? `${base} (${pluginName})` : base;
+}
+
+/**
  * Human-readable provenance string for a hook's source tier, with Claude Code's
  * plugin special-case: a plugin-contributed hook appends `(pluginName)` so the
  * user sees WHICH plugin installed it (SelectHookMode /
@@ -2216,17 +2297,38 @@ export interface HookProgressEvent {
  * {@link HookManager.getHookAuditView}.
  */
 export function hookSourceDisplayString(source: string, pluginName?: string): string {
-  const base = ((): string => {
-    switch (source) {
-      case 'project': return 'Project settings';
-      case 'user': return 'User settings';
-      case 'config': return 'Project config';
-      case 'managed': return 'Managed policy';
-      case 'plugin': return 'Plugin';
-      default: return source;
-    }
-  })();
-  return pluginName ? `${base} (${pluginName})` : base;
+  return withPluginSuffix(HOOK_SOURCE_LABELS[source]?.display ?? source, pluginName);
+}
+
+/**
+ * Full source description INCLUDING the backing file path (Claude Code's
+ * `hookSourceDescriptionDisplayString`): e.g. `Project settings (.ami/settings.json)`,
+ * with `(pluginName)` appended for plugin hooks. For a detail/inspector view that
+ * tells the user exactly which file a hook came from. Pure; used by
+ * {@link HookManager.getHookAuditView}.
+ */
+export function hookSourceDescription(source: string, pluginName?: string): string {
+  return withPluginSuffix(HOOK_SOURCE_LABELS[source]?.description ?? source, pluginName);
+}
+
+/**
+ * Title-Case section HEADER for grouping hooks by source (Claude Code's
+ * `hookSourceHeaderDisplayString`): e.g. `Project Settings`, `Plugin Hooks`. For a
+ * grouped list header. The plugin name is appended when present so distinct plugins
+ * get distinct headers. Pure; used by {@link HookManager.getHookAuditView}.
+ */
+export function hookSourceHeader(source: string, pluginName?: string): string {
+  return withPluginSuffix(HOOK_SOURCE_LABELS[source]?.header ?? source, pluginName);
+}
+
+/**
+ * Terse INLINE badge for a hook source (Claude Code's
+ * `hookSourceInlineDisplayString`): a single word — `Project`, `User`, `Config`,
+ * `Managed`, `Plugin` — for a compact inline column. The plugin name is NOT appended
+ * (the badge stays short). Pure; used by {@link HookManager.getHookAuditView}.
+ */
+export function hookSourceInline(source: string): string {
+  return HOOK_SOURCE_LABELS[source]?.inline ?? source;
 }
 
 /** A single hook's full audit row (Claude Code's ViewHookMode): identity, matcher,
@@ -2239,6 +2341,13 @@ export interface HookAuditRow {
   source: string;
   /** Human-readable source description incl. `(pluginName)` for plugin hooks. */
   sourceLabel: string;
+  /** Full source description WITH the backing file path (e.g. `Project settings
+   *  (.ami/settings.json)`) — for a detail/inspector view. */
+  sourceDescription: string;
+  /** Title-Case section header (e.g. `Project Settings`) — for grouped list headers. */
+  sourceHeader: string;
+  /** Terse single-word badge (e.g. `Project`) — for a compact inline column. */
+  sourceInline: string;
   pluginName?: string;
   /** Per-type content label ('Command' | 'Prompt' | 'URL'). */
   contentLabel: string;
@@ -2750,6 +2859,14 @@ export class HookManager extends EventEmitter {
   /** The currently-attached hook-lifecycle subscriber, or null (buffer mode). */
   private _hookEventHandler: ((e: HookLifecycleEvent) => void) | null = null;
 
+  /** Whether lifecycle events for ALL hook events are published, vs only the
+   *  {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (Claude Code's SDK
+   *  `includeHookEvents` / remote-mode toggle). AMI defaults this ON — its richer
+   *  all-events observability is an intentional superset of Claude's default-off
+   *  gate; {@link setAllHookEventsEnabled}(false) opts DOWN to Claude's quiet
+   *  allowlist-only behaviour for low-noise consumers. */
+  private _allHookEventsEnabled = true;
+
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
    */
@@ -2772,6 +2889,10 @@ export class HookManager extends EventEmitter {
    * none is attached. Parity with Claude Code's hookEvents.ts `emit`.
    */
   private publishHookLifecycle(e: HookLifecycleEvent): void {
+    // Honour the all-events gate (Claude Code's hookEvents.ts `shouldEmit`): when a
+    // consumer has quieted the channel via setAllHookEventsEnabled(false), only the
+    // ALWAYS_EMITTED_HOOK_EVENTS allowlist (sessionStart/setup) still flows.
+    if (!shouldEmitHookLifecycle(e.event, this._allHookEventsEnabled)) return;
     if (this._hookEventHandler) { this._hookEventHandler(e); return; }
     this._pendingHookEvents.push(e);
     if (this._pendingHookEvents.length > MAX_PENDING_HOOK_EVENTS) this._pendingHookEvents.shift();
@@ -2794,6 +2915,20 @@ export class HookManager extends EventEmitter {
   /** Number of hook-lifecycle events currently buffered awaiting a subscriber
    *  (introspection surface). */
   getPendingHookEventCount(): number { return this._pendingHookEvents.length; }
+
+  /**
+   * Toggle whether lifecycle events for ALL hook events are published, or only the
+   * {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (Claude Code's `setAllHookEventsEnabled`
+   * driven by the SDK `includeHookEvents` option / remote mode). Passing `false`
+   * quiets the channel down to Claude's low-noise default (sessionStart/setup only);
+   * `true` (AMI's default) restores full all-events observability. Takes effect for
+   * subsequent lifecycle emissions; already-buffered events are unaffected.
+   */
+  setAllHookEventsEnabled(enabled: boolean): void { this._allHookEventsEnabled = enabled; }
+
+  /** Whether all hook-event lifecycle notifications are currently published (vs the
+   *  {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist only). Introspection surface. */
+  isAllHookEventsEnabled(): boolean { return this._allHookEventsEnabled; }
 
   setEngineFactory(factory: EngineFactory): void { this._engineFactory = factory; }
   setProviderConfig(config: any): void { this._providerConfig = config; }
@@ -3550,6 +3685,17 @@ export class HookManager extends EventEmitter {
     return s ? { ...s, hookInfos: s.hookInfos.map(h => ({ ...h })), hookErrors: [...s.hookErrors] } : null;
   }
 
+  /** Operator-facing rendered summary of the most recent Stop-hook chain (count,
+   *  wall-clock, slow/errored hooks, prevented continuation), or null when no Stop
+   *  hooks have run or the last chain had nothing worth surfacing. Canonical consumer
+   *  of {@link formatStopHookSummaryMessage}; introspection / diagnostic surface —
+   *  never fed to the model. */
+  getLastStopHookSummaryMessage(): string | null {
+    if (!this._lastStopHookSummary) return null;
+    const msg = formatStopHookSummaryMessage(this._lastStopHookSummary);
+    return msg.length > 0 ? msg : null;
+  }
+
   /**
    * Register a set of already-parsed {@link HookConfigEntry}s scoped to THIS engine
    * instance (parity with Claude Code's registerFrontmatterHooks, which installs a
@@ -4269,6 +4415,10 @@ export class HookManager extends EventEmitter {
           hookErrors,
           preventContinuation,
           stopReason,
+          // Output worth surfacing to the operator: a blocking error fed back into
+          // the turn, a hook that errored, or a prevented continuation (Claude Code's
+          // hasOutput flag). A silent, fast, non-blocking chain has nothing to show.
+          hasOutput: blockingErrors.length > 0 || hookErrors.length > 0 || preventContinuation,
         };
         this._lastStopHookSummary = summary;
         this.emit('stopHookSummary', summary);
@@ -4835,6 +4985,9 @@ export class HookManager extends EventEmitter {
       ...(d.matcher ? { matcher: d.matcher } : {}),
       source: d.source,
       sourceLabel: hookSourceDisplayString(d.source, d.pluginName),
+      sourceDescription: hookSourceDescription(d.source, d.pluginName),
+      sourceHeader: hookSourceHeader(d.source, d.pluginName),
+      sourceInline: hookSourceInline(d.source),
       ...(d.pluginName ? { pluginName: d.pluginName } : {}),
       contentLabel: hookContentLabel(d.type),
       content: d.content,
