@@ -68,6 +68,13 @@ export const taskKillTool: ToolDefinition = {
   aliases: ['KillShell'],
   description:
     'Stop a running background task by its ID. Kills the process and its children. ' +
+    // PARITY (additive): explicit when-to-use + parameter/result contract guidance,
+    // mirroring Claude Code's TaskStop prompt.ts so the model picks this tool at the
+    // right moment. States when to reach for it, the single required parameter, and
+    // that it returns a success or failure status.
+    'Use this tool when you need to terminate a long-running background task. ' +
+    'Takes a task_id parameter identifying the task to stop and returns a success or ' +
+    'failure status. ' +
     'Idempotent and concurrency-safe: stopping an already-finished task (or one that ' +
     'exits during the stop) is reported as success, not an error. Pass cleanup:true to ' +
     'also reap the task (remove it from the task list and delete its output file). ' +
