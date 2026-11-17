@@ -5,6 +5,7 @@ import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powers
 import { redactCredentials } from '../credential-guard';
 import { normalizeCaseForComparison } from '../utils/path';
 import { CODE_LOADING_VARIABLES as PINNED_CODE_LOADING_VARIABLES } from '../env-protection';
+import { isEnvTruthy } from '../privacy-level';
 
 export interface SecurityCheckResult {
   safe: boolean;
@@ -78,6 +79,7 @@ const CHECK_IDS = {
   VALIDATOR_EXCEPTION: 73,
   TILDE_EXPANSION_VARIANT: 74,
   DANGEROUS_REDIRECT_TARGET: 75,
+  ASSIGNMENT_TILDE_EXPANSION: 76,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -679,8 +681,9 @@ function validateBackslashEscapedOperators(command: string): SecurityCheckResult
  *     first `<<` can desync the simplified scanner, so we bail (leave the command fully visible).
  * Exported for unit coverage.
  */
-export function stripHeredocBodies(command: string): string {
+export function stripHeredocBodies(command: string, options?: { quotedOnly?: boolean }): string {
   if (!command.includes('<<')) return command;
+  const quotedOnly = options?.quotedOnly === true;
 
   // Fail-SAFE bail-outs (match reference): constructs our simplified quote/comment scanner cannot
   // track reliably. Leaving the command unchanged keeps ALL of it visible to the structural guards.
@@ -746,6 +749,16 @@ export function stripHeredocBodies(command: string): string {
     // delimiter differs from bash's and we must not strip.
     if (quoteChar && command[opEnd - 1] !== quoteChar) continue;
     if (opEnd < command.length && !/^[ \t\n|&;()<>]$/.test(command[opEnd])) continue;
+
+    // In `quotedOnly` mode, strip ONLY heredocs whose delimiter is quoted
+    // (`<<'EOF'` / `<<"EOF"`) or backslash-escaped (`<<\EOF`): bash treats their
+    // body as LITERAL text with no $()/${}/` ` expansion, so it is inert data a
+    // substitution/expansion validator must not scan. An UNQUOTED `<<EOF` body
+    // IS expanded by bash, so it is deliberately left visible. (Default mode —
+    // used by validateNewlines/validateRedirections — strips every heredoc body,
+    // since those guards treat all heredoc bodies as stdin data.)
+    const isQuotedDelim = quoteChar !== undefined || /\\\w+$/.test(fullMatch);
+    if (quotedOnly && !isQuotedDelim) continue;
 
     // Body starts at the first UNQUOTED newline after the operator (a quoted newline extends the
     // logical opening line). Track quote state locally from a known-clean start (opEnd).
@@ -1395,6 +1408,20 @@ function validateCommandSubstitution(
     const reExtracted = extractQuotedContent(stripped);
     content = reExtracted.fullyUnquoted;
     dq = reExtracted.withDoubleQuotes;
+  } else if (command.includes('<<')) {
+    // No `$(…heredoc…)` substitution wrapper, but a TOP-LEVEL quoted heredoc
+    // (`<<'EOF'` / `<<"EOF"` / `<<\EOF`) has a LITERAL body: bash performs NO
+    // command substitution or parameter expansion inside it, so a `$(…)`/`${…}`
+    // there is inert text, not a live substitution. Strip ONLY quoted heredoc
+    // bodies (unquoted `<<EOF` bodies DO expand and stay visible) and re-extract,
+    // so a benign `cat <<'EOF'\n$(whoami)\nEOF` is not a false positive while an
+    // unquoted `cat <<EOF\n$(whoami)\nEOF` is still caught.
+    const qStripped = stripHeredocBodies(command, { quotedOnly: true });
+    if (qStripped !== command) {
+      const re = extractQuotedContent(qStripped);
+      content = re.fullyUnquoted;
+      dq = re.withDoubleQuotes;
+    }
   }
 
   const patterns: [RegExp, string][] = [
@@ -1714,6 +1741,20 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
 }
 
 function evaluateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform; cwd?: string }): SecurityCheckResult {
+  // Opt-out escape hatch (parity: Claude Code CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK,
+  // bashPermissions.ts L1217-1220): a truthy SUPERINFERENCE_DISABLE_COMMAND_INJECTION_CHECK
+  // (or the cross-framework CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK alias) turns the
+  // whole injection/misparsing safety gate OFF (fail-OPEN) for operators who need it.
+  // Scope is deliberately this validator battery only — the SEPARATE destructive-command
+  // detectors (nuclear rm, credential-path / session-transcript writes, exfiltration, …)
+  // live outside validateBashSecurity and are unaffected. Surfaced in `ami --introspect`.
+  if (
+    isEnvTruthy(process.env.SUPERINFERENCE_DISABLE_COMMAND_INJECTION_CHECK) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK)
+  ) {
+    return PASS;
+  }
+
   // Measure the UTF-8 BYTE length, not `.length` (UTF-16 code units): a BMP
   // character (CJK etc.) is one code unit but up to three UTF-8 bytes, so
   // `.length` under-reports by up to 3× and would let a long multibyte command
@@ -1782,6 +1823,15 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
     const tildeVariant = detectTildeExpansionVariant(command);
     if (tildeVariant.blocked) {
       return fail(CHECK_IDS.TILDE_EXPANSION_VARIANT, tildeVariant.reason!);
+    }
+  }
+
+  // Assignment-RHS tilde expansion — `VAR=~/x` / `PATH=~/bin:~/tools` resolves to
+  // an absolute home path a later `cd $VAR` hides from static validation (TOCTOU).
+  {
+    const assignTilde = detectAssignmentTildeExpansion(command);
+    if (assignTilde.blocked) {
+      return fail(CHECK_IDS.ASSIGNMENT_TILDE_EXPANSION, assignTilde.reason!);
     }
   }
 
@@ -4930,6 +4980,76 @@ export function detectTildeExpansionVariant(command: string): { blocked: boolean
     reason:
       'Tilde-expansion variant (~user, ~+, ~-, ~N) in a path requires manual approval — the shell expands it to a different directory than static validation sees (TOCTOU)',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Assignment-RHS tilde-expansion guard — parity with Claude Code's
+// walkVariableAssignment tilde rejection (utils/bash/ast.ts L1907-1920).
+//
+// bash tilde-expands inside an assignment VALUE when the `~` is UNQUOTED and sits
+// at the start of the value or immediately after a `:` (the PATH-style list
+// separator) — `VAR=~/x` → `VAR=/home/user/x`, `VAR=~root/x` → that user's home,
+// `PATH=~/bin:~/tools` → both expand. A later use of the variable
+// (`cd $VAR`, `cat $VAR`) then resolves to an absolute path the static argv never
+// showed: variable-value tracking is out of scope for a stateless validator, so a
+// tilde smuggled through an assignment is UNANALYZABLE and must go to manual
+// approval rather than be silently auto-run. A QUOTED tilde (`VAR='~/x'`,
+// `VAR="~/x"`) is literal to bash (no expansion) and is NOT flagged.
+// ---------------------------------------------------------------------------
+
+/** True iff an UNQUOTED `~` in `value` sits at a bash tilde-expansion position
+ *  (value start, or immediately after an unquoted `:`). */
+function tildeExpandsInAssignmentValue(value: string): boolean {
+  let inS = false, inD = false, esc = false;
+  let prev = '';
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (esc) { esc = false; prev = c; continue; }
+    if (c === '\\' && !inS) { esc = true; prev = c; continue; }
+    if (c === "'" && !inD) { inS = !inS; prev = c; continue; }
+    if (c === '"' && !inS) { inD = !inD; prev = c; continue; }
+    if (c === '~' && !inS && !inD && (i === 0 || prev === ':')) return true;
+    prev = c;
+  }
+  return false;
+}
+
+const ASSIGNMENT_DECLARING_BUILTIN_RE = /^(?:export|declare|typeset|local|readonly)\s+/;
+
+export function detectAssignmentTildeExpansion(command: string): { blocked: boolean; reason?: string } {
+  if (!command.includes('~')) return { blocked: false };
+  for (const seg of splitShellSegments(command)) {
+    let rest = seg.replace(/^\s+/, '');
+    const lead = ASSIGNMENT_DECLARING_BUILTIN_RE.exec(rest);
+    if (lead) rest = rest.slice(lead[0].length);
+    // Walk the LEADING run of `NAME=VALUE` assignment words only (bash applies a
+    // bare assignment prefix to the command's environment); stop at the first
+    // non-assignment word so a tilde in a later ordinary argument is not misread.
+    for (;;) {
+      const m = /^([A-Za-z_]\w*)=/.exec(rest);
+      if (!m) break;
+      let i = m[0].length;
+      let inS = false, inD = false, esc = false;
+      let value = '';
+      for (; i < rest.length; i++) {
+        const c = rest[i];
+        if (esc) { value += c; esc = false; continue; }
+        if (c === '\\' && !inS) { esc = true; value += c; continue; }
+        if (c === "'" && !inD) { inS = !inS; value += c; continue; }
+        if (c === '"' && !inS) { inD = !inD; value += c; continue; }
+        if (!inS && !inD && /\s/.test(c)) break; // value ends at unquoted whitespace
+        value += c;
+      }
+      if (tildeExpandsInAssignmentValue(value)) {
+        return {
+          blocked: true,
+          reason: `assignment '${m[1]}=' tilde-expands in its value — bash resolves ~ to an absolute home path that a later use (e.g. cd $${m[1]}) hides from static validation (TOCTOU); requires manual approval`,
+        };
+      }
+      rest = rest.slice(i).replace(/^\s+/, '');
+    }
+  }
+  return { blocked: false };
 }
 
 // ---------------------------------------------------------------------------
