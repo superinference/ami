@@ -1515,6 +1515,26 @@ export function powershellCommandIsSafe(
     }
   }
 
+  // Start-Process -Verb RunAs — structural defense-in-depth. The textual
+  // detectStartProcessElevation (reached via the delegation below) matches the
+  // elevation verb with a regex, but it tokenizes on whitespace, so a colon-bound
+  // value padded/obscured by quoting (`-Verb:" RunAs "`) splits across tokens and
+  // slips past it. When a real AST is available, the parser hands us the bound
+  // value as the parameter's structural child, so we normalize that child text
+  // (strip quotes/backticks/whitespace) and ask when it resolves to `runas`.
+  // Mirrors Claude Code's checkStartProcess children[] layer (PR #23554).
+  for (const cmd of allCommands) {
+    const lower = cmd.name.toLowerCase();
+    if (lower !== 'start-process' && lower !== 'saps' && lower !== 'start') {
+      continue;
+    }
+    if (startProcessColonVerbRunAs(cmd)) {
+      return askResult(
+        'PowerShell Start-Process -Verb RunAs requests elevated (administrator) privileges',
+      );
+    }
+  }
+
   // AST-only structural signals from deriveSecurityFlags.
   if (flags.hasSubExpressions) {
     return askResult('Command contains subexpressions $()');
@@ -1580,6 +1600,39 @@ export function powershellCommandIsSafe(
  * the positional-binding scan in Claude's checkDangerousFilePathExecution /
  * checkForEachMemberName.
  */
+/**
+ * True if a command binds `-Verb RunAs` through a colon-bound parameter whose
+ * value, after stripping quotes/backticks/whitespace, normalizes to `runas`
+ * (`-Verb:RunAs`, `-Verb:'RunAs'`, `-Verb:" RunAs "`, `-V`+backtick+`erb:…`).
+ * Reads the parser's structural `children[]` (the CommandParameterAst.Argument of
+ * each colon-bound parameter) so an elevation verb obscured by quoting/padding
+ * that the whitespace-tokenizing textual regex cannot anticipate is still
+ * surfaced. Fail-open when `children` is unavailable (the textual regex layer
+ * still runs). Mirrors Claude Code's checkStartProcess children[] layer.
+ */
+function startProcessColonVerbRunAs(cmd: ParsedCommandElement): boolean {
+  if (cmd.children === undefined) {
+    return false;
+  }
+  for (let i = 0; i < cmd.args.length; i++) {
+    // Strip backticks before matching the parameter name (`-V`+backtick+`erb:`).
+    const argName = cmd.args[i]!.replace(/`/g, '');
+    if (!/^[-–—―/]v[a-z]*:/i.test(argName)) {
+      continue;
+    }
+    const kids = cmd.children[i];
+    if (kids === undefined) {
+      continue;
+    }
+    for (const child of kids) {
+      if (child.text.replace(/['"`\s]/g, '').toLowerCase() === 'runas') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function hasPositionalStringArgAst(cmd: ParsedCommandElement): boolean {
   for (let i = 0; i < cmd.args.length; i++) {
     const arg = cmd.args[i];
