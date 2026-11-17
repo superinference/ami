@@ -1334,8 +1334,10 @@ describe('taskTool — subagent_type', () => {
     const toolNames = capturedConfig.tools.map((t: any) => t.name);
     assert.ok(!toolNames.includes('bash'));
     assert.ok(!toolNames.includes('file_write'));
-    // task is NOT in disallowedTools, so at depth 0 it's included
-    assert.ok(toolNames.includes('task'), 'task allowed when not in disallowedTools');
+    // U011: a non-built-in (custom) agent additionally loses CUSTOM_AGENT_DISALLOWED_TOOLS
+    // (parity: Claude's source-trust tool gate), which includes `task` — so an untrusted
+    // custom agent cannot spawn nested subagents even when task isn't in its own disallowedTools.
+    assert.ok(!toolNames.includes('task'), 'task denied for a non-built-in custom agent via CUSTOM_AGENT_DISALLOWED_TOOLS');
   });
 
   it('uses agent model when specified', async () => {

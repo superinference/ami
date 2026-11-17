@@ -651,8 +651,10 @@ export function formatCurrency(amount: number): string {
     assert.ok(!result.isError);
     if (result.output.includes('calculateTotal')) {
       assert.ok(result.output.includes('models.ts'));
-      // Line number should be present (e.g., ":1")
-      assert.match(result.output, /:\d+/);
+      // Line number should be present. U213 adopted Claude's grouped
+      // formatWorkspaceSymbolResult layout (`path:` then `  name (type) - Line N`),
+      // so the line number now renders as "Line N" rather than an inline ":N".
+      assert.match(result.output, /Line \d+/);
     }
   });
 

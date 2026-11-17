@@ -14,7 +14,7 @@ describe('validateBashSecurity fail-closed wrapper', () => {
     assert.doesNotThrow(() => validateBashSecurity(undefined as unknown as string));
     const result = validateBashSecurity(undefined as unknown as string);
     assert.equal(result.safe, false);
-    assert.equal(result.checkId, 72); // CHECK_IDS.VALIDATOR_EXCEPTION
+    assert.equal(result.checkId, 73); // CHECK_IDS.VALIDATOR_EXCEPTION (72 taken by DANGEROUS_DECLARE)
     assert.match(result.message, /fail-closed/);
   });
 
