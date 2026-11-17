@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
@@ -660,7 +660,16 @@ export const skillTool: ToolDefinition = {
       permissionMode: skill?.permissionMode ?? 'ask',
       // Forward the parent session's permission rules so inherited deny rules
       // still apply inside the forked skill (least-privilege / policy honored).
-      permissionRules: context._parentPermissionRules,
+      // FUNCTIONAL (parity): a skill's PATH/ARGUMENT-scoped allowlist entry
+      // (`Edit(~/.claude/settings.json)`, parity with Claude's statusline-spawned
+      // subagent) becomes an additive ALLOW rule prepended ahead of the inherited
+      // rules — scoping the forked subagent to exactly the authored operations
+      // while parent DENY rules still unconditionally win. Name-only entries are
+      // handled by filterToolsForSkill above; see scopedToolAllowRules.
+      permissionRules: [
+        ...scopedToolAllowRules(skill?.allowedTools, normalizeToolName),
+        ...(context._parentPermissionRules ?? []),
+      ],
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
     };

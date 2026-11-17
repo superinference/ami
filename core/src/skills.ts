@@ -1578,6 +1578,66 @@ function escapeForRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// ---------------------------------------------------------------------------
+// Path/argument-scoped tool allowlist → permission ALLOW rules — the
+// least-privilege half AMI's name-only skill/agent tool filter was missing
+// (parity with Claude Code's path-scoped allowlists, e.g. a /statusline-spawned
+// subagent bound to `allowedTools: ['Read(~/**)', 'Edit(~/.claude/settings.json)']`
+// so it can only read the home tree and edit that single file). `filterToolsForSkill`
+// (core/core/src/tools/skill.ts) already enforces WHICH tools a forked skill gets by
+// NAME; this derives the WHICH-ARGUMENTS half as additive permission rules the forked
+// sub-engine pre-grants. Pure core building block; the skill tool wires it into the
+// spawned sub-engine's `permissionRules`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a skill/command `allowedTools` list into the ARGUMENT-scoped permission
+ * ALLOW rules it implies (parity with Claude Code's path-scoped tool allowlists).
+ *
+ * For every entry of the form `Tool(scope)` whose scope is a REAL restriction, an
+ * `{ tool, pattern, action: 'allow' }` rule is produced so the forked subagent can
+ * pre-grant exactly that scoped operation (e.g. `Edit(~/.claude/settings.json)` →
+ * allow the file-edit tool only for that path). Entries that are NOT an argument
+ * scope yield no rule — the name-only filter alone governs them:
+ * - a bare name (`Edit`, no parens),
+ * - a category token (`read-only`, `edit`, … — these never carry parens),
+ * - an empty or bare-`*` scope (`Edit()`, `Read(*)`) — unrestricted,
+ * - a non-string or malformed (unterminated-paren) entry.
+ *
+ * `normalize` maps the authored tool name to the canonical runtime tool name — the
+ * caller passes the shared `normalizeToolName` alias map so `Read`/`Edit` resolve to
+ * `file_read`/`file_edit`; it defaults to identity to keep this a dependency-free
+ * core helper. Results are de-duplicated by tool+scope and preserve input order.
+ *
+ * These are ADDITIVE allow rules only: a matching DENY unconditionally wins in the
+ * permission engine, so prepending them ahead of inherited parent rules safely scopes
+ * the subagent UP to the author's allowlist without ever relaxing a parent deny.
+ */
+export function scopedToolAllowRules(
+  allowedTools: readonly string[] | undefined,
+  normalize: (name: string) => string = (n) => n,
+): Array<{ tool: string; pattern: string; action: 'allow' }> {
+  if (!allowedTools || allowedTools.length === 0) return [];
+  const rules: Array<{ tool: string; pattern: string; action: 'allow' }> = [];
+  const seen = new Set<string>();
+  for (const raw of allowedTools) {
+    if (typeof raw !== 'string') continue;
+    const entry = raw.trim();
+    const open = entry.indexOf('(');
+    if (open <= 0 || !entry.endsWith(')')) continue; // no scope (or no tool name) → name filter governs
+    const base = entry.slice(0, open).trim();
+    if (base.length === 0) continue;
+    const scope = entry.slice(open + 1, -1).trim();
+    if (scope.length === 0 || scope === '*') continue; // unrestricted scope → no rule
+    const tool = normalize(base);
+    const key = `${tool}\u0000${scope}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rules.push({ tool, pattern: scope, action: 'allow' });
+  }
+  return rules;
+}
+
 /**
  * True when `content` references the argument placeholder `name` in EITHER the
  * braced `${name}` or the bare `$name` form (the same two forms
