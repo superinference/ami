@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as nodePath from 'path';
 import { webFetchTool, summaryWindow, getCached, setCache } from '../src/tools/web-fetch';
+import { formatSize } from '../src/tools/spill-output';
 import {
   isPrivateIP,
   isBlockedRedirectTarget,
@@ -455,7 +456,8 @@ describe('web_fetch — response size bounding', () => {
       ctx({ _allowLocalhostForTesting: true, _webFetchHttpGet: mockGet({ body: 'partial body', contentType: 'text/plain', truncated: true }) }),
     );
     assert.equal(r.isError, undefined);
-    assert.ok(r.output.includes(`Download stopped at ${MAX_HTTP_BODY_BYTES} bytes`), r.output);
+    // FUNCTIONAL CHANGE (U069/w74): the truncation size is human-readable (formatSize).
+    assert.ok(r.output.includes(`Download stopped at ${formatSize(MAX_HTTP_BODY_BYTES)}`), r.output);
   });
 
   it('honours an offset into the page and reports no-content past the end', async () => {

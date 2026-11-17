@@ -76,13 +76,18 @@ describe('toolDefinitionsToOpenAI', () => {
     const result = toolDefinitionsToOpenAI(tools);
     assert.equal(result.length, 2);
 
+    // FUNCTIONAL CHANGE (U069/w74, prompt-cache stability): built-in tools are
+    // emitted in a deterministic alphabetical order (partitionAndSortTools), so
+    // `bash` now precedes `file_read` regardless of input order. This keeps the
+    // advertised tool-schema cache prefix stable across turns/runs.
     assert.equal(result[0].type, 'function');
-    assert.equal(result[0].function.name, 'file_read');
-    assert.equal(result[0].function.description, 'Read a file');
+    assert.equal(result[0].function.name, 'bash');
+    assert.equal(result[0].function.description, 'Run a command');
     assert.deepEqual(result[0].function.parameters.type, 'object');
     assert.ok(result[0].function.parameters.properties.value);
 
-    assert.equal(result[1].function.name, 'bash');
+    assert.equal(result[1].function.name, 'file_read');
+    assert.equal(result[1].function.description, 'Read a file');
   });
 
   it('returns empty array for empty tools', () => {

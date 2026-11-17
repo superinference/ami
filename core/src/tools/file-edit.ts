@@ -4,7 +4,8 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
@@ -367,8 +368,11 @@ export function commitWrite(
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
     const symlinkErr = verifyWriteTarget(resolved, context.cwd);
     if (symlinkErr) return symlinkErr;
-    let enc: ReturnType<typeof detectEncoding> = 'utf-8';
-    try { if (fs.existsSync(resolved)) enc = detectEncoding(fs.readFileSync(resolved).subarray(0, 4)); } catch { /* default utf-8 */ }
+    // Recover the existing file's BOM/encoding by probing ONLY its leading bytes
+    // (detectFileEncoding opens the fd and reads 4 bytes) instead of slurping the
+    // whole file just to inspect 4 — the old `readFileSync(resolved).subarray(0,4)`
+    // re-read a multi-megabyte file on every write. Absent/unreadable → utf-8.
+    const enc: FileEncoding = detectFileEncoding(resolved);
     writeFileAtomicSync(resolved, encodeText(rawToWrite, enc), mode !== undefined ? { mode } : undefined);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

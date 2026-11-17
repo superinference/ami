@@ -526,6 +526,35 @@ export function detectEncoding(buf: Buffer): FileEncoding {
   return 'utf-8';
 }
 
+/**
+ * Detect an EXISTING file's encoding by reading ONLY its leading BOM bytes via a
+ * bounded `readSync`, instead of slurping the whole file just to inspect 4 bytes.
+ * For a write-back that re-encodes content (file_edit's {@link writeFileAtomicSync}
+ * path), re-reading a multi-megabyte file to recover its BOM is pure waste — this
+ * opens the fd, reads at most {@link BOM_PROBE_BYTES} bytes, and closes it.
+ * Returns the default `'utf-8'` for an empty/short/absent/unreadable file so the
+ * caller behaves exactly as a BOM-less UTF-8 file. Mirrors Claude Code's
+ * `readFileSyncWithMetadata` leading-4096-byte encoding probe (scaled to the 4
+ * BOM bytes we actually need). Single source for cheap on-disk encoding probing.
+ */
+export const BOM_PROBE_BYTES = 4;
+
+export function detectFileEncoding(resolvedPath: string): FileEncoding {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(resolvedPath, 'r');
+    const buf = Buffer.alloc(BOM_PROBE_BYTES);
+    const bytesRead = fs.readSync(fd, buf, 0, BOM_PROBE_BYTES, 0);
+    return detectEncoding(buf.subarray(0, bytesRead));
+  } catch {
+    return 'utf-8';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* fd already gone */ }
+    }
+  }
+}
+
 /** Decode a buffer to text, stripping any BOM and honoring UTF-16 byte order. */
 export function decodeBuffer(buf: Buffer): { text: string; encoding: FileEncoding } {
   const encoding = detectEncoding(buf);
@@ -784,6 +813,21 @@ const SECRET_RULES: SecretRule[] = [
   { id: 'postman-api-token', source: '(?:^|[^a-zA-Z0-9])(PMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
   // Grafana Cloud API token — `glc_` + base64-ish body.
   { id: 'grafana-cloud-api-token', source: '(?:^|[^a-zA-Z0-9])(glc_[A-Za-z0-9+/]{32,400}={0,3})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Grafana API key — legacy `eyJrIjoi…` base64 blob. A single-segment base64
+  // run (no `.eyJ`), so it never collides with the two-segment `jwt` rule.
+  { id: 'grafana-api-key', source: '(?:^|[^a-zA-Z0-9])(eyJrIjoi[A-Za-z0-9+/]{70,400}={0,3})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Grafana service-account token — `glsa_<32>_<8 hex>`.
+  { id: 'grafana-service-account-token', source: '(?:^|[^a-zA-Z0-9])(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Sentry user auth token — `sntryu_` + 64 hex.
+  { id: 'sentry-user-token', source: '(?:^|[^a-zA-Z0-9])(sntryu_[a-f0-9]{64})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Sentry org auth token — `sntrys_` + an embedded base64 JSON header/region claim.
+  { id: 'sentry-org-token', source: '(?:^|[^a-zA-Z0-9])(sntrys_eyJpYXQiO[a-zA-Z0-9+/]{10,200}(?:LCJyZWdpb25fdXJs|InJlZ2lvbl91cmwi|cmVnaW9uX3VybCI6)[a-zA-Z0-9+/]{10,200}={0,2}_[a-zA-Z0-9+/]{43})' },
+  // Slack app-level token — `xapp-<ver>-<id>-<ts>-<secret>` (case-insensitive).
+  { id: 'slack-app-token', source: '(?:^|[^a-zA-Z0-9])(xapp-\\d-[A-Za-z0-9]+-\\d+-[a-z0-9]+)', flags: 'i' },
+  // Shopify access token — `shpat_` + 32 hex.
+  { id: 'shopify-access-token', source: '(?:^|[^a-zA-Z0-9])(shpat_[a-fA-F0-9]{32})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Shopify shared secret — `shpss_` + 32 hex.
+  { id: 'shopify-shared-secret', source: '(?:^|[^a-zA-Z0-9])(shpss_[a-fA-F0-9]{32})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
   // Quoted credential assignment: password/secret/token/api_key : = "value".
   { id: 'credential-assignment', source: '(?:password|secret|token|api_key)\\s*[:=]\\s*[\'"]([^\'"]{8,})[\'"]', flags: 'i' },
 ];
@@ -1013,6 +1057,41 @@ export function deduplicateToolCalls(
   }
 
   return { deduplicated, removedCount: removedIds.length, removedIds };
+}
+
+/**
+ * True when a tool name is an MCP tool — the canonical `mcp__<server>__<tool>`
+ * prefix every MCP-backed tool is registered under. Single source for the
+ * built-in-vs-MCP partition so no call site re-derives the prefix test.
+ */
+export function isMcpToolName(name: string): boolean {
+  return name.startsWith('mcp__');
+}
+
+/**
+ * Deterministically order a tool list for PROMPT-CACHE STABILITY: partition into
+ * built-ins vs MCP tools (by {@link isMcpToolName}), sort EACH group
+ * alphabetically by name, and return `builtIn.concat(mcp)`. Built-ins stay a
+ * contiguous, stably-ordered prefix and MCP tools follow in a stable order, so
+ * the provider's tool-schema cache prefix does not shift between turns/runs as
+ * MCP servers connect on demand. De-duplicates by name (first occurrence wins),
+ * mirroring Claude Code's `mergeAndFilterTools` partition-sort. Pure — returns a
+ * new array and never mutates the input. Generic over any `{ name }` shape so it
+ * can order either `ToolDefinition`s or already-serialized tool schemas.
+ */
+export function partitionAndSortTools<T extends { name: string }>(tools: readonly T[]): T[] {
+  const seen = new Set<string>();
+  const builtIn: T[] = [];
+  const mcp: T[] = [];
+  for (const tool of tools) {
+    if (seen.has(tool.name)) continue;
+    seen.add(tool.name);
+    (isMcpToolName(tool.name) ? mcp : builtIn).push(tool);
+  }
+  const byName = (a: T, b: T): number => a.name.localeCompare(b.name);
+  builtIn.sort(byName);
+  mcp.sort(byName);
+  return builtIn.concat(mcp);
 }
 
 /**

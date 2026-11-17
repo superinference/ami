@@ -211,7 +211,8 @@ describe('processMcpContent binary resource persistence', () => {
       content: [{ type: 'resource', resource: { uri: 'res://sheet', mimeType: 'application/pdf', blob } }],
     });
     assert.ok(out);
-    assert.match(out!.text, /\[Binary resource: res:\/\/sheet \(application\/pdf, \d+ bytes\)\]/);
+    // FUNCTIONAL CHANGE (U069/w74): size reported human-readably via formatSize.
+    assert.match(out!.text, /\[Binary resource: res:\/\/sheet \(application\/pdf, [\d.]+ (B|KB|MB|GB|TB)\)\]/);
   });
 });
 

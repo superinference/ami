@@ -688,7 +688,7 @@ export const webFetchTool: ToolDefinition = {
         content += `\n\n[${unread.toLocaleString()} characters unread. Use offset=${endOffset} to continue reading.]`;
       }
       if (truncated) {
-        content += `\n\n[Download stopped at ${MAX_HTTP_BODY_BYTES} bytes; the rest of the response was not read.]`;
+        content += `\n\n[Download stopped at ${formatSize(MAX_HTTP_BODY_BYTES)}; the rest of the response was not read.]`;
       }
 
       // Build the result. The status line carries the human-readable reason

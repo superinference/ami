@@ -248,7 +248,8 @@ describe('web_fetch tool', () => {
       makeContext('/tmp', true),
     );
     assert.equal(result.isError, undefined);
-    assert.ok(result.output.includes('Download stopped at 1048576 bytes'));
+    // FUNCTIONAL CHANGE (U069/w74): truncation size is human-readable (formatSize).
+    assert.ok(result.output.includes('Download stopped at 1.0 MB'));
     assert.ok(!result.output.includes('ENDMARK'));
   });
 

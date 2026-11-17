@@ -162,7 +162,8 @@ describe('processMcpContent', () => {
   it('renders a supported image and emits mcpImages metadata', () => {
     const out = processMcpContent({ content: [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/webp' }] });
     assert.ok(out);
-    assert.match(out!.text, /\[Image: image\/webp, \d+ bytes base64\]/);
+    // FUNCTIONAL CHANGE (U069/w74): inline sizes are human-readable (formatSize).
+    assert.match(out!.text, /\[Image: image\/webp, [\d.]+ (B|KB|MB|GB|TB) base64\]/);
     const imgs = out!.metadata!.mcpImages as Array<{ mimeType: string; data: string }>;
     assert.equal(imgs[0].mimeType, 'image/webp');
     assert.equal(imgs[0].data, 'aGVsbG8=');
@@ -197,12 +198,12 @@ describe('processMcpContent', () => {
 
   it('reports a binary resource blob by size with its uri and mime', () => {
     const out = processMcpContent({ content: [{ type: 'resource', resource: { uri: 'file:///x.bin', mimeType: 'application/pdf', blob: 'YmluYXJ5' } }] });
-    assert.match(out!.text, /\[Binary resource: file:\/\/\/x\.bin \(application\/pdf, \d+ bytes\)\]/);
+    assert.match(out!.text, /\[Binary resource: file:\/\/\/x\.bin \(application\/pdf, [\d.]+ (B|KB|MB|GB|TB)\)\]/);
   });
 
   it('reports a binary blob with unknown-type fallback when no mime given', () => {
     const out = processMcpContent({ content: [{ type: 'resource', resource: { blob: 'YmluYXJ5' } }] });
-    assert.match(out!.text, /\[Binary resource: unknown \(unknown type, \d+ bytes\)\]/);
+    assert.match(out!.text, /\[Binary resource: unknown \(unknown type, [\d.]+ (B|KB|MB|GB|TB)\)\]/);
   });
 
   it('reports a resource with neither text nor blob', () => {
@@ -226,7 +227,7 @@ describe('processMcpContent', () => {
   it('surfaces an audio content block with its mime and size', () => {
     const out = processMcpContent({ content: [{ type: 'audio', data: 'YWJj', mimeType: 'audio/wav' }] });
     assert.ok(out, 'audio block should no longer be dropped');
-    assert.match(out!.text, /\[Audio: audio\/wav, \d+ bytes base64\]/);
+    assert.match(out!.text, /\[Audio: audio\/wav, [\d.]+ (B|KB|MB|GB|TB) base64\]/);
   });
 
   it('defaults a missing audio mimeType to audio/mpeg', () => {

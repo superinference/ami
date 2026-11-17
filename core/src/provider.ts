@@ -34,6 +34,7 @@ import {
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
 import { log } from './logger';
+import { partitionAndSortTools } from './tools/tool-utils';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -95,7 +96,11 @@ interface OpenAIToolFunction {
 export function toolDefinitionsToOpenAI(tools: ToolDefinition[], model?: string): OpenAIToolFunction[] {
   const stripExperimental = experimentalBetasDisabled();
   const strictAllowed = !stripExperimental && !!model && modelSupportsStructuredOutputs(model);
-  return tools.map((tool) => {
+  // Deterministic partition-sort for prompt-cache stability: built-ins form a
+  // contiguous alphabetically-sorted prefix, MCP tools follow in a stable order,
+  // so the advertised tool-schema cache prefix does not shift between turns as
+  // MCP servers connect on demand (parity: Claude Code's mergeAndFilterTools).
+  return partitionAndSortTools(tools).map((tool) => {
     const fn: OpenAIToolFunction['function'] = {
       name: tool.name,
       description: tool.description,
@@ -2005,7 +2010,11 @@ const toolSchemaCache = new WeakMap<ToolDefinition, SdkToolEntry>();
 
 export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
   const sdkTools: Record<string, SdkToolEntry> = {};
-  for (const tool of tools) {
+  // Insert in the deterministic built-in-then-MCP sorted order (parity with
+  // toolDefinitionsToOpenAI) so the AI-SDK ToolSet key order — and therefore the
+  // Anthropic tool-block cache prefix — stays stable across turns as MCP servers
+  // connect on demand.
+  for (const tool of partitionAndSortTools(tools)) {
     let entry = toolSchemaCache.get(tool);
     if (!entry) {
       entry = {

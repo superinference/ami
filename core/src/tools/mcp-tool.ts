@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { spillToolText, getFormatDescription, isAlreadySpilled } from './spill-output';
+import { spillToolText, getFormatDescription, isAlreadySpilled, formatSize } from './spill-output';
 import { boundMcpResponse, getMaxMcpOutputChars } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
@@ -341,7 +341,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
       const mime = (item.mimeType as string) || 'image/png';
       if (SUPPORTED_IMAGE_TYPES.has(mime)) {
         const sizeBytes = Math.ceil(((item.data as string).length * 3) / 4);
-        parts.push(`[Image: ${mime}, ${sizeBytes} bytes base64]`);
+        parts.push(`[Image: ${mime}, ${formatSize(sizeBytes)} base64]`);
         images.push({ mimeType: mime, data: item.data as string });
       } else {
         parts.push(`[Unsupported image type: ${mime}]`);
@@ -351,7 +351,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
       // the image branch) so the block is not silently dropped from the output.
       const mime = (item.mimeType as string) || 'audio/mpeg';
       const sizeBytes = Math.ceil(((item.data as string).length * 3) / 4);
-      parts.push(`[Audio: ${mime}, ${sizeBytes} bytes base64]`);
+      parts.push(`[Audio: ${mime}, ${formatSize(sizeBytes)} base64]`);
     } else if (item.type === 'resource_link') {
       // A link to a resource the server can serve — surface name, uri and any
       // description so the model knows the referenced content exists.
@@ -396,7 +396,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
             parts.push(getBinaryBlobSavedMessage(persisted.filepath, mime || undefined, persisted.size, provenance));
           } else {
             const sizeBytes = bytes ? bytes.length : Math.ceil(((resource.blob as string).length * 3) / 4);
-            parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${sizeBytes} bytes)]`);
+            parts.push(`[Binary resource: ${resource.uri ?? 'unknown'} (${mime || 'unknown type'}, ${formatSize(sizeBytes)})]`);
           }
         } else {
           parts.push(`[Resource: ${resource.uri ?? 'unknown'}]`);
