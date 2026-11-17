@@ -1860,6 +1860,16 @@ export interface CountTokensRequest {
   signal?: AbortSignal;
   /** Injectable fetch (tests); defaults to the global fetch. */
   fetchImpl?: typeof globalThis.fetch;
+  /**
+   * Bounded additional attempts on a *transient* failure before giving up and
+   * returning `null`. Claude parity: `countMessagesTokensWithAPI` builds its
+   * Anthropic client with `maxRetries: 1`, so a single flaky 5xx / network blip
+   * on the best-effort count path self-heals instead of immediately degrading to
+   * the heuristic. A non-transient failure (a 4xx other than 408/409/429, a 200
+   * with a non-numeric body, an abort, or a non-network throw) is NOT retried —
+   * re-sending it would just loop. Defaults to `1`; set `0` to disable.
+   */
+  maxRetries?: number;
 }
 
 /**
@@ -1870,7 +1880,8 @@ export interface CountTokensRequest {
  * {@link computeAnthropicBetas} source, then is narrowed by
  * {@link filterCountTokensBetas} so a Vertex count never carries a beta that would
  * 400. Mirrors Claude Code's `countMessagesTokensWithAPI` (thinking budget,
- * dummy-message-when-empty, and `input_tokens` extraction).
+ * dummy-message-when-empty, `input_tokens` extraction, and a bounded single
+ * retry on a transient failure — see {@link CountTokensRequest.maxRetries}).
  */
 export async function countTokensWithAPI(
   config: Pick<ProviderConfig, 'apiKey' | 'baseUrl' | 'model' | 'provider' | 'disableBetas'>,
@@ -1897,18 +1908,34 @@ export async function countTokensWithAPI(
   if (req.tools && req.tools.length > 0) body.tools = req.tools;
   if (req.thinking) body.thinking = { type: 'enabled', budget_tokens: TOKEN_COUNT_THINKING_BUDGET };
   const fetchImpl = req.fetchImpl ?? globalThis.fetch;
-  try {
-    const res = await fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      ...(req.signal ? { signal: req.signal } : {}),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { input_tokens?: unknown };
-    return typeof data.input_tokens === 'number' ? data.input_tokens : null;
-  } catch {
-    return null;
+  // Graceful-degradation tier 1: a bounded retry on a *transient* failure before
+  // the caller degrades to its heuristic estimate. `maxRetries` extra attempts
+  // (default 1) cover a flaky 5xx / connection blip; a deterministic 4xx, a 200
+  // with a bad body, an abort, or a non-network throw short-circuits to null.
+  const maxRetries = Math.max(0, req.maxRetries ?? 1);
+  for (let attempt = 0; ; attempt++) {
+    if (req.signal?.aborted) return null;
+    try {
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        ...(req.signal ? { signal: req.signal } : {}),
+      });
+      if (!res.ok) {
+        // Retry only transient statuses (5xx + 408/409/429); a 400/401/403/404 is
+        // deterministic and re-sending it just loops, so give up immediately.
+        if (attempt < maxRetries && RETRYABLE_STATUS_CODES.has(res.status)) continue;
+        return null;
+      }
+      const data = (await res.json()) as { input_tokens?: unknown };
+      return typeof data.input_tokens === 'number' ? data.input_tokens : null;
+    } catch (err) {
+      // A transport-level blip (ECONNRESET / ETIMEDOUT / socket hang up) is
+      // transient and worth one bounded retry; a parse error or an abort is not.
+      if (attempt < maxRetries && !req.signal?.aborted && isNetworkError(err)) continue;
+      return null;
+    }
   }
 }
 
