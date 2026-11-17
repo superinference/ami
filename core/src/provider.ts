@@ -1940,6 +1940,7 @@ async function getProxyAgent(
   if (agent) {
     const caDesc = describeCATrustStore(env, tls?.ca);
     log('provider', `proxy dispatcher created${caDesc ? ` with custom trust store (${caDesc})` : ''}${connect?.lookup ? ', proxy-side DNS resolution ON' : ''}`);
+    recordNetworkTrustDiagnostics('proxy', caDesc, { proxySideDns: !!connect?.lookup, clientCert: !!tls?.cert });
   }
   return agent ?? undefined;
 }
@@ -1960,6 +1961,7 @@ async function getMTLSAgent(
   if (agent) {
     const caDesc = describeCATrustStore(env, tls.ca);
     log('provider', `mTLS dispatcher created${tls.cert ? ' with client certificate' : ''}${caDesc ? ` and custom trust store (${caDesc})` : ''}`);
+    recordNetworkTrustDiagnostics('mtls', caDesc, { clientCert: !!tls.cert });
   }
   return agent ?? undefined;
 }
@@ -1986,6 +1988,42 @@ export function clearProxyAgentCache(): void {
  */
 export function proxyAgentCacheSize(): number {
   return proxyAgentCache.size + mtlsAgentCache.size;
+}
+
+/** The structured-diagnostic event name for a resolved HTTP-dispatcher trust/proxy posture. */
+export const NETWORK_TRUST_DIAGNOSTIC_EVENT = 'network_trust_resolved';
+
+/**
+ * Emit a PII-free structured diagnostic describing the TLS-trust / proxy posture
+ * resolved for a just-created HTTP dispatcher — the machine-readable complement to
+ * the human `log('provider', …)` line at each dispatcher-creation site. Routed to
+ * the `AMI_DIAGNOSTICS_FILE` channel via {@link recordDiagnostic} (a zero-cost
+ * no-op when that channel is unconfigured), it gives an operator an AUDITABLE
+ * trail of HOW the CA-cert trust store and proxy routing were resolved for
+ * outbound API traffic — so a TLS handshake failure behind a corporate proxy /
+ * private CA is diagnosable from the diagnostics log without a live debugger.
+ *
+ * Only COARSE, non-PII fields are recorded — the cert COUNT + contributing SOURCES
+ * already summarized by {@link describeCATrustStore} (e.g. `3 CA cert(s)
+ * [bundled+extra-file]`), plus boolean posture flags — NEVER a proxy URL,
+ * hostname, file path, or any key material (the diagnostics channel's no-PII
+ * contract). The pre-computed `trustStoreDesc` is passed in rather than
+ * re-assembled so the (file-reading) trust store is built at most once per
+ * dispatcher. Mirrors Claude Code's `caCertsConfig.ts` `logForDebugging`
+ * CA-resolution trail, routed into AMI's structured diagnostics channel.
+ */
+export function recordNetworkTrustDiagnostics(
+  dispatcher: 'proxy' | 'mtls',
+  trustStoreDesc: string | undefined,
+  posture: { proxySideDns?: boolean; clientCert?: boolean } = {},
+): void {
+  recordDiagnostic('info', NETWORK_TRUST_DIAGNOSTIC_EVENT, {
+    dispatcher,
+    customTrustStore: trustStoreDesc !== undefined,
+    ...(trustStoreDesc !== undefined ? { trustStore: trustStoreDesc } : {}),
+    proxySideDns: posture.proxySideDns === true,
+    clientCert: posture.clientCert === true,
+  });
 }
 
 /**
