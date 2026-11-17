@@ -348,6 +348,32 @@ export function getAgentNameById(taskId: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Resolve a human-readable DISPLAY LABEL for a (background) agent, mirroring Claude
+ * Code's `useSwarmBanner` reverse-lookup precedence (useSwarmBanner.ts:L105-L122):
+ * prefer the agent's registered addressable `@name` — reverse-looked-up from the
+ * agent registry by its `taskId` ({@link getAgentNameById}) — then its task
+ * `description`, then a trimmed `prompt` preview, then the raw `taskId`, and only a
+ * literal `'agent'` when nothing is known. A leader viewing a background agent (or a
+ * roster/task_list row) sees the SAME name it messages the agent by, not an opaque
+ * id or a truncated prompt. Blank (whitespace-only) description/prompt values are
+ * skipped so they never shadow a lower-rung fallback. The name lookup is the real
+ * production path (a named spawn registers its name BEFORE this label is built), so
+ * the banner stays consistent with the send_message / resume address.
+ */
+export function resolveAgentLabel(opts: {
+  taskId?: string;
+  description?: string;
+  prompt?: string;
+}): string {
+  const byName = opts.taskId ? getAgentNameById(opts.taskId) : undefined;
+  if (byName) return byName;
+  const desc = opts.description?.trim();
+  if (desc) return desc;
+  if (opts.prompt && opts.prompt.trim()) return opts.prompt.slice(0, 80);
+  return opts.taskId || 'agent';
+}
+
 export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
   agentSessionRegistry.clear();
@@ -3468,7 +3494,10 @@ export const taskTool: ToolDefinition = {
       const outputPath = path.join(tasksDir, `${taskId}.output`);
       fs.closeSync(fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS));
 
-      const label = taskDescription || `${prompt.slice(0, 80)}`;
+      // Reverse-lookup the agent's registered @name (set above) for the roster /
+      // task_list label so a NAMED background agent surfaces under the address a
+      // leader messages it by, not just its description/prompt (useSwarmBanner parity).
+      const label = resolveAgentLabel({ taskId, description: taskDescription, prompt });
       if (context.processManager) {
         context.processManager.registerAgent(taskId, {
           command: `[agent] ${label}`,
@@ -3753,7 +3782,10 @@ export const taskTool: ToolDefinition = {
         fs.mkdirSync(tasksDir, { recursive: true });
         const outputPath = path.join(tasksDir, `${taskId}.output`);
         fs.closeSync(fs.openSync(outputPath, OUTPUT_FILE_OPEN_FLAGS));
-        const label = taskDescription || `${prompt.slice(0, 80)}`;
+        // Reverse-lookup the agent's registered @name (set above) so an auto-/promoted
+        // background agent surfaces under its addressable name in the roster, matching
+        // the fresh-background path above (useSwarmBanner parity).
+        const label = resolveAgentLabel({ taskId, description: taskDescription, prompt });
         if (context.processManager) {
           // The subagent becomes a tracked background task now; its cancellation is
           // owned by processManager.kill from here, so drop the foreground-abort entry.
