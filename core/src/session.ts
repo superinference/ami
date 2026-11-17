@@ -24,6 +24,34 @@ export { assertPathWithin } from './path-safety';
 export const MAX_SESSION_READ_BYTES = 100 * 1024 * 1024; // 100 MiB
 
 /**
+ * Size of the bounded head/tail buffer used by {@link SessionManager.readSessionMetaLite}
+ * when deriving a session-list row's metadata WITHOUT a full `JSON.parse` of the
+ * whole file. Only this many bytes are read from each end of the file, so a 50 MB
+ * transcript costs the same lite-metadata read as a 5 KB one. Parity: Claude's
+ * `LITE_READ_BUF_SIZE` (sessionStoragePortable) bounded head/tail metadata read.
+ */
+export const LITE_READ_BUF_SIZE = 64 * 1024; // 65536
+
+/**
+ * How many of the most-recent sessions in a listing are ENRICHED with a full parse
+ * (real first/last-prompt preview + message count) before the rest fall back to the
+ * cheap {@link SessionManager.readSessionMetaLite} path. The picker shows the top N
+ * fully, and older rows get a lite (title/date-only) entry until opened — so a store
+ * with thousands of sessions parses ~N files instead of all of them. Parity: Claude's
+ * `INITIAL_ENRICH_COUNT` resume-picker enrichment default.
+ */
+export const INITIAL_ENRICH_COUNT = 50;
+
+/**
+ * A session file at or above this size is ALWAYS read via the bounded lite path for
+ * a listing row (never fully parsed just to render a picker line), even when it falls
+ * inside the {@link INITIAL_ENRICH_COUNT} enrichment window — parsing a multi-megabyte
+ * transcript to show one row is never worth it. Parity: Claude's
+ * `SKIP_PRECOMPACT_THRESHOLD` resume-read size guard.
+ */
+export const SKIP_PRECOMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MiB
+
+/**
  * Session/transcript persistence is disabled when the user opts out: the
  * reference honours CLAUDE_CODE_SKIP_PROMPT_HISTORY; we add AMI_SKIP_SESSION_HISTORY.
  * When disabled, save() is a no-op so no transcript is written to disk (privacy /
@@ -111,6 +139,131 @@ export function contentToTexts(raw: unknown): string[] {
 export function contentToText(raw: unknown): string {
   const texts = contentToTexts(raw);
   return texts.length > 0 ? texts[0] : '';
+}
+
+// ---------------------------------------------------------------------------
+// Truncation-tolerant partial-JSON field extraction. These read a single scalar
+// string field out of a RAW JSON text slice WITHOUT a full `JSON.parse`, so a
+// bounded head/tail read of a huge session file can recover its metadata (id,
+// title, dates, branch, tag) cheaply and without OOM. Tolerant of a slice that
+// was cut mid-string/mid-escape by the bounded read (a lone trailing `\` or an
+// unterminated final string yields the best-effort partial, never a throw).
+// Parity: Claude's extractJsonStringField / extractLastJsonStringField /
+// unescapeJsonString (sessionStoragePortable).
+// ---------------------------------------------------------------------------
+
+function isJsonWs(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+/**
+ * Decode JSON string-escape sequences in an already quote-stripped slice. Handles
+ * `\n \t \r \b \f \" \\ \/` and `\uXXXX`; an invalid/truncated `\u` or a lone
+ * trailing backslash is dropped rather than throwing (a bounded read can cut mid
+ * escape). Parity: Claude's `unescapeJsonString`.
+ */
+export function unescapeJsonString(s: string): string {
+  if (s.indexOf('\\') === -1) return s; // fast path: nothing to decode
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== '\\') { out += c; continue; }
+    const next = s[i + 1];
+    if (next === undefined) break; // truncated trailing backslash — drop it
+    switch (next) {
+      case 'n': out += '\n'; i++; break;
+      case 't': out += '\t'; i++; break;
+      case 'r': out += '\r'; i++; break;
+      case 'b': out += '\b'; i++; break;
+      case 'f': out += '\f'; i++; break;
+      case '"': out += '"'; i++; break;
+      case '\\': out += '\\'; i++; break;
+      case '/': out += '/'; i++; break;
+      case 'u': {
+        const hex = s.slice(i + 2, i + 6);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 5;
+        } else {
+          out += next; // invalid/truncated \u — keep the literal char, drop the backslash
+          i++;
+        }
+        break;
+      }
+      default: out += next; i++; break;
+    }
+  }
+  return out;
+}
+
+/** Read a JSON string value that opens at `openIdx` (the index of the leading `"`),
+ *  returning the DECODED value and the index just past the closing quote. When the
+ *  string is unterminated (the slice was truncated) the best-effort decoded partial
+ *  is returned with `end = text.length`. */
+function readJsonStringAt(text: string, openIdx: number): { value: string; end: number } {
+  let raw = '';
+  let i = openIdx + 1;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      // Keep the escape pair verbatim for unescapeJsonString; an escaped quote is
+      // NOT a terminator. A trailing lone backslash is handled by unescapeJsonString.
+      raw += ch;
+      if (i + 1 < text.length) { raw += text[i + 1]; i++; }
+      continue;
+    }
+    if (ch === '"') return { value: unescapeJsonString(raw), end: i + 1 };
+    raw += ch;
+  }
+  return { value: unescapeJsonString(raw), end: text.length }; // truncated — best effort
+}
+
+/** Scan forward for `"field"` used as an OBJECT KEY (followed by `:` then a string
+ *  value) starting at `from`, returning the match's value-open index, or -1. A
+ *  `"field"` that appears as a string value (not followed by `:`) or whose value is
+ *  not a string is skipped. */
+function locateStringField(text: string, field: string, from: number): { openIdx: number; keyEnd: number } | null {
+  const key = '"' + field + '"';
+  let cursor = from;
+  for (;;) {
+    const ki = text.indexOf(key, cursor);
+    if (ki === -1) return null;
+    let j = ki + key.length;
+    while (isJsonWs(text[j])) j++;
+    if (text[j] !== ':') { cursor = ki + key.length; continue; }
+    j++;
+    while (isJsonWs(text[j])) j++;
+    if (text[j] !== '"') { cursor = ki + key.length; continue; } // non-string value
+    return { openIdx: j, keyEnd: ki + key.length };
+  }
+}
+
+/**
+ * Extract the FIRST top-level string value for `field` from a raw JSON text slice,
+ * or `undefined` when the key is absent or its value is not a string. Parity:
+ * Claude's `extractJsonStringField`.
+ */
+export function extractJsonStringField(text: string, field: string): string | undefined {
+  const hit = locateStringField(text, field, 0);
+  if (!hit) return undefined;
+  return readJsonStringAt(text, hit.openIdx).value;
+}
+
+/**
+ * Extract the LAST string value for `field` from a raw JSON text slice — used on a
+ * bounded TAIL read where the newest-wins value (e.g. `updatedAt`) sits near the end.
+ * Returns `undefined` when no string-valued occurrence exists. Parity: Claude's
+ * `extractLastJsonStringField`.
+ */
+export function extractLastJsonStringField(text: string, field: string): string | undefined {
+  let found: string | undefined;
+  let from = 0;
+  for (;;) {
+    const hit = locateStringField(text, field, from);
+    if (!hit) return found;
+    found = readJsonStringAt(text, hit.openIdx).value;
+    from = hit.keyEnd;
+  }
 }
 
 /**
@@ -480,6 +633,36 @@ export interface SessionListEntry {
   /** The session this one was forked/regenerated from, when recorded — lets a
    *  picker/analytics show the lineage of a cleared-through chain of sessions. */
   parentSessionId?: SessionId;
+  /** True when this entry was built from a bounded lite metadata read
+   *  ({@link SessionManager.readSessionMetaLite}) rather than a full parse: its
+   *  {@link preview}/{@link lastPrompt}/{@link summary} come from the title only and
+   *  {@link messageCount} is 0 until the session is opened (parity: Claude's
+   *  not-yet-enriched resume-picker rows). A full parse is done on open. */
+  lite?: boolean;
+}
+
+/**
+ * Metadata recovered by a bounded head/tail read of a session file WITHOUT a full
+ * `JSON.parse` of its transcript ({@link SessionManager.readSessionMetaLite}). Only
+ * top-level scalar fields are extractable this way (the first-prompt preview and the
+ * message count need the full messages array, so they are left to enrichment on
+ * open). Parity: Claude's lite session-list metadata.
+ */
+export interface SessionMetaLite {
+  id: string;
+  createdAt?: string;
+  updatedAt?: string;
+  customTitle?: string;
+  aiTitle?: string;
+  gitBranch?: string;
+  tag?: string;
+  version?: string;
+  projectPath?: string;
+  entrypoint?: string;
+  mode?: string;
+  kind?: SessionKind;
+  /** True when a top-level `"isSidechain": true` was seen in the head buffer. */
+  isSidechain?: boolean;
 }
 
 /**
@@ -1027,11 +1210,17 @@ export class SessionManager {
     // A user rename (customTitle) must never be clobbered by an auto-title save:
     // if this save doesn't carry one, preserve whatever is already on disk.
     const customTitle = session.customTitle ?? this.readSessionFile(filePath, false)?.customTitle;
+    // Serialize all scalar metadata BEFORE the (potentially huge) `messages` array
+    // so a bounded head read ({@link readSessionMetaLite} / LITE_READ_BUF_SIZE) always
+    // captures the session's metadata without parsing the whole transcript. Pulling
+    // `messages` out of the spread guarantees it is emitted LAST regardless of the
+    // caller's key insertion order (a spread would otherwise keep its original slot).
+    const scalarMeta: Record<string, unknown> = { ...session };
+    delete scalarMeta.messages;
     const data = {
-      ...session,
+      ...scalarMeta,
       id: safeId,
       customTitle,
-      messages: storedMessages,
       updatedAt: new Date().toISOString(),
       // Stamp provenance so /resume can show branch/project and migrations can
       // detect old schemas. Caller-supplied values win; otherwise derive from cwd.
@@ -1041,6 +1230,8 @@ export class SessionManager {
       // Classify the run: a caller-supplied kind wins; else honor an env override
       // (AMI_SESSION_KIND / CLAUDE_CODE_SESSION_KIND); else default foreground.
       kind: session.kind ?? envSessionKind() ?? 'interactive',
+      // Emitted LAST (see above) so metadata stays in the head buffer.
+      messages: storedMessages,
     };
     // Crash-safe + owner-only: a truncated/corrupt newest session can never
     // result from an interrupted write, and transcripts stay 0o600 on shared hosts.
@@ -1233,6 +1424,13 @@ export class SessionManager {
      *  data-model side of the resume picker's per-#tag tab (parity: Claude's TagTabs
      *  per-tag filtering). An empty/whitespace value is ignored (no constraint). */
     filterByTag?: string;
+    /** How many of the most-recent rows are ENRICHED with a full parse (real
+     *  first/last-prompt preview + message count); rows past this count — and any
+     *  file at/above {@link SKIP_PRECOMPACT_THRESHOLD} regardless of position — are
+     *  built from the cheap bounded {@link readSessionMetaLite} path instead. Defaults
+     *  to {@link INITIAL_ENRICH_COUNT}. Pass `Infinity` to force a full parse of every
+     *  row (the pre-enrichment behaviour). Parity: Claude's progressive enrichment. */
+    enrichCount?: number;
   } = {}): SessionListEntry[] {
     const files = this.listFiles();
 
@@ -1264,7 +1462,27 @@ export class SessionManager {
     // common path.)
     const seenIds = new Set<string>();
     const entries: SessionListEntry[] = [];
+    // Progressive enrichment: full-parse the most-recent `enrichCount` rows (real
+    // preview + message count); older rows, and any pathologically large file, come
+    // from the cheap bounded lite read so a huge store doesn't parse every file.
+    const enrichCount = opts.enrichCount ?? INITIAL_ENRICH_COUNT;
+    let enriched = 0;
     for (const { filePath, size: fileSize } of window) {
+      const lite = enriched >= enrichCount
+        || (fileSize !== undefined && fileSize >= SKIP_PRECOMPACT_THRESHOLD);
+      if (lite) {
+        const entry = this.liteEntry(filePath, fileSize);
+        if (!entry) continue;
+        if (entry.isSidechain && !opts.includeSidechain) continue;
+        const liteKey = String(entry.id);
+        if (opts.excludeId !== undefined && liteKey === String(opts.excludeId)) continue;
+        if (seenIds.has(liteKey)) continue;
+        seenIds.add(liteKey);
+        if (opts.dropEmpty && entry.summary === undefined) continue;
+        entries.push(entry);
+        continue;
+      }
+
       // Preview only needs inline data — skip blob rehydration for speed.
       const session = this.readSessionFile(filePath, false);
       if (!session) continue;
@@ -1279,6 +1497,7 @@ export class SessionManager {
       if (seenIds.has(idKey)) continue;
       seenIds.add(idKey);
 
+      enriched++;
       const preview = this.extractPreview(session);
       const lastPrompt = extractLastPrompt(session.messages);
       const summary = resolveSessionSummary(session, { lastPrompt, firstPrompt: preview });
@@ -1913,6 +2132,115 @@ export class SessionManager {
 
   private extractPreview(session: Session): string {
     return extractMeaningfulPreview(session.messages);
+  }
+
+  /**
+   * Recover a session's top-level metadata by a BOUNDED head (+ tail) read, without
+   * a full `JSON.parse` of the transcript — the cheap path behind {@link list}'s
+   * progressive enrichment so a store with thousands of sessions (or a single
+   * multi-megabyte one) does not parse every message just to render a picker row.
+   *
+   * Reads at most {@link LITE_READ_BUF_SIZE} bytes from the head (where {@link save}
+   * now serializes all scalar metadata, before the `messages` array) and, for a file
+   * larger than the buffer, the same-sized tail (so an `updatedAt` that trails a huge
+   * array — e.g. a legacy file written before metadata-first ordering — is still
+   * found via {@link extractLastJsonStringField}). Fields are parsed only from the
+   * region BEFORE the first `"messages"` key so an `id`/`tag` nested inside a message
+   * can never be mistaken for the top-level value. Returns `null` when the file is
+   * missing/unreadable or carries no recoverable top-level `id`.
+   */
+  readSessionMetaLite(filePath: string, sizeHint?: number): SessionMetaLite | null {
+    let fd: number | undefined;
+    try {
+      const size = sizeHint ?? fs.statSync(filePath).size;
+      if (size === 0) return null;
+      fd = fs.openSync(filePath, 'r');
+      const headLen = Math.min(size, LITE_READ_BUF_SIZE);
+      const headBuf = Buffer.allocUnsafe(headLen);
+      fs.readSync(fd, headBuf, 0, headLen, 0);
+      const head = headBuf.toString('utf-8');
+      // Only parse the metadata prefix (before the messages array) so a scalar key
+      // that also appears inside a message is never read as the top-level value.
+      const msgIdx = head.indexOf('"messages"');
+      const metaHead = msgIdx === -1 ? head : head.slice(0, msgIdx);
+
+      let tail = '';
+      if (size > LITE_READ_BUF_SIZE) {
+        const tailBuf = Buffer.allocUnsafe(LITE_READ_BUF_SIZE);
+        fs.readSync(fd, tailBuf, 0, LITE_READ_BUF_SIZE, size - LITE_READ_BUF_SIZE);
+        tail = tailBuf.toString('utf-8');
+      }
+
+      const id = extractJsonStringField(metaHead, 'id');
+      if (id === undefined || !isValidSessionId(id)) return null;
+
+      // Prefer the metadata prefix (collision-proof: a scalar key that also appears
+      // inside a message can't be read as the top-level value). Fall back to the full
+      // head (legacy/hand-written files that serialized `messages` before metadata)
+      // and finally the bounded tail (fields that trail a huge array). `id` stays
+      // strict to the prefix so a message's own `"id"` is never mistaken for it.
+      const field = (name: string): string | undefined =>
+        extractJsonStringField(metaHead, name)
+        ?? extractJsonStringField(head, name)
+        ?? (tail ? extractLastJsonStringField(tail, name) : undefined);
+
+      const kindRaw = field('kind');
+      const kind = kindRaw && (SESSION_KINDS as readonly string[]).includes(kindRaw)
+        ? (kindRaw as SessionKind)
+        : undefined;
+      const modeRaw = field('mode');
+      const mode = modeRaw === 'coordinator' || modeRaw === 'normal' ? modeRaw : undefined;
+
+      return {
+        id,
+        createdAt: field('createdAt'),
+        updatedAt: field('updatedAt'),
+        customTitle: field('customTitle'),
+        aiTitle: field('aiTitle'),
+        gitBranch: field('gitBranch'),
+        tag: field('tag'),
+        version: field('version'),
+        projectPath: field('projectPath'),
+        entrypoint: field('entrypoint'),
+        mode,
+        kind,
+        isSidechain: /"isSidechain"\s*:\s*true/.test(metaHead),
+      };
+    } catch {
+      return null;
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    }
+  }
+
+  /** Build a {@link SessionListEntry} for a session OUTSIDE the enrichment window (or
+   *  one too large to parse for a single row) from a bounded {@link readSessionMetaLite}
+   *  read. `fileSize` is carried over from the stat pass. Returns `null` when the lite
+   *  read recovers nothing usable, so the row is simply omitted. */
+  private liteEntry(filePath: string, fileSize: number | undefined): SessionListEntry | null {
+    const meta = this.readSessionMetaLite(filePath, fileSize);
+    if (!meta) return null;
+    const title = resolveSessionTitle(meta);
+    const summary = resolveSessionSummary(meta);
+    const preview = summary ?? '(open to load preview)';
+    return {
+      id: asSessionId(meta.id),
+      date: meta.updatedAt || meta.createdAt || '',
+      preview,
+      lastPrompt: summary,
+      summary,
+      messageCount: 0,
+      fileSize,
+      gitBranch: meta.gitBranch,
+      title,
+      tag: meta.tag,
+      mode: meta.mode,
+      projectPath: meta.projectPath,
+      entrypoint: meta.entrypoint,
+      kind: meta.kind,
+      isSidechain: meta.isSidechain,
+      lite: true,
+    };
   }
 }
 
