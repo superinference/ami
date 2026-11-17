@@ -1059,6 +1059,81 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
 }
 
 // ---------------------------------------------------------------------------
+// Safety-classifier failure — fail-safe fallback for an async check that CANNOT
+// produce a verdict (API error / timeout / transcript overflow)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured outcome of a SAFETY/auto-mode classifier call that FAILED — i.e. an
+ * async check (e.g. the auto-mode security classifier, see {@link ./auto-mode})
+ * that could not produce an allow/deny verdict. Mirrors the failure-carrying
+ * fields of Claude Code's `YoloClassifierResult` (`unavailable`,
+ * `transcriptTooLong`, `durationMs`) and encodes the documented fail-safe
+ * contract: a check that cannot decide must fall back to normal PROMPTING, never
+ * retry a DETERMINISTIC failure, and never silently auto-approve or hard-deny.
+ *
+ * This is deliberately distinct from {@link ClassifiedError} (which classifies a
+ * MAIN-model API error for the engine's retry/compact/fallback loop): the retry
+ * semantics differ. For the main model a context overflow is retryable (compact
+ * then re-send); for a CLASSIFIER call the SAME transcript overflows every time,
+ * so {@link classifySafetyCheckFailure} forces `retryable=false` on a transcript
+ * overflow — the single place that encodes that nuance.
+ */
+export interface SafetyClassifierFailure {
+  /** Always true: the classifier produced no verdict (it is "unavailable"). */
+  unavailable: true;
+  /**
+   * The failure is a DETERMINISTIC transcript/context overflow (the classifier
+   * prompt exceeded the context window). Same input → same error, so callers must
+   * fall back to prompting rather than retry. Parity: `transcriptTooLong`.
+   */
+  transcriptTooLong: boolean;
+  /** Underlying {@link ErrorCategory} of the failure, for logging/telemetry. */
+  category: ErrorCategory;
+  /** Human-readable, HTML-sanitized reason (the classified message). */
+  reason: string;
+  /** Duration of the failed classifier call in ms, when the caller tracked it. */
+  durationMs?: number;
+  /**
+   * Whether RETRYING the classifier call could plausibly succeed. True only for a
+   * TRANSIENT failure (rate limit / network / 5xx). A deterministic transcript
+   * overflow is always `false` even though {@link classifyError} marks
+   * context_overflow retryable for the main model.
+   */
+  retryable: boolean;
+}
+
+/**
+ * Classify a failed SAFETY/auto-mode classifier call into the fail-safe
+ * {@link SafetyClassifierFailure} contract. Runs the shared {@link classifyError}
+ * taxonomy, then applies the classifier-specific override: a transcript/context
+ * overflow is DETERMINISTIC for a fixed classifier prompt, so it is reported as
+ * `transcriptTooLong` and NON-retryable (retrying loops forever) — the opposite of
+ * the main-model "compact then retry" path. `opts.durationMs` records call latency
+ * for timeout/overhead telemetry (Claude's `durationMs`). The caller uses the
+ * result to fall back to normal prompting; it never auto-approves a failed check.
+ */
+export function classifySafetyCheckFailure(
+  error: string | Error | unknown,
+  opts?: { durationMs?: number },
+): SafetyClassifierFailure {
+  const classified = classifyError(error);
+  const transcriptTooLong = classified.category === 'context_overflow';
+  // Deterministic overflow → never retry (override classifyError's retryable=true
+  // for the main-model compaction path). Otherwise inherit transient retryability.
+  const retryable = transcriptTooLong ? false : classified.retryable;
+  const failure: SafetyClassifierFailure = {
+    unavailable: true,
+    transcriptTooLong,
+    category: classified.category,
+    reason: classified.message,
+    retryable,
+  };
+  if (opts?.durationMs !== undefined) failure.durationMs = opts.durationMs;
+  return failure;
+}
+
+// ---------------------------------------------------------------------------
 // StopFailure error-class taxonomy — a matchable CLASS for the StopFailure hook
 // ---------------------------------------------------------------------------
 

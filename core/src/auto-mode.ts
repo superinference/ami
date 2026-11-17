@@ -24,6 +24,7 @@
  */
 
 import type { AutoModeConfig } from './types';
+import { classifySafetyCheckFailure, type SafetyClassifierFailure } from './error-classifier';
 
 /**
  * The three classifier prompt sections, as REQUIRED arrays (empty when a section
@@ -201,4 +202,61 @@ export function getAutoModeUnavailableNotification(reason: AutoModeUnavailableRe
     case 'model':
       return 'Auto mode is unavailable for the current model';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-mode classifier outcome — fail-safe resolution when the LLM call that
+// consumes buildAutoModeClassifierPrompt errors / times out / overflows context
+// ---------------------------------------------------------------------------
+
+/**
+ * The final per-tool-call decision the engine takes from an auto-mode classifier
+ * outcome: either silently `auto-approve` the tool call, or `prompt` the user for
+ * explicit confirmation. There is no "auto-deny" — a classifier only ever
+ * downgrades an auto-approval to a prompt (a HARD deny is a separate permission
+ * rule that runs before the classifier).
+ */
+export type AutoModeClassifierResolution = 'auto-approve' | 'prompt';
+
+/**
+ * Outcome of running the auto-mode security classifier for one tool call. Exactly
+ * one of the two cases is meaningful:
+ *  - `approved` set — the classifier produced a verdict (`true` = auto-approve,
+ *    `false` = require confirmation);
+ *  - `failure` set — the classifier call itself failed (API error / timeout /
+ *    transcript overflow) and produced NO verdict (see {@link SafetyClassifierFailure}).
+ * An empty outcome (neither set) is treated as indeterminate → prompt.
+ */
+export interface AutoModeClassifierOutcome {
+  approved?: boolean;
+  failure?: SafetyClassifierFailure;
+}
+
+/**
+ * Resolve an {@link AutoModeClassifierOutcome} to the fail-safe permission
+ * decision. The contract mirrors Claude Code's documented classifier-failure
+ * handling: a check that could not produce a verdict falls back to normal
+ * PROMPTING — it is NEVER silently auto-approved (fail-open is unsafe) and NEVER
+ * hard-denied (fail-closed would block legitimate work). Only an explicit
+ * classifier approval auto-approves; everything else prompts.
+ */
+export function resolveAutoModeClassifierOutcome(
+  outcome: AutoModeClassifierOutcome,
+): AutoModeClassifierResolution {
+  // Fail-safe: any failure (unavailable / transcriptTooLong / timeout) → prompt.
+  if (outcome.failure) return 'prompt';
+  return outcome.approved === true ? 'auto-approve' : 'prompt';
+}
+
+/**
+ * Build an {@link AutoModeClassifierOutcome} for a FAILED classifier call. Wraps
+ * {@link classifySafetyCheckFailure} so the engine's classifier call site turns a
+ * caught error (with optional measured `durationMs`) into the fail-safe outcome in
+ * one step, instead of re-deriving the failure contract at the call site.
+ */
+export function makeAutoModeClassifierFailure(
+  error: string | Error | unknown,
+  opts?: { durationMs?: number },
+): AutoModeClassifierOutcome {
+  return { failure: classifySafetyCheckFailure(error, opts) };
 }

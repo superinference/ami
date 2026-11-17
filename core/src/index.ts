@@ -57,8 +57,8 @@ export { classifyMcpToolForCollapse, normalizeCollapseToolName } from './mcp/cla
 export type { McpCollapseClass } from './mcp/classify-collapse';
 export type { McpLogSinkOptions, McpErrorLogRecord, McpDebugLogRecord } from './mcp/log-sink';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
-export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage } from './error-classifier';
-export type { ClassifiedError, ErrorCategory } from './error-classifier';
+export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, classifySafetyCheckFailure } from './error-classifier';
+export type { ClassifiedError, ErrorCategory, SafetyClassifierFailure } from './error-classifier';
 export { FAULT_INJECTION_ENV, FAULT_DEFAULT_STATUS, parseFaultInjection, resetFaultInjection, faultInjectionActive, injectFault, consumeFault, makeInjectedError, maybeThrowFault } from './fault-injection';
 export type { FaultKind, InjectedFault } from './fault-injection';
 export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURRENT_PER_EVENT, HOOK_EVENTS, HOOK_CONFIG_TYPES, resolveHookTimeoutMs, combineHookAbort, HOOK_AGENT_DISALLOWED_TOOLS, isHttpHookUrlAllowed, interpolateHookHeaderEnv, sanitizeHeaderValue, formatHttpHookBlockedMessage, ERR_HTTP_HOOK_BLOCKED_ADDRESS, unwrapHookSpecificOutput, matchesHookIf, ELICITATION_ACTIONS, getHookEventMetadata, eventSupportsMatcher, formatHookMatcherLabel, sortMatchersByPriority, HOOK_SOURCE_PRIORITY, SESSION_START_SOURCES, isSessionStartSource, SESSION_END_REASONS, isSessionEndReason, SETUP_TRIGGERS, isSetupTrigger, hookContentLabel, getHookDisplayText, hookSourceDisplayString, normalizeMapKeyedHooks, parseFrontmatterHooks, substitutePluginRoot, withFrontmatterHookPluginRoot, MAX_PENDING_HOOK_EVENTS, validatePromptRequest, parsePromptRequestLine, isValidPromptSelection, buildPromptResponse, serializePromptResponse, createPromptLineScanner } from './hooks';
@@ -70,8 +70,9 @@ export {
   AUTO_MODE_DEFAULT_RULES, getDefaultExternalAutoModeRules, resolveAutoModeRules,
   buildAutoModeClassifierPrompt, buildAutoModeClassifierPromptFromConfig,
   AUTO_MODE_UNAVAILABLE_REASONS, classifyAutoModeUnavailableReason, getAutoModeUnavailableNotification,
+  resolveAutoModeClassifierOutcome, makeAutoModeClassifierFailure,
 } from './auto-mode';
-export type { AutoModeRules, AutoModeUnavailableReason, AutoModeAvailabilityState } from './auto-mode';
+export type { AutoModeRules, AutoModeUnavailableReason, AutoModeAvailabilityState, AutoModeClassifierResolution, AutoModeClassifierOutcome } from './auto-mode';
 export {
   RISK_LEVELS, riskLevelRank, classifyPermissionRisk,
 } from './permissions';
