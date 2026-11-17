@@ -21,12 +21,37 @@ export interface SecurityPattern {
   // fix recommendation as its own field.
   category: string;
   remediation: string;
+  // PARITY (security-review.ts:112-123 "Exploit Scenario"): an optional concrete
+  // attack narrative describing how the pattern is abused. Surfaced per-finding
+  // and through the `/security-patterns` + `--introspect` surfaces so the model
+  // and the user see WHY a match matters, not just that it matched.
+  exploit?: string;
+  // PARITY (security-review.ts:140-160 "multi-line cross-boundary"): when true the
+  // pattern is tested against the whole (comment-stripped) file buffer with a
+  // newline-spanning regex instead of line-by-line, so a construct split across
+  // lines (e.g. an SQL string concatenated over several lines then passed to
+  // execute()) is still caught. The matched offset is mapped back to a line.
+  multiline?: boolean;
+  // PARITY (security-review.ts PRECEDENTS #6): React/Angular/tsx are considered
+  // XSS-safe unless an explicitly unsafe method is used. XSS-category patterns
+  // that are NOT an unsafe-method form (e.g. a `javascript:` URI in an attribute)
+  // are suppressed in `.jsx`/`.tsx` files. Unsafe DOM/React sinks (innerHTML,
+  // dangerouslySetInnerHTML, document.write, …) set `unsafeMethod: true` so they
+  // still fire there.
+  unsafeMethod?: boolean;
 }
 
 const JS_EXTS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts', '.vue', '.svelte'];
 const PY_EXTS = ['.py', '.pyi'];
 const DOC_EXTS = ['.md', '.mdx', '.txt', '.rst'];
 const GO_EXTS = ['.go'];
+
+// Extensions whose line comments start with `#` (vs the `//` default). Used by
+// the comment-stripping pre-filter so an in-comment match is never reported.
+const HASH_COMMENT_EXTS = new Set([
+  ...PY_EXTS, '.sh', '.bash', '.zsh', '.rb', '.yml', '.yaml', '.toml',
+  '.ini', '.cfg', '.conf', '.pl', '.r', '.tf',
+]);
 
 export const SECURITY_PATTERNS: SecurityPattern[] = [
   {
@@ -37,6 +62,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'code_injection',
     message: 'eval() executes arbitrary code — use JSON.parse() for data or ast.literal_eval() for Python literals',
     remediation: 'Use JSON.parse() for data or ast.literal_eval() for Python literals instead of eval().',
+    exploit: 'An attacker who controls the string passed to eval() runs arbitrary code in the process, gaining full RCE.',
   },
   {
     id: 'child_process_exec',
@@ -46,6 +72,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'command_injection',
     message: 'child_process.exec() enables command injection — use execFile() or spawn() with argument arrays',
     remediation: 'Use execFile() or spawn() with an argument array so the shell never parses interpolated input.',
+    exploit: 'User input interpolated into the command string lets an attacker inject shell metacharacters (e.g. `; rm -rf /`) and run arbitrary commands.',
   },
   {
     id: 'new_function_injection',
@@ -62,6 +89,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'xss',
     message: 'innerHTML assignment with untrusted content enables XSS — use textContent or sanitize with DOMPurify',
     remediation: 'Assign textContent, or sanitize the HTML with DOMPurify before insertion.',
+    unsafeMethod: true,
   },
   {
     id: 'outerHTML_xss',
@@ -70,6 +98,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'xss',
     message: 'outerHTML assignment is an XSS sink — use textContent or sanitize with DOMPurify',
     remediation: 'Assign textContent, or sanitize the HTML with DOMPurify before insertion.',
+    unsafeMethod: true,
   },
   {
     id: 'dangerously_set_html',
@@ -78,6 +107,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'xss',
     message: 'dangerouslySetInnerHTML can cause XSS if content is not sanitized',
     remediation: 'Sanitize the HTML with DOMPurify before passing it to dangerouslySetInnerHTML.',
+    unsafeMethod: true,
   },
   {
     id: 'document_write',
@@ -86,6 +116,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'xss',
     message: 'document.write() enables XSS — use DOM manipulation methods instead',
     remediation: 'Build nodes with DOM APIs (createElement/append) instead of document.write().',
+    unsafeMethod: true,
   },
   {
     id: 'insertAdjacentHTML_xss',
@@ -94,6 +125,21 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'xss',
     message: 'insertAdjacentHTML is an XSS sink — use insertAdjacentText() or sanitize with DOMPurify',
     remediation: 'Use insertAdjacentText(), or sanitize the HTML with DOMPurify first.',
+    unsafeMethod: true,
+  },
+  // PARITY (security-review.ts PRECEDENTS #6): a `javascript:` URI in an href/src/
+  // action attribute is an XSS vector, but it is NOT an unsafe-method form, so it
+  // is suppressed in React (.jsx/.tsx) per Claude's precedent while still firing
+  // in plain HTML/JS/TS.
+  {
+    id: 'javascript_uri_xss',
+    regex: /\b(?:href|src|xlink:href|formaction|action)\s*[:=]\s*["'`]?\s*javascript:/i,
+    severity: 'medium',
+    category: 'xss',
+    message: 'javascript: URI in a link/attribute executes script when activated — use a safe scheme or sanitize the URL',
+    remediation: 'Reject or sanitize URLs so only http(s)/mailto/relative schemes are allowed; never emit a javascript: URI.',
+    unsafeMethod: false,
+    exploit: 'An attacker supplies a `javascript:` URL that runs script in the victim\'s session when the link is clicked.',
   },
   {
     id: 'os_system_injection',
@@ -112,6 +158,33 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'command_injection',
     message: 'subprocess with shell=True enables command injection — pass arguments as a list',
     remediation: 'Drop shell=True and pass the command as an argument list.',
+  },
+  // PARITY (security-review.ts:62-67 "SQL injection via unsanitized user input"):
+  // an SQL/NoSQL string built by f-string, template-literal interpolation, or
+  // string concatenation and handed to execute()/query()/raw(). Multi-line so a
+  // statement concatenated across several lines is still caught.
+  {
+    id: 'sql_injection',
+    regex: /\b(?:execute|executemany|executescript|query|raw)\s*\(\s*(?:f["']|`[^`]*\$\{|["'][\s\S]*?["']\s*\.\s*format\s*\(|["'][\s\S]*?["']\s*[%+]|[A-Za-z_][\w.]*\s*[%+]\s*["'`])/,
+    multiline: true,
+    severity: 'high',
+    category: 'sql_injection',
+    message: 'SQL/NoSQL query built via string interpolation or concatenation enables injection — use parameterized queries',
+    remediation: 'Use parameterized queries / bound parameters (e.g. execute(sql, params)); never interpolate user input into the query string.',
+    exploit: 'An attacker injects SQL syntax through the interpolated value (e.g. `\' OR 1=1 --`) to read, modify, or destroy database rows.',
+  },
+  // PARITY (security-review.ts:62-67 "Path traversal in file operations"): a file
+  // operation whose argument contains a `../` (or `..\`) relative-traversal
+  // segment — the concrete, high-confidence traversal smell.
+  {
+    id: 'path_traversal',
+    regex: /\b(?:open|readFile|readFileSync|createReadStream|createWriteStream|writeFile|writeFileSync|appendFile|sendFile|unlink|readlink|realpath)\s*\([^)\n]*\.\.[\\/]/,
+    excludeExtensions: DOC_EXTS,
+    severity: 'high',
+    category: 'path_traversal',
+    message: 'file operation with a ../ traversal segment enables path traversal — resolve and confine the path to a base directory',
+    remediation: 'Resolve the path and verify it stays within an allow-listed base directory (e.g. path.resolve + startsWith check) before opening it.',
+    exploit: 'An attacker supplies `../../etc/passwd`-style input so the file operation escapes the intended directory and reads or writes arbitrary files.',
   },
   {
     id: 'pickle_load',
@@ -255,6 +328,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'hardcoded_secret',
     message: 'hardcoded secret / API key detected — committed credentials can be extracted from history and abused',
     remediation: 'Move the secret to an environment variable or secrets manager and rotate the exposed credential immediately.',
+    exploit: 'Anyone with read access to the source (or its git history) extracts the live credential and impersonates the service.',
   },
   {
     id: 'hardcoded_credential',
@@ -268,6 +342,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     category: 'hardcoded_secret',
     message: 'hardcoded credential assignment detected — inline passwords/tokens are exposed in source and version history',
     remediation: 'Load credentials from environment variables or a secrets manager; never inline them as string literals.',
+    exploit: 'The inline credential leaks to anyone reading the repository or its history, who can then authenticate as the owner.',
   },
 ];
 
@@ -278,13 +353,14 @@ export interface SecurityFinding {
   line: number;
   // PARITY (security-review.ts:112-123): structured per-finding fields carried
   // through from the matched pattern so consumers can render category + fix
-  // recommendation as distinct columns (not a single blob).
+  // recommendation (+ the optional exploit narrative) as distinct columns.
   category: string;
   remediation: string;
+  exploit?: string;
 }
 
 function toFinding(pattern: SecurityPattern, line: number): SecurityFinding {
-  return {
+  const finding: SecurityFinding = {
     patternId: pattern.id,
     severity: pattern.severity,
     message: pattern.message,
@@ -292,30 +368,190 @@ function toFinding(pattern: SecurityPattern, line: number): SecurityFinding {
     category: pattern.category,
     remediation: pattern.remediation,
   };
+  if (pattern.exploit) finding.exploit = pattern.exploit;
+  return finding;
+}
+
+/**
+ * PARITY (security-review.ts FALSE POSITIVE FILTERING #11): findings in files
+ * that are only unit/integration tests are not reported. Matches `*.test.*` /
+ * `*.spec.*` suffixes, `__tests__`/`test`/`tests` directories, and Python
+ * `test_*.py`/`conftest.py` conventions.
+ */
+export function isTestFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return (
+    /\.(test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts|py|go|rb|rs|java|php)$/i.test(normalized) ||
+    /(?:^|\/)(?:__tests__|__mocks__|tests?|spec)\//.test(normalized) ||
+    /(?:^|\/)test_[^/]+\.py$/.test(normalized) ||
+    /(?:^|\/)conftest\.py$/.test(normalized)
+  );
+}
+
+/**
+ * PARITY (security-review.ts PRECEDENTS: "Do not report findings in comments"):
+ * returns the index at which a line comment starts, or the line length if there
+ * is none. String literals are tracked so a comment marker inside a quoted string
+ * (e.g. the `//` in `"http://x"`) is not treated as a comment.
+ */
+function commentStart(line: string, ext: string): number {
+  const hash = HASH_COMMENT_EXTS.has(ext);
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+    if (hash) {
+      if (c === '#') return i;
+    } else if (c === '/' && line[i + 1] === '/') {
+      return i;
+    }
+  }
+  return line.length;
+}
+
+// Drop the (line-)comment tail so an in-comment match is never scanned. The code
+// portion length is preserved via the original slice, keeping line structure
+// intact when the per-line results are rejoined for multi-line matching.
+function stripComment(line: string, ext: string): string {
+  const idx = commentStart(line, ext);
+  return idx === line.length ? line : line.slice(0, idx);
+}
+
+function isJsxSuppressed(pattern: SecurityPattern, ext: string): boolean {
+  return (
+    (ext === '.jsx' || ext === '.tsx') &&
+    pattern.category === 'xss' &&
+    pattern.unsafeMethod !== true
+  );
+}
+
+function globalRegex(re: RegExp): RegExp {
+  return re.global ? re : new RegExp(re.source, re.flags + 'g');
+}
+
+// 0-based line index of a character offset within `content`.
+function lineIndexOfOffset(content: string, offset: number): number {
+  let line = 0;
+  for (let i = 0; i < offset && i < content.length; i++) {
+    if (content[i] === '\n') line++;
+  }
+  return line;
+}
+
+function pushFinding(
+  findings: SecurityFinding[],
+  seen: Set<string>,
+  pattern: SecurityPattern,
+  line: number,
+): void {
+  const key = `${pattern.id}:${line}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  findings.push(toFinding(pattern, line));
+}
+
+// Run one pattern over a prepared (comment-stripped) code view and collect the
+// matching lines. `candidateLines` is the 0-based set of line indices eligible
+// for single-line patterns (all lines for a full scan, only added lines for a
+// diff scan); multi-line patterns are scoped by `multilineLineFilter`.
+function collectMatches(
+  pattern: SecurityPattern,
+  codeLines: string[],
+  codeContent: string,
+  candidateLines: Iterable<number>,
+  multilineLineFilter: (lineIdx0: number) => boolean,
+  findings: SecurityFinding[],
+  seen: Set<string>,
+): void {
+  if (pattern.multiline) {
+    const re = globalRegex(pattern.regex);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(codeContent)) !== null) {
+      const idx0 = lineIndexOfOffset(codeContent, m.index);
+      if (multilineLineFilter(idx0)) pushFinding(findings, seen, pattern, idx0 + 1);
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+    return;
+  }
+  for (const idx0 of candidateLines) {
+    if (pattern.regex.test(codeLines[idx0])) {
+      pushFinding(findings, seen, pattern, idx0 + 1);
+    }
+  }
+}
+
+function patternAppliesTo(pattern: SecurityPattern, ext: string): boolean {
+  if (pattern.extensions && !pattern.extensions.includes(ext)) return false;
+  if (pattern.excludeExtensions && pattern.excludeExtensions.includes(ext)) return false;
+  if (isJsxSuppressed(pattern, ext)) return false;
+  return true;
 }
 
 export function scanCodeForSecurityPatterns(
   content: string,
   filePath: string,
 ): SecurityFinding[] {
+  if (isTestFile(filePath)) return [];
   const ext = path.extname(filePath).toLowerCase();
   const findings: SecurityFinding[] = [];
+  const seen = new Set<string>();
+
+  // Hoisted once (not per pattern): split + comment-strip the whole file.
+  const codeLines = content.split('\n').map(l => stripComment(l, ext));
+  const codeContent = codeLines.join('\n');
+  const allLineIndices: number[] = codeLines.map((_, i) => i);
 
   for (const pattern of SECURITY_PATTERNS) {
-    if (pattern.extensions && !pattern.extensions.includes(ext)) continue;
-    if (pattern.excludeExtensions && pattern.excludeExtensions.includes(ext)) continue;
-
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (pattern.regex.test(lines[i])) {
-        if (!findings.some(f => f.patternId === pattern.id && f.line === i + 1)) {
-          findings.push(toFinding(pattern, i + 1));
-        }
-      }
-    }
+    if (!patternAppliesTo(pattern, ext)) continue;
+    collectMatches(pattern, codeLines, codeContent, allLineIndices, () => true, findings, seen);
   }
 
   return findings;
+}
+
+/**
+ * PARITY (security-review.ts "added lines diff"): identifies the lines newly
+ * introduced by a change using a positional LCS line diff — not a Set-membership
+ * heuristic — so a dangerous line is flagged even when identical text already
+ * existed elsewhere (duplicate/boilerplate), and so line numbers are exact.
+ * Returns the 0-based indices (into `after`) of added lines, in ascending order.
+ */
+export function computeAddedLineIndices(before: string, after: string): number[] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  const n = a.length;
+  const m = b.length;
+  // dp[i][j] = length of the LCS of a[i:] and b[j:].
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const added: number[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      i++; // line removed from `before`
+    } else {
+      added.push(j); // line present only in `after`
+      j++;
+    }
+  }
+  while (j < m) {
+    added.push(j);
+    j++;
+  }
+  return added;
 }
 
 export function scanAddedLinesForPatterns(
@@ -323,32 +559,29 @@ export function scanAddedLinesForPatterns(
   after: string,
   filePath: string,
 ): SecurityFinding[] {
-  const beforeLines = new Set(before.split('\n'));
-  const afterLines = after.split('\n');
-  const addedContent: string[] = [];
-  const lineMap: number[] = [];
-
-  for (let i = 0; i < afterLines.length; i++) {
-    if (!beforeLines.has(afterLines[i])) {
-      addedContent.push(afterLines[i]);
-      lineMap.push(i + 1);
-    }
-  }
-
-  if (addedContent.length === 0) return [];
+  if (isTestFile(filePath)) return [];
+  const added = computeAddedLineIndices(before, after);
+  if (added.length === 0) return [];
+  const addedSet = new Set(added);
 
   const ext = path.extname(filePath).toLowerCase();
   const findings: SecurityFinding[] = [];
+  const seen = new Set<string>();
+
+  const codeLines = after.split('\n').map(l => stripComment(l, ext));
+  const codeContent = codeLines.join('\n');
 
   for (const pattern of SECURITY_PATTERNS) {
-    if (pattern.extensions && !pattern.extensions.includes(ext)) continue;
-    if (pattern.excludeExtensions && pattern.excludeExtensions.includes(ext)) continue;
-
-    for (let i = 0; i < addedContent.length; i++) {
-      if (pattern.regex.test(addedContent[i])) {
-        findings.push(toFinding(pattern, lineMap[i]));
-      }
-    }
+    if (!patternAppliesTo(pattern, ext)) continue;
+    collectMatches(
+      pattern,
+      codeLines,
+      codeContent,
+      added,
+      idx0 => addedSet.has(idx0),
+      findings,
+      seen,
+    );
   }
 
   return findings;
