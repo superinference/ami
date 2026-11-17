@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
+import { isEnvTruthy } from '../privacy-level';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
 import { logMcpError as logMcpServerError, logMcpDebug as logMcpServerDebug, getMcpServerLogPath, type McpLogSinkOptions } from './log-sink';
 
@@ -2641,6 +2642,30 @@ export class McpManager extends EventEmitter {
   }
 
   /**
+   * Auto-register the reserved `ide` MCP server for a code-editor-launched endpoint
+   * when the Claude-parity auto-connect waterfall ({@link shouldAutoConnectIde}) is
+   * satisfied AND the editor's SSE endpoint is resolvable from the environment
+   * ({@link resolveIdeMcpEndpoint}, {@link MCP_IDE_SSE_PORT_ENV}). The server is
+   * registered as the built-in `dynamic` scope over the `sse-ide` transport so the
+   * normal connect pass brings it up and {@link getIdeConnectionStatus} reports the
+   * editor badge. No-op (returns `false`) when the gate is off, no endpoint
+   * resolves, or an `ide` server is already registered — so it is safe to call
+   * unconditionally at startup and only fires when an editor actually exported its
+   * port. Returns `true` when it registered the IDE server.
+   */
+  autoConnectIde(opts: IdeAutoConnectOptions = {}): boolean {
+    if (this.clients.has(IDE_MCP_SERVER_NAME) || this.pendingServers.has(IDE_MCP_SERVER_NAME)) return false;
+    if (!shouldAutoConnectIde(opts)) return false;
+    const env = opts.env ?? process.env;
+    const endpoint = resolveIdeMcpEndpoint(env);
+    if (!endpoint) return false;
+    const ideName = env.TERM_PROGRAM || 'IDE';
+    this.addServer(IDE_MCP_SERVER_NAME, { command: '', transport: 'sse-ide', url: endpoint.url, ideName });
+    coreLog('mcp', `IDE auto-connect: registered editor MCP endpoint ${endpoint.url} (${ideName})`);
+    return true;
+  }
+
+  /**
    * The on-disk path of a server's persisted OAuth token file (keyed on the server
    * NAME *and* a hash of its connection config, matching Claude's `getServerKey`).
    * Single source of truth so {@link addServer} (which writes/reads it) and
@@ -3507,6 +3532,98 @@ export function getMcpIdeName(config: McpServerConfig | undefined): string | nul
 }
 
 /**
+ * Env var carrying the port of the code-editor's MCP SSE endpoint, inherited from
+ * the editor extension that launched AMI (Claude-parity `CLAUDE_CODE_SSE_PORT`).
+ * The extension passes the port through the environment because terminal
+ * multiplexers (tmux/screen) clobber `TERM_PROGRAM`, so the editor can no longer
+ * be detected from the terminal alone once inside a multiplexer.
+ */
+export const MCP_IDE_SSE_PORT_ENV = 'AMI_SSE_PORT';
+
+/**
+ * Env var that force-ENABLES (a truthy value) or force-DISABLES (an explicit
+ * falsy value) IDE MCP auto-connect, overriding every other waterfall input
+ * (Claude-parity `CLAUDE_CODE_AUTO_CONNECT_IDE`). A falsy value is a hard opt-out
+ * that wins over the config knob, the flag, and a supported terminal.
+ */
+export const MCP_IDE_AUTOCONNECT_ENV = 'AMI_AUTO_CONNECT_IDE';
+
+/** Terminals of code editors that embed a terminal and expose an MCP SSE endpoint. */
+const SUPPORTED_IDE_TERM_PROGRAMS = new Set(['vscode', 'cursor', 'windsurf']);
+
+/**
+ * True when the current terminal is a known code-editor terminal
+ * (Claude-parity `isSupportedTerminal`): VS Code / Cursor / Windsurf expose an
+ * embedded terminal whose `TERM_PROGRAM` identifies the host editor, which is a
+ * strong signal the user wants the editor integration auto-connected.
+ */
+export function isSupportedIdeTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  const tp = env.TERM_PROGRAM;
+  return tp !== undefined && SUPPORTED_IDE_TERM_PROGRAMS.has(tp.toLowerCase());
+}
+
+/**
+ * True when `v` is an EXPLICIT falsy env value (`0`/`false`/`no`/`off`,
+ * case-insensitive). An unset/empty value is NOT "defined falsy" — it simply
+ * leaves the decision to the rest of the waterfall (Claude-parity
+ * `isEnvDefinedFalsy`, the hard opt-out companion to {@link isEnvTruthy}).
+ */
+export function isEnvDefinedFalsy(v: string | undefined): boolean {
+  if (v === undefined) return false;
+  const s = v.trim().toLowerCase();
+  return s === '0' || s === 'false' || s === 'no' || s === 'off';
+}
+
+/** Inputs to the IDE auto-connect waterfall ({@link shouldAutoConnectIde}). */
+export interface IdeAutoConnectOptions {
+  /** The persisted `autoConnectIde` config knob (EngineConfig.autoConnectIde). */
+  configEnabled?: boolean;
+  /** The `--ide` CLI flag (one-shot force-enable for this run). */
+  flag?: boolean;
+  /** An editor extension is pending installation (a connect intent is implied). */
+  ideToInstall?: boolean;
+  /** Environment to read the port / override env vars + TERM_PROGRAM from. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Decide whether to auto-connect to a code-editor-launched MCP endpoint, matching
+ * Claude Code's `addIde` waterfall (useIDEIntegration.ts:L32-36):
+ *   (config knob OR `--ide` flag OR a supported editor terminal OR an inherited
+ *    SSE port OR a pending extension install OR a truthy `AMI_AUTO_CONNECT_IDE`)
+ *   AND NOT an explicit falsy `AMI_AUTO_CONNECT_IDE`.
+ * The explicit-falsy override is a HARD opt-out that wins over every enabling input.
+ */
+export function shouldAutoConnectIde(opts: IdeAutoConnectOptions = {}): boolean {
+  const env = opts.env ?? process.env;
+  const override = env[MCP_IDE_AUTOCONNECT_ENV];
+  if (isEnvDefinedFalsy(override)) return false;
+  return Boolean(
+    opts.configEnabled ||
+    opts.flag ||
+    isSupportedIdeTerminal(env) ||
+    env[MCP_IDE_SSE_PORT_ENV] ||
+    opts.ideToInstall ||
+    isEnvTruthy(override),
+  );
+}
+
+/**
+ * Resolve the code-editor's MCP SSE endpoint URL from the inherited
+ * {@link MCP_IDE_SSE_PORT_ENV} port, or `null` when the port is unset / not a
+ * valid 1..65535 TCP port. The editor extension serves MCP over a loopback SSE
+ * endpoint; AMI connects to `http://127.0.0.1:<port>/sse` (Claude-parity local
+ * IDE transport). Loopback-only — never a remote host.
+ */
+export function resolveIdeMcpEndpoint(env: NodeJS.ProcessEnv = process.env): { url: string } | null {
+  const raw = env[MCP_IDE_SSE_PORT_ENV];
+  if (!raw) return null;
+  const port = parseInt(raw, 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return { url: `http://127.0.0.1:${port}/sse` };
+}
+
+/**
  * Derived tri-state (+null) IDE connection status a UI badge renders
  * (Claude-parity `IdeStatus`, useIdeConnectionStatus.ts): `null` means no editor
  * is connected (no `ide` server at all). Present-but-not-connected buckets as
@@ -3788,18 +3905,24 @@ export function sanitizeMcpToolSchema(schema: unknown): object {
  * Expand `${VAR}`, `${VAR:-default}`, and bare `$VAR` references in a string.
  * Returns the expanded string plus the names of referenced variables that were
  * both undefined AND had no `:-default` (so callers can surface missing-var
- * diagnostics). A missing variable still expands to '' (established behavior);
- * a `${VAR:-default}` with VAR undefined expands to the default and is NOT
- * reported missing.
+ * diagnostics). An unresolved reference (undefined var with no `:-default`)
+ * leaves the ORIGINAL token (`${VAR}` / `$VAR`) in place rather than collapsing
+ * to '' (Claude-parity, envExpansion.ts:L30-31) so the broken placeholder stays
+ * visible for debugging, in tandem with the missing-var diagnostic — the absence
+ * of a value is then distinguishable from an intentionally-empty one. A
+ * `${VAR:-default}` with VAR undefined expands to the default and is NOT reported
+ * missing.
  */
 export function expandEnvVarsTracked(value: string): { expanded: string; missingVars: string[] } {
   const missingVars: string[] = [];
-  const expanded = value.replace(/\$\{([^}]+)\}|\$([A-Z_][A-Z0-9_]*)/gi, (_, braced, bare) => {
+  const expanded = value.replace(/\$\{([^}]+)\}|\$([A-Z_][A-Z0-9_]*)/gi, (match, braced, bare) => {
     if (bare !== undefined) {
       const v = process.env[bare];
       if (v !== undefined) return v;
       missingVars.push(bare);
-      return '';
+      // Leave the original `$VAR` token in place (Claude-parity) so the unresolved
+      // placeholder is visible rather than silently blanked.
+      return match;
     }
     // Braced form may carry a `:-default`. Split on the FIRST `:-` so a default
     // value may itself contain `:-`.
@@ -3810,7 +3933,9 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
     if (v !== undefined) return v;
     if (def !== undefined) return def;
     missingVars.push(name);
-    return '';
+    // Leave the original `${VAR}` token in place (Claude-parity) so the unresolved
+    // placeholder is visible rather than silently blanked.
+    return match;
   });
   return { expanded, missingVars };
 }

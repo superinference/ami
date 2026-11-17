@@ -43,6 +43,21 @@ describe('missing env-var detection in MCP config (H35)', () => {
     assert.ok(mgr.getAllConfigWarnings().srv);
   });
 
+  it('preserves the literal ${VAR} token in the registered config when unset (Claude-parity debuggability)', () => {
+    const cfg = writeConfig({
+      mcpServers: {
+        srv: { command: 'run', args: ['--token', '${__MCP_MISSING_VAR}'], env: { KEY: '${__MCP_ALSO_MISSING}' } },
+      },
+    });
+    const mgr = new McpManager();
+    mgr.loadFromConfig(cfg);
+    const stored = mgr.getServerConfig('srv');
+    assert.ok(stored);
+    // The broken placeholder stays visible end-to-end rather than collapsing to ''.
+    assert.deepEqual(stored!.args, ['--token', '${__MCP_MISSING_VAR}']);
+    assert.equal(stored!.env?.KEY, '${__MCP_ALSO_MISSING}');
+  });
+
   it('records no warning when all referenced vars are set (or defaulted)', () => {
     process.env.__MCP_PRESENT_VAR = 'v';
     const cfg = writeConfig({

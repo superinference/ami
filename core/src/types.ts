@@ -1185,6 +1185,14 @@ export interface EngineConfig {
   maxTurnsCeiling?: number;
   /** Max time (ms) to wait for MCP servers to connect before the first submit proceeds (default 3000). */
   mcpStartupBudgetMs?: number;
+  /**
+   * Auto-connect to a code-editor-launched MCP endpoint at startup (Claude-parity
+   * `autoConnectIde`). One input to the auto-connect waterfall — a supported editor
+   * terminal, an inherited `AMI_SSE_PORT`, or a truthy `AMI_AUTO_CONNECT_IDE` also
+   * enable it; an explicit falsy `AMI_AUTO_CONNECT_IDE` is a hard opt-out. Only
+   * fires when the editor actually exported its SSE port.
+   */
+  autoConnectIde?: boolean;
   /** Session-wide cap on web_search tool calls (default 200) to stop runaway loops. */
   maxWebSearchesPerSession?: number;
   /** Cap (chars) on inline bash stdout before it is spilled to a file. */
