@@ -218,12 +218,27 @@ export function isStanceSkill(skill: SkillDefinition): boolean {
 }
 
 /**
- * Where an agent definition was loaded from, in ascending priority order. A
- * higher-priority same-named agent SHADOWS a lower one (project > user > plugin >
- * built-in). Mirrors Claude Code's agent source groups so `/agents` can group and
- * flag shadowed entries instead of silently dropping the loser.
+ * Where an agent definition was loaded from (parity with Claude Code's agent source
+ * tiers — `built-in`, `plugin`, `policySettings`, `userSettings`, `localSettings`,
+ * `projectSettings`, `flagSettings`). A higher-priority same-named agent SHADOWS a
+ * lower one; the load order in `SkillManager.loadAll` realizes the precedence. The
+ * AMI tiers:
+ *   - `built-in` — the bundled baseline agents.
+ *   - `plugin`   — contributed by an installed plugin bundle.
+ *   - `managed`  — enterprise/policy-managed (Claude's `policySettings`): admin-provided
+ *                  and READ-ONLY (see {@link AGENT_NONEDITABLE_SOURCES}).
+ *   - `user`     — the user's home-level agents (`~/.claude`/`~/.ami`), shared across projects.
+ *   - `local`    — project-LOCAL, non-shared agents (Claude's `localSettings`): editable,
+ *                  override `user`, and are not committed to the team's shared config.
+ *   - `project`  — the project's committed/shared agents (`.claude`/`.ami`), the team default.
+ *   - `flag`     — injected via a CLI flag for a single run (Claude's `flagSettings`):
+ *                  highest-priority and READ-ONLY (a per-run override, not a persisted file).
+ * Mirrors Claude Code's agent source groups so `/agents` can group and flag shadowed
+ * entries instead of silently dropping the loser.
  */
-export const AGENT_SOURCES = ['built-in', 'plugin', 'user', 'project'] as const;
+export const AGENT_SOURCES = [
+  'built-in', 'plugin', 'managed', 'user', 'local', 'project', 'flag',
+] as const;
 export type AgentSource = (typeof AGENT_SOURCES)[number];
 
 /**
@@ -243,8 +258,11 @@ export type AgentSourceSelector = AgentSource | 'all';
  *   - `'all'`      → `'All sources'`  (the aggregate selector)
  *   - `'built-in'` → `'Built-in'`
  *   - `'plugin'`   → `'Plugin'`
+ *   - `'managed'`  → `'Managed'`      (enterprise/policy-managed, read-only)
  *   - `'user'`     → `'User'`
+ *   - `'local'`    → `'Local'`        (project-local, not shared)
  *   - `'project'`  → `'Project'`
+ *   - `'flag'`     → `'Flag'`         (CLI-flag-injected, read-only)
  * An unknown/absent source yields `'Unknown'` so a malformed provenance never
  * surfaces as a blank label. This is the ONE canonical agent-source label map:
  * the SkillManager (common/) derives its `AGENT_SOURCE_LABELS` + grouped
@@ -256,8 +274,11 @@ export function getAgentSourceDisplayName(source: AgentSourceSelector | undefine
     case 'all': return 'All sources';
     case 'built-in': return 'Built-in';
     case 'plugin': return 'Plugin';
+    case 'managed': return 'Managed';
     case 'user': return 'User';
+    case 'local': return 'Local';
     case 'project': return 'Project';
+    case 'flag': return 'Flag';
     default: return 'Unknown';
   }
 }
@@ -1903,6 +1924,137 @@ export function requiredMcpServerReadiness(
 }
 
 // ---------------------------------------------------------------------------
+// Per-agent MCP server specs — classify an agent's frontmatter `mcpServers` into
+// the REFERENCED (by name, shared with the parent, NOT torn down) vs INLINE
+// (agent-specific single-key object, connected fresh and torn down on finish)
+// halves (parity with Claude Code's AgentTool `initializeAgentMcpServers`, which
+// per spec either looks up an existing config by name — a memoized/shared client —
+// or treats a single-key `{ [name]: config }` object as a newly-created client that
+// is the ONLY kind cleaned up when the agent completes). Agent MCP servers are
+// ADDITIVE to the parent's clients. Pure core building block over AMI's
+// {@link McpServerConfig}; the task tool's agent-spawn path wires the referenced
+// lookup + inline connect/cleanup from this classification.
+// ---------------------------------------------------------------------------
+
+/**
+ * One agent-frontmatter MCP server spec (parity with Claude Code's
+ * `AgentDefinition.mcpServers` element): either a STRING that REFERENCES an
+ * already-configured server by name (shared with the parent context, memoized, and
+ * NOT torn down when the agent finishes), or an INLINE single-key
+ * `{ [name]: config }` object (an agent-specific server connected fresh for the
+ * agent and torn down when it finishes).
+ */
+export type AgentMcpServerSpec = string | Record<string, McpServerConfig>;
+
+/** The raw frontmatter value an agent's `mcpServers`/`mcp-servers` may carry: the
+ *  existing AMI inline map form (`{ name: config }`), OR Claude Code's array of
+ *  referenced-by-name strings and/or inline single-key objects. */
+export type RawAgentMcpServers =
+  | Record<string, McpServerConfig>
+  | AgentMcpServerSpec[]
+  | undefined;
+
+/** Structured classification of an agent's MCP server specs. */
+export interface ClassifiedAgentMcpServers {
+  /** Server names referenced by STRING — resolved from the parent/global MCP config,
+   *  shared (memoized) with the parent, and NOT cleaned up when the agent finishes.
+   *  In input order, de-duplicated. */
+  referenced: string[];
+  /** INLINE agent-specific servers (single-key objects, or the inline-map form's
+   *  entries) — connected fresh for the agent and torn down when it finishes. In
+   *  input order; a later duplicate server name replaces an earlier one (last-wins). */
+  inline: Array<{ name: string; config: McpServerConfig }>;
+  /** Specs that could not be classified (a blank/whitespace reference name, an empty
+   *  or multi-key inline object, or a non-string/non-object element) paired with a
+   *  human-readable reason — surfaced as a load/spawn warning instead of silently
+   *  connecting a garbage server. */
+  invalid: Array<{ index: number; reason: string }>;
+}
+
+/**
+ * Classify an agent's frontmatter MCP server specs into the referenced vs inline
+ * halves (parity with Claude Code's `initializeAgentMcpServers` per-spec handling).
+ *
+ * Accepts both the existing AMI INLINE-MAP form (`{ name: config }` — every entry is
+ * treated as an inline, agent-specific server) and Claude Code's ARRAY form (each
+ * element a referenced-by-name string or a single-key inline object), so a loader can
+ * normalize either shape through one canonical classifier:
+ *   - a non-empty STRING element → a {@link ClassifiedAgentMcpServers.referenced} name
+ *     (shared with the parent, not cleaned up); a blank/whitespace string is `invalid`.
+ *   - a single-key `{ [name]: config }` object whose `config` is a non-null object →
+ *     an {@link ClassifiedAgentMcpServers.inline} server (cleaned up on finish); an
+ *     empty object, a multi-key object, or a non-object config is `invalid`.
+ *   - anything else (number/boolean/null/array element) → `invalid`.
+ *
+ * `referenced` is de-duplicated in input order; `inline` keeps input order with a
+ * later duplicate server name replacing an earlier one (last-wins, matching the
+ * inline-map's natural key semantics). Deep per-field config validation is left to
+ * the caller (common's `validateMcpServerConfigShape`); this stays a dependency-light
+ * core classifier that only distinguishes the two cleanup regimes + obvious garbage.
+ */
+export function classifyAgentMcpServerSpecs(raw: RawAgentMcpServers): ClassifiedAgentMcpServers {
+  const referenced: string[] = [];
+  const inline: Array<{ name: string; config: McpServerConfig }> = [];
+  const invalid: Array<{ index: number; reason: string }> = [];
+  const seenRef = new Set<string>();
+  const inlineIndex = new Map<string, number>(); // server name → position in `inline`
+
+  const addInline = (name: string, config: McpServerConfig): void => {
+    const at = inlineIndex.get(name);
+    if (at !== undefined) {
+      inline[at] = { name, config }; // last-wins on a repeated inline server name
+      return;
+    }
+    inlineIndex.set(name, inline.length);
+    inline.push({ name, config });
+  };
+
+  if (!raw) return { referenced, inline, invalid };
+
+  // Normalize the inline-MAP form into an array of single-key objects so both shapes
+  // share the one classification loop below (order follows the map's key order).
+  const specs: unknown[] = Array.isArray(raw)
+    ? raw
+    : Object.entries(raw).map(([name, config]) => ({ [name]: config }));
+
+  specs.forEach((spec, index) => {
+    if (typeof spec === 'string') {
+      const name = spec.trim();
+      if (name.length === 0) {
+        invalid.push({ index, reason: 'blank MCP server reference name' });
+        return;
+      }
+      if (!seenRef.has(name)) {
+        seenRef.add(name);
+        referenced.push(name);
+      }
+      return;
+    }
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+      invalid.push({ index, reason: 'expected a server name string or a single-key { name: config } object' });
+      return;
+    }
+    const entries = Object.entries(spec as Record<string, unknown>);
+    if (entries.length !== 1) {
+      invalid.push({ index, reason: `inline MCP server must have exactly one key (got ${entries.length})` });
+      return;
+    }
+    const [name, config] = entries[0]!;
+    if (name.trim().length === 0) {
+      invalid.push({ index, reason: 'blank inline MCP server name' });
+      return;
+    }
+    if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+      invalid.push({ index, reason: `inline MCP server "${name}" has a non-object config` });
+      return;
+    }
+    addInline(name, config as McpServerConfig);
+  });
+
+  return { referenced, inline, invalid };
+}
+
+// ---------------------------------------------------------------------------
 // Named positional-argument substitution — bind a skill/command's declared
 // `arguments` names to their positional token values in the body (parity with
 // Claude Code's `substituteArguments`, which replaces BARE `$name` as well as
@@ -2167,13 +2319,14 @@ export function substituteNamedArgPlaceholders(
 /**
  * Agent provenance tokens whose definitions are READ-ONLY (not user-editable) in
  * the `/agents` editor (parity with Claude Code's AgentsMenu `isEditable`, which
- * excludes `built-in`, `plugin`, and the CLI-flag-injected source). Kept as a
- * STRING set — not {@link AgentSource}-typed — so the `flag` (CLI-arg) tier is
- * forward-compatibly non-editable even before it is added to {@link AGENT_SOURCES};
- * a user/project/local/managed (policy) agent is editable.
+ * excludes `built-in`, `plugin`, the policy-managed source, and the CLI-flag-injected
+ * source). Kept as a STRING set — not {@link AgentSource}-typed — so a forward-added
+ * non-editable tier stays non-editable; a `user`/`project`/`local` agent is editable
+ * (an author-owned file), while a `managed` (enterprise/policy) or `flag` (per-run CLI)
+ * agent is not.
  */
 export const AGENT_NONEDITABLE_SOURCES: ReadonlySet<string> = new Set([
-  'built-in', 'plugin', 'flag',
+  'built-in', 'plugin', 'flag', 'managed',
 ]);
 
 /**
@@ -2211,14 +2364,17 @@ export function agentIdentityKey(
 /**
  * The recommended persistent-memory {@link AgentMemoryScope} for an agent given
  * WHERE it lives (parity with Claude Code's MemoryStep, which recommends the scope
- * matching the agent's location — a user-scoped agent → user memory, otherwise →
- * project memory). A `'user'`-sourced agent recommends `'user'`; every other source
- * (project/local/managed/plugin/built-in/absent) recommends `'project'`.
+ * matching the agent's location). A `'user'`-sourced agent recommends `'user'`
+ * memory; a `'local'`-sourced (project-local, non-shared) agent recommends `'local'`
+ * memory so its persistence stays as unshared as the agent itself; every other source
+ * (project/managed/plugin/built-in/flag/absent) recommends `'project'` memory.
  */
 export function recommendedAgentMemoryScope(
   source: AgentSource | undefined,
 ): AgentMemoryScope {
-  return source === 'user' ? 'user' : 'project';
+  if (source === 'user') return 'user';
+  if (source === 'local') return 'local';
+  return 'project';
 }
 
 /** One selectable agent-memory-scope option for the creation wizard: the scope
