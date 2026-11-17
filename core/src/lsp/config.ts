@@ -58,6 +58,18 @@ export interface LspServerConfig {
   /** Max crash-recovery respawns before refusing to restart. */
   maxRestarts?: number;
   /**
+   * Selection priority when MORE THAN ONE configured server (under DIFFERENT keys)
+   * claims the same file extension — e.g. a plugin-contributed server that should
+   * win over the built-in default, or two servers for the same language. Higher
+   * wins; the default is `0`. Ties fall back to a stable iteration order (built-in
+   * defaults first, then registered), so overriding a default's extension from a
+   * different key requires an explicit higher priority. (Registering under the
+   * SAME key already overrides a default outright, independent of priority.)
+   * Mirrors Claude Code's "multiple servers per extension with ordering/priority"
+   * (`extensionMap` stores a LIST; selection is explicitly extensible to priority).
+   */
+  priority?: number;
+  /**
    * Lowercased file-extension → languageId map driving extension routing and
    * the `languageId` sent in `didOpen`. Keys include the leading dot (".ts").
    */
@@ -125,37 +137,53 @@ export function getAllLspServers(): Record<string, LspServerConfig> {
 }
 
 /**
+ * Every configured server that handles `ext`, ordered by selection preference:
+ * highest `priority` first (default 0), ties broken by stable insertion order so
+ * a registered server wins over the built-in default. Returns `[]` when none
+ * handle the extension. This is the single ranking used by BOTH the language-key
+ * resolver and the `languageId` lookup so they can never disagree on which server
+ * owns an extension. Mirrors Claude Code's per-extension server LIST + ordering.
+ */
+export function candidatesForExtension(
+  ext: string,
+  servers: Record<string, LspServerConfig> = getAllLspServers(),
+): Array<{ name: string; config: LspServerConfig }> {
+  const needle = ext.toLowerCase();
+  const matches: Array<{ name: string; config: LspServerConfig; index: number }> = [];
+  let index = 0;
+  for (const [name, config] of Object.entries(servers)) {
+    if (config.extensionToLanguage && needle in config.extensionToLanguage) {
+      matches.push({ name, config, index });
+    }
+    index++;
+  }
+  matches.sort((a, b) => (b.config.priority ?? 0) - (a.config.priority ?? 0) || a.index - b.index);
+  return matches.map(({ name, config }) => ({ name, config }));
+}
+
+/**
  * Resolve the language-server KEY for a file extension (with leading dot,
- * lowercased) by scanning every server's `extensionToLanguage` map. Returns
- * null when no configured server handles the extension.
+ * lowercased) — the highest-priority server that handles it. Returns null when
+ * no configured server handles the extension.
  */
 export function resolveLanguageForExtension(
   ext: string,
   servers: Record<string, LspServerConfig> = getAllLspServers(),
 ): string | null {
-  const needle = ext.toLowerCase();
-  for (const [name, config] of Object.entries(servers)) {
-    if (config.extensionToLanguage && needle in config.extensionToLanguage) {
-      return name;
-    }
-  }
-  return null;
+  return candidatesForExtension(ext, servers)[0]?.name ?? null;
 }
 
 /**
  * The `languageId` to send in `didOpen` for a file extension, e.g.
- * ".tsx" → "typescriptreact". Falls back to "plaintext".
+ * ".tsx" → "typescriptreact". Uses the SAME priority-ranked winner as
+ * {@link resolveLanguageForExtension}. Falls back to "plaintext".
  */
 export function languageIdForExtension(
   ext: string,
   servers: Record<string, LspServerConfig> = getAllLspServers(),
 ): string {
-  const needle = ext.toLowerCase();
-  for (const config of Object.values(servers)) {
-    const map = config.extensionToLanguage;
-    if (map && needle in map) return map[needle];
-  }
-  return 'plaintext';
+  const winner = candidatesForExtension(ext, servers)[0];
+  return winner?.config.extensionToLanguage?.[ext.toLowerCase()] ?? 'plaintext';
 }
 
 /**
@@ -206,6 +234,7 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (typeof r.shutdownTimeout === 'number') config.shutdownTimeout = r.shutdownTimeout;
   if (typeof r.restartOnCrash === 'boolean') config.restartOnCrash = r.restartOnCrash;
   if (typeof r.maxRestarts === 'number') config.maxRestarts = r.maxRestarts;
+  if (typeof r.priority === 'number') config.priority = r.priority;
   if (r.extensionToLanguage && typeof r.extensionToLanguage === 'object') {
     const map: Record<string, string> = {};
     for (const [ext, lang] of Object.entries(r.extensionToLanguage as Record<string, unknown>)) {

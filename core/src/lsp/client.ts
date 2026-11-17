@@ -159,6 +159,16 @@ export class LSPClient implements DiagnosticSource {
   /** Per-language crash-recovery counter (reset to 0 on a successful init). */
   private crashCounts: Map<string, number> = new Map();
   /**
+   * In-flight `initialize` handshakes keyed by language. A server is added to the
+   * `servers` map BEFORE its handshake completes (so `onData` can route the
+   * server's `initialize` reply), which means a second concurrent caller would
+   * otherwise observe a half-open entry and fail in `sendRequest` with
+   * "server is starting". Tracking the handshake promise lets every concurrent
+   * `ensureServer`/`request` for the same language await the SAME result — the
+   * AMI analogue of Claude Code's generation-guarded init + `waitForInitialization`.
+   */
+  private handshakes: Map<string, Promise<boolean>> = new Map();
+  /**
    * Retained per-language lifecycle status. Unlike the live `servers` map (which a
    * crash removes), this survives a crash so the failure state + reason stay
    * attributable — the AMI analogue of Claude's per-`LSPServerInstance` state.
@@ -262,8 +272,34 @@ export class LSPClient implements DiagnosticSource {
     });
   }
 
+  /**
+   * Ensure the language server for `language` is connected and its initialize
+   * handshake has completed, returning `true` only once it is genuinely ready.
+   *
+   * Concurrency: a fully-initialized server is reused immediately; otherwise
+   * callers that arrive while a handshake is still in flight await the SAME
+   * handshake promise (no duplicate spawn, no half-open "starting" race). This is
+   * the init-pending await Claude's manager performs before answering a request.
+   */
   async ensureServer(language: string, cwd: string): Promise<boolean> {
-    if (this.servers.has(language)) return true;
+    if (this.servers.get(language)?.initialized) return true;
+    const inflight = this.handshakes.get(language);
+    if (inflight) return inflight;
+    const started = this.startServer(language, cwd);
+    this.handshakes.set(language, started);
+    try {
+      return await started;
+    } finally {
+      this.handshakes.delete(language);
+    }
+  }
+
+  /**
+   * Spawn + handshake a single language server. Only ever invoked (and serialized
+   * per language) through {@link ensureServer}, which de-duplicates concurrent
+   * callers via the `handshakes` map; callers must not invoke this directly.
+   */
+  private async startServer(language: string, cwd: string): Promise<boolean> {
     const config = this.configFor(language);
     if (!config) return false;
 
@@ -878,7 +914,13 @@ export class LSPClient implements DiagnosticSource {
 
   private ensureDidOpen(conn: ServerConn, filePath: string, content?: string): void {
     const uri = this.fileUri(filePath);
-    if (this.openedDocuments.has(uri)) return;
+    if (this.openedDocuments.has(uri)) {
+      // Lifecycle introspection: the didOpen short-circuit is otherwise invisible,
+      // so a developer cannot tell a skipped-because-already-open from a never-sent
+      // didOpen. Mirrors Claude's "File already open, skipping didOpen" debug line.
+      log('lsp', `[LSP ${conn.language}] file already open, skipping didOpen: ${filePath}`, undefined, 'debug');
+      return;
+    }
     const languageId = languageIdForExtension(path.extname(filePath));
     let text = content;
     if (text === undefined) {
@@ -897,6 +939,11 @@ export class LSPClient implements DiagnosticSource {
     });
     this.openedDocuments.add(uri);
     this.documentVersions.set(uri, 1);
+    // Lifecycle introspection: record which document was opened and with which
+    // languageId, so a "server saw the file but produced no diagnostics" case is
+    // distinguishable from "the file was never synced" (parity with Claude's
+    // per-sync debug logging in LSPServerManager).
+    log('lsp', `[LSP ${conn.language}] didOpen ${filePath} (languageId=${languageId})`, undefined, 'debug');
   }
 
   async notifyDidChange(filePath: string, content: string, cwd: string): Promise<void> {
@@ -916,6 +963,7 @@ export class LSPClient implements DiagnosticSource {
       textDocument: { uri, version },
       contentChanges: [{ text: content }],
     }, 'change', filePath);
+    log('lsp', `[LSP ${lang}] didChange ${filePath} (version=${version})`, undefined, 'debug');
   }
 
   async notifyDidSave(filePath: string, cwd: string): Promise<void> {
@@ -926,6 +974,7 @@ export class LSPClient implements DiagnosticSource {
     const conn = this.servers.get(lang)!;
     this.ensureDidOpen(conn, filePath);
     this.syncNotify(conn, 'textDocument/didSave', { textDocument: { uri: this.fileUri(filePath) } }, 'save', filePath);
+    log('lsp', `[LSP ${lang}] didSave ${filePath}`, undefined, 'debug');
   }
 
   // ---- diagnostics (DiagnosticSource) -----------------------------------
@@ -1008,6 +1057,11 @@ export class LSPClient implements DiagnosticSource {
     // Snapshot the open documents before we clear them — gracefulStop needs them
     // to emit `textDocument/didClose` for each server it is tearing down.
     const openUris = [...this.openedDocuments];
+    // Lifecycle introspection: a one-line teardown summary so a developer can see
+    // the subsystem shutting down and how many servers it is stopping.
+    if (this.servers.size > 0) {
+      log('lsp', `[LSP] shutting down ${this.servers.size} language server(s): ${[...this.servers.keys()].join(', ')}`, undefined, 'debug');
+    }
     for (const [language, conn] of this.servers) {
       this.gracefulStop(language, conn, openUris);
     }
@@ -1016,6 +1070,7 @@ export class LSPClient implements DiagnosticSource {
     this.openedDocuments.clear();
     this.documentVersions.clear();
     this.crashCounts.clear();
+    this.handshakes.clear();
     this.serverStatus.clear();
     this.pendingInits = 0;
     this.diagnosticsByUri.clear();
