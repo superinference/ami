@@ -151,7 +151,7 @@ export { ProviderCoordinator } from './provider-coordinator';
 export type { CoordinatorState } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
-export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename } from './logger';
+export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites } from './logger';
 export type { LogTailResult } from './logger';
 export { createBufferedWriter } from './buffered-writer';
 export type { BufferedWriter, BufferedWriterOptions, WriteFn } from './buffered-writer';

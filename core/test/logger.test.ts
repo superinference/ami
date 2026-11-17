@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites, runtimeHooks } from '../src/logger';
 import { AMI_VERSION } from '../src/version';
 
 // ---------------------------------------------------------------------------
@@ -1601,5 +1601,216 @@ describe('batched diagnostics channel', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debug-mode enable gate: DEBUG/DEBUG_SDK/AMI_DEBUG env + --debug/-d/--debug=
+// argv flags + mid-session enableDebugLogging() (parity: Claude Code isDebugMode
+// / enableDebugLogging).
+// ---------------------------------------------------------------------------
+describe('isDebugMode / enableDebugLogging', () => {
+  const ORIG = { ...process.env };
+  const ORIG_ARGV = [...process.argv];
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    process.env = { ...ORIG };
+    process.argv = [...ORIG_ARGV];
+  });
+
+  it('is off by default (no env/flag/runtime enable)', () => {
+    __resetLoggerForTest();
+    delete process.env.DEBUG;
+    delete process.env.DEBUG_SDK;
+    delete process.env.AMI_DEBUG;
+    delete process.env.AMI_DEBUG_TO_STDERR;
+    process.argv = ['node', 'ami'];
+    assert.equal(isDebugMode(), false);
+  });
+
+  for (const v of ['DEBUG', 'DEBUG_SDK', 'AMI_DEBUG'] as const) {
+    it(`is on when ${v} is truthy`, () => {
+      __resetLoggerForTest();
+      process.argv = ['node', 'ami'];
+      process.env[v] = '1';
+      assert.equal(isDebugMode(), true);
+    });
+  }
+
+  for (const flag of ['--debug', '-d', '--debug=api']) {
+    it(`is on when argv contains ${flag}`, () => {
+      __resetLoggerForTest();
+      delete process.env.DEBUG;
+      delete process.env.DEBUG_SDK;
+      delete process.env.AMI_DEBUG;
+      process.argv = ['node', 'ami', flag];
+      assert.equal(isDebugMode(), true);
+    });
+  }
+
+  it('enableDebugLogging() turns it on mid-session and reports prior state', () => {
+    __resetLoggerForTest();
+    delete process.env.DEBUG;
+    delete process.env.DEBUG_SDK;
+    delete process.env.AMI_DEBUG;
+    delete process.env.AMI_DEBUG_TO_STDERR;
+    process.argv = ['node', 'ami'];
+    assert.equal(isDebugMode(), false);
+    const wasActive = enableDebugLogging();
+    assert.equal(wasActive, false);
+    assert.equal(isDebugMode(), true);
+    // Idempotent: a second call reports it was already active.
+    assert.equal(enableDebugLogging(), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary gate: NODE_ENV=test suppression + non-node-runtime guard
+// (parity: Claude Code shouldLogDebugMessage prelude).
+// ---------------------------------------------------------------------------
+describe('persistence boundary gate', () => {
+  const ORIG = { ...process.env };
+  const ORIG_ARGV = [...process.argv];
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    process.env = { ...ORIG };
+    process.argv = [...ORIG_ARGV];
+  });
+
+  it('suppresses at-rest writes when NODE_ENV=test and debug mode is off', () => {
+    __resetLoggerForTest();
+    process.env.NODE_ENV = 'test';
+    delete process.env.DEBUG;
+    delete process.env.DEBUG_SDK;
+    delete process.env.AMI_DEBUG;
+    delete process.env.AMI_DEBUG_TO_STDERR;
+    process.argv = ['node', 'ami'];
+    let appended = false;
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'suppressed under test env');
+    assert.equal(appended, false);
+  });
+
+  it('still writes under NODE_ENV=test when debug mode is forced on', () => {
+    __resetLoggerForTest();
+    process.env.NODE_ENV = 'test';
+    process.env.AMI_DEBUG = '1';
+    let appended = false;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'forced on');
+    assert.equal(appended, true);
+  });
+
+  it('writes normally when NODE_ENV is not test', () => {
+    __resetLoggerForTest();
+    delete process.env.NODE_ENV;
+    let appended = false;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'normal write');
+    assert.equal(appended, true);
+  });
+
+  it('is a no-op in a non-node/degraded runtime (nodeVersion undefined)', () => {
+    __resetLoggerForTest();
+    delete process.env.NODE_ENV;
+    let appended = false;
+    mock.method(runtimeHooks, 'nodeVersion', () => undefined);
+    mock.method(fsHooks, 'appendFileSync', () => { appended = true; });
+    log('comp', 'degraded runtime');
+    assert.equal(appended, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deferred write queue: buffer-on-failure + replay-in-order on next success
+// (parity: Claude Code errorQueue + drain-on-attach).
+// ---------------------------------------------------------------------------
+describe('deferred write queue', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    process.env = { ...ORIG };
+  });
+
+  it('buffers a line when the write keeps failing, then replays it in order on recovery', () => {
+    __resetLoggerForTest();
+    delete process.env.NODE_ENV;
+    const appended: string[] = [];
+    let failing = true;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (_f: string, line: string) => {
+      if (failing) throw new Error('EACCES');
+      appended.push(String(line));
+    });
+    // First line: both the write and the mkdir+retry fail → deferred, not dropped.
+    log('comp', 'first');
+    assert.equal(appended.length, 0);
+    // Recovery: the sink becomes writable. The next write replays the deferred
+    // line in order BEFORE the new line.
+    failing = false;
+    log('comp', 'second');
+    assert.equal(appended.length, 2);
+    assert.ok(appended[0]!.includes('first'));
+    assert.ok(appended[1]!.includes('second'));
+  });
+
+  it('flushPendingLogWrites() is an idempotent no-op when nothing is queued', () => {
+    __resetLoggerForTest();
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    assert.equal(flushPendingLogWrites(), 0);
+    assert.equal(flushPendingLogWrites(), 0);
+  });
+
+  it('bounds the queue, dropping the oldest beyond the cap', () => {
+    __resetLoggerForTest();
+    delete process.env.NODE_ENV;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let failing = true;
+    const appended: string[] = [];
+    mock.method(fsHooks, 'appendFileSync', (_f: string, line: string) => {
+      if (failing) throw new Error('EACCES');
+      appended.push(String(line));
+    });
+    // Defer 150 lines while unwritable; the queue caps at 100 (oldest evicted).
+    for (let i = 0; i < 150; i++) log('comp', `line-${i}`);
+    assert.equal(appended.length, 0);
+    failing = false;
+    const drained = flushPendingLogWrites();
+    assert.equal(drained, 100);
+    // The oldest 50 were evicted; the first replayed line is line-50.
+    assert.ok(appended[0]!.includes('line-50'));
+    assert.ok(appended[99]!.includes('line-149'));
+  });
+
+  it('stops draining at the first still-failing line, keeping the rest buffered', () => {
+    __resetLoggerForTest();
+    delete process.env.NODE_ENV;
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    let failing = true;
+    mock.method(fsHooks, 'appendFileSync', () => { if (failing) throw new Error('EACCES'); });
+    log('comp', 'a');
+    log('comp', 'b');
+    failing = false;
+    // Allow exactly one successful append, then fail again mid-drain.
+    let allowed = 1;
+    mock.method(fsHooks, 'appendFileSync', () => {
+      if (allowed <= 0) throw new Error('EACCES');
+      allowed -= 1;
+    });
+    assert.equal(flushPendingLogWrites(), 1);
+    // One line remains buffered; a later full-recovery drains it.
+    mock.method(fsHooks, 'appendFileSync', () => undefined);
+    assert.equal(flushPendingLogWrites(), 1);
+    assert.equal(flushPendingLogWrites(), 0);
   });
 });

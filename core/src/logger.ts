@@ -392,6 +392,8 @@ export function __resetLoggerForTest(): void {
   logDir = DEFAULT_LOG_DIR;
   logFile = path.join(DEFAULT_LOG_DIR, 'engine.log');
   inMemoryErrors = [];
+  pendingWrites = [];
+  runtimeDebugEnabled = false;
   lastApiRequest = null;
   debugFilterCache.clear();
   for (const writer of diagnosticsWriters.values()) writer.dispose();
@@ -414,6 +416,54 @@ function rotate(): void {
   try { fsHooks.unlinkSync(backup); } catch {}
   try { fsHooks.renameSync(logFile, backup); } catch {}
   bytesWritten = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Deferred write queue (buffer-before-ready + replay-on-attach).
+//
+// A line whose at-rest write fails — the log dir is not yet created during the
+// startup boundary window, or is transiently unwritable — is buffered here
+// (bounded, oldest evicted) and replayed IN ORDER the instant a later write
+// succeeds, so no line logged before the sink is ready is silently dropped.
+// The on-disk file is AMI's "sink"; {@link flushPendingLogWrites} is the
+// idempotent drain. Mirrors Claude Code's errorQueue + drain-on-attach.
+// ---------------------------------------------------------------------------
+const MAX_PENDING_WRITES = 100;
+let pendingWrites: string[] = [];
+
+/** Append a line to the active log file, returning whether the write succeeded. */
+function tryAppend(line: string): boolean {
+  try {
+    fsHooks.appendFileSync(logFile, line, { mode: FILE_MODE });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Buffer a line for later replay, evicting the oldest once the bound is hit. */
+function enqueuePending(line: string): void {
+  if (pendingWrites.length >= MAX_PENDING_WRITES) pendingWrites.shift();
+  pendingWrites.push(line);
+}
+
+/**
+ * Replay buffered lines in order. Idempotent — a no-op when nothing is queued.
+ * Stops at the first line that still cannot be written (keeping it and the
+ * remainder buffered so ordering is preserved for a later attempt). Returns the
+ * count of lines successfully drained. Introspection/manual-drain surface for the
+ * deferred-write queue (also invoked automatically by {@link log}).
+ */
+export function flushPendingLogWrites(): number {
+  let drained = 0;
+  while (pendingWrites.length > 0) {
+    const line = pendingWrites[0]!;
+    if (!tryAppend(line)) break;
+    pendingWrites.shift();
+    bytesWritten += Buffer.byteLength(line);
+    drained++;
+  }
+  return drained;
 }
 
 function ensureDir(): void {
@@ -457,6 +507,79 @@ function isDebugToStderr(): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Debug-mode enable gate (env/flag + mid-session runtime toggle).
+//
+// AMI keeps its default-ON logging (a superset perk: diagnostics are always
+// captured so a bug report never lacks the log). These knobs are the
+// Claude-compatible debug-mode signal that additionally FORCES logging on where
+// it would otherwise be suppressed (notably under `NODE_ENV=test`), and provide
+// the on/off affordance Claude exposes via `DEBUG`/`--debug`. Mirrors Claude
+// Code's isDebugMode / enableDebugLogging.
+// ---------------------------------------------------------------------------
+// Mid-session runtime enable (the `/debug on` path). Starts false.
+let runtimeDebugEnabled = false;
+
+/**
+ * Whether debug mode is active: the union of the `DEBUG` / `DEBUG_SDK` /
+ * `AMI_DEBUG` env vars, the `--debug` / `-d` / `--debug=<pattern>` argv flags,
+ * the stderr-routing flag, and a mid-session runtime enable. Evaluated per call
+ * (no memoization) so a value set in-session — or in a test — takes effect
+ * immediately. Mirrors Claude Code's isDebugMode.
+ */
+export function isDebugMode(): boolean {
+  return (
+    runtimeDebugEnabled ||
+    isEnvTruthy(process.env.DEBUG) ||
+    isEnvTruthy(process.env.DEBUG_SDK) ||
+    isEnvTruthy(process.env.AMI_DEBUG) ||
+    process.argv.includes('--debug') ||
+    process.argv.includes('-d') ||
+    process.argv.some((a) => a.startsWith('--debug=')) ||
+    isDebugToStderr()
+  );
+}
+
+/**
+ * Turn debug logging on for the rest of the session (the `/debug on` path), so
+ * capture can start WITHOUT a restart — even under test-env suppression.
+ * Idempotent; returns whether debug mode was ALREADY active before the call.
+ * Mirrors Claude Code's enableDebugLogging.
+ */
+export function enableDebugLogging(): boolean {
+  const wasActive = isDebugMode();
+  runtimeDebugEnabled = true;
+  return wasActive;
+}
+
+/**
+ * Runtime-presence seam (ESM-safe). Returns the active Node version, or
+ * `undefined` in a non-node/degraded runtime. Behavior-preserving indirection so
+ * {@link shouldPersistToDisk}'s non-node boundary guard is exercisable in a test
+ * (via `mock.method(runtimeHooks, 'nodeVersion', () => undefined)`) without
+ * deleting the real `process` global. Mirrors Claude Code's `typeof process`
+ * boundary guard in shouldLogDebugMessage.
+ */
+export const runtimeHooks = {
+  nodeVersion: (): string | undefined => process.versions.node,
+};
+
+/**
+ * Boundary gate applied before any at-rest write (mirrors Claude Code's
+ * shouldLogDebugMessage prelude):
+ *   1. a hard non-node-runtime guard so logging never throws in a degraded env;
+ *   2. `NODE_ENV=test` suppression — avoids cross-test contamination of the
+ *      shared log file — UNLESS debug mode is explicitly requested;
+ *   3. the `AMI_DISABLE_DEBUG_LOG` data-minimization opt-out (absolute: an
+ *      explicit opt-out is honored even in debug mode).
+ */
+function shouldPersistToDisk(): boolean {
+  if (!runtimeHooks.nodeVersion()) return false;
+  if (process.env.NODE_ENV === 'test' && !isDebugMode()) return false;
+  if (isEnvTruthy(process.env.AMI_DISABLE_DEBUG_LOG)) return false;
+  return true;
+}
+
 export function log(
   component: string,
   msg: string,
@@ -483,10 +606,10 @@ export function log(
     return;
   }
 
-  // Data-minimization opt-out: a user can disable at-rest debug-log persistence
-  // so sensitive tool inputs/outputs and error text never touch disk. Mirrors
-  // Claude Code's gating of whether debug messages are written at all.
-  if (isEnvTruthy(process.env.AMI_DISABLE_DEBUG_LOG)) return;
+  // Boundary gate (non-node runtime / NODE_ENV=test / AMI_DISABLE_DEBUG_LOG
+  // data-minimization opt-out) — skip all at-rest work when it says so. Mirrors
+  // Claude Code's shouldLogDebugMessage prelude.
+  if (!shouldPersistToDisk()) return;
 
   ensureDir();
   const size = Buffer.byteLength(line);
@@ -494,19 +617,23 @@ export function log(
   if (bytesWritten > 0 && bytesWritten + size > MAX_LOG_SIZE) {
     rotate();
   }
-  try {
-    fsHooks.appendFileSync(logFile, line, { mode: FILE_MODE });
+  // Replay any lines deferred by an earlier failed write first, so ordering is
+  // preserved, then write this line.
+  flushPendingLogWrites();
+  if (tryAppend(line)) {
     bytesWritten += size;
-  } catch {
-    // Self-heal: the directory may have been removed mid-session (temp cleanup,
-    // another process). Recreate it and retry once so logging does not silently
-    // die for the rest of the run.
-    try {
-      fsHooks.mkdirSync(logDir, { recursive: true, mode: DIR_MODE });
-      fsHooks.appendFileSync(logFile, line, { mode: FILE_MODE });
-      bytesWritten += size;
-    } catch {}
+    return;
   }
+  // Self-heal: the directory may have been removed mid-session (temp cleanup,
+  // another process). Recreate it and retry once.
+  try { fsHooks.mkdirSync(logDir, { recursive: true, mode: DIR_MODE }); } catch {}
+  if (tryAppend(line)) {
+    bytesWritten += size;
+    return;
+  }
+  // Still unwritable — DEFER the line for replay on a later successful write
+  // rather than dropping it.
+  enqueuePending(line);
 }
 
 export function logToolCall(
