@@ -753,6 +753,35 @@ export interface ProjectConfig {
    * makes it recognized + value-validated; entries ACCUMULATE across layers.
    */
   strictKnownMarketplaces?: string[];
+  /**
+   * Gate the extra "clear context" affordance offered when the user ACCEPTS a plan
+   * (exit-plan-mode approval). Parity: Claude Code's `showClearContextOnPlanAccept`
+   * setting (`ExitPlanModePermissionRequest.tsx` reads
+   * `settings.showClearContextOnPlanAccept ?? false`) — when on, the plan-approval
+   * prompt adds an "approve AND clear context" option so a long planning turn's tokens
+   * don't carry into execution. Default OFF (the option is additive, opt-in). Resolved
+   * by {@link shouldShowClearContextOnPlanAccept} off the MERGED config and consumed by
+   * the exit-plan permission flow in `common/`. A merge knob (any tier may set it).
+   */
+  showClearContextOnPlanAccept?: boolean;
+  /**
+   * Whether the prompt-input footer renders the current branch's pull-request status
+   * line (`common/src/pr-status.ts`). Parity: Claude Code's `prStatusFooterEnabled ??
+   * true` (`PromptInputFooterLeftSide.tsx` `isPrStatusEnabled`). Default ON; set `false`
+   * to suppress the PR footer entirely. Resolved by {@link isPrStatusFooterEnabled} off
+   * the MERGED config and consumed by the footer renderer in `cli/`. A merge knob.
+   */
+  prStatusFooterEnabled?: boolean;
+  /**
+   * The release-notes/changelog VERSION the user has already seen, persisted in the
+   * GLOBAL config so the one-time "what's new" banner is shown at most once per release.
+   * Parity: Claude Code's `lastReleaseNotesSeen` (`LogoV2.tsx` gates the banner on
+   * `config.lastReleaseNotesSeen !== VERSION`, then writes the current VERSION after it
+   * is shown). Read by {@link getLastReleaseNotesSeen} / {@link hasUnseenReleaseNotes}
+   * and advanced by {@link markReleaseNotesSeen}; consumed by `common/src/release-notes.ts`.
+   * Persisted user STATE (like {@link preferencesShown}), not a cross-layer policy knob.
+   */
+  lastReleaseNotesSeen?: string;
 }
 
 /**
@@ -1394,6 +1423,11 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['pluginTrustMessage', 'string'], ['memoryCriticalRssBytes', 'number'],
   ['preferTmuxOverIterm2', 'boolean'],
   ['blockedMarketplaces', 'string[]'], ['strictKnownMarketplaces', 'string[]'],
+  // UI/UX knobs (round 4) consumed by common/cli footer + plan-accept + release-notes
+  // flows (see ProjectConfig) — declared here so they are recognized (no spurious
+  // unknown-key warning) + base-type validated + emitted in the JSON schema.
+  ['showClearContextOnPlanAccept', 'boolean'], ['prStatusFooterEnabled', 'boolean'],
+  ['lastReleaseNotesSeen', 'string'],
 ];
 
 /**
@@ -3053,6 +3087,13 @@ export function mergeConfigs(
     if (layer.messageIdleNotifThresholdMs !== undefined) merged.messageIdleNotifThresholdMs = layer.messageIdleNotifThresholdMs;
     if (layer.spinnerVerbs !== undefined) merged.spinnerVerbs = layer.spinnerVerbs;
     if (layer.backgroundTasksEnabled !== undefined) merged.backgroundTasksEnabled = layer.backgroundTasksEnabled;
+    // UI/UX knobs (round 4): last-layer-wins scalars read by the common/cli footer +
+    // plan-accept + release-notes flows. Copied here so a file-tier value is not dropped
+    // by the merge before its resolver (shouldShowClearContextOnPlanAccept /
+    // isPrStatusFooterEnabled / getLastReleaseNotesSeen) reads it off the merged config.
+    if (layer.showClearContextOnPlanAccept !== undefined) merged.showClearContextOnPlanAccept = layer.showClearContextOnPlanAccept;
+    if (layer.prStatusFooterEnabled !== undefined) merged.prStatusFooterEnabled = layer.prStatusFooterEnabled;
+    if (layer.lastReleaseNotesSeen !== undefined) merged.lastReleaseNotesSeen = layer.lastReleaseNotesSeen;
     // Admin-policy / engine knobs (round 3): the policy maps deep-merge across layers
     // (a higher layer ADDS denies/entries, never silently drops a lower layer's), the
     // marketplace policy lists ACCUMULATE (deny/allow-wins union), and the remaining
@@ -3756,6 +3797,34 @@ export function resolveAdditionalDirectories(
     if (!out.includes(resolved)) out.push(resolved);
   }
   return out;
+}
+
+/**
+ * Whether the plan-approval prompt should offer the extra "accept AND clear context"
+ * affordance, resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude
+ * Code's `settings.showClearContextOnPlanAccept ?? false` gate in
+ * `ExitPlanModePermissionRequest.tsx`. Default OFF — the option is additive/opt-in, so
+ * only an explicit `true` (at any config tier) turns it on. Consumed by the exit-plan
+ * permission flow in `common/`.
+ */
+export function shouldShowClearContextOnPlanAccept(
+  config: ProjectConfig | null | undefined,
+): boolean {
+  return config?.showClearContextOnPlanAccept === true;
+}
+
+/**
+ * Whether the prompt-input footer should render the branch's pull-request status line,
+ * resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * `getGlobalConfig().prStatusFooterEnabled ?? true` (`PromptInputFooterLeftSide.tsx`
+ * `isPrStatusEnabled`). Default ON — only an explicit `false` (at any tier) suppresses
+ * the PR footer. Consumed by the footer renderer in `cli/` (which already drives
+ * `common/src/pr-status.ts`).
+ */
+export function isPrStatusFooterEnabled(
+  config: ProjectConfig | null | undefined,
+): boolean {
+  return config?.prStatusFooterEnabled !== false;
 }
 
 // ---------------------------------------------------------------------------
@@ -4508,6 +4577,63 @@ export function markPreferenceShown(name: string): boolean {
       current.preferencesShown?.[name] === true
         ? current
         : { ...current, preferencesShown: { ...current.preferencesShown, [name]: true } },
+    );
+    return result?.written ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The release-notes/changelog VERSION the user has already seen
+ * ({@link ProjectConfig.lastReleaseNotesSeen}). Reads the passed-in config when given
+ * (e.g. the merged config) and otherwise the GLOBAL config; a non-string / blank value
+ * is normalized to `undefined`. Best-effort: any read failure yields `undefined` so a
+ * missing store never blocks the what's-new banner decision.
+ */
+export function getLastReleaseNotesSeen(
+  config?: ProjectConfig | null,
+): string | undefined {
+  try {
+    const v = (config ?? loadGlobalConfig())?.lastReleaseNotesSeen;
+    return typeof v === 'string' && v.trim() ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a one-time "what's new" release-notes banner should be shown for
+ * `currentVersion` — i.e. the persisted {@link ProjectConfig.lastReleaseNotesSeen}
+ * differs from it (parity: Claude Code's `config.lastReleaseNotesSeen !== VERSION` gate
+ * in `LogoV2.tsx`). A blank `currentVersion` is never "unseen" (no version to compare
+ * against). Reads the passed-in config when given, otherwise the GLOBAL config.
+ */
+export function hasUnseenReleaseNotes(
+  currentVersion: string,
+  config?: ProjectConfig | null,
+): boolean {
+  if (!currentVersion || !currentVersion.trim()) return false;
+  return getLastReleaseNotesSeen(config) !== currentVersion;
+}
+
+/**
+ * Record that the user has seen the release notes for `version` by persisting it as
+ * {@link ProjectConfig.lastReleaseNotesSeen} in the GLOBAL config via the lock-safe
+ * {@link saveGlobalConfig}, so the what's-new banner is surfaced at most once per release
+ * (parity: Claude Code writing `lastReleaseNotesSeen = VERSION` after the banner is
+ * shown). Concurrency-safe: the updater re-reads the fresh value and returns the same
+ * reference (no write) when it already matches. Returns `true` iff the value was newly
+ * persisted; `false` when `version` is empty, it was already current, there is no
+ * writable global path, or the best-effort write failed.
+ */
+export function markReleaseNotesSeen(version: string): boolean {
+  if (!version || !version.trim()) return false;
+  try {
+    const result = saveGlobalConfig(current =>
+      current.lastReleaseNotesSeen === version
+        ? current
+        : { ...current, lastReleaseNotesSeen: version },
     );
     return result?.written ?? false;
   } catch {

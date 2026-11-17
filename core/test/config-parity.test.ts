@@ -101,6 +101,11 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       pluginTrustMessage: 'See go/plugins', memoryCriticalRssBytes: 1_500_000_000,
       preferTmuxOverIterm2: true, policyRefresh: { pollIntervalMs: 90_000 },
       blockedMarketplaces: ['evil.example'], strictKnownMarketplaces: ['github.com'],
+      // UI/UX knobs (U010 w92, round 4): plan-accept clear-context affordance, PR status
+      // footer toggle, and the persisted release-notes-seen version — declared/validated/
+      // merged so a config-file value takes effect.
+      showClearContextOnPlanAccept: true, prStatusFooterEnabled: false,
+      lastReleaseNotesSeen: '1.2.3',
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
