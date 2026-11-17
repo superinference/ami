@@ -146,8 +146,15 @@ test('buildPermissionSuggestions: a READ of a config-folder file widens the dir,
   try {
     const target = path.join(tmp, '.ami', 'settings.json');
     const sugg = buildPermissionSuggestions('file_read', { file_path: target });
-    assert.equal(sugg.length, 1);
+    // A read widens the dir (addDirectories) and additionally offers a persistable
+    // file_read Read rule (/**) — but NO config-folder session grant, which is a
+    // write-only affordance (w87/U003).
+    assert.equal(sugg.length, 2);
     assert.equal(sugg[0]!.type, 'addDirectories');
+    const rule = sugg[1]!;
+    assert.ok(rule.type === 'addRules');
+    assert.equal(rule.rules[0]!.toolName, 'file_read');
+    assert.ok(rule.rules[0]!.ruleContent?.endsWith('/**'));
   } finally {
     process.chdir(prevCwd);
   }

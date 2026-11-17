@@ -107,6 +107,56 @@ export function cyclePermissionMode(
 }
 
 /**
+ * True when `mode` is the neutral/default permission mode — AMI's default is `ask`
+ * — OR is unset (`undefined`). Centralizes the "is this the default?" branch so the
+ * undefined-vs-default equivalence lives in ONE place instead of being re-derived as
+ * scattered `?? 'ask'` coalescing at each call site (which invites drift when the
+ * default changes). Mirrors Claude's `isDefaultMode` (utils/permissions/PermissionMode.ts),
+ * which likewise treats both the default string and `undefined` as the default.
+ */
+export function isDefaultMode(mode: PermissionMode | undefined): boolean {
+  return mode === undefined || mode === 'ask';
+}
+
+/**
+ * The reduced permission-mode vocabulary exposed to EXTERNAL / SDK consumers. A
+ * superset consumer should not have to understand AMI's richer internal set
+ * (`auto-allow`, `deny-all`); those collapse onto an external equivalent via
+ * {@link toExternalPermissionMode}. Mirrors Claude's `EXTERNAL_PERMISSION_MODES`
+ * (the internal set minus vendor-only modes), with AMI's neutral mode surfaced as
+ * the canonical `default` label.
+ */
+export const EXTERNAL_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number];
+
+/**
+ * Type guard: is `mode` already a value in the external vocabulary? `acceptEdits`,
+ * `bypassPermissions`, and `plan` are shared between the internal and external sets,
+ * so they pass through {@link toExternalPermissionMode} unchanged. AMI-internal-only
+ * modes (`ask`, `auto-allow`, `deny-all`) are not external and must be mapped.
+ */
+export function isExternalPermissionMode(mode: string): mode is ExternalPermissionMode {
+  return (EXTERNAL_PERMISSION_MODES as readonly string[]).includes(mode);
+}
+
+/**
+ * Collapse an INTERNAL {@link PermissionMode} onto the {@link ExternalPermissionMode}
+ * surfaced to external/SDK consumers (parity: Claude's `toExternalPermissionMode`).
+ * `ask`/`undefined` → `default` (the neutral mode); the three shared modes pass
+ * through unchanged; the remaining internal-only modes map to their closest external
+ * equivalent — a blanket `auto-allow` reads as `bypassPermissions` (both skip the
+ * prompt), and a blanket `deny-all` has no external counterpart so it reads as the
+ * conservative `default`.
+ */
+export function toExternalPermissionMode(mode: PermissionMode | undefined): ExternalPermissionMode {
+  // isDefaultMode covers both undefined and the neutral `ask` mode.
+  if (mode === undefined || isDefaultMode(mode)) return 'default';
+  if (isExternalPermissionMode(mode)) return mode;
+  // Remaining internal-only modes after the default + shared-mode checks.
+  return mode === 'auto-allow' ? 'bypassPermissions' : 'default';
+}
+
+/**
  * Where a permission rule/update is persisted, in precedence order (later wins at
  * runtime; earlier is broader scope). Mirrors Claude's PermissionUpdateDestination:
  * - `userSettings`   — global (~/.ami), applies everywhere;
@@ -419,8 +469,14 @@ export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
  * Mirrors Claude's `getRuleBehaviorDescription` (utils/permissions/PermissionResult.ts),
  * where `ask` (the default) reads "asked for confirmation for". A single canonical
  * mapping so callers never hand-roll the allow→"allowed" / deny→"denied" conversion.
+ *
+ * The parameter is intentionally widened to `string` so this is a FAIL-SAFE boundary:
+ * any value outside `allow`/`deny` — including a future/unknown behavior a newer
+ * settings file might carry — degrades to the most conservative "asked for
+ * confirmation for" prose rather than throwing or mislabeling it as an allow (parity
+ * with Claude's `getRuleBehaviorDescription` `default` arm).
  */
-export function getRuleBehaviorDescription(behavior: 'allow' | 'deny' | 'ask'): string {
+export function getRuleBehaviorDescription(behavior: string): string {
   switch (behavior) {
     case 'allow':
       return 'allowed';
@@ -3539,6 +3595,38 @@ export function deriveWebFetchDomainRuleContent(input: Record<string, unknown>):
   }
 }
 
+/**
+ * Turn a granted DIRECTORY into a persistable `file_read` allow rule (parity:
+ * Claude's `createReadRuleSuggestion`), so "I pointed the agent at this dir" can be
+ * saved as a normal, scoped permission rule rather than only a runtime read root.
+ * Two algorithmic subtleties are mirrored exactly:
+ *  - the filesystem root `/` is rejected as far too broad (returns `undefined`); and
+ *  - an ABSOLUTE path gets an extra leading slash to form the root-anchored
+ *    `//path/**` pattern, while a relative path becomes `path/**`.
+ * The path is POSIX-normalized first so a Windows path produces a forward-slash glob.
+ * `destination` defaults to `'session'` (ephemeral) — the caller opts into a
+ * persisted tier explicitly.
+ */
+export function createReadRuleSuggestion(
+  dirPath: string,
+  destination: PermissionUpdateDestination = 'session',
+): PermissionUpdate | undefined {
+  // POSIX-normalize for pattern matching (collapse Windows separators).
+  const pathForPattern = dirPath.replace(/\\/g, '/');
+  // The filesystem root is too broad to be a reasonable permission target.
+  if (pathForPattern === '/') return undefined;
+  // Absolute paths get an extra leading slash → the `//path/**` root-anchored form.
+  const ruleContent = pathForPattern.startsWith('/')
+    ? `/${pathForPattern}/**`
+    : `${pathForPattern}/**`;
+  return {
+    type: 'addRules',
+    behavior: 'allow',
+    destination,
+    rules: [{ toolName: 'file_read', ruleContent }],
+  };
+}
+
 export function buildPermissionSuggestions(
   toolName: string,
   input: Record<string, unknown>,
@@ -3567,7 +3655,17 @@ export function buildPermissionSuggestions(
     // Operation-aware shaping (parity with Claude's operationType): a READ widens
     // the read boundary by directory; a mutating op offers a path allow rule.
     if (resolveFileOperationType(canonical, input) === 'read') {
-      return [{ type: 'addDirectories', destination: 'session', directories: [path.dirname(filePath)] }];
+      const dir = path.dirname(filePath);
+      // Offer BOTH a runtime read-root widening (addDirectories) AND a persistable,
+      // path-scoped `file_read` allow rule (createReadRuleSuggestion), so granting a
+      // read can either just widen this session or be saved as a normal rule. The
+      // Read rule is omitted when the directory is the un-scopable filesystem root.
+      const suggestions: PermissionUpdate[] = [
+        { type: 'addDirectories', destination: 'session', directories: [dir] },
+      ];
+      const readRule = createReadRuleSuggestion(dir);
+      if (readRule) suggestions.push(readRule);
+      return suggestions;
     }
     const suggestions: PermissionUpdate[] = [];
     // A write/create inside the agent's OWN config folder also offers a broader,
@@ -3870,6 +3968,13 @@ export class PermissionManager {
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
+  /** Whether bypass-permissions mode was AVAILABLE when this session started
+   *  (Claude's ToolPermissionContext.isBypassPermissionsModeAvailable). It is the
+   *  POSITIVE counterpart to {@link _disableBypass}: a session launched directly in
+   *  `bypassPermissions` has bypass available, and a later switch to `plan` inherits
+   *  bypass semantics (see {@link check}). Defaults from the constructor's initial
+   *  mode; the CLI can also set it from a launch flag via {@link setBypassModeAvailable}. */
+  private _bypassModeAvailable = false;
   /** The permission mode active immediately before plan mode was entered, so a
    *  later plan-mode exit can restore it (Claude's ToolPermissionContext.prePlanMode).
    *  Undefined when not in plan mode or when none was captured. */
@@ -3923,6 +4028,9 @@ export class PermissionManager {
     if (mode) this.mode = mode;
     if (rules) this.rules = [...rules];
     if (allowedRoots) for (const r of allowedRoots) this.registerAllowedRoot(r);
+    // A session launched directly in bypassPermissions has bypass available, so a
+    // later cycle into plan mode inherits it (parity: isBypassPermissionsModeAvailable).
+    if (mode === 'bypassPermissions') this._bypassModeAvailable = true;
   }
 
   /**
@@ -4267,6 +4375,20 @@ export class PermissionManager {
       return 'allow';
     }
 
+    // Auto-allow plain `--help` invocations (parity: Claude's `isHelpCommand`
+    // prefix-extraction bypass). A bare help request (`git commit --help`,
+    // `python --help`) is side-effect-free, so it never needs a prompt in the
+    // rule-evaluated modes — the user is not asked to grant a rule just to read a
+    // tool's help text. Hardline blocks (handled above) and explicit user deny
+    // rules still win; deny-all/plan keep denying; help forms routed through an
+    // unsafe backend (`man -l`, `git help --web`) are excluded by isHelpCommand.
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        isHelpCommand(input.command) &&
+        !this.anyDenyMatches(toolName, input)) {
+      return 'allow';
+    }
+
     // Fast path: mode-level overrides — but in auto-allow mode, explicit
     // deny rules still fire (Gap #32). M9: a matching deny UNCONDITIONALLY wins
     // over the auto-allow, regardless of rule order (an earlier allow can no
@@ -4300,6 +4422,18 @@ export class PermissionManager {
     }
 
     if (this.mode === 'plan') {
+      // A plan run that was STARTED while bypass was available inherits bypass
+      // semantics instead of the read-only allowlist (parity: Claude's
+      // shouldBypassPermissions = mode==='plan' && isBypassPermissionsModeAvailable).
+      // Explicit user deny/ask rules and sensitive-path safety still win first —
+      // identical ordering to the bypassPermissions branch above — so an inherited
+      // bypass never silently overrides a hard stop.
+      if (this._bypassModeAvailable) {
+        if (this.anyDenyMatches(toolName, input)) return 'deny';
+        if (this.anyAskMatches(toolName, input)) return 'ask';
+        if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
+        return 'allow';
+      }
       const readOnlyTools = new Set(['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols', 'tool_search', 'task_tracker', 'task_list', 'task_output', 'todo_read']);
       if (readOnlyTools.has(toolName)) return 'allow';
       return 'deny';
@@ -5235,7 +5369,9 @@ export class PermissionManager {
     }
     const prev = this.mode;
     this.mode = mode;
-    this.traceMutation(`Setting mode to '${mode}' (was '${prev}')`);
+    // Include the external-facing mode label so an introspection trace shows how the
+    // mode is surfaced to external/SDK consumers (toExternalPermissionMode).
+    this.traceMutation(`Setting mode to '${mode}' (external: ${toExternalPermissionMode(mode)}) (was '${prev}')`);
     return true;
   }
 
@@ -5278,6 +5414,23 @@ export class PermissionManager {
    */
   isDisableBypass(): boolean {
     return this._disableBypass;
+  }
+
+  /**
+   * Mark whether bypass-permissions mode was available when the session started
+   * (Claude's `isBypassPermissionsModeAvailable`). The CLI sets this from a launch
+   * flag; when true, a `plan`-mode run inherits bypass semantics in {@link check}.
+   */
+  setBypassModeAvailable(available: boolean): void {
+    this._bypassModeAvailable = available;
+  }
+
+  /**
+   * Whether bypass-permissions mode is available for this session (gates plan-mode
+   * bypass inheritance). Mirrors Claude's ToolPermissionContext field.
+   */
+  isBypassModeAvailable(): boolean {
+    return this._bypassModeAvailable;
   }
 
   /**

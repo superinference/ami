@@ -96,12 +96,18 @@ test('buildPermissionSuggestions: no safe suggestion → empty array', () => {
 
 test('buildPermissionSuggestions: read-shaped file tool widens the read boundary', () => {
   const sugg = buildPermissionSuggestions('file_read', { file_path: '/repo/src/a.ts' });
-  assert.equal(sugg.length, 1);
+  // A read now offers BOTH the runtime read-boundary widening AND a persistable,
+  // path-scoped file_read Read rule (createReadRuleSuggestion) — additive (w87/U003).
+  assert.equal(sugg.length, 2);
   const u = sugg[0]!;
   assert.ok(u.type === 'addDirectories');
   assert.deepEqual(u.directories, ['/repo/src']);
   assert.equal(u.destination, 'session');
-  // Claude-Code tool-name alias (`Read`) canonicalizes to the same suggestion.
+  const rule = sugg[1]!;
+  assert.ok(rule.type === 'addRules');
+  assert.equal(rule.behavior, 'allow');
+  assert.deepEqual(rule.rules, [{ toolName: 'file_read', ruleContent: '//repo/src/**' }]);
+  // Claude-Code tool-name alias (`Read`) canonicalizes to the same suggestions.
   const aliased = buildPermissionSuggestions('Read', { path: '/repo/src/a.ts' });
   assert.deepEqual(aliased, sugg);
 });
