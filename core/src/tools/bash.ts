@@ -23,6 +23,7 @@ import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-l
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxDefaultDeny, isSandboxEscapeDisabled } from './tool-gates';
+import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -380,6 +381,137 @@ export function normalizeBashInput(command: string, cwd: string | undefined): st
   out = rewriteWindowsNullRedirect(out);
   out = collapseFindExecEscape(out);
   return out;
+}
+
+/**
+ * The hardened pwsh flag set (parity: Claude Code powershell/parser.ts L1171-1179)
+ * prepended to a PowerShell invocation: `-NoProfile` skips profile code,
+ * `-NonInteractive` avoids prompts/ANSI, `-NoLogo` suppresses the banner. Paired
+ * with `-EncodedCommand` (UTF-16LE base64) to run the script without any shell
+ * escaping/injection/temp-file issues.
+ */
+export const HARDENED_PWSH_FLAGS = ['-NoProfile', '-NonInteractive', '-NoLogo'] as const;
+
+/**
+ * Encode a PowerShell script as the UTF-16LE base64 string pwsh's `-EncodedCommand`
+ * expects (parity: Claude Code powershell/parser.ts `toUtf16LeBase64`). A base64
+ * payload survives any surrounding shell-quoting layer intact.
+ */
+export function encodeUtf16LeBase64(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+// A SIMPLE `pwsh|powershell[.exe] -Command|-c "<script>"` invocation whose single
+// quoted script spans to the end of the command. Deliberately conservative: a
+// compound/piped command, pre-flag ordering, or an already-`-EncodedCommand` form
+// does NOT match, so only the unambiguous common case is rewritten.
+const PWSH_SIMPLE_INVOCATION_RE = /^(\s*)(pwsh|powershell(?:\.exe)?)\s+(?:-Command|-c)\s+(["'])([\s\S]*)\3\s*$/i;
+
+/**
+ * Harden a simple PowerShell invocation to pwsh's safe, deterministic form
+ * (parity: Claude Code powershell/parser.ts L1167-1180): rewrite
+ * `powershell -Command "<script>"` to
+ * `powershell -NoProfile -NonInteractive -NoLogo -EncodedCommand <utf16le-base64>`.
+ * The encoded form avoids command-line escaping/injection and interactive-mode
+ * ANSI/prompt noise. Non-matching commands (compound, already encoded, other
+ * shells) are returned unchanged.
+ */
+export function rewritePwshInvocation(command: string): string {
+  const m = command.match(PWSH_SIMPLE_INVOCATION_RE);
+  if (!m) return command;
+  const [, lead, exe, , script] = m;
+  return `${lead}${exe} ${HARDENED_PWSH_FLAGS.join(' ')} -EncodedCommand ${encodeUtf16LeBase64(script)}`;
+}
+
+/**
+ * The env gate `AMI_SEARCH_SHADOW` that opts bare `grep`/`find` run through the
+ * bash tool into GrepTool-matching default flags (parity: Claude Code
+ * ShellSnapshot.createFindGrepShellIntegration). Default OFF so command behavior is
+ * unchanged unless explicitly enabled. Truthy = `1`/`true`/`yes`/`on`.
+ */
+export const SEARCH_SHADOW_ENV = 'AMI_SEARCH_SHADOW';
+export function isSearchShadowEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[SEARCH_SHADOW_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/** VCS metadata dirs excluded from a shadowed `grep` (parity: ShellSnapshot VCS_DIRECTORIES_TO_EXCLUDE). */
+const SEARCH_SHADOW_VCS_DIRS = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as const;
+
+/**
+ * Build the shell preamble that shadows bare `grep`/`find` with GrepTool-matching
+ * defaults (parity: Claude Code ShellSnapshot.createFindGrepShellIntegration — the
+ * PORTABLE subset, since AMI ships no embedded bfs/ugrep). First clears any
+ * renaming alias (`alias grep=ggrep`) so the function — not the alias — handles the
+ * call, then shadows `grep` with the GNU flags GrepTool relies on: `-I` (skip
+ * binary files) and `--exclude-dir` for each VCS dir. A later user flag (`-a`,
+ * `-E`, `-r`, …) still wins since it appears after these in argv. `find` is left to
+ * GNU's default regextype (which already matches GlobTool) — only its alias is
+ * cleared, as bfs/ugrep-specific flags don't apply without those binaries.
+ */
+export function buildSearchShadowPreamble(): string {
+  const excludeDirs = SEARCH_SHADOW_VCS_DIRS.map(d => `--exclude-dir=${d}`).join(' ');
+  return [
+    'unalias grep 2>/dev/null || true',
+    'unalias find 2>/dev/null || true',
+    `grep() { command grep -I ${excludeDirs} "$@"; }`,
+  ].join('\n');
+}
+
+/**
+ * The env gate `AMI_PLUGIN_HINTS` that opts into surfacing a plugin-install
+ * suggestion when a tool emits an `<ami-hint type="plugin" …/>` tag on stderr
+ * (parity: Claude Code's stderr-hint plugin recommendation). Default OFF — the hint
+ * TAG is always stripped from output regardless, only the user-facing suggestion is
+ * gated. Truthy = `1`/`true`/`yes`/`on`.
+ */
+export const PLUGIN_HINTS_ENV = 'AMI_PLUGIN_HINTS';
+export function isPluginHintsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[PLUGIN_HINTS_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Resolve the official-marketplace allowlist (`AMI_PLUGIN_HINT_MARKETPLACES`, a
+ * comma list) for the plugin-hint sync gate (parity: Claude's official-marketplace
+ * filter). Returns `undefined` when unset — no marketplace restriction is applied.
+ */
+export const PLUGIN_HINT_MARKETPLACES_ENV = 'AMI_PLUGIN_HINT_MARKETPLACES';
+export function resolveOfficialMarketplaces(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> | undefined {
+  const raw = (env[PLUGIN_HINT_MARKETPLACES_ENV] ?? '').trim();
+  if (!raw) return undefined;
+  const set = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  return set.size ? set : undefined;
+}
+
+/**
+ * Process the plugin-hint tags a command emitted on stderr (parity: Claude Code's
+ * Bash tool `<claude-code-hint>` handling): ALWAYS strip the internal tags from the
+ * model-visible stderr, and — when `AMI_PLUGIN_HINTS` is enabled — run each hint
+ * through the synchronous {@link evaluatePluginHint} gate to produce the resolved
+ * recommendations and a one-line suggestion note appended to the output. Returns
+ * the cleaned stderr plus the surfaced recommendations/note. No network/marketplace
+ * lookup is performed here (the expensive resolve is deferred to the async layer).
+ */
+export function processPluginHints(stderr: string): {
+  stderr: string;
+  recommendations: PluginRecommendationHint[];
+  note: string;
+} {
+  if (!stderr.includes('<ami-hint')) return { stderr, recommendations: [], note: '' };
+  const hints = parsePluginHintTags(stderr);
+  const cleaned = stripPluginHintTags(stderr);
+  if (!isPluginHintsEnabled()) return { stderr: cleaned, recommendations: [], note: '' };
+  const official = resolveOfficialMarketplaces();
+  const recommendations: PluginRecommendationHint[] = [];
+  let note = '';
+  for (const h of hints) {
+    const rec = evaluatePluginHint(h, official ? { officialMarketplaces: official } : {});
+    if (!rec) continue;
+    recommendations.push(rec);
+    note += `\n\n[Plugin suggestion: ${formatPluginHintNote(rec)}]`;
+  }
+  return { stderr: cleaned, recommendations, note };
 }
 
 /**
@@ -1538,7 +1670,16 @@ export const bashTool: ToolDefinition = {
     // The script is folded into the EXECUTED command only; the display `command`
     // is left untouched so transcripts/output stay clean.
     const sessionEnvScript = await getSessionEnvironmentScript(context.sessionId);
-    const commandToRun = sessionEnvScript ? `${sessionEnvScript}\n${command}` : command;
+    // Harden a simple PowerShell invocation to the `-NoProfile -NonInteractive
+    // -NoLogo -EncodedCommand` form at EXECUTION time only (display `command` stays
+    // the readable original). [FUNCTIONAL CHANGE] Parity: Claude pwsh parser.
+    const hardenedCommand = rewritePwshInvocation(command);
+    // Opt-in (AMI_SEARCH_SHADOW): prepend a preamble that shadows bare grep/find
+    // with GrepTool-matching defaults. Folded into the EXECUTED command only, like
+    // the session env script, so transcripts/output stay clean. [FUNCTIONAL CHANGE]
+    const searchShadow = isSearchShadowEnabled() ? buildSearchShadowPreamble() : '';
+    const preamble = [sessionEnvScript, searchShadow].filter(Boolean).join('\n');
+    const commandToRun = preamble ? `${preamble}\n${hardenedCommand}` : hardenedCommand;
     let effectiveCommand: string;
     // Surfaced when the host sandbox degraded to resource-limits-only while a
     // network/filesystem carve-out was explicitly requested (see
@@ -1808,7 +1949,7 @@ export const bashTool: ToolDefinition = {
     // In container mode, explain a failure that was likely caused by sandbox
     // isolation (network off, or a host path not mounted inside the container) so
     // the model does not misdiagnose a blocked op as a real error.
-    const stderr =
+    const rawStderr =
       context.sandbox?.mode === 'container'
         ? annotateStderrWithSandboxFailures(command, presented.stderr, {
             allowNetwork: context.sandbox.allowNetwork !== false,
@@ -1816,6 +1957,12 @@ export const bashTool: ToolDefinition = {
             ignoreViolations: context.sandbox.ignoreViolations,
           })
         : presented.stderr;
+    // Plugin-install hints: a CLI/SDK may emit an `<ami-hint type="plugin" .../>`
+    // tag on stderr. The tag is ALWAYS stripped so it never leaks to the model; when
+    // AMI_PLUGIN_HINTS is enabled, surface a non-blocking install suggestion + record
+    // it in metadata for introspection. Parity: Claude's stderr-hint recommendation.
+    const pluginHintResult = processPluginHints(rawStderr);
+    const stderr = pluginHintResult.stderr;
 
     // Compound/pipeline-aware silent-command detection (parity): every segment
     // must be a known no-output command, so a noisy later segment (`cp a b && ls`)
@@ -1837,6 +1984,7 @@ export const bashTool: ToolDefinition = {
     if (compoundCdGitAdvisory) output += `\n\n[Warning: ${compoundCdGitAdvisory}]`;
     if (cwdResetNote) output += `\n\n[Warning: ${cwdResetNote}]`;
     if (sandboxFallbackAdvisory) output += `\n\n[Warning: ${sandboxFallbackAdvisory}]`;
+    if (pluginHintResult.note) output += pluginHintResult.note;
     // PARITY (sandbox indicator): prefix the visible marker when the resolved
     // user-facing name is `SandboxedBash` (Claude's indicator-knob name switch).
     if (sandboxDisplayName !== 'Bash') output = `[${sandboxDisplayName}]\n${output}`;
@@ -1874,9 +2022,12 @@ export const bashTool: ToolDefinition = {
       // process could not be started (pre-exec spawn 'error' event), not that a
       // command ran and failed — tag it so callers can distinguish a tooling
       // fault from a genuine non-zero exit. Parity: Claude's preSpawnError field.
-      metadata: result.exitCode === SPAWN_FAILURE_EXIT_CODE
-        ? { readOnly, preSpawnError: 'spawn-failure' }
-        : { readOnly },
+      metadata: {
+        ...(result.exitCode === SPAWN_FAILURE_EXIT_CODE
+          ? { readOnly, preSpawnError: 'spawn-failure' }
+          : { readOnly }),
+        ...(pluginHintResult.recommendations.length ? { pluginHints: pluginHintResult.recommendations } : {}),
+      },
     };
   },
 };

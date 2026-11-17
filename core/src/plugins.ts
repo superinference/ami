@@ -548,6 +548,149 @@ export function buildPluginRecommendation(
 }
 
 /**
+ * The INPUT hint schema (Claude parity: `ClaudeCodeHint`, utils/plugins/
+ * hintRecommendation.ts L41-47) a CLI/SDK emits on a tool's **stderr** inside an
+ * `<ami-hint type="plugin" value="name@marketplace" sourceCommand="…" />` tag.
+ * The Bash tool detects the tag, strips it from the model-visible output, and
+ * turns it into the OUTPUT {@link PluginRecommendationHint} via
+ * {@link evaluatePluginHint}. Distinct from `PluginRecommendationHint`: this is
+ * the raw wire form a tool emits; the recommendation is the resolved, provenance-
+ * stamped shape a frontend renders. `value` is a `name@marketplace` identifier.
+ */
+export interface AmiPluginHint {
+  /** `name@marketplace` plugin identifier the emitting tool recommends. */
+  value: string;
+  /** The command/tool whose output produced the hint (its stderr). */
+  sourceCommand?: string;
+  /** Hint discriminator — only `'plugin'` is recognized. */
+  type: string;
+}
+
+/** Matches one `<ami-hint …>` / `<ami-hint …/>` open tag (greedy to the first `>`). */
+const AMI_HINT_OPEN_RE = /<ami-hint\b[^>]*>/gi;
+/** Matches the optional `</ami-hint>` close tag of the non-self-closing form. */
+const AMI_HINT_CLOSE_RE = /<\/ami-hint\s*>/gi;
+/** Matches a single `key="value"` attribute inside a tag. */
+const AMI_HINT_ATTR_RE = /([A-Za-z][\w-]*)\s*=\s*"([^"]*)"/g;
+
+/**
+ * Parse every `<ami-hint type="plugin" value="…" sourceCommand="…" />` tag out of
+ * a tool's stderr into {@link AmiPluginHint}s (Claude parity: the Bash/PowerShell
+ * tool's `<claude-code-hint>` stderr detection). A tag missing `type` or `value`
+ * is skipped. The raw tag text is NOT modified here — use {@link stripPluginHintTags}
+ * to remove it from model-visible output.
+ */
+export function parsePluginHintTags(stderr: string): AmiPluginHint[] {
+  const hints: AmiPluginHint[] = [];
+  if (!stderr.includes('<ami-hint')) return hints;
+  AMI_HINT_OPEN_RE.lastIndex = 0;
+  let tag: RegExpExecArray | null;
+  while ((tag = AMI_HINT_OPEN_RE.exec(stderr)) !== null) {
+    const attrs: Record<string, string> = {};
+    AMI_HINT_ATTR_RE.lastIndex = 0;
+    let a: RegExpExecArray | null;
+    while ((a = AMI_HINT_ATTR_RE.exec(tag[0])) !== null) attrs[a[1]] = a[2];
+    if (!attrs.type || !attrs.value) continue;
+    hints.push({
+      value: attrs.value,
+      type: attrs.type,
+      ...(attrs.sourceCommand ? { sourceCommand: attrs.sourceCommand } : {}),
+    });
+  }
+  return hints;
+}
+
+/**
+ * Remove every `<ami-hint …/>` tag from a tool's stderr so the internal plugin-hint
+ * protocol never leaks into the model-visible output (parity: Claude's Bash tool
+ * strips the `<claude-code-hint>` tag before surfacing stderr). Also collapses the
+ * blank gap a stripped standalone-line tag leaves behind.
+ */
+export function stripPluginHintTags(stderr: string): string {
+  if (!stderr.includes('<ami-hint')) return stderr;
+  return stderr
+    .replace(AMI_HINT_OPEN_RE, '')
+    .replace(AMI_HINT_CLOSE_RE, '')
+    // A tag that occupied its own line leaves an empty line — collapse it.
+    .replace(/\n[ \t]*\n+/g, '\n');
+}
+
+/**
+ * Split a `name@marketplace` plugin identifier (Claude parity: hintRecommendation's
+ * identifier parse) into its parts, or return `null` when it is malformed (no `@`,
+ * empty name, or empty marketplace). `@` may appear in the name (e.g. a scoped
+ * `@org/pkg@market`) — the LAST `@` separates the marketplace suffix.
+ */
+export function parsePluginIdentifier(value: string): { pluginName: string; marketplaceName: string } | null {
+  const at = value.lastIndexOf('@');
+  if (at <= 0 || at === value.length - 1) return null;
+  const pluginName = value.slice(0, at).trim();
+  const marketplaceName = value.slice(at + 1).trim();
+  if (!pluginName || !marketplaceName) return null;
+  return { pluginName, marketplaceName };
+}
+
+/** Sync-gate inputs for {@link evaluatePluginHint} (Claude parity: maybeRecordPluginHint's cheap pre-store checks). */
+export interface PluginHintGateOptions {
+  /**
+   * When provided, ONLY hints whose marketplace is in this set pass (Claude's
+   * official-marketplace filter). Omitted = no marketplace restriction.
+   */
+  officialMarketplaces?: ReadonlySet<string>;
+  /** Already-installed plugin identifiers (`name@marketplace`) to skip (Claude's already-installed check). */
+  installedPlugins?: ReadonlySet<string>;
+  /**
+   * Per-session identifiers already surfaced (Claude's per-session dedup /
+   * show-once). MUTATED: a hint that passes is added so it won't surface twice.
+   */
+  seen?: Set<string>;
+}
+
+/**
+ * The cheap SYNCHRONOUS gate (Claude parity: `maybeRecordPluginHint` L65-135) that
+ * turns a raw {@link AmiPluginHint} into a resolved {@link PluginRecommendationHint},
+ * or `null` when it fails any pre-store check: wrong type, unparseable
+ * `name@marketplace` identifier, non-official marketplace, already installed, or
+ * already shown this session. Deliberately does NO network/marketplace-cache
+ * lookup — that expensive resolve is deferred to the async layer so a shell tool
+ * never awaits I/O just to strip a stderr line.
+ */
+export function evaluatePluginHint(
+  hint: AmiPluginHint,
+  opts: PluginHintGateOptions = {},
+): PluginRecommendationHint | null {
+  if (hint.type !== 'plugin') return null;
+  const id = parsePluginIdentifier(hint.value);
+  if (!id) return null;
+  if (opts.officialMarketplaces && !opts.officialMarketplaces.has(id.marketplaceName)) return null;
+  const key = `${id.pluginName}@${id.marketplaceName}`;
+  if (opts.installedPlugins?.has(key)) return null;
+  if (opts.seen) {
+    if (opts.seen.has(key)) return null;
+    opts.seen.add(key);
+  }
+  return {
+    pluginName: id.pluginName,
+    marketplaceName: id.marketplaceName,
+    sourceCommand: hint.sourceCommand ?? '',
+  };
+}
+
+/**
+ * Render a resolved {@link PluginRecommendationHint} as the one-line install
+ * suggestion surfaced in a tool's output (Claude parity: PluginHintMenu wording
+ * "the <sourceCommand> command suggests installing <pluginName> from
+ * <marketplaceName>"). The `sourceCommand` clause is omitted when unknown.
+ */
+export function formatPluginHintNote(rec: PluginRecommendationHint): string {
+  const lead = rec.sourceCommand
+    ? `the '${rec.sourceCommand}' command suggests installing ${rec.pluginName}`
+    : `suggested plugin: ${rec.pluginName}`;
+  const desc = rec.pluginDescription ? ` — ${rec.pluginDescription}` : '';
+  return `${lead} from ${rec.marketplaceName}${desc}`;
+}
+
+/**
  * Per-command metadata an author may declare in a plugin manifest's
  * `commandsMetadata` object-mapping (Claude parity: CommandMetadataSchema,
  * utils/plugins/schemas.ts L385-416). An entry either points at a command file via

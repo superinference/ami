@@ -273,7 +273,11 @@ export interface ToolResult {
    *  - `assistantAutoBackgrounded`: `true` when a long foreground command was
    *    auto-moved to the background in assistant/detached mode so the main agent
    *    stays responsive (Claude's `shouldAutoBackground` / assistant blocking
-   *    budget). Accompanied by `backgrounded: true` and the `taskId`. */
+   *    budget). Accompanied by `backgrounded: true` and the `taskId`.
+   *  - `pluginHints`: `PluginRecommendationHint[]` — install suggestions parsed
+   *    from an `<ami-hint type="plugin" .../>` tag a command emitted on stderr
+   *    (set only when `AMI_PLUGIN_HINTS` is enabled; Claude's stderr-hint plugin
+   *    recommendation). */
   metadata?: Record<string, unknown>;
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
