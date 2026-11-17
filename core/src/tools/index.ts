@@ -36,6 +36,7 @@ import { sendMessageTool } from './send-message';
 import { sleepTool } from './sleep';
 import { workflowTool } from './workflow';
 import { briefTool } from './brief';
+import { surfaceAttachmentTool } from './surface-attachments';
 import { teamCreateTool, teamDeleteTool } from './team';
 import { todoWriteTool, todoReadTool } from './todo-write';
 import { configTool } from './config-tool';
@@ -174,6 +175,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     exitWorktreeTool,
     sleepTool,
     briefTool,
+    surfaceAttachmentTool,
     todoWriteTool,
     todoReadTool,
     configTool,
@@ -266,6 +268,8 @@ export { sleepTool } from './sleep';
 export { workflowTool, MAX_WORKFLOW_SCRIPT_BYTES, sanitizeWorkflowRunId, persistWorkflowRun, loadWorkflowRun } from './workflow';
 export type { WorkflowRunRecord } from './workflow';
 export { briefTool } from './brief';
+export { surfaceAttachmentTool, formatAttachmentDelivery, expandAttachmentPath, resolveSurfacedAttachments, SURFACE_ATTACHMENT_METADATA_KEY } from './surface-attachments';
+export type { SurfacedAttachment } from './surface-attachments';
 export { WorkflowRuntime, executeWorkflow, parseWorkflowMeta } from './workflow-runtime';
 export type { WorkflowMeta, AgentHandler, AgentOptions, WorkflowBudget, WorkflowContext, WorkflowResolver } from './workflow-runtime';
 export { parseBashAST, extractCommands, extractCommandsFromString, PARSE_ABORTED, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, resolveShellWord } from './bash-parser';
