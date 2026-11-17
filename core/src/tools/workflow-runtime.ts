@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { parseEnvInt } from '../utils/env';
+import { formatDuration } from '../conversation-summary';
 import type { PermissionMode } from '../permissions';
 
 /**
@@ -20,8 +21,23 @@ export interface WorkflowAgentCache {
  *  which are display-only, are excluded so a relabel does not bust the cache).
  *  `maxTurns` is a semantic cap on the agent's work, so it participates in the
  *  key — two calls that differ only by their turn budget are not conflated. */
-export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string; maxTurns?: number; permissionMode?: string }): string {
-  const norm = { prompt, schema: opts?.schema ?? null, model: opts?.model ?? null, isolation: opts?.isolation ?? null, agentType: opts?.agentType ?? null, maxTurns: opts?.maxTurns ?? null, permissionMode: opts?.permissionMode ?? null };
+export function workflowAgentCacheKey(prompt: string, opts?: { schema?: unknown; model?: string; isolation?: string; agentType?: string; maxTurns?: number; permissionMode?: string; tools?: string[]; disallowedTools?: string[]; effort?: string | number }): string {
+  const norm = {
+    prompt,
+    schema: opts?.schema ?? null,
+    model: opts?.model ?? null,
+    isolation: opts?.isolation ?? null,
+    agentType: opts?.agentType ?? null,
+    maxTurns: opts?.maxTurns ?? null,
+    permissionMode: opts?.permissionMode ?? null,
+    // The per-agent capability surface (tool allow/deny) and reasoning effort are
+    // semantic inputs: two otherwise-identical calls scoped to different tools or
+    // run at a different effort are NOT the same work, so they key separately.
+    // Allow/deny lists are sorted so order-only differences do not bust the cache.
+    tools: Array.isArray(opts?.tools) ? [...opts.tools].sort() : null,
+    disallowedTools: Array.isArray(opts?.disallowedTools) ? [...opts.disallowedTools].sort() : null,
+    effort: opts?.effort ?? null,
+  };
   return crypto.createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -62,21 +78,126 @@ export interface AgentResult {
 }
 
 /**
+ * [FUNCTIONAL PARITY] Per-agent work stats a handler reports back to the runtime
+ * so the `agent-complete` event can carry a completion affordance (parity with
+ * the reference AgentTool UI `Done (N tool uses · M tokens · Xs)`). The handler
+ * (which alone sees the sub-engine's token/tool-use stream) calls this with the
+ * latest counts; the runtime adds the measured wall-clock duration itself.
+ */
+export type WorkflowAgentReporter = (stats: { toolUseCount?: number; tokenCount?: number }) => void;
+
+/**
+ * [FUNCTIONAL PARITY] Format a spawned agent's completion affordance the way the
+ * reference AgentTool UI does: `Done (N tool uses · M tokens · Xs)`. Singular
+ * "1 tool use", the token count rendered with thousands separators, and the
+ * duration via the shared {@link formatDuration}. Omits a stat whose value is
+ * unknown (undefined), so a cached short-circuit (no handler run) still yields a
+ * well-formed message.
+ */
+export function formatAgentCompletion(stats: { toolUseCount?: number; tokenCount?: number; durationMs?: number }): string {
+  const parts: string[] = [];
+  if (typeof stats.toolUseCount === 'number') {
+    parts.push(stats.toolUseCount === 1 ? '1 tool use' : `${stats.toolUseCount} tool uses`);
+  }
+  if (typeof stats.tokenCount === 'number') {
+    parts.push(`${stats.tokenCount.toLocaleString('en-US')} tokens`);
+  }
+  if (typeof stats.durationMs === 'number') {
+    parts.push(formatDuration(stats.durationMs));
+  }
+  return parts.length > 0 ? `Done (${parts.join(' · ')})` : 'Done';
+}
+
+/**
+ * [FUNCTIONAL PARITY] Resolve a tool allow/deny scope by NAME against the full
+ * tool set (parity with the reference agent `tools` / `disallowedTools` fields):
+ *  - `allow` is an allowlist: only tools whose name is listed survive. `'*'` in
+ *    the allowlist means "all tools" (no allow-filter). Any allow name not in
+ *    `all` is collected in `invalid` so the caller can reject the scope rather
+ *    than silently dropping a typo'd tool.
+ *  - `disallow` is applied AFTER the allowlist and removes those tools by name
+ *    (deny wins over allow, defense-in-depth).
+ * A single shared resolver so the per-call `agent(p, { tools })` scope and a
+ * named agentType's declared scope go through ONE code path (no duplication).
+ */
+export function resolveToolScope<T extends { name: string }>(
+  all: T[],
+  allow?: string[],
+  disallow?: string[],
+): { tools: T[]; invalid: string[] } {
+  let tools = all;
+  const invalid: string[] = [];
+  if (allow && allow.length > 0 && !allow.includes('*')) {
+    const known = new Set(all.map(t => t.name));
+    for (const name of allow) if (!known.has(name)) invalid.push(name);
+    const allowSet = new Set(allow);
+    tools = all.filter(t => allowSet.has(t.name));
+  }
+  if (disallow && disallow.length > 0) {
+    const denySet = new Set(disallow);
+    tools = tools.filter(t => !denySet.has(t.name));
+  }
+  return { tools, invalid };
+}
+
+/**
+ * [FUNCTIONAL PARITY] Normalize a per-agent `model` value (parity with the
+ * reference loader's model transform + `'inherit'` sentinel). A blank/whitespace
+ * value or the explicit case-insensitive `'inherit'` sentinel means "fall back
+ * to the parent/default model" and returns `undefined`; any other value is
+ * returned trimmed. So a workflow can say `agent(p, { model: 'inherit' })` to
+ * intentionally inherit, and a stray-whitespace model never reaches the handler.
+ */
+export function normalizeAgentModel(model?: string): string | undefined {
+  if (typeof model !== 'string') return undefined;
+  const trimmed = model.trim();
+  if (trimmed === '' || trimmed.toLowerCase() === 'inherit') return undefined;
+  return trimmed;
+}
+
+/**
  * The injected per-agent worker. Receives the stable {@link WorkflowRuntime}
  * agent id (the same number surfaced on `agent-start`/`agent-complete` as
  * `agentNumber`) as a third argument so the consumer can correlate the spawned
  * work (e.g. a process-manager task) back to the live agent and drive per-agent
  * {@link WorkflowRuntime.retryAgent}/{@link WorkflowRuntime.skipAgent} recovery.
  */
-export type AgentHandler = (prompt: string, opts?: AgentOptions, agentId?: number) => Promise<unknown>;
+export type AgentHandler = (prompt: string, opts?: AgentOptions, agentId?: number, report?: WorkflowAgentReporter) => Promise<unknown>;
 
 export interface AgentOptions {
   label?: string;
   phase?: string;
   schema?: Record<string, unknown>;
+  /**
+   * [FUNCTIONAL PARITY] Per-agent model override (parity with the reference agent
+   * `model`). An explicit `'inherit'` sentinel (or a blank value) means "use the
+   * parent/default model" — see {@link normalizeAgentModel}. Part of
+   * {@link workflowAgentCacheKey}.
+   */
   model?: string;
   isolation?: 'worktree';
   agentType?: string;
+  /**
+   * [FUNCTIONAL PARITY] Per-agent tool allowlist by NAME (parity with the
+   * reference agent `tools`). When set, this single `agent()` call is scoped to
+   * only these tools (`'*'` = all). It overrides the resolved agentType's tool
+   * set. Resolved via {@link resolveToolScope}; part of {@link workflowAgentCacheKey}.
+   */
+  tools?: string[];
+  /**
+   * [FUNCTIONAL PARITY] Per-agent tool denylist by NAME (parity with the
+   * reference agent `disallowedTools`). Removed from the effective tool set AFTER
+   * any allowlist (deny wins). Part of {@link workflowAgentCacheKey}.
+   */
+  disallowedTools?: string[];
+  /**
+   * [FUNCTIONAL PARITY] Per-agent reasoning-effort level (parity with the
+   * reference agent `effort`): an {@link import('../skills').EffortLevel} name
+   * ('low'|'medium'|'high'|'xhigh'|'max') or a non-negative integer. Threaded to
+   * the agent handler to set the spawned sub-engine's thinking depth independently
+   * of the model, and part of {@link workflowAgentCacheKey}.
+   */
+  effort?: string | number;
   /**
    * [FUNCTIONAL PARITY] Per-agent permission posture for this single `agent()`
    * call (parity with the reference AgentTool `mode`). When set to a recognized
@@ -172,6 +293,45 @@ export function stripMeta(script: string): string {
     if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
   }
   return script.slice(0, start) + script.slice(end);
+}
+
+/**
+ * [FUNCTIONAL PARITY] Sliding-window concurrency scheduler (parity with the
+ * reference `all(generators, concurrencyCap)` in utils/generators): start at most
+ * `cap` workers, and launch the next item ONLY when a running one finishes, so at
+ * no point are more than `cap` promises materialized — regardless of what the
+ * worker does. This bounds ALL work (not just `agent()` calls, which the separate
+ * per-agent semaphore caps), so a large `parallel()`/`pipeline()` batch no longer
+ * eagerly spins up thousands of simultaneous promises.
+ *
+ * Results are written back by index, so the returned array preserves input order
+ * even though items complete out of order. `onLaunch` runs (awaited) just before
+ * each worker is invoked, in ascending launch order, so a caller can gate/space
+ * launches (e.g. the prompt-cache stagger).
+ */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  cap: number,
+  worker: (item: T, index: number) => Promise<R>,
+  onLaunch?: (index: number) => void | Promise<void>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const windowSize = Math.max(1, Math.min(cap, items.length));
+
+  const runner = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      if (onLaunch) await onLaunch(index);
+      results[index] = await worker(items[index]!, index);
+    }
+  };
+
+  const runners: Array<Promise<void>> = [];
+  for (let i = 0; i < windowSize; i++) runners.push(runner());
+  await Promise.all(runners);
+  return results;
 }
 
 export class WorkflowRuntime extends EventEmitter {
@@ -363,6 +523,17 @@ export class WorkflowRuntime extends EventEmitter {
         throw new Error('Budget exhausted');
       }
 
+      // [FUNCTIONAL PARITY] Measure this agent's wall-clock duration + collect the
+      // tool-use/token counts the handler reports, so `agent-complete` carries a
+      // completion affordance (parity with the reference `Done (N tool uses · M
+      // tokens · Xs)`). The runtime owns the clock; the handler owns the counts.
+      const startedAt = Date.now();
+      const agentStats: { toolUseCount?: number; tokenCount?: number } = {};
+      const report: WorkflowAgentReporter = (s) => {
+        if (typeof s.toolUseCount === 'number') agentStats.toolUseCount = s.toolUseCount;
+        if (typeof s.tokenCount === 'number') agentStats.tokenCount = s.tokenCount;
+      };
+
       this._agentCount++;
       // Capture a STABLE per-agent id at spawn time. `this._agentCount` keeps
       // incrementing as concurrent agents spawn, so reading it later would
@@ -380,7 +551,9 @@ export class WorkflowRuntime extends EventEmitter {
         const cached = this._cache.get(cacheKey);
         if (cached !== undefined) {
           this.emit('agent-start', { prompt: prompt.slice(0, 100), label: opts?.label, phase, agentNumber: agentId, cached: true });
-          this.emit('agent-complete', { label: opts?.label, phase, agentNumber: agentId, cached: true });
+          // A cached short-circuit ran no handler, so tool-use/token counts are
+          // unknown; only the (negligible) measured duration is surfaced.
+          this.emit('agent-complete', { label: opts?.label, phase, agentNumber: agentId, cached: true, durationMs: Date.now() - startedAt });
           return cached;
         }
       }
@@ -406,7 +579,7 @@ export class WorkflowRuntime extends EventEmitter {
             const maxAttempts = schemaMaxAttempts();
             let validated: unknown | undefined;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              const raw = await this._agentHandler(prompt, opts, agentId);
+              const raw = await this._agentHandler(prompt, opts, agentId, report);
               validated = validateStructuredOutput(raw, opts.schema);
               if (validated !== undefined) break;
               if (attempt < maxAttempts) {
@@ -424,7 +597,7 @@ export class WorkflowRuntime extends EventEmitter {
             }
             return validated;
           }
-          return await this._agentHandler(prompt, opts, agentId);
+          return await this._agentHandler(prompt, opts, agentId, report);
         };
 
         const outcome = await this.runWithAgentControl(agentId, opts?.label, phase, produce);
@@ -438,6 +611,12 @@ export class WorkflowRuntime extends EventEmitter {
           label: opts?.label,
           phase,
           agentNumber: agentId,
+          // [FUNCTIONAL PARITY] Per-agent completion affordance: the tool-use/token
+          // counts the handler reported plus the measured duration, so a consumer
+          // can render `Done (N tool uses · M tokens · Xs)` (see formatAgentCompletion).
+          toolUseCount: agentStats.toolUseCount,
+          tokenCount: agentStats.tokenCount,
+          durationMs: Date.now() - startedAt,
         });
 
         if (cacheKey && this._cache && result !== null && result !== undefined) {
@@ -510,50 +689,64 @@ export class WorkflowRuntime extends EventEmitter {
 
   private createParallel(): <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>> {
     const STAGGER_DELAY = parseEnvInt(process.env.AMI_WORKFLOW_PREFIX_STAGGER_MS, 50);
+    const cap = this._maxConcurrent;
 
     return async <T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>> => {
       if (thunks.length > MAX_PIPELINE_ITEMS) {
         throw new Error(`parallel() limit exceeded: ${thunks.length} > ${MAX_PIPELINE_ITEMS}`);
       }
 
-      if (STAGGER_DELAY <= 0 || thunks.length <= 1) {
-        return Promise.all(
-          thunks.map(async (thunk) => {
-            try { return await thunk(); } catch { return null; }
-          }),
-        );
-      }
-
-      // Stagger launches so subsequent agents hit the prompt cache
-      const results: Array<Promise<T | null>> = [];
-      for (let i = 0; i < thunks.length; i++) {
-        if (i > 0) await new Promise(r => setTimeout(r, STAGGER_DELAY));
-        results.push(thunks[i]!().catch(() => null as T | null));
-      }
-      return Promise.all(results);
+      // Sliding-window scheduler (see mapWithConcurrency): at most `cap` thunks are
+      // ever in flight, so even non-agent thunks (which never hit the agent
+      // semaphore) are bounded and we never materialize thousands of promises at
+      // once. A failed thunk resolves to null (same contract as before).
+      //
+      // Launch stagger: successive launches are spaced by STAGGER_DELAY so later
+      // agents hit the prompt cache. The gate serializes launch times via a shared
+      // `nextLaunchAt` watermark (assigned synchronously in ascending launch order)
+      // so even when `cap` runners start together, their worker invocations are
+      // still spaced — the first launch waits 0ms.
+      let nextLaunchAt = 0;
+      const stagger = STAGGER_DELAY > 0
+        ? async (): Promise<void> => {
+          const now = Date.now();
+          const wait = Math.max(0, nextLaunchAt - now);
+          nextLaunchAt = Math.max(now, nextLaunchAt) + STAGGER_DELAY;
+          if (wait > 0) await new Promise(r => setTimeout(r, wait));
+        }
+        : undefined;
+      return mapWithConcurrency(
+        thunks,
+        cap,
+        async (thunk) => {
+          try { return await thunk(); } catch { return null as T | null; }
+        },
+        stagger,
+      );
     };
   }
 
   private createPipeline(): <T>(items: T[], ...stages: Array<(prev: any, item: T, idx: number) => Promise<any>>) => Promise<any[]> {
+    const cap = this._maxConcurrent;
     return async <T>(items: T[], ...stages: Array<(prev: any, item: T, idx: number) => Promise<any>>): Promise<any[]> => {
       if (items.length > MAX_PIPELINE_ITEMS) {
         throw new Error(`pipeline() limit exceeded: ${items.length} > ${MAX_PIPELINE_ITEMS}`);
       }
 
-      const results = await Promise.all(
-        items.map(async (item, idx) => {
-          let prev: any = item;
-          for (const stage of stages) {
-            try {
-              prev = await stage(prev, item, idx);
-            } catch {
-              return null;
-            }
+      // Sliding-window scheduler bounds concurrent per-item stage chains at `cap`
+      // (parity with the reference `all()`), so a pipeline whose stages do
+      // non-agent work no longer runs every item at once with no bound.
+      return mapWithConcurrency(items, cap, async (item, idx) => {
+        let prev: any = item;
+        for (const stage of stages) {
+          try {
+            prev = await stage(prev, item, idx);
+          } catch {
+            return null;
           }
-          return prev;
-        }),
-      );
-      return results;
+        }
+        return prev;
+      });
     };
   }
 

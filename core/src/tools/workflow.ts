@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { projectStateDir } from '../reference-journal';
-import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache, type WorkflowRuntime } from './workflow-runtime';
+import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache, resolveToolScope, normalizeAgentModel, formatAgentCompletion, type WorkflowRuntime } from './workflow-runtime';
+import { parseEffort } from '../skills';
 import {
   SUBAGENT_RETURN_DIRECTIVE,
   generateTaskId,
@@ -282,7 +283,7 @@ export const workflowTool: ToolDefinition = {
     let totalToolUses = 0;
     const workflowStartedAt = Date.now();
 
-    const agentHandler = async (prompt: string, opts?: any, agentId?: number): Promise<string> => {
+    const agentHandler = async (prompt: string, opts?: any, agentId?: number, report?: (s: { toolUseCount?: number; tokenCount?: number }) => void): Promise<string> => {
       if (!context._engineFactory) return `[Agent not available: no engine factory]`;
 
       // Per-agent specialized agent-type (parity: AgentTool `subagent_type`).
@@ -297,6 +298,7 @@ export const workflowTool: ToolDefinition = {
       let agentDefPermissionMode: string | undefined;
       let agentDefTools: ToolDefinition[] | undefined;
       let agentDefMaxTurns: number | undefined;
+      let agentDefEffort: string | number | undefined;
       const agentType = typeof opts?.agentType === 'string' ? opts.agentType.trim() : '';
       if (agentType && context._skillManager) {
         const def = context._skillManager.getAgent(agentType);
@@ -305,31 +307,21 @@ export const workflowTool: ToolDefinition = {
           return `[Agent error: agentType "${agentType}" not found. Available agents: ${available}]`;
         }
         agentSystemPrompt = def.systemPrompt;
-        // 'inherit' is a sentinel for "use the parent's model" — leave undefined.
-        agentDefModel = def.model && def.model !== 'inherit' ? def.model : undefined;
+        // normalizeAgentModel maps the 'inherit' sentinel / blank value to undefined
+        // (use the parent's model) — one shared normalization path.
+        agentDefModel = normalizeAgentModel(def.model);
         agentDefPermissionMode = def.permissionMode;
         agentDefMaxTurns = def.maxTurns;
-        if (def.tools && def.tools.length > 0) {
+        agentDefEffort = def.effort;
+        // Resolve the agentType's declared tool allow/deny scope via the shared
+        // resolveToolScope (one code path for agentType + per-call scoping).
+        if ((def.tools && def.tools.length > 0) || (def.disallowedTools && def.disallowedTools.length > 0)) {
           const everything = createDefaultTools(context.cwd).getAll();
-          if (def.tools.includes('*')) {
-            agentDefTools = everything;
-          } else {
-            const known = new Set(everything.map(t => t.name));
-            const invalid = def.tools.filter(n => !known.has(n));
-            if (invalid.length > 0) {
-              return `[Agent error: agentType "${agentType}" lists unknown tool(s): ${invalid.join(', ')}]`;
-            }
-            const allowed = new Set(def.tools);
-            agentDefTools = everything.filter(t => allowed.has(t.name));
+          const { tools, invalid } = resolveToolScope(everything, def.tools, def.disallowedTools);
+          if (invalid.length > 0) {
+            return `[Agent error: agentType "${agentType}" lists unknown tool(s): ${invalid.join(', ')}]`;
           }
-          // Deny wins even alongside an allowlist (defense-in-depth), matching task.ts.
-          if (def.disallowedTools && def.disallowedTools.length > 0) {
-            const denied = new Set(def.disallowedTools);
-            agentDefTools = agentDefTools.filter(t => !denied.has(t.name));
-          }
-        } else if (def.disallowedTools && def.disallowedTools.length > 0) {
-          const denied = new Set(def.disallowedTools);
-          agentDefTools = createDefaultTools(context.cwd).getAll().filter(t => !denied.has(t.name));
+          agentDefTools = tools;
         }
       }
 
@@ -400,10 +392,12 @@ export const workflowTool: ToolDefinition = {
         isolatedWorktree = undefined;
       };
       // Per-agent model override (parity: AgentTool `model`). An explicit per-call
-      // `model` wins; otherwise the resolved agentType's own model applies. Either
-      // is layered onto a COPY of the parent provider config so the shared config
+      // `model` wins; otherwise the resolved agentType's own model applies.
+      // normalizeAgentModel maps a blank value or the `'inherit'` sentinel to
+      // undefined (fall back to the parent/default model). The effective model is
+      // layered onto a COPY of the parent provider config so the shared config
       // object is never mutated.
-      const effectiveModel = (opts?.model as string | undefined) ?? agentDefModel;
+      const effectiveModel = normalizeAgentModel(opts?.model as string | undefined) ?? agentDefModel;
       const provider = effectiveModel
         ? { ...context._providerConfig!, model: effectiveModel }
         : context._providerConfig!;
@@ -414,15 +408,43 @@ export const workflowTool: ToolDefinition = {
       const permissionMode = (opts?.permissionMode && normalizePermissionMode(String(opts.permissionMode)))
         || (agentDefPermissionMode && normalizePermissionMode(agentDefPermissionMode))
         || 'auto-allow';
+      // Per-call tool allow/deny scope (parity: AgentTool `tools`/`disallowedTools`).
+      // A per-call allow/deny list (tool NAMES) scopes THIS single agent and
+      // overrides the agentType's resolved tool set. Resolved via the shared
+      // resolveToolScope; an unknown allow name errors out rather than silently
+      // dropping a typo'd tool.
+      const perCallTools = Array.isArray(opts?.tools) ? (opts.tools as string[]) : undefined;
+      const perCallDisallow = Array.isArray(opts?.disallowedTools) ? (opts.disallowedTools as string[]) : undefined;
+      let effectiveTools = agentDefTools;
+      if (perCallTools || perCallDisallow) {
+        const everything = createDefaultTools(context.cwd).getAll();
+        // An explicit per-call allowlist selects from the full set; a deny-only
+        // scope narrows the agentType's set (or the full set when there is none).
+        const base = perCallTools ? everything : (agentDefTools ?? everything);
+        const { tools, invalid } = resolveToolScope(base, perCallTools, perCallDisallow);
+        if (invalid.length > 0) {
+          return `[Agent error: agent() lists unknown tool(s): ${invalid.join(', ')}]`;
+        }
+        effectiveTools = tools;
+      }
+      // Per-agent reasoning effort (parity: AgentTool `effort`). Precedence:
+      // explicit per-call `effort` → the agentType's declared effort. parseEffort
+      // validates/normalizes the value so an injected/typo'd effort never reaches
+      // the sub-engine; when present it enables thinking at that level (mirrors
+      // task.ts's effort→thinking mapping, one path).
+      const effectiveEffort = parseEffort(opts?.effort) ?? (agentDefEffort !== undefined ? parseEffort(agentDefEffort) : undefined);
       const subEngine = context._engineFactory({
         provider,
         cwd: agentCwd,
         permissionMode,
-        // Explicit per-call tools win; otherwise the agentType's tool allowlist.
-        tools: opts?.tools ?? agentDefTools,
+        // Per-call scope wins; otherwise the agentType's tool allowlist.
+        tools: effectiveTools,
         // The agentType's system prompt gives the sub-engine its specialist identity.
         systemPrompt: agentSystemPrompt,
         maxTurns: agentDefMaxTurns,
+        ...(effectiveEffort !== undefined
+          ? { thinking: { enabled: true, level: effectiveEffort as import('../model-capabilities').ThinkingLevel } }
+          : {}),
         abortController: ac,
       });
       // Same return-and-stop framing as task sub-agents: a workflow agent should
@@ -487,6 +509,10 @@ export const workflowTool: ToolDefinition = {
             agentTokens = event.stats?.totalTokens ?? agentTokens;
             if (pm && taskId) pm.updateEntry(taskId, { tokenCount: agentTokens });
           }
+          // Report the latest per-agent counts to the runtime so its
+          // `agent-complete` event carries the completion affordance (tool uses +
+          // tokens); the runtime adds the measured duration.
+          report?.({ toolUseCount: agentToolUses, tokenCount: agentTokens });
         }
       } catch (err) {
         context.abortSignal.removeEventListener('abort', forwardAbort);
@@ -532,6 +558,12 @@ export const workflowTool: ToolDefinition = {
         ? new DiskWorkflowCache(path.join(context.cwd, '.ami', 'workflows', '.cache', cacheNamespace))
         : undefined;
 
+      // Per-agent completion affordances (parity: the reference agent result's
+      // `Done (N tool uses · M tokens · Xs)`). The runtime's `agent-complete`
+      // carries the tool-use/token counts (reported by the handler) + measured
+      // duration; we format one summary line per completed agent and surface them
+      // in the tool output so the TUI renders what each spawned agent did.
+      const agentSummaries: string[] = [];
       const result = await executeWorkflow(script, agentHandler, {
         args: input.args,
         abortSignal: context.abortSignal,
@@ -539,8 +571,15 @@ export const workflowTool: ToolDefinition = {
         maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
         cache,
         // Capture the live runtime so a per-agent task_kill retry/skip can recover
-        // one wedged agent mid-run (parity: onRetryAgent / onSkipAgent).
-        onRuntime: (rt) => { wfRuntime = rt; },
+        // one wedged agent mid-run (parity: onRetryAgent / onSkipAgent), and
+        // subscribe to agent-complete for the per-agent completion summaries.
+        onRuntime: (rt) => {
+          wfRuntime = rt;
+          rt.on('agent-complete', (e: { label?: string; toolUseCount?: number; tokenCount?: number; durationMs?: number }) => {
+            const prefix = e.label ? `${e.label}: ` : '';
+            agentSummaries.push(`${prefix}${formatAgentCompletion(e)}`);
+          });
+        },
       });
 
       const durationS = ((Date.now() - workflowStartedAt) / 1000).toFixed(1);
@@ -549,6 +588,7 @@ export const workflowTool: ToolDefinition = {
         `Agents spawned: ${result.agentCount}`,
         `Tokens: ${totalAgentTokens} · Tool uses: ${totalToolUses} · Duration: ${durationS}s`,
         effectiveRunId ? `Run id: ${effectiveRunId}` : '',
+        agentSummaries.length > 0 ? `\nAgents:\n${agentSummaries.map(s => `  - ${s}`).join('\n')}` : '',
         result.logs.length > 0 ? `\nLogs:\n${result.logs.map(l => `  - ${l}`).join('\n')}` : '',
         result.result !== null ? `\nResult: ${JSON.stringify(result.result, null, 2)}` : '',
         resumeHint ? `\n${resumeHint}` : '',
