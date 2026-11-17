@@ -260,6 +260,26 @@ export interface DiffHunk {
   lines: string[];
 }
 
+/** VCS-aware per-edit change summary attached to a file-mutating tool result's
+ *  {@link ToolResult.metadata} as `gitDiff`. Parity: Claude's FileEditTool
+ *  `gitDiffSchema` output field (filename, status, additions/deletions/changes
+ *  counts, unified patch) — lets a programmatic caller read change magnitude and
+ *  the patch without re-parsing the human `output` string. */
+export interface GitDiffSummary {
+  /** The edited file's path. */
+  filename: string;
+  /** `'added'` for a newly created (or previously empty) file, else `'modified'`. */
+  status: 'modified' | 'added';
+  /** Count of added lines. */
+  additions: number;
+  /** Count of removed lines. */
+  deletions: number;
+  /** `additions + deletions` — total changed lines (Claude's `changes`). */
+  changes: number;
+  /** Unified diff text (bounded by the edit diff cap). */
+  patch: string;
+}
+
 export interface ToolResult {
   output: string;
   isError?: boolean;
@@ -277,7 +297,22 @@ export interface ToolResult {
    *  - `pluginHints`: `PluginRecommendationHint[]` — install suggestions parsed
    *    from an `<ami-hint type="plugin" .../>` tag a command emitted on stderr
    *    (set only when `AMI_PLUGIN_HINTS` is enabled; Claude's stderr-hint plugin
-   *    recommendation). */
+   *    recommendation).
+   *
+   *  Keys the file_edit tool sets on a SUCCESSFUL edit (parity with Claude Code's
+   *  FileEditTool `outputSchema`), so a programmatic caller reads them without
+   *  re-parsing the text `output`:
+   *  - `filePath`: `string` — the edited path.
+   *  - `editMode`: `'single' | 'multiple'` — whether one edit or an `edits[]` batch
+   *    was applied (Claude's IDEDiffConfig `editMode` discriminator), letting a
+   *    diff/permission UI branch on single-vs-batch presentation.
+   *  - `replaceAll`: `boolean` — whether every occurrence was replaced.
+   *  - `userModified`: `boolean` — whether the applied bytes diverged from the
+   *    model's proposal via an interactive accept-with-edits path. Always `false`
+   *    in AMI (the permission layer is allow/deny, with no in-prompt diff editor);
+   *    emitted to match Claude's output contract.
+   *  - `gitDiff`: {@link GitDiffSummary} — change counts + unified patch (omitted on
+   *    the diff-cost-capped success paths, where no per-line diff is computed). */
   metadata?: Record<string, unknown>;
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */

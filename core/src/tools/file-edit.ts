@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ToolDefinition, ToolContext, ToolResult, DiffHunk } from '../types';
+import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
@@ -350,6 +350,51 @@ interface SequentialEdit {
 }
 
 /**
+ * Single-edit vs edits[]-batch discriminator attached to a successful edit result
+ * so a diff/permission UI can branch on how many edits it is presenting (parity:
+ * Claude Code's IDEDiffConfig `editMode`, stamped `'single'` by
+ * createSingleEditDiffConfig and `'multiple'` for an `edits[]` batch).
+ */
+export type EditMode = 'single' | 'multiple';
+
+/**
+ * Build the structured result metadata every SUCCESSFUL file_edit emits (parity:
+ * Claude Code's FileEditTool `outputSchema`), carried on {@link ToolResult.metadata}
+ * so a programmatic caller reads the edit's shape/magnitude without re-parsing the
+ * human `output`. `userModified` is always false in AMI — the permission layer is
+ * allow/deny with no in-prompt accept-with-edits diff editor, so the applied bytes
+ * always equal the model's proposal — but it is emitted to match Claude's output
+ * contract. `gitDiff` is attached only when a per-line diff was computed (omitted on
+ * the diff-cost-capped paths).
+ */
+function buildEditMetadata(opts: {
+  filePath: string;
+  editMode: EditMode;
+  replaceAll: boolean;
+  gitDiff?: GitDiffSummary;
+}): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    filePath: opts.filePath,
+    editMode: opts.editMode,
+    replaceAll: opts.replaceAll,
+    userModified: false,
+  };
+  if (opts.gitDiff) meta.gitDiff = opts.gitDiff;
+  return meta;
+}
+
+/** Assemble a {@link GitDiffSummary} from counts + the already-computed patch text. */
+function buildGitDiff(
+  filename: string,
+  status: GitDiffSummary['status'],
+  additions: number,
+  deletions: number,
+  patch: string,
+): GitDiffSummary {
+  return { filename, status, additions, deletions, changes: additions + deletions, patch };
+}
+
+/**
  * Indirection seam for the LSP client lookup. Production loads the real client
  * lazily via require; tests swap it to exercise the notification error handling
  * (client lookup failure, rejected notify promises) deterministically. Behavior
@@ -643,9 +688,16 @@ export async function writeEntireFile(
     const body = content.length === 0 ? '(No content)' : preview.map(l => `+${l}`).join('\n');
     const truncNote = content.length > 0 && lineCount > 20 ? `\n... (+${lineCount - 20} more lines)` : '';
     const createdLabel = !fileExists ? 'Created new file' : 'Populated empty file';
+    const createPatch = `--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${body}${truncNote}`;
     return {
-      output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${body}${truncNote}`,
+      output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n${createPatch}`,
       structuredPatch: buildStructuredPatch(normalizeToLf(oldContent), normalizeToLf(content)),
+      metadata: buildEditMetadata({
+        filePath: resolved,
+        editMode: 'single',
+        replaceAll: false,
+        gitDiff: buildGitDiff(resolved, 'added', lineCount, 0, createPatch),
+      }),
     };
   }
 
@@ -654,17 +706,30 @@ export async function writeEntireFile(
   // Degrade to a size-only summary (parity: Claude's MAX_SCAN_BYTES fallback to
   // the plain "create" view instead of diffing a multi-GB file).
   if (exceedsDiffScanCap(oldContent, content)) {
-    return { output: diffOmittedSummary(resolved, lineCount), structuredPatch: [] };
+    return {
+      output: diffOmittedSummary(resolved, lineCount),
+      structuredPatch: [],
+      metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false }),
+    };
   }
 
   // Minimal structured diff: emit only the changed hunks (+ surrounding context)
   // via the common-prefix/suffix differ, instead of marking the entire old file
   // as removed and the entire new file as added. For a small edit inside a large
   // file this keeps the overwrite diff proportional to what actually changed.
-  const diff = buildUnifiedDiff(normalizeToLf(oldContent), normalizeToLf(content), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+  const oldLf = normalizeToLf(oldContent);
+  const newLf = normalizeToLf(content);
+  const diff = buildUnifiedDiff(oldLf, newLf, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+  const { additions, removals } = countLinesChanged(oldLf, newLf);
   return {
     output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n${diff}`,
-    structuredPatch: buildStructuredPatch(normalizeToLf(oldContent), normalizeToLf(content)),
+    structuredPatch: buildStructuredPatch(oldLf, newLf),
+    metadata: buildEditMetadata({
+      filePath: resolved,
+      editMode: 'single',
+      replaceAll: false,
+      gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
+    }),
   };
 }
 
@@ -833,7 +898,12 @@ async function applySequentialEdits(
     ];
     if (skipped.length > 0) summary.push(`\nSkipped edits:\n${skipped.join('\n')}`);
     if (failed.length > 0) summary.push(`\nFailed edits:\n${failed.join('\n')}`);
-    return { output: summary.join('\n'), isError: false, structuredPatch: [] };
+    return {
+      output: summary.join('\n'),
+      isError: false,
+      structuredPatch: [],
+      metadata: buildEditMetadata({ filePath: resolved, editMode: 'multiple', replaceAll: false }),
+    };
   }
 
   const { additions, removals } = countLinesChanged(normalizeToLf(rawContent), content);
@@ -869,6 +939,12 @@ async function applySequentialEdits(
     output: summary.join('\n'),
     isError: false,
     structuredPatch: patch,
+    metadata: buildEditMetadata({
+      filePath: resolved,
+      editMode: 'multiple',
+      replaceAll: false,
+      gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
+    }),
   };
 }
 
@@ -879,7 +955,7 @@ export const fileEditTool: ToolDefinition = {
   // 'modify file contents in place'). Consumed by tool-search.ts scoring.
   searchHint: 'modify file contents in place create overwrite write edit replace rewrite patch',
   description:
-    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers: file_read output prefixes EVERY line with its line number and a tab ("N\\t<content>"), and old_string must contain ONLY the content that appears AFTER that tab — never the "N\\t" prefix — with the original indentation (tabs/spaces) preserved exactly as written in the file. Never use bash sed/awk to edit files.',
+    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers: file_read output prefixes EVERY line with its line number and a tab ("N\\t<content>"), and old_string must contain ONLY the content that appears AFTER that tab — never the "N\\t" prefix — with the original indentation (tabs/spaces) preserved exactly as written in the file. Never use bash sed/awk to edit files. Edits are addressed by EXACT STRING MATCH on content (old_string), never by line number: this is the canonical, intentional addressing scheme — AMI does not use line-reference ("hashline") edits, because a string match stays correct even when surrounding lines shift, whereas a stale line number silently edits the wrong span.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -924,6 +1000,32 @@ export const fileEditTool: ToolDefinition = {
       },
     },
     required: ['file_path'],
+  },
+  // Structured result contract (parity: Claude Code's FileEditTool `outputSchema`).
+  // Describes the keys {@link buildEditMetadata} attaches to a successful edit's
+  // {@link ToolResult.metadata}, so a resumed/persisted result can be validated and
+  // a frontend can read the edit's shape without re-parsing the text output.
+  outputSchema: {
+    type: 'object',
+    properties: {
+      filePath: { type: 'string', description: 'The file path that was edited.' },
+      editMode: { type: 'string', description: 'single (one edit / write) or multiple (an edits[] batch).' },
+      replaceAll: { type: 'boolean', description: 'Whether every occurrence was replaced.' },
+      userModified: { type: 'boolean', description: 'Whether the applied content diverged from the proposal (always false in AMI).' },
+      structuredPatch: { type: 'array', description: 'Per-hunk structured diff of the change.' },
+      gitDiff: {
+        type: 'object',
+        description: 'Change summary: status, additions/deletions/changes counts, unified patch.',
+        properties: {
+          filename: { type: 'string' },
+          status: { type: 'string', description: 'modified or added.' },
+          additions: { type: 'number' },
+          deletions: { type: 'number' },
+          changes: { type: 'number' },
+          patch: { type: 'string' },
+        },
+      },
+    },
   },
   isReadOnly: false,
 
@@ -1202,12 +1304,20 @@ export const fileEditTool: ToolDefinition = {
           return {
             output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
             structuredPatch: [],
+            metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: true }),
           };
         }
         const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+        const raCounts = countLinesChanged(content, replaced);
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
           structuredPatch: buildStructuredPatch(content, replaced),
+          metadata: buildEditMetadata({
+            filePath: resolved,
+            editMode: 'single',
+            replaceAll: true,
+            gitDiff: buildGitDiff(resolved, 'modified', raCounts.additions, raCounts.removals, diff),
+          }),
         };
       }
       return {
@@ -1242,6 +1352,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
         structuredPatch: [],
+        metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false }),
       };
     }
 
@@ -1261,6 +1372,12 @@ export const fileEditTool: ToolDefinition = {
     return {
       output: `${patchInfo}\nSuccessfully edited ${resolved}${strategyNote}\n\n${diff}`,
       structuredPatch: patch,
+      metadata: buildEditMetadata({
+        filePath: resolved,
+        editMode: 'single',
+        replaceAll: false,
+        gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
+      }),
     };
   },
 };
