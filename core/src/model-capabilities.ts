@@ -574,7 +574,17 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
  * claudeReasoningCapabilities would recurse.
  */
 function deriveMaxThinkingBudget(modelId: string): number {
-  const upperLimit = lookupOutputTokenRange(modelId.toLowerCase())?.upperLimit;
+  const lower = modelId.toLowerCase();
+  // A completion cap learned from a live `/models` payload (discoverFromModelList)
+  // bounds the thinking budget exactly as it bounds output — thinking can never
+  // request more tokens than the model will actually emit. Prefer it over the
+  // static family ladder so a server-advertised output cap dynamically resizes the
+  // thinking ceiling (parity with Claude's getMaxThinkingTokensForModel, which
+  // derives the thinking cap from the live output upperLimit). A plain Map read, so
+  // it introduces no recursion back through getModelCapabilities.
+  const dynamicCap = dynamicOutputCaps.get(lower);
+  if (dynamicCap !== undefined && dynamicCap > 0) return Math.max(1_024, dynamicCap - 1);
+  const upperLimit = lookupOutputTokenRange(lower)?.upperLimit;
   return upperLimit !== undefined ? upperLimit - 1 : 128000;
 }
 
@@ -1178,9 +1188,21 @@ const OUTPUT_TOKEN_CAPS: Record<string, MaxOutputTokenRange> = {
   'o1-mini':     { default: 65536, upperLimit: 65536 },
 };
 
-/** First static-table range whose key is a substring of the (lowercased) id. */
+/**
+ * Output-cap entries pre-sorted most-specific (longest key) first, with a stable
+ * localeCompare tiebreak, so a substring lookup structurally prefers the most
+ * specific id (e.g. `claude-opus-4-8` before `claude-opus-4`) regardless of the
+ * table's hand-maintained insertion order. Mirrors the same specificity guarantee
+ * getContextWindow already makes for CONTEXT_WINDOWS (ref sortForMatching,
+ * utils/model/modelCapabilities.ts:L53-L58) so a future edit that reorders the
+ * table can't silently under-report a newer minor version's output cap.
+ */
+const OUTPUT_TOKEN_CAP_ENTRIES: Array<[string, MaxOutputTokenRange]> = Object.entries(OUTPUT_TOKEN_CAPS)
+  .sort((a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]));
+
+/** Most-specific (longest-key) static-table range whose key is a substring of the (lowercased) id. */
 function lookupOutputTokenRange(lowerId: string): MaxOutputTokenRange | undefined {
-  for (const [key, range] of Object.entries(OUTPUT_TOKEN_CAPS)) {
+  for (const [key, range] of OUTPUT_TOKEN_CAP_ENTRIES) {
     if (lowerId.includes(key)) return range;
   }
   return undefined;
@@ -1556,14 +1578,73 @@ export function getModelSwitchWarning(
   if (targetWindow >= currentWindow) return null;
 
   if (currentTokens > targetWindow) {
-    return `Critical: conversation uses ${formatTokenCount(currentTokens)} tokens but ${targetModel} only supports ${formatTokenCount(targetWindow)}. Compaction required before switching.`;
+    return `Critical: conversation uses ${formatTokenCount(currentTokens)} tokens but ${targetModel} only supports ${formatTokenCount(targetWindow)}. Compaction required before switching — run /compact first.`;
   }
 
   if (currentTokens > targetWindow * 0.8) {
-    return `Warning: conversation uses ${formatTokenCount(currentTokens)} tokens and ${targetModel} supports ${formatTokenCount(targetWindow)}. Consider compacting before switching.`;
+    return `Warning: conversation uses ${formatTokenCount(currentTokens)} tokens and ${targetModel} supports ${formatTokenCount(targetWindow)}. Consider compacting before switching — run /compact first.`;
   }
 
   return `Note: ${targetModel} has a smaller context window (${formatTokenCount(targetWindow)}) than ${currentModel} (${formatTokenCount(currentWindow)}).`;
+}
+
+/** The `[1m]` long-context suffix: a model already carrying it has no larger
+ *  variant left to upgrade to. */
+const ONE_MILLION_SUFFIX = /\[1m\]$/i;
+/** The context window a `[1m]` upgrade grants; the baseline for the relative
+ *  multiplier and the "already maxed out" short-circuit. */
+const ONE_MILLION_CONTEXT = 1_000_000;
+
+/**
+ * A larger-context model variant reachable from the current model, mirroring the
+ * descriptor Claude Code's `getAvailableUpgrade()` returns
+ * (utils/model/contextWindowUpgradeCheck.ts:L9-L27). Unlike Claude's absolute
+ * window table, AMI expresses the gain as a relative {@link multiplier} so a
+ * message can say "{N}x more context" from any base window.
+ */
+export interface ContextUpgrade {
+  /** The model id/alias to switch to, carrying the `[1m]` marker (e.g. `opus[1m]`). */
+  alias: string;
+  /** Human-readable name of the larger-context variant (e.g. `Opus 1M`). */
+  name: string;
+  /** Relative context-size gain of the variant over the current window
+   *  (`1M / currentWindow`, rounded, never below 2). Claude hard-codes 5; AMI
+   *  derives it from the live window so it stays accurate across base sizes. */
+  multiplier: number;
+}
+
+/**
+ * The larger-context sibling of `currentModel`, or `null` when none is reachable
+ * (the model already carries a `[1m]` marker, is already on a ≥1M window, or is a
+ * family with no 1M variant). Provider-agnostic — keyed off the `[1m]` convention
+ * and the `opus`/`sonnet` families that expose a 1M variant (core's `MODEL_ALIASES`),
+ * so it needs no registry import and never special-cases a vendor entitlement.
+ *
+ * Mirrors Claude Code's forward-upgrade detection (`getAvailableUpgrade`,
+ * utils/model/contextWindowUpgradeCheck.ts) — the inverse of
+ * {@link getModelSwitchWarning}, which only warns about switching DOWN to a smaller
+ * window. `currentContextLimit` (the session's resolved window) lets the caller
+ * suppress the suggestion once already on a ≥1M window and makes the multiplier
+ * exact; when omitted the multiplier falls back to Claude's canonical 5x.
+ */
+export function getAvailableContextUpgrade(
+  currentModel: string | null | undefined,
+  currentContextLimit?: number,
+): ContextUpgrade | null {
+  const id = (typeof currentModel === 'string' ? currentModel : '').toLowerCase();
+  if (!id) return null;
+  // Already on the 1M window (by explicit suffix or by a resolved ≥1M limit) → nothing larger.
+  if (ONE_MILLION_SUFFIX.test(id)) return null;
+  if (typeof currentContextLimit === 'number' && currentContextLimit >= ONE_MILLION_CONTEXT) return null;
+  // Only the opus/sonnet families expose a [1m] long-context variant (MODEL_ALIASES).
+  const family = id.includes('opus') ? 'opus' : id.includes('sonnet') ? 'sonnet' : null;
+  if (!family) return null;
+  const alias = `${family}[1m]`;
+  const name = `${family.charAt(0).toUpperCase()}${family.slice(1)} 1M`;
+  const multiplier = typeof currentContextLimit === 'number' && currentContextLimit > 0
+    ? Math.max(2, Math.round(ONE_MILLION_CONTEXT / currentContextLimit))
+    : 5;
+  return { alias, name, multiplier };
 }
 
 /**
