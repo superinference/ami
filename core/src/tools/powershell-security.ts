@@ -1362,8 +1362,18 @@ export function powershellCommandIsSafe(
   parsed: ParsedPowerShellCommand,
 ): PowerShellSecurityResult {
   // Fail-safe boundary: an un-parseable/un-analyzable command is never allowed.
+  // Surface the parser's structured diagnostic (errorId + human-readable message
+  // — CommandTooLong / EmptyOutput / InvalidJson / PwshError / PwshTimeout /
+  // NoPowerShell / a syntax ErrorId, …) so the degraded-to-ask reason is
+  // actionable instead of opaque. The parser already produces these diagnostics
+  // (powershell-parser.ts makeInvalidResult); previously they were discarded
+  // here. Mirrors Claude Code's parse-failure reason surfacing
+  // (powershellPermissions.ts: "…cannot be parsed: <message>").
   if (!parsed.valid) {
-    return askResult('Could not parse command for security analysis');
+    const diag = parsed.errors[0];
+    const detail =
+      diag !== undefined ? ` (${diag.errorId}: ${diag.message})` : '';
+    return askResult(`Could not parse command for security analysis${detail}`);
   }
 
   const allCommands = getAllCommands(parsed);
