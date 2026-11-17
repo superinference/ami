@@ -1173,6 +1173,39 @@ export function hasOutstandingShutdownRequest(agentName: string): boolean {
   return outstandingShutdowns.has(agentName);
 }
 
+// --- Blocked-on-plan-approval boundary --------------------------------------
+// A teammate that submits a plan_approval_request enters a BLOCKED state: it has
+// handed a plan to the lead and must wait for a decision before proceeding. The
+// boundary is RESOLVED when the lead sends the matching plan_approval_response
+// back to that teammate — whether approved (proceed) or rejected (revise) — so the
+// teammate is cleanly unblocked either way. Keyed by the submitting teammate's bare
+// trusted name (the same identity it stamps as `from`), so submit-open and
+// response-close line up. Mirrors Claude Code's inProcessTeammateHelpers
+// setAwaitingPlanApproval / handlePlanApprovalResponse (utils/inProcessTeammateHelpers.ts),
+// which tracks a per-teammate `awaitingPlanApproval` flag and resets it exactly when
+// a plan_approval_response arrives from the leader. AMI already routed both plan
+// messages but tracked no blocked state; this adds the boundary entirely within the
+// send_message execute() paths (no engine wiring), mirroring the shutdown handshake.
+const awaitingPlanApproval = new Map<string, string>();
+
+/**
+ * True when `agentName` has submitted a plan and is still awaiting the lead's
+ * decision. Introspection surface for the plan-approval boundary — lets a caller
+ * (and tests) see the blocked state without re-sending.
+ */
+export function isAwaitingPlanApproval(agentName: string): boolean {
+  return awaitingPlanApproval.has(agentName);
+}
+
+/**
+ * The request id of the plan `agentName` is awaiting approval on, or undefined when
+ * it is not blocked. Lets a consumer correlate the pending plan to the eventual
+ * plan_approval_response.
+ */
+export function getAwaitingPlanApprovalRequestId(agentName: string): string | undefined {
+  return awaitingPlanApproval.get(agentName);
+}
+
 export function getMailbox(agentName: string): AgentMessage[] {
   return mailboxes.get(agentName) || [];
 }
@@ -1199,6 +1232,7 @@ export function purgeMailbox(agentName: string): void {
   mailboxRevisions.delete(agentName);
   outboundDms.delete(agentName);
   outstandingShutdowns.delete(agentName);
+  awaitingPlanApproval.delete(agentName);
 }
 
 export function resetAllMailboxes(): void {
@@ -1209,6 +1243,7 @@ export function resetAllMailboxes(): void {
   mailboxRevisions.clear();
   outboundDms.clear();
   outstandingShutdowns.clear();
+  awaitingPlanApproval.clear();
   messageSeq = 0;
 }
 
@@ -1531,6 +1566,23 @@ function knownRecipientNames(exclude?: string): string[] {
  */
 export const SEND_MESSAGE_VALIDATION_ERROR_CODE = 9;
 
+/**
+ * Machine-readable classification of a SOFT delivery warning on a plain-text send,
+ * carried on the ToolResult `metadata.deliveryWarning` channel ALONGSIDE the human
+ * warning string (the same structured-hints channel {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}
+ * rides on). Mirrors Claude Code's sendDirectMemberMessage typed error discriminants
+ * (utils/directMemberMessage.ts DirectMessageResult.error):
+ *  - `unknown_recipient` — a team roster IS established but the recipient is not a
+ *    member of it (a likely typo / stale name);
+ *  - `no_team_context`   — no roster is established, but other agents are live this
+ *    session and the recipient is not among them.
+ * AMI still QUEUES the message (its deliberate queue-to-coming-online superset — never
+ * a hard reject that would break a teammate that is still spawning), so this is an
+ * ADDITIVE structured hint: a programmatic consumer gets the same classification
+ * Claude surfaces as a hard failure, without regressing AMI's delivery behavior.
+ */
+export type DeliveryWarning = 'unknown_recipient' | 'no_team_context';
+
 /** Build an input-shape validation error carrying {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}. */
 function validationError(message: string): ToolResult {
   return { output: `Error: ${message}`, isError: true, metadata: { errorCode: SEND_MESSAGE_VALIDATION_ERROR_CODE } };
@@ -1808,6 +1860,10 @@ export const sendMessageTool: ToolDefinition = {
           const reqId = structured.requestId || generateRequestId('plan', toRaw);
           const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
           enqueue(to, { from, to, content: wire, timestamp: Date.now() });
+          // Open the blocked-on-approval boundary: the submitting teammate is now
+          // awaiting the lead's decision, keyed by its trusted identity so the
+          // matching plan_approval_response (addressed back to it) resolves it.
+          awaitingPlanApproval.set(from, reqId);
           const fileTag = structured.planFilePath ? ` (${structured.planFilePath})` : '';
           return { output: `Plan submitted to ${toRaw} for approval (id: ${reqId})${fileTag} [from: ${from}]` };
         }
@@ -1818,6 +1874,12 @@ export const sendMessageTool: ToolDefinition = {
           }
           const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
+          // Resolve the blocked-on-approval boundary: the teammate the lead just
+          // answered is unblocked whether the plan was approved (proceed) or
+          // rejected (revise). Clear by the addressed bare name AND the resolved
+          // recipient key so it lines up with however the submit stamped it.
+          awaitingPlanApproval.delete(toRaw);
+          if (to !== toRaw) awaitingPlanApproval.delete(to);
           if (structured.approve) {
             // The granted permission mode (if any) is surfaced so the lead sees
             // what posture the teammate will inherit on exiting plan-mode.
@@ -2002,10 +2064,15 @@ export const sendMessageTool: ToolDefinition = {
     // Computed BEFORE enqueue, which would otherwise create the mailbox.
     const hasRoster = rosterMemberNames().length > 0;
     let unreachableWarn = '';
+    let deliveryWarning: DeliveryWarning | undefined;
     if (!isReachable(to) && (mailboxNotifiers.size > 0 || hasRoster)) {
       const known = knownRecipientNames(trustedSelf ?? from);
       const knownTag = known.length > 0 ? ` Known agents: ${known.join(', ')}.` : '';
       unreachableWarn = ` [warning: "${toRaw}" is not a known/live agent — check the name.${knownTag}]`;
+      // Typed discriminant alongside the human warning: a roster-established-but-
+      // not-a-member target is an `unknown_recipient`; without a roster (only live
+      // peers) it is a `no_team_context`. Mirrors Claude's DirectMessageResult.error.
+      deliveryWarning = hasRoster ? 'unknown_recipient' : 'no_team_context';
     }
 
     enqueue(to, msg);
@@ -2021,6 +2088,7 @@ export const sendMessageTool: ToolDefinition = {
     const affordance = deliveryAffordance(toRaw, to, context);
     return {
       output: `Message sent to "${toRaw}"${summaryTag} [from: ${from}] (${content.length} chars)${affordance}${unreachableWarn}`,
+      ...(deliveryWarning ? { metadata: { deliveryWarning } } : {}),
     };
   },
 };
