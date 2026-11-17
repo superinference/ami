@@ -36,6 +36,11 @@ export const writeMemoryTool: ToolDefinition = {
         enum: [...MEMORY_SCOPES],
         description: 'Storage scope (default: private). private=only you and the current user; team=shared with everyone working in this project directory (synced each session). NEVER put secrets or user credentials in a team memory.',
       },
+      skipIndex: {
+        type: 'boolean',
+        description:
+          'When true, do a ONE-step save: write the memory file only and do NOT append a pointer to the directory\'s MEMORY.md index. Default false — the two-step save also indexes the memory so the always-loaded MEMORY.md stays in sync with what was written.',
+      },
     },
     required: ['name', 'content'],
   },
@@ -52,20 +57,34 @@ export const writeMemoryTool: ToolDefinition = {
       return { output: 'Error: content must not be empty.', isError: true };
     }
 
+    // Scope defaults to 'private'; an unrecognized value falls back to private
+    // (mirrors the invalid-type fallback) so a bad model arg never mis-routes a
+    // write into the shared team directory. Resolved BEFORE the secret guard so
+    // the rejection message can be scope-aware (a team leak is worse — it is
+    // shared with every collaborator).
+    const rawScope = typeof input.scope === 'string' ? input.scope : undefined;
+    const scope: MemoryScope =
+      rawScope && (MEMORY_SCOPES as readonly string[]).includes(rawScope) ? (rawScope as MemoryScope) : 'private';
+
     // Secret-leak guard: a durable memory persists across sessions and may be
     // committed/synced, so credentials must never be written to it. Block the
     // write and name only the KIND(s) of credential detected (the rule label,
     // e.g. "Anthropic Key") so the model knows what to remove — but NEVER echo
     // the matched value itself. Mirrors Claude's team-memory secret guard, which
-    // records the gitleaks ruleId and never the secret.
+    // records the gitleaks ruleId and never the secret. For a TEAM-scoped write
+    // the consequence is sharper (teamMemSecretGuard.ts): the file would be
+    // shared with every repository collaborator, so the message says so.
     const secrets = findCredentials(content);
     if (secrets.length > 0) {
       const kinds = [...new Set(secrets.map(s => s.label))].sort();
+      const sharedNote = scope === 'team'
+        ? 'Team memory is shared with all repository collaborators'
+        : 'Memories persist across sessions and may be shared';
       return {
         output:
           `Error: refusing to store this memory — it contains ${secrets.length} ` +
           `detected secret${secrets.length === 1 ? '' : 's'} (${kinds.join(', ')}). ` +
-          'Memories persist across sessions and may be shared; remove the sensitive value and try again.',
+          `${sharedNote}; remove the sensitive value and try again.`,
         isError: true,
       };
     }
@@ -77,19 +96,29 @@ export const writeMemoryTool: ToolDefinition = {
     const type: MemoryType | undefined =
       rawType && (MEMORY_TYPES as readonly string[]).includes(rawType) ? (rawType as MemoryType) : undefined;
 
-    // Scope defaults to 'private'; an unrecognized value falls back to private
-    // (mirrors the invalid-type fallback) so a bad model arg never mis-routes a
-    // write into the shared team directory.
-    const rawScope = typeof input.scope === 'string' ? input.scope : undefined;
-    const scope: MemoryScope =
-      rawScope && (MEMORY_SCOPES as readonly string[]).includes(rawScope) ? (rawScope as MemoryScope) : 'private';
+    // Save mode: by default do Claude Code's TWO-step save (write the topic file
+    // AND append a one-line pointer to the directory's MEMORY.md index so the
+    // always-loaded index stays in sync). `skipIndex:true` selects the ONE-step
+    // save (file only, no index pointer) — parity with extractMemories' skipIndex
+    // branch (teamMemPrompts.ts L29-58).
+    const skipIndex = input.skipIndex === true;
+    const mgr = new MemoryManager(context.cwd);
+    const savedPath = mgr.saveMemory(name, content, description, type, scope, !skipIndex);
 
-    // Two-step save (addToIndex=true): persist the topic file AND append a
-    // one-line pointer to the memory directory's MEMORY.md index, matching Claude
-    // Code's two-step memory-write pattern so the always-loaded index stays in
-    // sync with what was written.
-    const savedPath = new MemoryManager(context.cwd).saveMemory(name, content, description, type, scope, true);
+    // Count-bearing confirmation (teamMemSaved.ts): after the save, report how
+    // many memories now exist, split by scope, with singular/plural agreement and
+    // zero-suppression of the team segment (parity with Claude's teamCount split).
+    const counts = mgr.countMemoriesByScope();
+    const pluralMem = (n: number) => (n === 1 ? 'memory' : 'memories');
+    const countParts = [`${counts.private} private ${pluralMem(counts.private)}`];
+    if (counts.team > 0) countParts.push(`${counts.team} team ${pluralMem(counts.team)}`);
+
     const meta = type ? `${scope}, type: ${type}` : scope;
-    return { output: `Saved memory "${name}" (${meta}) to ${savedPath} and indexed it in MEMORY.md. View with /memory.` };
+    const indexNote = skipIndex ? '' : ' and indexed it in MEMORY.md';
+    return {
+      output:
+        `Saved memory "${name}" (${meta}) to ${savedPath}${indexNote}. ` +
+        `You now have ${countParts.join(' and ')}. View with /memory.`,
+    };
   },
 };

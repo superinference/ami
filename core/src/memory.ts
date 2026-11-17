@@ -2435,6 +2435,38 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   }
 
   /**
+   * Count persisted memory topic files split by scope, for the save-confirmation
+   * summary surfaced by the `write_memory` tool. Mirrors Claude Code's
+   * teamMemSaved count split (team vs private). The `MEMORY.md` index is a table
+   * of contents, not a memory body, so it is excluded by basename at any depth;
+   * files under the nested `team/` sub-tree are counted as team, everything else
+   * under the auto-memory root as private. Missing directories count as 0.
+   */
+  countMemoriesByScope(): { private: number; team: number } {
+    const base = this.getMemoryDir();
+    const teamDir = this.getTeamMemoryDir();
+    const isMemFile = (f: unknown): f is string =>
+      typeof f === 'string' && f.endsWith('.md') && path.basename(f) !== MEMORY_INDEX_FILENAME;
+    let priv = 0;
+    let team = 0;
+    try {
+      for (const f of fs.readdirSync(base, { recursive: true }) as string[]) {
+        if (!isMemFile(f)) continue;
+        // Normalize the platform separator so the team-subtree test is portable.
+        const rel = f.split(path.sep).join('/');
+        if (rel === 'team' || rel.startsWith('team/')) continue; // counted as team below
+        priv++;
+      }
+    } catch { /* no auto-memory dir yet */ }
+    try {
+      for (const f of fs.readdirSync(teamDir, { recursive: true }) as string[]) {
+        if (isMemFile(f)) team++;
+      }
+    } catch { /* no team dir yet */ }
+    return { private: priv, team };
+  }
+
+  /**
    * Is `absPath` inside the auto-memory tree at all (private root OR the nested
    * team sub-dir)? Traversal-safe: the boundary check normalizes/expands and
    * symlink-resolves via the shared {@link isPathWithin} primitive, so a
