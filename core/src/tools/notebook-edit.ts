@@ -282,6 +282,10 @@ export const notebookEditTool: ToolDefinition = {
     const totalCells = notebook.cells.length;
     // Unified diff of the replaced cell's source, appended to the output below.
     let replaceDiff: string | undefined;
+    // Source of the cell removed by a delete, captured BEFORE the splice so the
+    // confirmation can surface what was deleted (parity with Claude's
+    // NotebookEditToolDiff, which shows the deleted cell's source on delete).
+    let deletedSource: string | undefined;
 
     // For insert mode with cell_id match, insert AFTER the matched cell (Claude behavior)
     let effectiveIndex: number;
@@ -305,6 +309,7 @@ export const notebookEditTool: ToolDefinition = {
           isError: true,
         };
       }
+      deletedSource = cellSourceToString(notebook.cells[effectiveIndex].source);
       notebook.cells.splice(effectiveIndex, 1);
     } else if (editMode === 'insert') {
       if (effectiveIndex < 0 || effectiveIndex > totalCells) {
@@ -469,11 +474,23 @@ export const notebookEditTool: ToolDefinition = {
           ? `Inserted new ${cellType ?? 'code'} cell at index ${effectiveIndex}`
           : `Replaced cell ${effectiveIndex}`;
 
-    const diffBlock = replaceDiff && replaceDiff !== '(no changes detected)'
-      ? `\n\n${replaceDiff}`
-      : '';
+    // Per-mode cell preview (parity with Claude's NotebookEditToolDiff, which
+    // renders a distinct body per edit_mode): a unified diff of old→new source for
+    // REPLACE, the new cell source for INSERT, and the removed cell source for
+    // DELETE. Previously only replace surfaced a preview; insert/delete returned a
+    // bare one-liner so the model/user never saw the cell that was added or removed.
+    // Source previews are emitted verbatim (no `-`/`+`/`@@` diff markers) so they
+    // read as plain cell bodies and are not mis-classified as unified diffs.
+    let previewBlock = '';
+    if (replaceDiff && replaceDiff !== '(no changes detected)') {
+      previewBlock = `\n\n${replaceDiff}`;
+    } else if (editMode === 'insert') {
+      previewBlock = `\n\nInserted cell source:\n${newSource}`;
+    } else if (editMode === 'delete' && deletedSource !== undefined) {
+      previewBlock = `\n\nDeleted cell source:\n${deletedSource}`;
+    }
     return {
-      output: `${modeLabel} in ${resolved}. Notebook now has ${newTotal} cell(s).${diffBlock}`,
+      output: `${modeLabel} in ${resolved}. Notebook now has ${newTotal} cell(s).${previewBlock}`,
     };
   },
 };
