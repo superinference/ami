@@ -1370,7 +1370,11 @@ export type EngineEvent =
   // classification) so connection/timeout/idle retries render distinctly from an
   // HTTP-status retry even when no status is present.
   | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode?: number | null; errorKind?: RetryErrorKind }
-  | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string }
+  // `retryAfterMs` (rate-limit category only): the server-directed wait the engine
+  // derived from the `Retry-After` header / 429 body ("try again in Ns"), so a UI
+  // can show WHEN the limit resets (parity: Claude's getLimitReachedText "· resets
+  // <time>"), not just a bare "[RATE_LIMITED]". Absent when no hint was provided.
+  | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string; retryAfterMs?: number }
   | { type: 'provider_changed'; provider: string; model: string; reason: string }
   | { type: 'checkpoint_created'; checkpointId: string; files: string[] }
   | { type: 'analytics_summary'; summary: Record<string, number> }
