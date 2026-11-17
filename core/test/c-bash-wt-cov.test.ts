@@ -331,16 +331,28 @@ function makeWorktreeDir(repoDir: string, name: string): string {
 describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', () => {
   let tmpDir: string;
   let worktreePath: string;
+  const launchCwd = process.cwd();
 
   beforeEach(() => {
     tmpDir = makeTmpGitRepo();
     worktreePath = makeWorktreeDir(tmpDir, 'cbash-wt');
-    setWorktreeSession(null);
+    // A destructive remove now requires an active enter_worktree session that
+    // owns this exact worktree (session-ownership scope guard).
+    setWorktreeSession({
+      originalCwd: tmpDir,
+      worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'cbash-wt',
+      worktreeBranch: 'worktree-cbash-wt',
+      createdAt: new Date().toISOString(),
+    });
   });
 
   afterEach(() => {
     mock.restoreAll();
     setWorktreeSession(null);
+    // The remove branch now restores the process cwd to originalCwd; leave the
+    // process in a dir that survives teardown before deleting the temp tree.
+    try { process.chdir(launchCwd); } catch { /* ignore */ }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -367,7 +379,7 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
     assert.equal(pruned, true, 'fallback prune must run');
   });
 
-  it('returns the original error when the fallback itself fails', async () => {
+  it('exits anyway (graceful degraded exit) when the removal fallback itself fails', async () => {
     mock.method(_exitWorktreeHooks, 'exec', ((args: string[]) => {
       if (/worktree remove/.test(args.join(' '))) throw new Error('remove refused');
       throw new Error('prune also failed');
@@ -379,8 +391,13 @@ describe('exitWorktreeTool — remove fallback + rejected hook (seam-driven)', (
       ctx({ cwd: worktreePath }),
     );
 
-    assert.equal(result.isError, true);
-    assert.match(result.output, /Error removing worktree: remove refused/);
+    // Parity (WorktreeExitDialog "Worktree cleanup failed, exiting anyway"): an
+    // unrecoverable teardown failure must NOT trap the session — it returns a
+    // non-error "exiting anyway" result that tells the user how to clean up.
+    assert.ok(!result.isError, result.output);
+    assert.match(result.output, /exiting anyway/);
+    assert.match(result.output, /git worktree remove --force/);
+    assert.equal((result.metadata as { cleanupFailed?: boolean }).cleanupFailed, true);
   });
 
   it('swallows a rejected executeWorktreeRemove hook', async () => {

@@ -150,6 +150,22 @@ export const exitWorktreeTool: ToolDefinition = {
       };
     }
 
+    // Session-ownership scope guard for DESTRUCTIVE actions (parity: Claude's
+    // ExitWorktree only acts on a worktree created by enter_worktree IN THIS
+    // SESSION; with no active session it is a clean no-op, filesystem unchanged).
+    // AMI previously gated the destructive `remove`/`merge` purely on the
+    // `.ami/worktrees/` path pattern, so cd'ing into a leftover worktree from a
+    // previous session — or one created manually under that dir — and running
+    // exit_worktree would force-remove it even though no active session owns it.
+    // Require an owning session before any destructive teardown; otherwise return
+    // an informational no-op. "keep" stays session-null tolerant (non-destructive).
+    if (action !== 'keep' && !existing) {
+      return {
+        output: 'No active worktree session created by enter_worktree in this session; nothing to remove. No filesystem changes made.',
+        isError: false,
+      };
+    }
+
     // Resolve the worktree's branch now (used for keep messaging + merge/remove
     // teardown). The worktree's own checked-out HEAD is the GROUND TRUTH for the
     // real branch name — session metadata (worktreeBranch) can diverge from the
@@ -182,8 +198,21 @@ export const exitWorktreeTool: ToolDefinition = {
         setWorktreeSession(null);
       }
       // Do NOT fire executeWorktreeRemove hook — we are keeping the worktree.
+      const keptMsg = `Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}`;
       return {
-        output: cap(`Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}`),
+        output: cap(keptMsg),
+        // Structured result (parity: Claude's ExitWorktreeTool outputSchema) carried
+        // on metadata alongside the human text so a resume/frontend path can read the
+        // machine-readable fields without parsing prose. "keep" discards nothing.
+        metadata: {
+          action,
+          originalCwd: session?.originalCwd ?? worktreePath,
+          worktreePath,
+          worktreeBranch: branch,
+          discardedFiles: 0,
+          discardedCommits: 0,
+          message: keptMsg,
+        },
       };
     }
 
@@ -302,8 +331,15 @@ export const exitWorktreeTool: ToolDefinition = {
       mergedInto = targetBranch;
     }
 
+    // Run the destructive removal from the REPO ROOT, never from inside the
+    // worktree we are about to delete (parity: Claude runs `git worktree remove`
+    // with cwd = gitRoot — "Run from the main repo root, not the worktree (which
+    // we're about to delete)"). Deleting the process/child cwd out from under git
+    // is unreliable on some platforms and is the reason the rmSync+prune fallback
+    // exists at all; running from repoRoot avoids that failure mode entirely.
+    let cleanupFailed = false;
     try {
-      _exitWorktreeHooks.exec(['worktree', 'remove', '--force', worktreePath], { cwd: worktreePath, stdio: 'pipe' });
+      _exitWorktreeHooks.exec(['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot, stdio: 'pipe' });
     } catch (e) {
       try {
         if (_exitWorktreeHooks.existsSync(worktreePath)) {
@@ -311,7 +347,13 @@ export const exitWorktreeTool: ToolDefinition = {
         }
         _exitWorktreeHooks.exec(['worktree', 'prune'], { cwd: repoRoot, stdio: 'ignore' });
       } catch {
-        return { output: `Error removing worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        // Soft-failure (parity: Claude's WorktreeExitDialog "Worktree cleanup
+        // failed, exiting anyway"): an unrecoverable teardown error must not trap
+        // the session inside the worktree it asked to leave. Record it, then still
+        // restore the original cwd and clear the session below, and return a
+        // non-error "exiting anyway" result that tells the user how to clean up.
+        cleanupFailed = true;
+        void e;
       }
     }
 
@@ -319,7 +361,8 @@ export const exitWorktreeTool: ToolDefinition = {
     // lock-release window first (parity with Claude): `git worktree remove` can
     // leave the worktree's locks briefly held, and `git branch -D` of the branch
     // that worktree had checked out would then fail with "cannot delete, locked".
-    if (branch) {
+    // Skip when the worktree could not be removed — its branch is still checked out.
+    if (branch && !cleanupFailed) {
       if (_exitWorktreeHooks.branchDeleteDelayMs > 0) {
         await _exitWorktreeHooks.sleep(_exitWorktreeHooks.branchDeleteDelayMs);
       }
@@ -331,6 +374,14 @@ export const exitWorktreeTool: ToolDefinition = {
     if (activeSession) {
       if (activeSession.originalCwd) {
         context.cwd = activeSession.originalCwd;
+        // Restore the PROCESS working directory too (parity + symmetry with the
+        // keep branch). After `git worktree remove` deletes the worktree dir,
+        // leaving process.cwd() pointing at the now-deleted path breaks any
+        // subsequent relative-path git/fs operation. The keep branch already
+        // chdir'd back; the remove branch previously only reassigned context.cwd.
+        // Skip when cleanup failed (the dir may still exist, and we never want to
+        // throw here).
+        if (!cleanupFailed) { try { process.chdir(activeSession.originalCwd); } catch { /* best effort */ } }
         returned = `\nReturned to ${activeSession.originalCwd}`;
         // Mirror enter_worktree + the keep branch: invalidate CWD-dependent caches
         // for the restored directory on exit (system-prompt env sections,
@@ -340,8 +391,21 @@ export const exitWorktreeTool: ToolDefinition = {
       }
       setWorktreeSession(null);
     }
-    if (context._hookManager) {
+    // Only signal removal when the worktree was actually removed.
+    if (context._hookManager && !cleanupFailed) {
       context._hookManager.executeWorktreeRemove?.({ worktreePath }).catch(() => {});
+    }
+
+    const originalCwd = activeSession?.originalCwd ?? worktreePath;
+
+    if (cleanupFailed) {
+      // Graceful degraded exit (parity): the session leaves cleanly even though
+      // the worktree dir could not be deleted; tell the user how to finish it.
+      const failMsg = `Worktree cleanup failed, exiting anyway${branchLabel}: ${worktreePath} could not be removed — remove it manually with: git worktree remove --force ${worktreePath}${returned}`;
+      return {
+        output: cap(failMsg),
+        metadata: { action, originalCwd, worktreePath, worktreeBranch: branch, discardedFiles, discardedCommits, message: failMsg, cleanupFailed: true },
+      };
     }
 
     if (mergedInto) {
@@ -349,11 +413,19 @@ export const exitWorktreeTool: ToolDefinition = {
       // original branch. Only forcibly-discarded uncommitted files are a loss.
       const mergedCommits = discardedCommits > 0 ? ` (${pluralize(discardedCommits, 'commit')} merged)` : '';
       const lost = discardedFiles > 0 ? ` (discarded ${pluralize(discardedFiles, 'uncommitted file')})` : '';
-      return { output: cap(`Worktree merged into ${mergedInto}${branchLabel}${mergedCommits}${lost} and removed.${returned}`) };
+      const mergeMsg = `Worktree merged into ${mergedInto}${branchLabel}${mergedCommits}${lost} and removed.${returned}`;
+      return {
+        output: cap(mergeMsg),
+        metadata: { action, originalCwd, worktreePath, worktreeBranch: branch, mergedInto, discardedFiles, discardedCommits, message: mergeMsg },
+      };
     }
     const discardSummary = (discardedFiles > 0 || discardedCommits > 0)
       ? ` (discarded ${pluralize(discardedCommits, 'commit')} and ${pluralize(discardedFiles, 'uncommitted file')})`
       : ' (no changes)';
-    return { output: cap(`Worktree removed${branchLabel}${discardSummary}.${returned}`) };
+    const removedMsg = `Worktree removed${branchLabel}${discardSummary}.${returned}`;
+    return {
+      output: cap(removedMsg),
+      metadata: { action, originalCwd, worktreePath, worktreeBranch: branch, discardedFiles, discardedCommits, message: removedMsg },
+    };
   },
 };

@@ -137,6 +137,12 @@ describe('exitWorktreeTool — remove refuses when countWorktreeChanges returns 
     // Make .git/index unreadable so git status --porcelain fails,
     // while git rev-parse --is-inside-work-tree and --show-toplevel still succeed.
     fs.chmodSync(indexPath, 0o000);
+    // A destructive remove now requires an active session that owns this worktree.
+    setWorktreeSession({
+      originalCwd: tmpDir, worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'null-wt', worktreeBranch: 'worktree-null-wt',
+      createdAt: new Date().toISOString(),
+    });
 
     const r = await exitWorktreeTool.execute(
       { action: 'remove' },
@@ -169,6 +175,11 @@ describe('exitWorktreeTool — remove refuses when uncommitted changes exist (li
   });
 
   it('refuses removal when uncommitted changes exist', async () => {
+    setWorktreeSession({
+      originalCwd: tmpDir, worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'dirty-wt', worktreeBranch: 'worktree-dirty-wt',
+      createdAt: new Date().toISOString(),
+    });
     const r = await exitWorktreeTool.execute(
       { action: 'remove' },
       ctx({ cwd: worktreePath }),
@@ -202,6 +213,11 @@ describe('exitWorktreeTool — remove refuses when unpushed commits exist (lines
   });
 
   it('refuses removal when unpushed commits exist', async () => {
+    setWorktreeSession({
+      originalCwd: tmpDir, worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'unpushed-wt', worktreeBranch: 'worktree-unpushed-wt',
+      createdAt: new Date().toISOString(),
+    });
     const r = await exitWorktreeTool.execute(
       { action: 'remove' },
       ctx({ cwd: worktreePath }),
@@ -260,7 +276,9 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
     assert.equal(getCurrentWorktreeSession(), null, 'Session should be cleared');
   });
 
-  it('removes worktree without an active session', async () => {
+  it('no-ops a destructive remove when no active session owns the worktree', async () => {
+    // Parity (Claude's ExitWorktree): with no active enter_worktree session the
+    // destructive remove is an informational no-op — the filesystem is unchanged.
     setWorktreeSession(null);
 
     const r = await exitWorktreeTool.execute(
@@ -269,11 +287,18 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
     );
 
     assert.ok(!r.isError, r.output);
-    assert.ok(r.output.includes('Worktree removed'));
+    assert.ok(r.output.includes('No active worktree session'));
+    assert.equal(fs.existsSync(worktreePath), true, 'worktree must be untouched');
   });
 
   it('removes worktree without a hookManager', async () => {
-    setWorktreeSession(null);
+    // Covers the no-hookManager arm: an owning session exists, but the context
+    // has no _hookManager, so the removal path must still succeed.
+    setWorktreeSession({
+      originalCwd: tmpDir, worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'remove-wt', worktreeBranch: 'worktree-remove-wt',
+      createdAt: new Date().toISOString(),
+    });
 
     const r = await exitWorktreeTool.execute(
       { action: 'remove', discard_changes: true },
@@ -303,6 +328,11 @@ describe('exitWorktreeTool — fallback removal when git worktree remove fails (
   it('falls back to fs.rmSync + git worktree prune when git worktree remove fails', async () => {
     // The dir is not a real git worktree (just an independent repo in the path),
     // so `git worktree remove --force` will fail, triggering the fallback (lines 94-99).
+    setWorktreeSession({
+      originalCwd: tmpDir, worktreePath: fs.realpathSync(worktreePath),
+      worktreeName: 'fallback-wt', worktreeBranch: 'worktree-fallback-wt',
+      createdAt: new Date().toISOString(),
+    });
     const r = await exitWorktreeTool.execute(
       { action: 'remove', discard_changes: true },
       ctx({ cwd: worktreePath }),

@@ -24,11 +24,14 @@ function makeRepo(): string {
   return dir;
 }
 const ctx = (over: Partial<ToolContext> = {}) => ({ cwd: process.cwd(), abortSignal: new AbortController().signal, ...over } as ToolContext);
+// exit_worktree's remove/merge branches now chdir the process back to originalCwd
+// (parity gap 17); restore to a surviving dir before each temp repo is deleted.
+const LAUNCH_CWD = process.cwd();
 
 describe('enter_worktree parity', () => {
   let repo: string;
   beforeEach(() => { repo = makeRepo(); setWorktreeSession(null); });
-  afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
+  afterEach(() => { try { process.chdir(LAUNCH_CWD); } catch { /* ignore */ } fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
 
   it('description carries when-to-use / when-NOT guidance', () => {
     assert.match(enterWorktreeTool.description, /WHEN TO USE/);
@@ -65,7 +68,7 @@ describe('enter_worktree parity', () => {
 describe('exit_worktree parity', () => {
   let repo: string;
   beforeEach(() => { repo = makeRepo(); setWorktreeSession(null); });
-  afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
+  afterEach(() => { try { process.chdir(LAUNCH_CWD); } catch { /* ignore */ } fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
 
   it('rejects unknown parameters', async () => {
     const r = await exitWorktreeTool.execute({ action: 'keep', bogus: 1 } as Record<string, unknown>, ctx({ cwd: repo }));
@@ -96,8 +99,11 @@ describe('exit_worktree parity', () => {
     assert.match(kept.output, /Returned to /);
     assert.equal(getCurrentWorktreeSession(), null);
 
-    // Now remove it (session was cleared, so no scope guard); branch should be deleted.
+    // Re-establish the owning session for this worktree (parity: a destructive
+    // remove requires an active enter_worktree session that owns this exact path),
+    // then remove it; its branch should be deleted.
     const branch = session.worktreeBranch;
+    setWorktreeSession(session);
     const r = await exitWorktreeTool.execute({ action: 'remove', discard_changes: true }, ctx({ cwd: wtPath }));
     assert.match(r.output, /Worktree removed/);
     // The worktree branch must no longer exist.

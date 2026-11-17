@@ -27,13 +27,20 @@ function makeRepo(): string {
   return dir;
 }
 
+// Captured once at module load — a directory guaranteed to still exist, used to
+// restore the PROCESS cwd after each test. exit_worktree's remove/merge branches
+// now chdir the process back to the session's originalCwd (parity gap 17); since
+// each test then deletes that temp repo, we must leave the process in a surviving
+// directory before teardown or the next `process.cwd()` call throws ENOENT.
+const LAUNCH_CWD = process.cwd();
+
 const ctx = (over: Partial<ToolContext> = {}) =>
   ({ cwd: process.cwd(), abortSignal: new AbortController().signal, ...over } as ToolContext);
 
 describe('exit_worktree merge-back parity', () => {
   let repo: string;
   beforeEach(() => { repo = makeRepo(); setWorktreeSession(null); });
-  afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
+  afterEach(() => { try { process.chdir(LAUNCH_CWD); } catch { /* ignore */ } fs.rmSync(repo, { recursive: true, force: true }); setWorktreeSession(null); });
 
   // ---- GAP 1: action "merge" is a valid action & merges committed work back ----
   it('merges committed worktree work into the original branch, then removes the worktree + branch', async () => {

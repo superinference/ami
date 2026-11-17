@@ -39,6 +39,10 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
   } as ToolContext;
 }
 
+// exit_worktree's remove branch now chdir's the process back to originalCwd
+// (parity gap 17); restore to a surviving dir before each temp repo is deleted.
+const LAUNCH_CWD = process.cwd();
+
 // ---------------------------------------------------------------------------
 // U057 / GAP 14 — precise session-delta commit counting (originalHeadCommit..HEAD)
 // ---------------------------------------------------------------------------
@@ -138,6 +142,7 @@ describe('U057 GAP14 E2E: exit_worktree remove uses session-delta counting', () 
   });
 
   afterEach(() => {
+    try { process.chdir(LAUNCH_CWD); } catch { /* ignore */ }
     try { git('worktree prune', repo); } catch { /* ignore */ }
     fs.rmSync(repo, { recursive: true, force: true });
     setWorktreeSession(null);

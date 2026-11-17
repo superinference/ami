@@ -22,6 +22,10 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
   };
 }
 
+// exit_worktree's remove branch now chdir's the process back to originalCwd
+// (parity gap 17); restore to a surviving dir before a temp repo is deleted.
+const LAUNCH_CWD = process.cwd();
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -157,6 +161,7 @@ describe('worktree tools – lifecycle', () => {
       );
       assert.ok(removeResult.output.includes('removed') || removeResult.output.includes('Worktree'), `Remove output: ${removeResult.output}`);
     } finally {
+      try { process.chdir(LAUNCH_CWD); } catch { /* ignore */ }
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
