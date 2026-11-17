@@ -1383,11 +1383,12 @@ function ipInCidr(host: string, entry: string): boolean {
 
 /**
  * NO_PROXY matcher supporting wildcard (`*`), exact host, domain suffix
- * (`.example.com` or bare `example.com`), port-specific entries
- * (`example.com:8080`, compared against the request host:port), and CIDR /
- * IP-range entries (`10.0.0.0/8`, `fd00::/8`, matched only when the host is a
- * literal IP). `port` is the resolved request port (protocol default applied by
- * the caller).
+ * (`.example.com`, glob `*.example.com`, or bare `example.com`), port-specific
+ * entries (`example.com:8080`, compared against the request host:port), and
+ * CIDR / IP-range entries (`10.0.0.0/8`, `fd00::/8`, matched only when the host
+ * is a literal IP). A leading `*.` glob prefix is treated the same as a leading
+ * `.` (both the apex and any subdomain match). `port` is the resolved request
+ * port (protocol default applied by the caller).
  */
 function hostMatchesNoProxy(
   noProxy: string | undefined,
@@ -1413,8 +1414,11 @@ function hostMatchesNoProxy(
       if (hostWithPort === entry) return true;
       continue;
     }
-    const bare = entry.replace(/^\./, '');
-    if (host === bare || host.endsWith('.' + bare)) return true;
+    // Strip a leading `.` (domain suffix) OR a `*.` glob prefix — both forms
+    // bypass the apex and every subdomain. A bare `*.` (empty remainder) matches
+    // nothing, mirroring how a lone `.` would.
+    const bare = entry.replace(/^(?:\*\.|\.)/, '');
+    if (bare && (host === bare || host.endsWith('.' + bare))) return true;
   }
   return false;
 }
@@ -1422,9 +1426,12 @@ function hostMatchesNoProxy(
 /**
  * Resolve the proxy URL to use for `url` from the standard proxy env vars, or
  * `undefined` when none applies. An https target prefers `HTTPS_PROXY` (falling
- * back to `HTTP_PROXY`); an http target uses `HTTP_PROXY`. A `NO_PROXY` match
- * (exact host, domain suffix, `*`, a `host:port` entry, or a CIDR / IP range)
- * always wins and returns `undefined`.
+ * back to `HTTP_PROXY`); an http target uses `HTTP_PROXY`. Within each pair the
+ * lowercase variant is preferred over the uppercase one (`https_proxy` >
+ * `HTTPS_PROXY` > `http_proxy` > `HTTP_PROXY`; `no_proxy` > `NO_PROXY`), matching
+ * curl/standard-tooling precedence (Claude Code's `getProxyUrl`/`getNoProxy`). A
+ * `NO_PROXY` match (exact host, domain suffix, `*`, `*.domain` glob, a
+ * `host:port` entry, or a CIDR / IP range) always wins and returns `undefined`.
  * Pure + exported so it is unit-testable without touching the network.
  */
 export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string | undefined {
@@ -1432,11 +1439,11 @@ export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string 
   try { parsed = new URL(url); } catch { return undefined; }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
   const proxy = parsed.protocol === 'https:'
-    ? (env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy)
-    : (env.HTTP_PROXY ?? env.http_proxy);
+    ? (env.https_proxy ?? env.HTTPS_PROXY ?? env.http_proxy ?? env.HTTP_PROXY)
+    : (env.http_proxy ?? env.HTTP_PROXY);
   if (!proxy) return undefined;
   const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-  if (hostMatchesNoProxy(env.NO_PROXY ?? env.no_proxy, parsed.hostname, port)) return undefined;
+  if (hostMatchesNoProxy(env.no_proxy ?? env.NO_PROXY, parsed.hostname, port)) return undefined;
   return proxy;
 }
 
@@ -1984,14 +1991,31 @@ export { inferProviderFromApiKey };
 // Convert our ToolDefinition[] to AI SDK ToolSet
 // ---------------------------------------------------------------------------
 
+type SdkToolEntry = { description: string; inputSchema: ReturnType<typeof jsonSchema> };
+
+/**
+ * Identity-keyed cache of the per-tool SDK schema. `jsonSchema()` re-wraps a
+ * tool's JSON schema on every request (the hot path runs once per model turn),
+ * yet the tool objects in the registry are stable across turns. Keying by the
+ * `ToolDefinition` identity means each tool's schema is converted exactly once
+ * and the same immutable entry is reused thereafter; the WeakMap lets a dropped
+ * tool be garbage-collected. Mirrors Claude Code's `toolSchemaCache`.
+ */
+const toolSchemaCache = new WeakMap<ToolDefinition, SdkToolEntry>();
+
 export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
-  const sdkTools: Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema>; }> = {};
+  const sdkTools: Record<string, SdkToolEntry> = {};
   for (const tool of tools) {
-    sdkTools[tool.name] = {
-      description: tool.description,
-      inputSchema: jsonSchema(tool.inputSchema as any),
-      // NO execute function — we handle execution in our engine loop
-    };
+    let entry = toolSchemaCache.get(tool);
+    if (!entry) {
+      entry = {
+        description: tool.description,
+        inputSchema: jsonSchema(tool.inputSchema as any),
+        // NO execute function — we handle execution in our engine loop
+      };
+      toolSchemaCache.set(tool, entry);
+    }
+    sdkTools[tool.name] = entry;
   }
   return sdkTools;
 }
