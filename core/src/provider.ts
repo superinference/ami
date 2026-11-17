@@ -37,6 +37,7 @@ import {
   SYSTEM_CA_NODE_OPTIONS,
 } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
+import { assertValidStsEnvCredentials } from './utils/aws';
 import { isEnvTruthy } from './analytics';
 import { log, logError, recordDiagnostic } from './logger';
 import { partitionAndSortTools } from './tools/tool-utils';
@@ -2272,6 +2273,15 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // Resolve the invoked id against the account's inference profiles so a
   // region-scoped profile (e.g. eu.anthropic.<model>-v1:0) is used when provisioned.
   if (provider === 'amazon-bedrock') {
+    // Boundary guard: when the setup uses short-term STS credentials
+    // (AWS_SESSION_TOKEN exported) but the credential triple is malformed/empty,
+    // fail fast here with an actionable message rather than letting a broken
+    // credential blob surface as an opaque 403 deep in the request. Skipped for
+    // bearer-token auth (AWS_BEARER_TOKEN_BEDROCK), which does not consume the
+    // STS env triple. Mirrors Claude Code's isValidAwsStsOutput boundary check.
+    if (!(process.env[AWS_BEARER_TOKEN_BEDROCK_ENV] ?? '').trim()) {
+      assertValidStsEnvCredentials(process.env);
+    }
     const bedrockModel = resolveBedrockModelId(model, getBedrockInferenceProfiles());
     // Bedrock rejects `anthropic-beta` HEADERS, so route the model's allowed betas
     // (interleaved-thinking / 1M-context) through the request BODY instead, mirroring
