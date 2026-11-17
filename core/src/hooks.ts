@@ -3645,7 +3645,10 @@ export class HookManager extends EventEmitter {
    * installed it. Returns copies; callers cannot mutate the retained set.
    */
   getHookAuditView(): HookAuditRow[] {
-    return this._descriptors.map(d => ({
+    // Build from describeHooks() (the canonical retained-descriptor copy) rather
+    // than re-reading _descriptors, so the two introspection surfaces share one
+    // source of truth and the audit view can never drift from the raw view.
+    return this.describeHooks().map(d => ({
       event: d.event,
       type: d.type,
       ...(d.matcher ? { matcher: d.matcher } : {}),
