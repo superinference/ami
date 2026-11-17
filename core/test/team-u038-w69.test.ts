@@ -115,6 +115,7 @@ describe('U038-w69 team.ts resolved self-identity introspection surface', () => 
         parentSessionId: undefined,
         isTeammate: false,
         isLeader: false,
+        role: 'none',
         isInProcess: false,
       });
     });

@@ -466,6 +466,31 @@ export function isLeader(team: TeamFile | null = currentTeam): boolean {
 }
 
 /**
+ * The team roles a session can hold (parity: Claude Code's leader-vs-teammate role
+ * distinction — `isTeamLead` / `isLeader = !agentId` in swarm/reconnection.ts and the
+ * 'team-lead' vs teammate split surfaced in TeamStatus.tsx). Exposed as a named enum
+ * (not just the separate {@link isLeader}/{@link isTeammate} booleans) so role-aware
+ * diagnostics/status wording has one canonical vocabulary, and so the set is
+ * registerable in the introspection surface.
+ */
+export const TEAM_ROLES = ['lead', 'teammate'] as const;
+export type TeamRole = typeof TEAM_ROLES[number];
+
+/**
+ * This session's single resolved team role (parity: Claude Code's leader-vs-teammate
+ * role distinction). Consolidates {@link isLeader}/{@link isTeammate} into one named
+ * value: `'lead'` when this session is the team lead, `'teammate'` when it is a
+ * non-lead teammate, and `'none'` for a standalone session with no team lineage.
+ * Reuses the existing role predicates so it never drifts from them (no duplicated
+ * resolution).
+ */
+export function getSelfRole(): TeamRole | 'none' {
+  if (isLeader()) return 'lead';
+  if (isTeammate()) return 'teammate';
+  return 'none';
+}
+
+/**
  * A fully-resolved snapshot of THIS session's swarm identity (parity: Claude Code's
  * `getDynamicTeamContext` "for inspection/debugging" aggregate, combined with
  * `getAgentId`/`getAgentName`/`getTeamName`/`getTeammateColor`/`isTeammate`).
@@ -485,6 +510,10 @@ export interface SelfIdentity {
   parentSessionId?: string;
   isTeammate: boolean;
   isLeader: boolean;
+  /** This session's single team role (parity: Claude Code's leader-vs-teammate
+   *  distinction), consolidating {@link isLeader}/{@link isTeammate}: `'lead'`,
+   *  `'teammate'`, or `'none'` for a standalone session. */
+  role: TeamRole | 'none';
   isInProcess: boolean;
 }
 
@@ -504,6 +533,7 @@ export function getSelfIdentity(): SelfIdentity {
     parentSessionId: getSelfParentSessionId(),
     isTeammate: isTeammate(),
     isLeader: isLeader(),
+    role: getSelfRole(),
     isInProcess: isInProcessTeammate(),
   };
 }
@@ -1174,7 +1204,11 @@ export const teamCreateTool: ToolDefinition = {
     // Surface this session's resolved swarm identity via the cohesive introspection
     // aggregate (consolidates the former ad-hoc isLeader()/getSelfAgentName() reads).
     const self = getSelfIdentity();
-    const roleNote = ` You are the ${self.isLeader ? 'team lead' : 'teammate'} (self: ${self.agentName}).`;
+    // Role-aware status wording driven by the single resolved role (parity: Claude's
+    // leader-vs-teammate wording) — reads self.role so the three states (lead,
+    // teammate, solo) are surfaced from one canonical vocabulary.
+    const roleLabel = self.role === 'lead' ? 'team lead' : self.role === 'teammate' ? 'teammate' : 'solo agent';
+    const roleNote = ` You are the ${roleLabel} (self: ${self.agentName}).`;
     return {
       output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote}${roleNote} ` +
         `Spawn teammates with task({ name: "<teammate>" }) to add members.`,
