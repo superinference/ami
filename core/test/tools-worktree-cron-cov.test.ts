@@ -32,6 +32,7 @@ import {
 import {
   gitCommitTool,
   buildFinalMessage,
+  resolveCommitAttribution,
   CO_AUTHOR_TRAILER,
   TRAILER_REGEX,
   _gitCommitFs,
@@ -960,9 +961,12 @@ describe('git_commit tool', () => {
     const withTrailer = `fix: thing\n\n${CO_AUTHOR_TRAILER}`;
     assert.equal(buildFinalMessage(withTrailer), withTrailer.trim());
 
-    // Opt-out env → no trailer.
+    // Opt-out env → resolveCommitAttribution returns null, and a null trailer
+    // makes buildFinalMessage append nothing (env/config resolution moved to
+    // resolveCommitAttribution; buildFinalMessage is now pure in its trailer arg).
     process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = '1';
-    assert.equal(buildFinalMessage('fix: thing'), 'fix: thing');
+    assert.equal(resolveCommitAttribution(process.cwd()), null);
+    assert.equal(buildFinalMessage('fix: thing', null), 'fix: thing');
     delete process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR;
   });
 

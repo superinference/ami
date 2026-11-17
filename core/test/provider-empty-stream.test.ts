@@ -151,6 +151,8 @@ describe('streamChatCompletionWithRetry - empty-stream retry (E2E control flow)'
     assert.equal(attempts, 3, `expected 3 attempts (1 + 2 retries), got ${attempts}`);
     const last = chunks.at(-1)!;
     assert.equal(last.type, 'error');
-    assert.equal(isEmptyStreamError(last.error), true);
+    // The surfaced error now carries a request-id suffix (U020 request-id error
+    // surfacing) for gateway debugging, so the sentinel is a prefix of it.
+    assert.ok((last.error ?? '').includes(EMPTY_STREAM_ERROR), `expected empty-stream sentinel in: ${last.error}`);
   });
 });
