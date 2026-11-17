@@ -7,6 +7,7 @@ import { isEnvTruthy } from './privacy-level';
 import { isSafeSegment } from './skill-catalog';
 import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
 import { AMI_VERSION } from './version';
+import { resolveCacheDir } from './reference-journal';
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
@@ -271,8 +272,27 @@ function resolveLogTarget(): { dir: string; file: string } {
     return { dir: path.dirname(fileOverride), file: fileOverride };
   }
   const dirOverride = (process.env.AMI_DEBUG_LOGS_DIR ?? process.env.CLAUDE_CODE_DEBUG_LOGS_DIR)?.trim();
-  const dir = dirOverride || DEFAULT_LOG_DIR;
+  const dir = dirOverride || cacheLogDirIfConfigured() || DEFAULT_LOG_DIR;
   return { dir, file: path.join(dir, logFileName()) };
+}
+
+/**
+ * The platform CACHE location for transient debug logs — `<resolveCacheDir>/core`
+ * — but ONLY when the user has explicitly opted into a platform cache dir by setting
+ * `AMI_CACHE_DIR`, `XDG_CACHE_HOME` (posix), or `%LOCALAPPDATA%` (win32). Without one
+ * of those, logs stay under the historical {@link DEFAULT_LOG_DIR} (`os.tmpdir()`),
+ * so default behaviour is unchanged. This honors the standalone cache-dir knob
+ * ({@link resolveCacheDir}) for transient logs without forcing it on every user
+ * (parity: Claude Code's cachePaths.ts `envPaths().cache` for logs/errors/mcp).
+ */
+function cacheLogDirIfConfigured(): string | null {
+  const env = process.env;
+  const opted =
+    (env.AMI_CACHE_DIR && env.AMI_CACHE_DIR.trim()) ||
+    (env.XDG_CACHE_HOME && env.XDG_CACHE_HOME.trim()) ||
+    (process.platform === 'win32' && env.LOCALAPPDATA && env.LOCALAPPDATA.trim());
+  if (!opted) return null;
+  return path.join(resolveCacheDir(env), 'core');
 }
 
 /**

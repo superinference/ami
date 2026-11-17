@@ -33,8 +33,8 @@ export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, esti
 export { diffStringLists, buildDiffableContent, createUnifiedPatch, writeCacheBreakDiff } from './cost-tracker';
 export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause, DiffableTool, ModelSpeed } from './cost-tracker';
 export {
-  resolveConfigDir, migrateLegacyDataDir, migrateDeprecatedModelAlias, runStartupMigrations, formatStartupMigrationNotices, CURRENT_MIGRATION_VERSION, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
-  canonicalizePath, canonicalGitRoot,
+  resolveConfigDir, resolveCacheDir, getUserBinDir, migrateLegacyDataDir, migrateDeprecatedModelAlias, runStartupMigrations, formatStartupMigrationNotices, CURRENT_MIGRATION_VERSION, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
+  canonicalizePath, canonicalGitRoot, normalizeGitRemoteUrl, repoRemoteHash,
   toReferenceToolName, toReferenceModelId, buildUsageFields,
   buildAssistantEntry, buildUserEntry, appendEntry, ndjsonSafeStringify,
   dashboardConfigPath, registerDataDir, maybeRegisterDataDir,
