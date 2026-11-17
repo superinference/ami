@@ -263,14 +263,37 @@ export interface ClassifiedError {
  * Parsed token fields (gap + actual/limit) for a context-overflow error, with
  * only the keys that could be parsed present. Shared by every context_overflow
  * classification branch so the structured counts stay consistent.
+ *
+ * Recognizes BOTH authoritative overflow wordings so magnitude is carried on the
+ * ClassifiedError regardless of which one the API returns:
+ *   1. "prompt is too long: N tokens > M maximum" (the INPUT alone overflows) —
+ *      actual = N, limit = M.
+ *   2. "input length and `max_tokens` exceed context limit: A + B > C" (input +
+ *      requested max_tokens overflow) — actual = A + B, limit = C.
+ * In both cases tokenGap is the positive (actual − limit), so the engine's
+ * recovery loop can size compaction / a max_tokens reduction in one shot and the
+ * user-facing message can show the exact overflow instead of a vague "too long".
  */
 function overflowTokenFields(raw: string): Pick<ClassifiedError, 'tokenGap' | 'actualTokens' | 'limitTokens'> {
-  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(raw);
   const fields: Pick<ClassifiedError, 'tokenGap' | 'actualTokens' | 'limitTokens'> = {};
-  const gap = getPromptTooLongTokenGap(raw);
-  if (gap !== undefined) fields.tokenGap = gap;
-  if (actualTokens !== undefined) fields.actualTokens = actualTokens;
-  if (limitTokens !== undefined) fields.limitTokens = limitTokens;
+  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(raw);
+  if (actualTokens !== undefined && limitTokens !== undefined) {
+    const gap = getPromptTooLongTokenGap(raw);
+    if (gap !== undefined) fields.tokenGap = gap;
+    fields.actualTokens = actualTokens;
+    fields.limitTokens = limitTokens;
+    return fields;
+  }
+  // Fall back to the "input length and `max_tokens` exceed context limit" form,
+  // where the overflowing total is the sum of the input and requested max_tokens.
+  const maxTokens = parseMaxTokensContextOverflow(raw);
+  if (maxTokens) {
+    const actual = maxTokens.inputTokens + maxTokens.maxTokens;
+    fields.actualTokens = actual;
+    fields.limitTokens = maxTokens.contextLimit;
+    const gap = actual - maxTokens.contextLimit;
+    if (gap > 0) fields.tokenGap = gap;
+  }
   return fields;
 }
 
