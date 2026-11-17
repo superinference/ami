@@ -199,6 +199,26 @@ function truncate(s: string): string {
 }
 
 /**
+ * Targeted-cell label for a notebook_edit activity phrase: the explicit `cell_id`
+ * when present, else the positional `cell-N` alias derived from a finite
+ * `cell_number` (accepting the quoted-number form providers sometimes emit).
+ * Returns `undefined` when no cell can be resolved so the caller shows the
+ * notebook path alone instead of a `cell-NaN`/`cell-undefined` artifact.
+ */
+function notebookCellLabel(inp: Record<string, unknown>): string | undefined {
+  const id = firstString(inp.cell_id);
+  if (id) return id;
+  const raw = inp.cell_number;
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim() !== ''
+        ? Number(raw)
+        : NaN;
+  return Number.isFinite(n) ? `cell-${n}` : undefined;
+}
+
+/**
  * Canonical human-readable activity phrase for a tool call computed from its
  * name + input (e.g. "Reading src/foo.ts", "Searching for TODO", "Running npm
  * test"). Returns `undefined` for a tool with no meaningful phrase so the caller
@@ -227,10 +247,20 @@ export function describeToolActivity(
       const p = firstString(inp.notebook_path, inp.file_path);
       return p ? `Reading ${truncate(p)}` : 'Reading notebook';
     }
-    case 'file_edit':
-    case 'notebook_edit': {
+    case 'file_edit': {
       const p = firstString(inp.file_path, inp.notebook_path);
       return p ? `Editing ${truncate(p)}` : 'Editing file';
+    }
+    case 'notebook_edit': {
+      // Parity: Claude's NotebookEdit getActivityDescription ("Editing notebook
+      // <summary>"), and consistent with cli/src/subagent-roster.ts, which already
+      // uses the "Editing notebook" verb. Surface the TARGETED cell (cell_id, else
+      // the positional cell-N alias derived from cell_number) so the live-progress
+      // hint names the exact cell being edited, not just the file.
+      const p = firstString(inp.notebook_path, inp.file_path);
+      if (!p) return 'Editing notebook';
+      const cell = notebookCellLabel(inp);
+      return cell ? `Editing notebook ${truncate(p)} ${cell}` : `Editing notebook ${truncate(p)}`;
     }
     case 'file_write':
     case 'write': {

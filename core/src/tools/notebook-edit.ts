@@ -14,6 +14,7 @@ import {
   detectLineEnding,
   convertToLineEnding,
 } from './tool-utils';
+import { describeToolActivity } from './tool-activity-class';
 
 /** Normalize a notebook cell source (string or string[]) to a single string. */
 function cellSourceToString(source: string | string[] | undefined): string {
@@ -142,6 +143,15 @@ export const notebookEditTool: ToolDefinition = {
   // Discovery hint for tool_search using synonyms NOT already in the name/
   // description, so a deferred notebook_edit is findable by "jupyter"/"ipynb".
   searchHint: 'jupyter ipynb notebook cell code markdown edit insert delete',
+  // Human-readable live-progress phrase (parity: Claude's NotebookEdit
+  // getActivityDescription -> "Editing notebook <summary>"). Delegates to the ONE
+  // canonical phrasing rule (describeToolActivity) so a sub-agent's task_list
+  // progressSummary — resolved via createActivityDescriptionResolver, which prefers
+  // this hook — names the notebook AND the targeted cell rather than the raw
+  // snake_case tool name. No second copy of the phrasing lives here.
+  getActivityDescription(input: Record<string, unknown>): string {
+    return describeToolActivity('notebook_edit', input) ?? 'Editing notebook';
+  },
   // PARITY (additive): structured-result schema describing the machine-readable
   // outcome AMI carries on `ToolResult.metadata` ({@link NotebookEditMetadata}).
   // Mirrors Claude's NotebookEditTool `outputSchema` (new_source / cell_type /
