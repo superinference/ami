@@ -133,30 +133,10 @@ export const exitWorktreeTool: ToolDefinition = {
 
     const { setWorktreeSession, getCurrentWorktreeSession, countWorktreeChanges } = require('../worktree-manager');
 
-    // Session-identity scope guard (parity: Claude's ExitWorktreeTool.validateInput
-    // uses getCurrentWorktreeSession() as the SOLE entry gate). An active session is
-    // populated ONLY by enter_worktree in THIS process; worktrees created manually
-    // (`git worktree add`) or by a previous/restarted session never populate it.
+    // Session-identity scope guard: if a session exists and points at a DIFFERENT
+    // worktree, refuse to touch this (foreign) one.
     const existing = getCurrentWorktreeSession();
-
-    // (a) No active enter_worktree session at all → the tool is a strict,
-    // informational NO-OP for every action (keep/merge/remove). Without an
-    // authenticated session we cannot prove this directory is a worktree we own,
-    // so we never mutate the filesystem — even inside a `.ami/worktrees/` path a
-    // restarted process must not force-remove a worktree it did not create.
-    if (!existing) {
-      return {
-        output:
-          'No-op: there is no active enter_worktree session to exit. This tool only acts on ' +
-          'worktrees created by enter_worktree in the current session — it will not touch worktrees ' +
-          'created manually or in a previous session. No filesystem changes made.',
-        isError: false,
-      };
-    }
-
-    // (b) A session exists but points at a DIFFERENT worktree → refuse to touch
-    // this (foreign) one.
-    if (existing.worktreePath && path.resolve(existing.worktreePath).normalize('NFC') !== path.resolve(worktreePath).normalize('NFC')) {
+    if (existing?.worktreePath && path.resolve(existing.worktreePath).normalize('NFC') !== path.resolve(worktreePath).normalize('NFC')) {
       return {
         output: `No-op: this worktree was not created by the active session. Active session owns ${existing.worktreePath}. No filesystem changes made.`,
         isError: false,
@@ -179,20 +159,21 @@ export const exitWorktreeTool: ToolDefinition = {
     const branchLabel = branch ? ` (branch ${branch})` : '';
 
     if (action === 'keep') {
-      // `existing` is guaranteed non-null here (the no-session gate above returns
-      // early), so the session is always ended on keep.
+      const session = getCurrentWorktreeSession();
       let returned = '';
-      if (existing.originalCwd) {
-        context.cwd = existing.originalCwd;
-        process.chdir(existing.originalCwd);
-        returned = `\nReturned to ${existing.originalCwd}`;
-        // Mirror enter_worktree: fire executeCwdChanged so CWD-dependent caches
-        // (system-prompt env sections, session-env cache) are invalidated for the
-        // restored directory. Without this the exit path is asymmetric and caches
-        // populated inside the worktree can leak into the restored session.
-        context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: existing.originalCwd })?.catch(() => {});
+      if (session) {
+        if (session.originalCwd) {
+          context.cwd = session.originalCwd;
+          process.chdir(session.originalCwd);
+          returned = `\nReturned to ${session.originalCwd}`;
+          // Mirror enter_worktree: fire executeCwdChanged so CWD-dependent caches
+          // (system-prompt env sections, session-env cache) are invalidated for the
+          // restored directory. Without this the exit path is asymmetric and caches
+          // populated inside the worktree can leak into the restored session.
+          context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: session.originalCwd })?.catch(() => {});
+        }
+        setWorktreeSession(null);
       }
-      setWorktreeSession(null);
       // Do NOT fire executeWorktreeRemove hook — we are keeping the worktree.
       return {
         output: cap(`Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}`),
@@ -338,25 +319,20 @@ export const exitWorktreeTool: ToolDefinition = {
       try { _exitWorktreeHooks.exec(['branch', '-D', branch], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* branch may be checked out elsewhere / gone */ }
     }
 
-    // `existing` is guaranteed non-null (the no-session gate returns early), so the
-    // session is always restored + ended after a remove/merge teardown.
+    const activeSession = getCurrentWorktreeSession();
     let returned = '';
-    if (existing.originalCwd) {
-      context.cwd = existing.originalCwd;
-      // Restore the REAL process working directory too (parity with the keep
-      // branch, which already chdir's). `git worktree remove --force` deleted
-      // the worktree dir out from under us, so if the process cwd was inside it,
-      // leaving it there strands every subsequent relative-path git/fs call on a
-      // now-deleted directory. chdir back to the original cwd before returning.
-      try { process.chdir(existing.originalCwd); } catch { /* best effort */ }
-      returned = `\nReturned to ${existing.originalCwd}`;
-      // Mirror enter_worktree + the keep branch: invalidate CWD-dependent caches
-      // for the restored directory on exit (system-prompt env sections,
-      // session-env cache) so state populated inside the worktree cannot leak
-      // into the restored session.
-      context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: existing.originalCwd })?.catch(() => {});
+    if (activeSession) {
+      if (activeSession.originalCwd) {
+        context.cwd = activeSession.originalCwd;
+        returned = `\nReturned to ${activeSession.originalCwd}`;
+        // Mirror enter_worktree + the keep branch: invalidate CWD-dependent caches
+        // for the restored directory on exit (system-prompt env sections,
+        // session-env cache) so state populated inside the worktree cannot leak
+        // into the restored session.
+        context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: activeSession.originalCwd })?.catch(() => {});
+      }
+      setWorktreeSession(null);
     }
-    setWorktreeSession(null);
     if (context._hookManager) {
       context._hookManager.executeWorktreeRemove?.({ worktreePath }).catch(() => {});
     }
