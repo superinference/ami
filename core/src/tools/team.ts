@@ -132,23 +132,33 @@ const MAX_TEAM_NAME_LEN = 64;
 const MAX_TEAM_DESCRIPTION_LEN = 5000;
 
 /**
- * Validate a user-supplied team name that becomes a directory component. Mirrors
- * Claude's validateAgentType identifier bounds: a bounded length AND a start/end
- * alphanumeric requirement, so degenerate names like "-", "_", "-foo" or "bar_"
- * (which would still be valid path components) are rejected. Returns the name when
- * valid, or null otherwise.
+ * Normalize a user-supplied team name into a filesystem-safe slug that becomes a
+ * directory component (parity: Claude Code's `sanitizeName` in
+ * utils/swarm/teamHelpers.ts, which replaces every unsafe char with `-` and uses
+ * the result rather than rejecting it). Human-friendly names like `"My Team!"` are
+ * ACCEPTED and normalized to `"My-Team"` instead of failing validation.
+ *
+ * AMI superset (kept, not dropped): an already-valid name is preserved VERBATIM —
+ * `_`, `-`, and letter CASE survive (Claude would lowercase and collapse `_`→`-`),
+ * so existing team dirs/paths are unchanged.
+ *
+ * Security (preserved): the slug is always a single, self-contained path component
+ * — every path separator, dot, and other unsafe char is mapped to `-`, so a
+ * traversal attempt like `"../../../etc/evil"` normalizes to a contained
+ * `"etc-evil"` that can never escape the teams dir. Leading/trailing separators are
+ * trimmed so the slug starts and ends with an alphanumeric (no flag-like `-foo`),
+ * and the length is bounded. Returns the slug, or null when it normalizes to empty
+ * (e.g. `""` or `"..."`) or exceeds {@link MAX_TEAM_NAME_LEN}. The three regexes are
+ * linear/anchored (no nested optionals) so there is no ReDoS surface.
  */
 function sanitizeTeamName(name: string): string | null {
-  const clean = name.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!clean || clean !== name) return null;
-  if (clean.length > MAX_TEAM_NAME_LEN) return null;
-  // Must start and end with an alphanumeric (single-char alphanumeric is allowed).
-  // clean is already [a-zA-Z0-9_-]+, so a direct first/last char test suffices
-  // (avoids a ReDoS-flagged nested-optional regex).
-  const isAlnum = (c: string): boolean =>
-    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-  if (!isAlnum(clean[0]) || !isAlnum(clean[clean.length - 1])) return null;
-  return clean;
+  const slug = name
+    .replace(/[^a-zA-Z0-9_-]/g, '-') // map every unsafe char to a hyphen (parity: sanitizeName)
+    .replace(/-+/g, '-')             // collapse inserted hyphen runs
+    .replace(/^[-_]+|[-_]+$/g, '');  // trim leading/trailing separators (start/end alphanumeric)
+  if (!slug) return null;            // empty after normalization ("" / "...") -> reject
+  if (slug.length > MAX_TEAM_NAME_LEN) return null;
+  return slug;
 }
 
 /**
@@ -1046,7 +1056,7 @@ export const teamCreateTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      team_name: { type: 'string', description: 'Name for the team (alphanumeric, hyphen, underscore).' },
+      team_name: { type: 'string', description: 'Name for the team. A friendly name (e.g. "My Team") is accepted and normalized to a filesystem-safe slug; it must contain at least one alphanumeric character.' },
       description: { type: 'string', description: 'Description of the team purpose.' },
       agent_type: { type: 'string', description: 'Role/type of the team lead (default "lead").' },
       model: { type: 'string', description: 'Model the lead runs under.' },
@@ -1110,7 +1120,7 @@ export const teamCreateTool: ToolDefinition = {
     if (currentTeam) return { output: `Error: Team "${currentTeam.name}" already exists. Delete it first with team_delete.`, isError: true };
     const rawName = input.team_name as string;
     const base = sanitizeTeamName(rawName);
-    if (!base) return { output: `Error: team_name must contain only alphanumeric characters, hyphens, and underscores, must start and end with an alphanumeric character, and be at most ${MAX_TEAM_NAME_LEN} characters.`, isError: true };
+    if (!base) return { output: `Error: team_name must contain at least one alphanumeric character (it is normalized to a filesystem-safe slug) and be at most ${MAX_TEAM_NAME_LEN} characters after normalization.`, isError: true };
 
     // Bound the free-text description before it is persisted verbatim to team.json.
     const description = input.description as string | undefined;

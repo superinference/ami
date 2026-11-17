@@ -59,14 +59,25 @@ describe('team rich structure + guards', () => {
     assert.ok(r.isError && r.output.includes('at most'));
   });
 
-  it('rejects a name that does not start/end with an alphanumeric', async () => {
-    for (const bad of ['-foo', 'foo-', '_bar', 'bar_', '-', '_']) {
+  it('normalizes leading/trailing separators to a slug; rejects separator-only names', async () => {
+    // Parity (sanitizeName): leading/trailing separators are TRIMMED so the slug
+    // starts/ends with an alphanumeric — the name is normalized, not rejected.
+    for (const [input, expected] of [['-foo', 'foo'], ['foo-', 'foo'], ['_bar', 'bar'], ['bar_', 'bar']] as const) {
+      resetTeam();
+      const r = await teamCreateTool.execute({ team_name: input }, ctx());
+      assert.equal(r.isError, undefined, `expected "${input}" to be normalized, not rejected`);
+      assert.equal(getCurrentTeam()!.name, expected, `"${input}" should normalize to "${expected}"`);
+    }
+    // A separator-only name normalizes to empty and is rejected.
+    for (const bad of ['-', '_']) {
+      resetTeam();
       const r = await teamCreateTool.execute({ team_name: bad }, ctx());
       assert.ok(r.isError, `expected "${bad}" to be rejected`);
       assert.ok(r.output.includes('alphanumeric'));
       assert.equal(getCurrentTeam(), null, `no team should be created for "${bad}"`);
     }
-    // Interior hyphen/underscore and single-char alphanumerics stay valid.
+    // Interior hyphen/underscore and single-char alphanumerics stay valid (verbatim).
+    resetTeam();
     const ok = await teamCreateTool.execute({ team_name: 'a-b_c1' }, ctx());
     assert.equal(ok.isError, undefined);
     assert.equal(getCurrentTeam()!.name, 'a-b_c1');

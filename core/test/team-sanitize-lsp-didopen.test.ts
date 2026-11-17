@@ -38,27 +38,36 @@ describe('teamCreateTool — team name sanitization', () => {
     assert.ok(fs.existsSync(teamDir));
   });
 
-  it('rejects team name with path traversal (../)', async () => {
+  it('neutralizes path traversal (../) into a contained slug — never escapes', async () => {
+    // Parity (sanitizeName): a traversal attempt is NORMALIZED to a contained
+    // single-component slug rather than hard-rejected; the security invariant is
+    // preserved because no directory is ever created outside the teams dir.
     const result = await teamCreateTool.execute({ team_name: '../../../etc/evil' }, ctx());
-    assert.equal(result.isError, true);
-    assert.ok(result.output.includes('alphanumeric'));
+    assert.equal(result.isError, undefined);
     const evilDir = path.join(tmpDir, '..', '..', '..', 'etc', 'evil');
     assert.ok(!fs.existsSync(evilDir));
+    const teamsRoot = path.join(tmpDir, '.ami', 'teams');
+    const entries = fs.readdirSync(teamsRoot);
+    assert.equal(entries.length, 1);
+    assert.ok(!entries[0].includes('/') && !entries[0].includes('..'));
   });
 
-  it('rejects team name with slashes', async () => {
+  it('normalizes a slashed name to a single safe component', async () => {
     const result = await teamCreateTool.execute({ team_name: 'foo/bar' }, ctx());
-    assert.equal(result.isError, true);
+    assert.equal(result.isError, undefined);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.ami', 'teams', 'foo-bar')));
   });
 
-  it('rejects team name with dots', async () => {
+  it('normalizes a dotted name to a safe slug', async () => {
     const result = await teamCreateTool.execute({ team_name: 'a.b' }, ctx());
-    assert.equal(result.isError, true);
+    assert.equal(result.isError, undefined);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.ami', 'teams', 'a-b')));
   });
 
-  it('rejects team name with spaces', async () => {
+  it('normalizes a name with spaces to a slug', async () => {
     const result = await teamCreateTool.execute({ team_name: 'my team' }, ctx());
-    assert.equal(result.isError, true);
+    assert.equal(result.isError, undefined);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.ami', 'teams', 'my-team')));
   });
 
   it('rejects empty team name', async () => {
@@ -66,14 +75,15 @@ describe('teamCreateTool — team name sanitization', () => {
     assert.equal(result.isError, true);
   });
 
-  it('rejects team name that is only special characters', async () => {
+  it('rejects team name that normalizes to empty (only special characters)', async () => {
     const result = await teamCreateTool.execute({ team_name: '...' }, ctx());
     assert.equal(result.isError, true);
   });
 
-  it('allows hyphens and underscores', async () => {
+  it('allows (and preserves) hyphens and underscores verbatim', async () => {
     const result = await teamCreateTool.execute({ team_name: 'my_team-v2' }, ctx());
     assert.equal(result.isError, undefined);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.ami', 'teams', 'my_team-v2')));
   });
 });
 
