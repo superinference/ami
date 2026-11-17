@@ -24,7 +24,7 @@ import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import type { PermissionUpdate, PermissionMode } from './permissions';
-import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
+import { validateUrlSafety, pinnedDnsLookup, SSRF_LOOPBACK_AFFORDANCE } from './tools/web-utils';
 import { escapeHarnessMarkerTags } from './tools/bash-security';
 import { getSmallFastModel } from './model-capabilities';
 import { isEnvTruthy } from './privacy-level';
@@ -1199,7 +1199,7 @@ export const ERR_HTTP_HOOK_BLOCKED_ADDRESS = 'ERR_HTTP_HOOK_BLOCKED_ADDRESS';
 export function formatHttpHookBlockedMessage(url: string, reason: string): string {
   let host = url;
   try { host = new URL(url).hostname || url; } catch { /* non-parseable URL: keep raw */ }
-  return `HTTP hook blocked: ${host} — ${reason}. Loopback (127.0.0.1, ::1) is allowed for local dev. [${ERR_HTTP_HOOK_BLOCKED_ADDRESS}]`;
+  return `HTTP hook blocked: ${host} — ${reason}. ${SSRF_LOOPBACK_AFFORDANCE} [${ERR_HTTP_HOOK_BLOCKED_ADDRESS}]`;
 }
 
 /**

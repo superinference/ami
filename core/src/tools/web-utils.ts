@@ -29,6 +29,16 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Allowed-alternative affordance appended to SSRF block messages so a caller who
+ * hits the guard learns the permitted shape without reading docs — the same
+ * self-correction clause Claude Code closes its ssrfError with
+ * (`utils/hooks/ssrfGuard.ts` ssrfError L287). Single canonical string so the web
+ * tool messages AND the HTTP-hook block message (`hooks.ts`
+ * `formatHttpHookBlockedMessage`) agree on one wording. ADDITIVE.
+ */
+export const SSRF_LOOPBACK_AFFORDANCE = 'Loopback (127.0.0.1, ::1) is allowed for local dev.';
+
+/**
  * URL schemes the web tools are permitted to fetch. Everything else —
  * `file:`, `ftp:`, `gopher:`, `data:`, `blob:`, `javascript:`, `ws:`/`wss:` —
  * is refused before any network or filesystem access. A crafted initial URL
@@ -299,7 +309,7 @@ export async function validateUrlSafety(
   }
 
   if (BLOCKED_HOSTNAMES.has(hostname) && !(allowLoopback && isLoopbackHost(hostname))) {
-    return { error: `Blocked: "${hostname}" is a private/metadata hostname` };
+    return { error: `Blocked: "${hostname}" is a private/metadata hostname. ${SSRF_LOOPBACK_AFFORDANCE}` };
   }
 
   // Reject single-label (dot-less) hostnames before any DNS/network work. A bare
@@ -332,7 +342,7 @@ export async function validateUrlSafety(
     }
     for (const addr of usable) {
       if (isPrivateIP(addr.address) && !(allowLoopback && isLoopbackHost(addr.address))) {
-        return { error: `Blocked: "${hostname}" resolves to private IP ${addr.address}` };
+        return { error: `Blocked: "${hostname}" resolves to private IP ${addr.address}. ${SSRF_LOOPBACK_AFFORDANCE}` };
       }
     }
     return { resolvedIP: usable[0].address };
@@ -452,6 +462,20 @@ export function stripHtml(html: string): string {
   text = text.replace(/<br\s*\/?>/gi, '\n');
   text = text.replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, '\n');
   text = text.replace(/<(p|div|h[1-6]|li|tr|blockquote)\b[^>]*>/gi, '\n');
+
+  // Preserve anchor link targets as Markdown [text](href) BEFORE the catch-all
+  // tag strip below — otherwise every <a href> URL is discarded and the model
+  // receives link text with no citable destination. Mirrors Claude Code's
+  // turndown HTML→Markdown conversion, which keeps link targets
+  // (WebFetchTool/utils.ts). The href value may be single/double/unquoted; the
+  // anchor text (which can hold nested inline tags) is captured and those inner
+  // tags are removed by the generic strip that follows, leaving [text](href).
+  // ADDITIVE: anchors without an href fall through to the plain tag strip. An
+  // empty href yields a bare [text]() which the model reads as un-linked text.
+  text = text.replace(
+    /<a\b[^>]*?\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>([\s\S]*?)<\/a>/gi,
+    (_m, _raw, dq, sq, uq, inner) => `[${inner}](${dq ?? sq ?? uq ?? ''})`,
+  );
 
   // Strip remaining tags
   text = text.replace(/<[^>]+>/g, '');
@@ -612,7 +636,7 @@ export function httpGet(
   const maxRedirects = options?.maxRedirects ?? 5;
   const timeoutMs = options?.timeoutMs ?? 30000;
 
-  return httpGetInternal(url, signal, maxRedirects, timeoutMs, options?.resolvedIP, options?.raw);
+  return httpGetInternal(url, signal, maxRedirects, timeoutMs, maxRedirects, options?.resolvedIP, options?.raw);
 }
 
 function httpGetInternal(
@@ -620,6 +644,10 @@ function httpGetInternal(
   signal: AbortSignal,
   redirectsLeft: number,
   timeoutMs: number,
+  // The original redirect ceiling (constant across the recursion) — reported in
+  // the "Too many redirects" error so the consumer sees the hop limit that was
+  // reached (parity with Claude's `Too many redirects (exceeded ${MAX_REDIRECTS})`).
+  maxRedirects: number,
   resolvedIP?: string,
   raw?: boolean,
   // Status code of the FIRST redirect hop followed on the way to the final
@@ -675,7 +703,7 @@ function httpGetInternal(
           res.headers.location
         ) {
           if (redirectsLeft <= 0) {
-            reject(new Error('Too many redirects'));
+            reject(new Error(`Too many redirects (exceeded ${maxRedirects} hops)`));
             return;
           }
           // Resolve relative redirects against the original URL
@@ -689,12 +717,12 @@ function httpGetInternal(
           // re-validation; embedded credentials are refused by the check below.)
           if (redirectCrossesSecurityBoundary(url, redirectUrl)) {
             reject(new Error(
-              `Blocked: redirect "${url}" → "${redirectUrl}" crosses a protocol/port boundary`,
+              `Blocked: redirect "${url}" → "${redirectUrl}" crosses a protocol/port boundary. ${SSRF_LOOPBACK_AFFORDANCE}`,
             ));
             return;
           }
           if (isBlockedRedirectTarget(redirectUrl)) {
-            reject(new Error(`Blocked: redirect to private/internal URL "${redirectUrl}"`));
+            reject(new Error(`Blocked: redirect to private/internal URL "${redirectUrl}". ${SSRF_LOOPBACK_AFFORDANCE}`));
             return;
           }
           res.resume(); // Drain the response body
@@ -703,7 +731,7 @@ function httpGetInternal(
               reject(new Error(ssrfResult.error));
               return;
             }
-            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, ssrfResult.resolvedIP, raw, firstRedirectStatus ?? statusCode).then(resolve, reject);
+            httpGetInternal(redirectUrl, signal, redirectsLeft - 1, timeoutMs, maxRedirects, ssrfResult.resolvedIP, raw, firstRedirectStatus ?? statusCode).then(resolve, reject);
           }, reject);
           return;
         }
@@ -821,7 +849,7 @@ export function isTransientHttpError(err: unknown): boolean {
   const m = err.message;
   if (m === 'Aborted') return false;
   if (m.startsWith('Blocked:')) return false;
-  if (m === 'Too many redirects') return false;
+  if (m.startsWith('Too many redirects')) return false;
   if (m.startsWith('Invalid URL')) return false;
   return true;
 }
