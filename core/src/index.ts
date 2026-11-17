@@ -84,7 +84,7 @@ export type { RiskLevel, PermissionExplanation } from './permissions';
 export { detectPathExpansionHazard, pathExpansionHazardReason } from './permissions';
 export type { PathExpansionHazard } from './permissions';
 export {
-  validatePermissionRule, filterInvalidPermissionRules, permissionRuleValueFromString,
+  validatePermissionRule, validatePermissionUpdate, filterInvalidPermissionRules, permissionRuleValueFromString,
   permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,
   resolveFileOperationType, resolveConfigFolderScope,
 } from './permissions';

@@ -3491,6 +3491,86 @@ export type PermissionUpdate =
   | { type: 'removeDirectories'; directories: string[]; destination?: PermissionUpdateDestination };
 
 /**
+ * Validate an UNTRUSTED {@link PermissionUpdate} at a trust boundary before it is
+ * applied. Permission updates can arrive from less-trusted surfaces — a delegated
+ * permission-prompt tool's JSON reply (an MCP server), a hook process's
+ * `updatedPermissions`, or a settings file — where TypeScript's compile-time union
+ * does NOT hold at runtime. A malformed mutation (unknown `type`, a missing/invalid
+ * `behavior`, a non-array `rules`, a rule whose `ruleContent` is not a string, an
+ * empty tool name, a `destination` outside the writable tiers, a bogus `setMode`
+ * mode, or a non-string directory) must be REJECTED whole rather than partially
+ * applied — a single acceptance boundary mirroring Claude Code's
+ * `PermissionUpdateSchema` Zod `discriminatedUnion` with its enum `behavior` /
+ * `destination` and typed rule/directory arrays
+ * (references/claude/claude-code-main/src/utils/permissions/PermissionUpdateSchema.ts
+ * L27-L77).
+ *
+ * Returns `{ valid: true }` for a well-formed update, else `{ valid: false, error }`
+ * naming the first problem. Pure + synchronous; the enforcement point is
+ * {@link PermissionManager.applyUpdate}, which drops an invalid update fail-closed
+ * (grants nothing) instead of partially applying it or throwing mid-turn.
+ */
+export function validatePermissionUpdate(update: unknown): { valid: boolean; error?: string } {
+  if (update === null || typeof update !== 'object' || Array.isArray(update)) {
+    return { valid: false, error: 'permission update must be an object' };
+  }
+  const u = update as Record<string, unknown>;
+  // `destination` is optional, but when present it is a hard boundary: a rule or
+  // directory grant may only be routed to a WRITABLE tier (read-only sources like
+  // policySettings/flagSettings/command can never be a persistence target).
+  const dest = u.destination;
+  if (dest !== undefined &&
+      !(typeof dest === 'string' && (PERMISSION_UPDATE_DESTINATIONS as readonly string[]).includes(dest))) {
+    return { valid: false, error: `invalid destination: ${JSON.stringify(dest)}` };
+  }
+  switch (u.type) {
+    case 'addRules':
+    case 'replaceRules':
+    case 'removeRules': {
+      if (u.behavior !== 'allow' && u.behavior !== 'deny' && u.behavior !== 'ask') {
+        return { valid: false, error: `${u.type} requires behavior "allow" | "deny" | "ask"` };
+      }
+      if (!Array.isArray(u.rules)) {
+        return { valid: false, error: `${u.type}.rules must be an array` };
+      }
+      for (const rv of u.rules) {
+        if (rv === null || typeof rv !== 'object' || Array.isArray(rv)) {
+          return { valid: false, error: `${u.type}.rules entries must be objects` };
+        }
+        const r = rv as Record<string, unknown>;
+        if (typeof r.toolName !== 'string' || r.toolName === '') {
+          return { valid: false, error: `${u.type}.rules entries require a non-empty string toolName` };
+        }
+        if (r.ruleContent !== undefined && typeof r.ruleContent !== 'string') {
+          return { valid: false, error: `${u.type}.rules ruleContent must be a string when present` };
+        }
+      }
+      return { valid: true };
+    }
+    case 'setMode': {
+      if (typeof u.mode !== 'string' || !(PERMISSION_MODES as readonly string[]).includes(u.mode)) {
+        return { valid: false, error: `setMode requires a valid mode (${PERMISSION_MODES.join(', ')})` };
+      }
+      return { valid: true };
+    }
+    case 'addDirectories':
+    case 'removeDirectories': {
+      if (!Array.isArray(u.directories)) {
+        return { valid: false, error: `${u.type}.directories must be an array` };
+      }
+      for (const d of u.directories) {
+        if (typeof d !== 'string' || d === '') {
+          return { valid: false, error: `${u.type}.directories entries must be non-empty strings` };
+        }
+      }
+      return { valid: true };
+    }
+    default:
+      return { valid: false, error: `unknown permission update type: ${JSON.stringify(u.type)}` };
+  }
+}
+
+/**
  * The kind of filesystem access a tool call represents — mirrors Claude's
  * `FileOperationType` (components/permissions/FilePermissionDialog/permissionOptions.tsx):
  * a read-only access, an edit of pre-existing content (`write`), or the creation of
@@ -5968,6 +6048,17 @@ export class PermissionManager {
    * removes a stored tool-wide `bash` rule and vice-versa.
    */
   applyUpdate(update: PermissionUpdate): { applied: number } {
+    // Validate at the trust boundary: updates reach here from untrusted surfaces
+    // (a permission-prompt tool's JSON reply, a hook's `updatedPermissions`) where
+    // the compile-time union does not hold at runtime. Drop a malformed update
+    // fail-closed (grant nothing) rather than partially applying it or letting an
+    // unknown `type` fall through the switch and return `undefined` (a mid-turn
+    // crash in {@link applyUpdates}).
+    const validation = validatePermissionUpdate(update);
+    if (!validation.valid) {
+      this.traceMutation(`Rejected invalid permission update: ${validation.error}`);
+      return { applied: 0 };
+    }
     switch (update.type) {
       case 'setMode':
         return { applied: this.setMode(update.mode) ? 1 : 0 };
