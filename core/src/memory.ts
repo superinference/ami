@@ -1120,6 +1120,68 @@ export function stripHtmlComments(content: string): string {
   return masked;
 }
 
+/**
+ * Shared source pattern for a bare `@path` import token (`@relative`, `@./rel`,
+ * `@~/home`, `@/abs`), allowing an escaped space (`\ `) and a `#fragment` suffix.
+ * ONE definition so {@link MemoryManager.resolveAtImports} (inline substitution)
+ * and {@link MemoryManager.buildImportGraph} (parent-tracked hierarchy) tokenize
+ * imports identically and can never drift. Group 1 is the leading boundary
+ * (line-start or whitespace), group 2 the raw path.
+ */
+const AT_IMPORT_PATTERN = '(^|\\s)@(~?(?:\\\\ |[\\w./~#-])+)';
+
+/**
+ * Yield the PROSE lines of markdown `content` with code masked out — fenced
+ * blocks (```` ``` ````) and indented code (≥4 spaces / a tab) are dropped
+ * entirely and inline code spans (`` `…` ``) are blanked — so an `@path` written
+ * as documentation inside code is never mistaken for a real import. Mirrors the
+ * code-skipping {@link MemoryManager.resolveAtImports} applies while inlining, so
+ * the import graph only sees the SAME tokens the inline resolver would act on.
+ */
+function* prosePlainLines(content: string): Generator<string> {
+  let inFence = false;
+  for (const raw of content.split('\n')) {
+    if (/^\s*```/.test(raw)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    if (/^(?: {4}|\t)/.test(raw)) continue;
+    yield raw.replace(/`[^`\n]*`/g, '');
+  }
+}
+
+/**
+ * One node in a memory/instruction `@include` hierarchy: the imported file, the
+ * file that imported it (`null` for the root entrypoint), and its nesting depth
+ * (0 = root). Parity with Claude Code's `MemoryFileInfo.parent`
+ * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked
+ * entries rather than inline substitution.
+ */
+export interface MemoryImportNode {
+  /** Absolute, symlink-resolved path of the imported file. */
+  path: string;
+  /** Absolute path of the file that imported this one; `null` for the root. */
+  parent: string | null;
+  /** Nesting depth below the root entrypoint (0 = the root itself). */
+  depth: number;
+}
+
+/**
+ * Render a parent-before-child {@link MemoryImportNode} list as indented tree
+ * rows: the root on its own line, each nested import as `"  "×(depth-1) + "L
+ * <path>"`. Parity with Claude Code's MemoryFileSelector nested `L <path>` view.
+ * Paths inside `cwd` are shown workspace-relative (`./…`); anything else is
+ * home-abbreviated so a user-global entrypoint stays legible.
+ */
+export function formatImportTree(nodes: MemoryImportNode[], cwd: string): string[] {
+  const root = path.resolve(cwd);
+  return nodes.map(n => {
+    const display = isPathWithin(n.path, root, root)
+      ? `./${path.relative(root, n.path)}`
+      : abbreviateHome(n.path);
+    if (n.depth === 0) return display;
+    return `${'  '.repeat(n.depth - 1)}L ${display}`;
+  });
+}
+
 function sanitizeContent(content: string, filePath: string): string {
   // Drop editorial HTML comments FIRST (before the size cap) so comment bulk
   // doesn't count toward the truncation budget and comment text never reaches
@@ -2039,6 +2101,44 @@ export class MemoryManager {
    * Files are concatenated with headers indicating their source path.
    */
   /**
+   * Resolve ONE raw `@path` token to its security-cleared absolute target,
+   * applying the shared unescape → fragment-strip → `~`/relative-resolution →
+   * WORKSPACE-CONFINEMENT (realpath, with the sanctioned approved-external escape
+   * hatch) policy used by BOTH {@link resolveAtImports} (inline substitution) and
+   * {@link buildImportGraph} (parent-tracked hierarchy) — one canonical resolver
+   * so the two can never diverge on what a path means or whether it escapes the
+   * workspace. Returns a discriminated result; the caller decides how to render
+   * each outcome (inline content / a block marker / a graph node) and owns any
+   * stat/text-gate/cycle checks and hook side effects, which differ per surface.
+   */
+  private resolveAtImportPath(rawPath: string, basePath: string):
+    | { kind: 'skip' }
+    | { kind: 'blocked'; resolved: string }
+    | { kind: 'ok'; real: string; resolved: string; external: boolean } {
+    // Unescape `\ ` → ` ` and drop a trailing `#fragment` (anchors are not part
+    // of the filesystem path).
+    let atPath = rawPath.replace(/\\ /g, ' ');
+    const hashIdx = atPath.indexOf('#');
+    if (hashIdx >= 0) atPath = atPath.slice(0, hashIdx);
+    if (atPath === '') return { kind: 'skip' };
+    let resolved: string;
+    try {
+      resolved = atPath.startsWith('~')
+        ? path.join(os.homedir(), atPath.slice(1))
+        : path.resolve(path.dirname(basePath), atPath);
+    } catch { return { kind: 'skip' }; }
+    // WORKSPACE CONFINEMENT: resolve symlinks first so a link inside the workspace
+    // that points out of it is also caught. A persisted, explicit approval MAY
+    // sanction a specific external file (resolved to its REAL path so a symlink
+    // still cannot escape the approved roots).
+    const within = realpathWithin(resolved, this.cwd);
+    if (within !== null) return { kind: 'ok', real: within, resolved, external: false };
+    const approvedReal = this.resolveApprovedExternalImport(resolved);
+    if (approvedReal === null) return { kind: 'blocked', resolved };
+    return { kind: 'ok', real: approvedReal, resolved, external: true };
+  }
+
+  /**
    * Inline Claude-Code-style `@path` imports in instruction content. A bare
    * `@relative/or/~/absolute/path` (at line start or after whitespace, outside
    * fenced code) is replaced with the referenced file's content, recursively.
@@ -2072,43 +2172,23 @@ export class MemoryManager {
       // suffix so `@my\ file.md` and `@notes.md#section` are captured whole; the
       // escape is unescaped and the fragment stripped before resolution (parity
       // with Claude Code's safeResolvePath).
-      line = line.replace(/(^|\s)@(~?(?:\\ |[\w./~#-])+)/g, (full, pre, p) => {
-        // Unescape `\ ` → ` ` and drop a trailing `#fragment` (anchors are not
-        // part of the filesystem path).
-        let atPath = p.replace(/\\ /g, ' ');
-        const hashIdx = atPath.indexOf('#');
-        if (hashIdx >= 0) atPath = atPath.slice(0, hashIdx);
-        if (atPath === '') return full;
-        let resolved: string;
-        try {
-          resolved = atPath.startsWith('~')
-            ? path.join(os.homedir(), atPath.slice(1))
-            : path.resolve(path.dirname(basePath), atPath);
-        } catch { return full; }
-        // WORKSPACE CONFINEMENT: never inline a file outside the launch cwd. A crafted
-        // CLAUDE.md/AGENTS.md could otherwise exfiltrate arbitrary files into the system
-        // prompt via `@~/.ssh/id_rsa`, `@/etc/passwd`, or `@../../other/secret`. Resolve
-        // symlinks FIRST (realpath) so a link that sits inside the workspace but points
-        // out of it is also caught — a lexical prefix check misses that. Block it, leave a
-        // visible marker (so it is never silent), and notify via the hook.
-        let real = realpathWithin(resolved, this.cwd);
-        if (real === null) {
-          // Workspace confinement failed. The default posture is a hard block, BUT a
-          // persisted, explicit user consent ({@link ProjectConfig.externalMemoryImportsApproved}
-          // / the AMI_ALLOW_EXTERNAL_MEMORY_IMPORTS env, resolved + root-scoped by
-          // {@link resolveApprovedExternalImport}) MAY sanction this specific external
-          // file — the sanctioned escape hatch for a trusted monorepo layout. When
-          // granted we proceed with the file's REAL path (so a symlink still cannot
-          // escape the approved roots) and fire a DISTINCT load reason so the decision
-          // is observable; otherwise we keep the visible block marker + hook.
-          const approvedReal = this.resolveApprovedExternalImport(resolved);
-          if (approvedReal === null) {
-            if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: resolved, loadReason: 'import-blocked-outside-workspace' });
-            return `${pre}[import blocked — outside workspace: ${path.basename(resolved)}]`;
-          }
-          real = approvedReal;
-          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: real, loadReason: 'import-allowed-external-approved' });
+      line = line.replace(new RegExp(AT_IMPORT_PATTERN, 'g'), (full, pre, p) => {
+        // Shared security-cleared resolution (unescape, fragment-strip, confinement
+        // + approved-external escape hatch) — see {@link resolveAtImportPath}.
+        const r = this.resolveAtImportPath(p, basePath);
+        if (r.kind === 'skip') return full;
+        if (r.kind === 'blocked') {
+          // WORKSPACE CONFINEMENT: never inline a file outside the launch cwd. A crafted
+          // CLAUDE.md/AGENTS.md could otherwise exfiltrate arbitrary files into the system
+          // prompt via `@~/.ssh/id_rsa`, `@/etc/passwd`, or `@../../other/secret`. Leave a
+          // visible marker (so it is never silent) and notify via the hook.
+          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: r.resolved, loadReason: 'import-blocked-outside-workspace' });
+          return `${pre}[import blocked — outside workspace: ${path.basename(r.resolved)}]`;
         }
+        const { real, resolved } = r;
+        // A sanctioned approved-external file fires a DISTINCT load reason so the
+        // decision is observable (parity: the escape-hatch branch is auditable).
+        if (r.external && this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: real, loadReason: 'import-allowed-external-approved' });
         // Cycle detection keys on the REAL path so two aliases of one file (one via
         // a symlink) can't slip past `seen` and re-enter the recursion.
         if (seen.has(real)) return `${pre}[circular import: ${path.basename(resolved)}]`;
@@ -2138,6 +2218,73 @@ export class MemoryManager {
       lines[i] = line.replace(/\u0000C(\d+)\u0000/g, (_m, n) => spans[Number(n)]);
     }
     return lines.join('\n');
+  }
+
+  /**
+   * Build the `@include` hierarchy rooted at `filePath` as a flat, PARENT-BEFORE-CHILD
+   * (pre-order DFS) list of {@link MemoryImportNode} — each tagged with the file that
+   * imported it and its nesting depth. Parity with Claude Code's `processMemoryFile`
+   * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked entries
+   * (main file first, then its imports) rather than AMI's inline substitution — giving
+   * an OBSERVABLE import graph with per-file provenance (surfaced via `/memory`) without
+   * changing what the model is injected. Uses the SAME security-cleared resolver
+   * ({@link resolveAtImportPath}) and prose-line scan ({@link prosePlainLines}) as
+   * {@link resolveAtImports}, so a token the inline path would refuse (code span,
+   * outside-workspace, non-text, cycle) never appears in the graph either. Cycles,
+   * depth>5, blocked / non-existent / non-text targets are skipped (never looped).
+   */
+  buildImportGraph(filePath: string): MemoryImportNode[] {
+    const out: MemoryImportNode[] = [];
+    const seen = new Set<string>();
+    // The ROOT is an explicitly-chosen entrypoint (not an untrusted import), so it is
+    // symlink-resolved WITHOUT cwd-confinement — a user-global `~/.ami/CLAUDE.md` is a
+    // legitimate root. Its @-imports, however, stay cwd-confined via resolveAtImportPath,
+    // exactly matching what resolveAtImports would actually inline.
+    const rootReal = realpathDeepest(path.resolve(this.cwd, filePath));
+    if (rootReal === null) return out;
+    const walk = (real: string, parent: string | null, depth: number): void => {
+      if (depth > 5 || seen.has(real)) return;
+      // Gate exactly like the inline resolver: a node appears only for an EXISTING,
+      // text-eligible, readable file — a non-text/missing/unreadable target (root or
+      // child) contributes nothing (parity: processMemoryFile skips empty/unreadable).
+      let content: string;
+      try {
+        if (!this._statSync(real).isFile() || !isTextImportPath(real)) return;
+        content = fs.readFileSync(real, 'utf-8');
+      } catch { return; }
+      seen.add(real);
+      out.push({ path: real, parent, depth });
+      for (const prose of prosePlainLines(content)) {
+        const re = new RegExp(AT_IMPORT_PATTERN, 'g');
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(prose)) !== null) {
+          const r = this.resolveAtImportPath(m[2], real);
+          if (r.kind === 'ok') walk(r.real, real, depth + 1);
+        }
+      }
+    };
+    walk(rootReal, null, 0);
+    return out;
+  }
+
+  /**
+   * Import-hierarchy views for the user + project instruction entrypoints, as
+   * pre-formatted indented tree rows (parity: Claude Code MemoryFileSelector's nested
+   * `L <path>` view). Only an entrypoint that actually `@`-imports another file yields
+   * a tree, so a flat CLAUDE.md/AGENTS.md contributes nothing. Reuses
+   * {@link enumerateInstructionCandidates} (no duplicate entrypoint discovery) and
+   * {@link buildImportGraph}; powers the `/memory` surface's import-tree section.
+   */
+  getInstructionImportTrees(): Array<{ scope: 'user' | 'project'; rows: string[] }> {
+    const trees: Array<{ scope: 'user' | 'project'; rows: string[] }> = [];
+    for (const cand of this.enumerateInstructionCandidates()) {
+      if (!cand.exists) continue;
+      const nodes = this.buildImportGraph(cand.path);
+      if (nodes.some(n => n.depth > 0)) {
+        trees.push({ scope: cand.scope, rows: formatImportTree(nodes, this.cwd) });
+      }
+    }
+    return trees;
   }
 
   loadProjectInstructions(): string {
