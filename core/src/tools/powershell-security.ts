@@ -1232,6 +1232,22 @@ export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set([
 // whitelist and keeps this a cheap synchronous check for the classifier.
 const PS_READONLY_DISQUALIFY_RE = /[$`{}()@&>]/;
 
+// SSRF / XXE defense: a handful of cmdlets are read-ONLY for data but accept a
+// flag that triggers an outbound network request or external-entity resolution.
+// They stay on {@link POWERSHELL_READONLY_CMDLETS} for their benign forms, but
+// an invocation carrying one of these flags must NOT auto-allow (it falls
+// through to a prompt). Parity with Claude's readOnlyValidation.ts removal of
+// `-FilterXml`/`-FilterHashtable` from Get-WinEvent's safeFlags (XXE: a
+// `-FilterXml` DOCTYPE SYSTEM external entity → HTTP GET; `-FilterHashtable`
+// can embed `<QueryList>` XML). `-FilterXPath` (plain pattern, no entities)
+// stays allowed. Select-Xml / Test-Json / Get-WmiObject / Get-CimInstance are
+// NOT in the allowlist at all (deliberately omitted), so they already prompt.
+// The alt-dash class matches PowerShell's `-`-equivalent prefixes (hyphen, the
+// three Unicode dashes, and `/`).
+const PS_READONLY_DANGEROUS_FLAG_RE: ReadonlyMap<string, RegExp> = new Map([
+  ['get-winevent', /(?:^|\s)[-‒–—―−/]filter(?:xml|hashtable)\b/i],
+]);
+
 /**
  * True if `command` is a PowerShell command composed solely of allowlisted
  * read-only cmdlets with no dangerous construct — safe to auto-allow in `ask`
@@ -1276,6 +1292,14 @@ export function isReadOnlyPowerShellCommand(command: string): boolean {
       .toLowerCase()
       .replace(/\.(exe|cmd|bat|com|ps1)$/, '');
     if (!POWERSHELL_READONLY_CMDLETS.has(name)) {
+      return false;
+    }
+    // SSRF/XXE: an allowlisted read cmdlet carrying a network/external-entity
+    // flag (e.g. `Get-WinEvent -FilterXml`) must not auto-allow — fall through
+    // to a prompt. Checked against the ORIGINAL segment text so the flag casing
+    // and alt-dash prefix are preserved.
+    const dangerousFlagRe = PS_READONLY_DANGEROUS_FLAG_RE.get(name);
+    if (dangerousFlagRe !== undefined && dangerousFlagRe.test(segment)) {
       return false;
     }
   }

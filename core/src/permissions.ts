@@ -1600,7 +1600,8 @@ interface DestructivePattern {
  * Purely informational — these drive the human-readable note surfaced in a
  * permission prompt ({@link getDestructiveCommandWarning}); they do NOT change
  * any allow/deny decision (that is owned by {@link PermissionManager.check} /
- * {@link detectHardlineCommand}). Parity with Claude's bash DESTRUCTIVE_PATTERNS.
+ * {@link detectHardlineCommand}). Parity with Claude's bash DESTRUCTIVE_PATTERNS
+ * plus the PowerShell DESTRUCTIVE_PATTERNS (destructiveCommandWarning.ts).
  */
 const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   // Git — data loss / hard to reverse.
@@ -1636,6 +1637,22 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   // Infrastructure.
   { pattern: /\bkubectl\s+delete\b/, warning: 'Note: may delete Kubernetes resources' },
   { pattern: /\bterraform\s+destroy\b/, warning: 'Note: may destroy Terraform infrastructure' },
+  // PowerShell cmdlets — Windows counterpart of the POSIX destructive notes
+  // (parity with Claude's PowerShellTool/destructiveCommandWarning.ts). Each is
+  // anchored to a statement start (`^`, `|`, `;`, `&`, newline, or a block/group
+  // opener `{`/`(`) so `git rm` / a `-Force` flag on an unrelated later statement
+  // does not false-match; the `[^|;&\n}]*` spans stay inside one statement (the
+  // `}` stopper ends a script block). Most-specific (recurse + force) first.
+  { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Recurse\b[^|;&\n}]*-Force\b/i, warning: 'Note: may recursively force-remove files' },
+  { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Force\b[^|;&\n}]*-Recurse\b/i, warning: 'Note: may recursively force-remove files' },
+  { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Recurse\b/i, warning: 'Note: may recursively remove files' },
+  { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Force\b/i, warning: 'Note: may force-remove files' },
+  { pattern: /\bClear-Content\b[^|;&\n]*\*/i, warning: 'Note: may clear content of multiple files' },
+  { pattern: /\bFormat-Volume\b/i, warning: 'Note: may format a disk volume' },
+  { pattern: /\bClear-Disk\b/i, warning: 'Note: may clear a disk' },
+  { pattern: /\bClear-RecycleBin\b/i, warning: 'Note: permanently deletes recycled files' },
+  { pattern: /\bStop-Computer\b/i, warning: 'Note: will shut down the computer' },
+  { pattern: /\bRestart-Computer\b/i, warning: 'Note: will restart the computer' },
 ];
 
 /**
