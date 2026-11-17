@@ -1,6 +1,8 @@
+import * as fs from 'fs';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { formatSize } from './spill-output';
+import { agentResultPath } from './task';
 
 /** Default cap on how long task_output({wait:true}) blocks for a task to finish. */
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -259,6 +261,25 @@ export const taskOutputTool: ToolDefinition = {
     // guard so a minimal manager stub (tests) is a no-op.
     if (result.status !== 'running' && typeof context.processManager.markNotified === 'function') {
       context.processManager.markNotified(taskId);
+    }
+
+    // Clean final-answer preference (parity: Claude Code's TaskOutputTool returning
+    // the agent's in-memory final answer over the raw transcript). When a TERMINAL
+    // agent task has written a `.result` sidecar — its last text-bearing turn only —
+    // hand THAT back as the deliverable instead of the noisy streamed transcript, and
+    // point at the full log for drill-down. Skipped for a filter / incremental read
+    // (the caller asked for specific transcript lines, not the summary) and for a
+    // bash task (which never writes the sidecar). Best-effort: a read failure falls
+    // through to the normal transcript tail.
+    if (!filterRe && !hasSince && result.status !== 'running' && taskMeta?.outputPath) {
+      try {
+        const clean = fs.readFileSync(agentResultPath(taskMeta.outputPath), 'utf-8');
+        if (clean.trim()) {
+          lines.push('', '--- Final result ---', capBody(clean.trim()));
+          lines.push(`(Clean final answer; the full streamed transcript is at ${taskMeta.outputPath}.)`);
+          return { output: lines.join('\n'), isError: false };
+        }
+      } catch { /* no sidecar / unreadable — fall through to the transcript tail */ }
     }
 
     const tailLabel = tail > 0 ? `last ${tail} lines` : 'all lines';

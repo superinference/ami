@@ -61,6 +61,29 @@ export function applyBedrockRegionPrefix(id: string, region: BedrockRegionPrefix
 }
 
 /**
+ * Inherit a Bedrock cross-region inference-profile prefix from a PARENT model onto
+ * a sub-agent's resolved model id — a data-residency boundary (parity: Claude
+ * Code's subagent model resolution carrying the parent's region prefix,
+ * `utils/model/agent.ts`). A sub-agent spawned by a Bedrock session must invoke a
+ * profile in the SAME account region as its parent, or the call fails / silently
+ * crosses regions. The prefix is inherited ONLY when the sub-agent's own id does
+ * not already pin a region (an explicit `eu.anthropic.…` sub-agent model wins) and
+ * the parent actually carries one; otherwise the sub-agent id is returned
+ * unchanged, so this never rewrites a non-cross-region id or a bare canonical id.
+ */
+export function inheritBedrockRegionPrefix(
+  subagentModel: string,
+  parentModel: string | undefined,
+): string {
+  if (!subagentModel) return subagentModel;
+  // The sub-agent already pinned its own region → honor it, do not override.
+  if (extractBedrockRegionPrefix(subagentModel)) return subagentModel;
+  const parentPrefix = parentModel ? extractBedrockRegionPrefix(parentModel) : undefined;
+  if (!parentPrefix) return subagentModel;
+  return applyBedrockRegionPrefix(subagentModel, parentPrefix);
+}
+
+/**
  * The configured cross-region prefix from {@link BEDROCK_REGION_PREFIX_ENV}
  * (trimmed, case-insensitive), or undefined when unset or not a recognized
  * region. Empty when the account does not use cross-region profiles.

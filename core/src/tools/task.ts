@@ -11,6 +11,8 @@ import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
+import { collapseReadSearchRun } from './tool-activity-class';
+import { inheritBedrockRegionPrefix } from '../bedrock';
 import { getCurrentTeam, registerTeamMember, setTeamMemberActive, teamAllowedPathsToRules } from './team';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
@@ -1332,6 +1334,55 @@ export function buildThoroughnessDirective(level: string): string {
 export const EXPLORE_THOROUGHNESS_LEVELS = ['quick', 'medium', 'very thorough'] as const;
 
 /**
+ * One curated, selectable sub-agent model option with a per-tier affordance
+ * description (parity: Claude Code's curated agent model options with per-tier
+ * guidance + an explicit "Inherit from parent" choice, `utils/model/agent.ts`).
+ * `value` is what the caller passes as the `model` arg — the empty string denotes
+ * the default of OMITTING the field (inherit the parent conversation's model).
+ */
+export interface SubagentModelOption {
+  /** The `model` arg to pass; '' means omit the field (inherit the parent). */
+  value: string;
+  /** Short human label. */
+  label: string;
+  /** When to pick this tier. */
+  description: string;
+}
+
+/**
+ * Curated, selectable sub-agent model options (SOURCE OF TRUTH) with per-tier
+ * affordance guidance and an explicit inherit-from-parent choice. Drives the
+ * {@link TASK_TOOL_PROPERTIES}.model description so the advertised schema and any
+ * agent-config surface describe the SAME tiers, and surfaces the AMI
+ * parent-inheritance perk as the first-class default rather than a buried note.
+ */
+export const SUBAGENT_MODEL_OPTIONS: readonly SubagentModelOption[] = [
+  { value: '', label: 'Inherit from parent (default)', description: 'Omit `model` to run the subagent on the SAME model as the main conversation — the right default for most delegations.' },
+  { value: INHERIT_MODEL_SENTINEL, label: 'Inherit (explicit)', description: 'The explicit "inherit" sentinel: identical to omitting the field — run on the parent conversation\'s model.' },
+  { value: 'opus', label: 'Opus (most capable)', description: 'Deepest reasoning for genuinely hard implementation/analysis; slowest and most expensive — reserve it.' },
+  { value: 'sonnet', label: 'Sonnet (balanced)', description: 'Balanced capability and speed for everyday coding, edits, and investigation.' },
+  { value: 'haiku', label: 'Haiku (fastest)', description: 'Fast and cheap for read-only exploration and simple lookups where top-tier reasoning is unnecessary.' },
+] as const;
+
+/**
+ * Build the `model` param description from {@link SUBAGENT_MODEL_OPTIONS} so the one
+ * curated tier list is the single source for both the advertised tool schema and any
+ * agent-config UI. Leads with the inherit-by-default behavior, then one line per
+ * named tier, then a note that any full model name / provider alias is also accepted.
+ */
+export function buildSubagentModelParamDescription(
+  options: readonly SubagentModelOption[] = SUBAGENT_MODEL_OPTIONS,
+): string {
+  const tiers = options
+    .filter(o => o.value !== '')
+    .map(o => `"${o.value}" — ${o.description}`)
+    .join(' ');
+  return 'Model override for this subagent. Omit to INHERIT the parent conversation\'s model (the default). ' +
+    `Curated tiers: ${tiers} ` +
+    'Any full model name or provider alias ("gpt-4o", "gemini-pro", a pinned "claude-…" id) is also accepted verbatim.';
+}
+
+/**
  * Static property set for the task tool's input schema. Extracted to a named
  * constant so the schema can be rebuilt per-advertisement (the `inputSchema`
  * getter below omits `run_in_background` when background tasks are disabled).
@@ -1372,7 +1423,7 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   },
   model: {
     type: 'string',
-    description: 'Model override. Accepts full names or aliases: "sonnet", "opus", "haiku", "gpt-4o", "gemini-pro". The special value "inherit" runs the subagent on the same model as the main conversation.',
+    description: buildSubagentModelParamDescription(),
   },
   system_prompt: {
     type: 'string',
@@ -1435,6 +1486,19 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     enum: [...AGENT_COLORS],
   },
 };
+
+/**
+ * Path of the clean FINAL-ANSWER sidecar for a background agent, derived from its
+ * `<taskId>.output` transcript path (`<taskId>.result`). Parity with Claude Code's
+ * TaskOutputTool preferring the agent's in-memory final answer over the raw on-disk
+ * transcript: the `.output` file streams the whole noisy run (thinking, tool calls,
+ * tool results), whereas `.result` holds ONLY the agent's last text-bearing turn —
+ * the deliverable the parent actually wants. A non-agent background task (a bash
+ * job) never writes this sidecar, so its presence also discriminates an agent task.
+ */
+export function agentResultPath(outputPath: string): string {
+  return outputPath.replace(/\.output$/, '.result');
+}
 
 /** Parameters for {@link runBackgroundAgentDrain}. */
 interface BackgroundDrainParams {
@@ -1500,6 +1564,15 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   };
   const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
   resetBgStall();
+  // Classified recent tool-activity window (parity: Claude's collapseReadSearch) so
+  // the live progressSummary folds a run of consecutive read/search ops into one
+  // compact label instead of scrolling a noisy per-file trail. Bounded so it never
+  // grows unboundedly across a long background run.
+  const bgRecentToolNames: string[] = [];
+  // The text of the agent's most recent text-bearing assistant turn — the CLEAN
+  // final answer written to the `.result` sidecar on completion (parity: Claude's
+  // TaskOutputTool preferring the in-memory final answer over the raw transcript).
+  let bgLastTurnText: string | undefined;
   let pending = p.firstPending ?? null;
   try {
     // Start the stream INSIDE the try (explicit-background path) so a synchronous
@@ -1533,9 +1606,15 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         // progress summary of the CURRENT action (progress.summary parity — takes
         // precedence over the static description in task_list); this stamps the
         // entry's lastActivity so a quiet agent can be flagged idle.
+        bgRecentToolNames.push(event.toolName);
+        if (bgRecentToolNames.length > 20) bgRecentToolNames.shift();
+        // Collapse a run of consecutive read/search ops into one line (parity:
+        // Claude's collapseReadSearch); a single op / a mutation keeps its own
+        // per-tool detail so writes stay visible.
+        const collapsed = collapseReadSearchRun(bgRecentToolNames);
         context.processManager?.updateEntry(taskId, {
           toolCount: bgToolUseCount,
-          progressSummary: `${event.toolName}: ${summary}`.slice(0, 80),
+          progressSummary: (collapsed ?? `${event.toolName}: ${summary}`).slice(0, 80),
         });
         w(`\n▸ ${event.toolName} ${summary}\n`);
       }
@@ -1561,6 +1640,12 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         const errText = `\nError: ${event.error}`;
         result += errText;
         w(errText);
+      }
+      // Track the last text-bearing assistant turn as the clean final answer
+      // (parity: Claude's finalizeAgentTool backward-walk) so the `.result` sidecar
+      // holds only the deliverable, not the whole streamed transcript.
+      if (event.type === 'turn_complete' && typeof event.content === 'string' && event.content.trim().length > 0) {
+        bgLastTurnText = event.content;
       }
     }
     if (bgStalled) {
@@ -1589,6 +1674,13 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   try { fs.closeSync(fd); } catch { /* already closed */ }
   if (!result) {
     try { fs.writeFileSync(outputPath, '(subagent produced no output)'); } catch { /* dir removed */ }
+  }
+  // Persist the CLEAN final answer to the `.result` sidecar so task_output can hand
+  // the parent the deliverable instead of the raw streamed transcript (parity:
+  // Claude's TaskOutputTool preferring the in-memory final answer). Only written
+  // when the agent actually produced a text-bearing final turn; best-effort.
+  if (bgLastTurnText && bgLastTurnText.trim()) {
+    try { fs.writeFileSync(agentResultPath(outputPath), bgLastTurnText); } catch { /* dir removed */ }
   }
   // Completion usage summary (parity: Claude's async-agent usage block) — the
   // tokens / tool-uses / duration the model would otherwise only get from a
@@ -2277,6 +2369,15 @@ export const taskTool: ToolDefinition = {
     // getHardcodedTeammateModelFallback; keeps AMI's parent-inheritance perk when a
     // model IS present — see defaultSubagentModelFallback).
     providerConfig.model = defaultSubagentModelFallback(providerConfig.model, providerConfig);
+
+    // Bedrock data-residency boundary (parity: Claude's subagent model resolution):
+    // when running on amazon-bedrock, a sub-agent must invoke an inference profile in
+    // the SAME account region as its parent. If the resolved sub-agent model does not
+    // already pin its own cross-region prefix, inherit the parent model's prefix so a
+    // delegation never silently crosses regions (a no-op when neither carries one).
+    if (providerConfig.provider === 'amazon-bedrock') {
+      providerConfig.model = inheritBedrockRegionPrefix(providerConfig.model, parentModel);
+    }
 
     // Per-call `max_output_tokens` cap (parity: Claude's ForkedAgentParams.maxOutputTokens
     // → maxOutputTokensOverride): size the sub-engine's per-request max_tokens so a
