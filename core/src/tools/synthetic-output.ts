@@ -252,6 +252,15 @@ export const syntheticOutputTool: ToolDefinition = {
     'Pass the result in `data`, and optionally a JSON `schema` the data must satisfy — ' +
     'if provided, the data is validated against it and rejected with a descriptive error on mismatch. ' +
     'You MUST call this tool exactly once at the end of your response when structured output is requested.',
+  // Discovery synonyms for `tool_search` (terms NOT already in the name/description)
+  // so a deferred/forgotten structured-output capability is findable by intent.
+  // Parity: Claude's `SyntheticOutputTool.searchHint`.
+  searchHint: 'return the final response as structured JSON',
+  // Cap the serialized result the SAME way the tool's own serializer does, so the
+  // engine's generic spill-to-disk path (tool-executor) honors the identical
+  // boundary instead of the larger engine-global default. Single source of the cap
+  // is {@link MAX_RESULT_SIZE_CHARS}. Parity: Claude's per-tool `maxResultSizeChars`.
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   inputSchema: {
     type: 'object',
     properties: {

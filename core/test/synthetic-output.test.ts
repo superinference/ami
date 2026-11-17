@@ -8,6 +8,8 @@ import {
   MAX_RESULT_SIZE_CHARS,
   ndjsonSafeStringify,
 } from '../src/tools/synthetic-output';
+import { toolSearchTool, setSearchableTools } from '../src/tools/tool-search';
+import type { ToolContext } from '../src/types';
 
 const LS = '\u2028'; // LINE SEPARATOR
 const PS = '\u2029'; // PARAGRAPH SEPARATOR
@@ -216,6 +218,43 @@ describe('syntheticOutputTool', () => {
       );
       assert.equal(result.isError, true);
       assert.match(result.output, /schema is invalid/i);
+    });
+  });
+
+  describe('searchHint discovery surface (tool_search wiring)', () => {
+    it('declares a searchHint with synonyms not already in the name/description', () => {
+      assert.ok(syntheticOutputTool.searchHint, 'searchHint must be set');
+      // The hint must add intent terms the name/description lack so tool_search can
+      // match the capability by synonym (here: "final").
+      assert.match(syntheticOutputTool.searchHint!, /final/);
+      assert.doesNotMatch(syntheticOutputTool.name, /final/);
+      assert.doesNotMatch(syntheticOutputTool.description, /final/);
+    });
+
+    it('is discoverable via tool_search by a required term that lives only in the searchHint', async () => {
+      const ctx: ToolContext = { cwd: '/tmp', abortSignal: new AbortController().signal };
+      setSearchableTools([syntheticOutputTool]);
+      const hit = await toolSearchTool.execute({ query: '+final structured' }, ctx);
+      assert.equal(hit.isError, false);
+      // Must be a genuine ranked match, NOT the "no match" fallback (whose text
+      // also happens to list the tool name in the available-tools roster).
+      assert.doesNotMatch(hit.output, /No tools or skills matched/);
+      assert.match(hit.output, /Tools matching/);
+      assert.match(hit.output, /structured_output/);
+    });
+
+    it('does NOT match the same required term once the searchHint is stripped (proves the hint drives the match)', async () => {
+      const ctx: ToolContext = { cwd: '/tmp', abortSignal: new AbortController().signal };
+      const withoutHint = { ...syntheticOutputTool, searchHint: undefined };
+      setSearchableTools([withoutHint]);
+      const miss = await toolSearchTool.execute({ query: '+final structured' }, ctx);
+      assert.match(miss.output, /No tools or skills matched/);
+    });
+  });
+
+  describe('maxResultSizeChars knob (tool-executor spill wiring)', () => {
+    it('declares the per-tool result-size cap so the engine spill path honors the same boundary', () => {
+      assert.equal(syntheticOutputTool.maxResultSizeChars, MAX_RESULT_SIZE_CHARS);
     });
   });
 
