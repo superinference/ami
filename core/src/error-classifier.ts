@@ -1036,6 +1036,64 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
   return { category: 'unknown', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
 }
 
+// ---------------------------------------------------------------------------
+// StopFailure error-class taxonomy — a matchable CLASS for the StopFailure hook
+// ---------------------------------------------------------------------------
+
+/**
+ * The enumerated error classes a StopFailure hook is matched against, mirroring
+ * Claude Code's StopFailure `error` matcher taxonomy (hooksConfigManager
+ * `matcherMetadata.values`). A StopFailure fires when an API error ends the turn
+ * (or a Stop hook itself errors) and a hook scopes on WHICH class of failure it
+ * was, so the set MUST stay 1:1 with the reference values. This is the SINGLE
+ * source: the hooks catalog's advertised `stopFailure` matcher values import it,
+ * and {@link stopFailureErrorClass} maps any classified error onto it, so the
+ * value advertised to `/hooks` / `--introspect` and the value actually emitted at
+ * the StopFailure callsite can never drift.
+ */
+export const STOP_FAILURE_ERROR_CLASSES = [
+  'rate_limit', 'authentication_failed', 'billing_error', 'invalid_request',
+  'server_error', 'max_output_tokens', 'unknown',
+] as const;
+
+export type StopFailureErrorClass = (typeof STOP_FAILURE_ERROR_CLASSES)[number];
+
+/**
+ * Map every internal {@link ErrorCategory} onto its StopFailure taxonomy class.
+ * Exhaustive `Record` on purpose: a newly added `ErrorCategory` must be assigned a
+ * taxonomy class here (a compile error otherwise) rather than silently defaulting
+ * at a callsite.
+ */
+const ERROR_CATEGORY_TO_STOP_FAILURE_CLASS: Record<ErrorCategory, StopFailureErrorClass> = {
+  rate_limited: 'rate_limit',
+  plan_limit: 'billing_error',
+  auth_error: 'authentication_failed',
+  context_overflow: 'invalid_request',
+  output_too_large: 'max_output_tokens',
+  content_filter: 'invalid_request',
+  gateway_rejection: 'invalid_request',
+  tool_pairing: 'invalid_request',
+  model_unavailable: 'server_error',
+  server_error: 'server_error',
+  network_error: 'server_error',
+  ssl_error: 'server_error',
+  abort: 'unknown',
+  repetition: 'unknown',
+  unknown: 'unknown',
+};
+
+/**
+ * Classify an error into the StopFailure matcher taxonomy so a StopFailure hook can
+ * scope on the FAILURE CLASS (`rate_limit` / `authentication_failed` / …) instead
+ * of the raw, unmatchable error text. Runs the full {@link classifyError} taxonomy
+ * and folds its category onto the reference class set. Mirrors Claude Code's
+ * StopFailure `error` discriminator so a matcher configured with one of the
+ * advertised {@link STOP_FAILURE_ERROR_CLASSES} actually matches the emitted event.
+ */
+export function stopFailureErrorClass(error: string | Error | unknown): StopFailureErrorClass {
+  return ERROR_CATEGORY_TO_STOP_FAILURE_CLASS[classifyError(error).category];
+}
+
 const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   rate_limited: 'Rate limited by the provider — retrying after a delay.',
   plan_limit: 'Plan or billing limit reached — check your account usage and billing settings.',

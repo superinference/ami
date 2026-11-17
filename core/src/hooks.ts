@@ -14,6 +14,7 @@ import {
   type HookSourceKind,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
+import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass } from './error-classifier';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
@@ -361,7 +362,18 @@ export interface CwdChangedContext {
 }
 
 export interface StopFailureContext {
-  error: string;
+  /**
+   * The matchable failure CLASS (Claude Code's StopFailure `error` discriminator),
+   * one of {@link StopFailureErrorClass}. A `matcher` on a StopFailure hook scopes
+   * on this value, so the sole emitter classifies the raw failure into the taxonomy
+   * via {@link stopFailureErrorClass} before firing — a matcher configured with one
+   * of the advertised classes (`rate_limit`, `authentication_failed`, …) then
+   * actually matches, instead of failing against a raw, unmatchable error string.
+   */
+  error: StopFailureErrorClass;
+  /** The raw, human-readable failure detail (the thrown message / API error text),
+   *  surfaced to the hook payload for logging without being the matchable field. */
+  errorMessage?: string;
   hookIndex: number;
 }
 
@@ -1396,8 +1408,9 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   // Setup: scope on the boundary cause (Claude Code's Setup `trigger`
   // discriminator — init | maintenance).
   setup: 'trigger',
-  // A StopFailure hook can scope on the failure cause (Claude Code's `error`
-  // field, e.g. rate_limit / authentication_failed).
+  // A StopFailure hook scopes on the failure CLASS (Claude Code's `error` field,
+  // e.g. rate_limit / authentication_failed) — the emitter classifies the raw
+  // failure into this taxonomy (stopFailureErrorClass) before firing.
   stopFailure: 'error',
   elicitation: 'mcpServerName',
   elicitationResult: 'mcpServerName',
@@ -1465,10 +1478,10 @@ const HOOK_MATCHER_VALUES: Record<string, readonly string[]> = {
   postCompact: ['manual', 'auto'],
   preSampling: SAMPLING_ORIGINS,
   postSampling: SAMPLING_ORIGINS,
-  stopFailure: [
-    'rate_limit', 'authentication_failed', 'billing_error', 'invalid_request',
-    'server_error', 'max_output_tokens', 'unknown',
-  ],
+  // Single source: the StopFailure taxonomy lives in error-classifier.ts, where
+  // stopFailureErrorClass() maps onto it, so the advertised matcher values and the
+  // emitted `error` class can never drift.
+  stopFailure: STOP_FAILURE_ERROR_CLASSES,
   configChange: ['user_settings', 'project_settings', 'local_settings', 'policy_settings', 'skills'],
   instructionsLoaded: ['session_start', 'nested_traversal', 'path_glob_match', 'include', 'compact'],
   notification: [
@@ -1556,7 +1569,7 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   postSampling: { summary: 'After a model sampling call', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
   userPromptSubmit: { summary: 'When the user submits a prompt', description: 'Input: JSON with prompt, turn_count. May inject additionalContext or block.' + EXIT_CODE_BLOCKING },
   stop: { summary: 'When the agent turn is about to end', description: 'Input: JSON with stop_hook_active, last_assistant_message. May block turn-end.' + EXIT_CODE_BLOCKING },
-  stopFailure: { summary: 'When a Stop hook itself errors', description: 'Input: JSON with error, hookIndex.' + EXIT_CODE_OBSERVE },
+  stopFailure: { summary: 'When the turn ends due to an API error (or a Stop hook itself errors)', description: `Input: JSON with error (failure class: ${STOP_FAILURE_ERROR_CLASSES.join('|')}), errorMessage, hookIndex.` + EXIT_CODE_OBSERVE },
   error: { summary: 'On an engine/turn error', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
   sessionStart: { summary: 'At session start', description: `Input: JSON with session_id, source (${SESSION_START_SOURCES.join('|')}), model, agent_type. May return initialUserMessage / initialUserMessages[] / watchPaths.` + EXIT_CODE_OBSERVE },
   sessionEnd: { summary: 'At session end', description: `Input: JSON with session_id, reason (${SESSION_END_REASONS.join('|')}).` + EXIT_CODE_OBSERVE },
@@ -3166,7 +3179,7 @@ export class HookManager extends EventEmitter {
         case 'stopFailure': {
           const fn: StopFailureHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('stopFailure', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'stopFailure', error: ctx.error, hookIndex: ctx.hookIndex });
+            const eventData = serializeHookEvent({ event: 'stopFailure', error: ctx.error, errorMessage: ctx.errorMessage, hookIndex: ctx.hookIndex });
             await this.runArmHook(hookConfig, cwd, eventData, undefined, this.stopFailureHooks, fn, 'stopFailure');
           };
           this.onStopFailure(fn);
@@ -3304,7 +3317,9 @@ export class HookManager extends EventEmitter {
             hookInfos.push({ durationMs: Date.now() - hookStart, error: message });
             hookErrors.push(message);
             coreLog('hooks', 'Hook error', { error: message });
-            await this.executeStopFailure({ error: message, hookIndex: i });
+            // Classify the raw failure into the matchable StopFailure taxonomy so a
+            // hook scoped on e.g. `rate_limit` actually fires; keep the raw detail.
+            await this.executeStopFailure({ error: stopFailureErrorClass(message), errorMessage: message, hookIndex: i });
           }
         }
       } finally {

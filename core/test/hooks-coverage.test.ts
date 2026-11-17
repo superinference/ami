@@ -1884,7 +1884,10 @@ describe('executeStop — triggers executeStopFailure on hook error', () => {
 
     await hm.executeStop(makeContext());
     assert.ok(stopFailureReceived);
-    assert.ok(stopFailureReceived!.error.includes('stop hook crashed'));
+    // `error` now carries the matchable failure CLASS (an un-API-like crash message
+    // classifies to 'unknown'); the raw detail moved to `errorMessage`.
+    assert.equal(stopFailureReceived!.error, 'unknown');
+    assert.ok(stopFailureReceived!.errorMessage!.includes('stop hook crashed'));
     assert.equal(stopFailureReceived!.hookIndex, 0);
   });
 });
