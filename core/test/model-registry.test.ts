@@ -454,3 +454,160 @@ describe('getAgentModelOptions', () => {
     assert.deepEqual(getAgentModelOptions().map(o => o.value), [...MODEL_ALIASES]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// probeProviderConnectivity — live reachability probe (parity: checkEndpoints)
+// ---------------------------------------------------------------------------
+import { probeProviderConnectivity } from '../src/model-registry';
+
+describe('probeProviderConnectivity', () => {
+  let server: http.Server;
+  let port: number;
+  const NONESSENTIAL = 'SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC';
+  let savedNonessential: string | undefined;
+
+  before(async () => {
+    savedNonessential = process.env[NONESSENTIAL];
+    delete process.env[NONESSENTIAL];
+    const s = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const auth = req.headers['authorization'];
+      if (auth === 'Bearer k_auth') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'invalid api key' } }));
+        return;
+      }
+      if (auth === 'Bearer k_api') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'internal error' } }));
+        return;
+      }
+      if (req.url === '/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }] }));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'not found' } }));
+    });
+    await new Promise<void>(resolve => { s.listen(0, '127.0.0.1', () => resolve()); });
+    server = s;
+    port = (s.address() as { port: number }).port;
+  });
+
+  after(() => {
+    server.close();
+    if (savedNonessential !== undefined) process.env[NONESSENTIAL] = savedNonessential;
+    else delete process.env[NONESSENTIAL];
+  });
+
+  it('reports ok + reachable when the endpoint answers 2xx', async () => {
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k_ok' }));
+    assert.equal(r.status, 'ok');
+    assert.equal(r.reachable, true);
+    assert.equal(r.errorKind, 'none');
+    assert.equal(typeof r.latencyMs, 'number');
+  });
+
+  it('classifies a 401 as auth: reachable but warn', async () => {
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k_auth' }));
+    assert.equal(r.status, 'warn');
+    assert.equal(r.reachable, true);
+    assert.equal(r.errorKind, 'auth');
+  });
+
+  it('classifies an HTTP 500 as api: reachable but warn', async () => {
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k_api' }));
+    assert.equal(r.status, 'warn');
+    assert.equal(r.reachable, true);
+    assert.equal(r.errorKind, 'api');
+  });
+
+  it('classifies a 404 path as api (endpoint answered)', async () => {
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}/sub`, apiKey: 'k_ok' }));
+    assert.equal(r.status, 'warn');
+    assert.equal(r.reachable, true);
+    assert.equal(r.errorKind, 'api');
+  });
+
+  it('reports error + unreachable on a connection failure', async () => {
+    // Bind then free a port so the probe hits a refused connection (ECONNREFUSED).
+    const tmp = http.createServer();
+    const freePort = await new Promise<number>(resolve => {
+      tmp.listen(0, '127.0.0.1', () => resolve((tmp.address() as { port: number }).port));
+    });
+    await new Promise<void>(resolve => tmp.close(() => resolve()));
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${freePort}`, apiKey: 'k_ok' }));
+    assert.equal(r.status, 'error');
+    assert.equal(r.reachable, false);
+    assert.equal(r.errorKind, 'network');
+  });
+
+  it('errors when no base URL can be derived for the provider', async () => {
+    const r = await probeProviderConnectivity(cfg({ provider: 'openai', apiKey: 'k_ok' }));
+    assert.equal(r.status, 'error');
+    assert.equal(r.reachable, false);
+    assert.equal(r.errorKind, 'network');
+    assert.match(r.detail, /No base URL configured/);
+  });
+
+  it('skips the live probe under essential-traffic-only', async () => {
+    process.env[NONESSENTIAL] = '1';
+    try {
+      const r = await probeProviderConnectivity(cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k_ok' }));
+      assert.equal(r.status, 'skipped');
+      assert.equal(r.reachable, false);
+      assert.match(r.detail, /nonessential network traffic is disabled/);
+    } finally {
+      delete process.env[NONESSENTIAL];
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listModels — capability cache skip-when-unchanged (parity: '[modelCapabilities]
+// cache unchanged, skipping write')
+// ---------------------------------------------------------------------------
+import * as fs from 'fs';
+import * as os from 'os';
+import * as nodePath from 'path';
+
+describe('listModels — capability cache reuse', () => {
+  let server: http.Server;
+  let port: number;
+  let cacheDir: string;
+  let savedCacheDir: string | undefined;
+
+  before(async () => {
+    const s = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-4o', owned_by: 'openai', context_window: 128000 }] }));
+    });
+    await new Promise<void>(resolve => { s.listen(0, '127.0.0.1', () => resolve()); });
+    server = s;
+    port = (s.address() as { port: number }).port;
+    cacheDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mr-cache-'));
+    savedCacheDir = process.env.SUPERINFERENCE_MODEL_CACHE_DIR;
+    process.env.SUPERINFERENCE_MODEL_CACHE_DIR = cacheDir;
+  });
+
+  after(() => {
+    server.close();
+    if (savedCacheDir !== undefined) process.env.SUPERINFERENCE_MODEL_CACHE_DIR = savedCacheDir;
+    else delete process.env.SUPERINFERENCE_MODEL_CACHE_DIR;
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it('does not rewrite the cache file when the model set is unchanged', async () => {
+    const config = cfg({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'test-key' });
+    await withCleanEnvAsync(() => listModels(config));
+    const files = fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'));
+    assert.ok(files.length >= 1, 'expected a capability cache file to be written');
+    const file = nodePath.join(cacheDir, files[0]);
+    const first = fs.readFileSync(file, 'utf8');
+    // Second identical discovery must take the skip-when-unchanged branch (no rewrite).
+    await withCleanEnvAsync(() => listModels(config));
+    assert.equal(fs.readFileSync(file, 'utf8'), first);
+  });
+});

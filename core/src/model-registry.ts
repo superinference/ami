@@ -329,20 +329,33 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
   const headers: Record<string, string> = {};
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
-  const data = await httpGetJSON(url, headers) as { data?: ModelInfo[] };
-  const models = (data.data || []).map(m => ({
-    id: m.id,
-    name: m.id,
-    owned_by: m.owned_by,
+  const data = await httpGetJSON(url, headers) as { data?: Array<Record<string, unknown>> };
+  const raw = data.data || [];
+  const models: ModelInfo[] = raw.map(m => ({
+    id: String(m.id ?? ''),
+    name: String(m.id ?? ''),
+    owned_by: typeof m.owned_by === 'string' ? m.owned_by : undefined,
   }));
-  const discovery = discoverFromModelList(models as unknown as Record<string, unknown>[]);
+  // Learn capabilities from the RAW records (not the stripped {id,name,owned_by}
+  // projection) so a provider-advertised context window / output cap
+  // (context_window, max_output_tokens, …) is actually captured and persisted —
+  // the mapped rows carry no such fields, so discovery must see the originals.
+  const discovery = discoverFromModelList(raw);
   // Persist the freshly-advertised windows/caps to the on-disk cache (opt-in via
   // SUPERINFERENCE_MODEL_CACHE_DIR) so the next cold start can warm them without a
   // round-trip. Skipped automatically when the model set is unchanged (no mtime churn).
   const cacheDir = modelCapabilitiesCacheDir();
   if (cacheDir) {
     const entries = discoveryToCacheEntries(discovery);
-    if (entries.length > 0) writeModelCapabilitiesCache(cacheDir, entries);
+    if (entries.length > 0) {
+      // writeModelCapabilitiesCache returns false when the freshly-advertised set
+      // is byte-identical to what is already on disk (no mtime churn). Report that
+      // skip so operators can see the cache was reused unchanged — the third of
+      // Claude Code's model-capability debug lines ('cache unchanged, skipping
+      // write'), alongside 'cached N models' and 'fetch failed' below/above.
+      const wrote = writeModelCapabilitiesCache(cacheDir, entries);
+      if (!wrote) log('modelCapabilities', '[modelCapabilities] cache unchanged, skipping write');
+    }
   }
   // Debug/introspection: report the outcome of capability discovery (how many
   // models the endpoint returned and how many advertised a context window), so
@@ -419,6 +432,138 @@ function classifyDiscoveryDiagnostic(diagnostic: string | null): 'auth' | 'netwo
   if (/^Timed out reaching|^Could not reach/.test(diagnostic)) return 'network';
   if (/endpoint not found|returned HTTP|non-JSON response/.test(diagnostic)) return 'api';
   return 'none';
+}
+
+// ---------------------------------------------------------------------------
+// Live provider-connectivity probe — an ACTIVE boundary/health check that hits
+// the provider's model-list endpoint and classifies the outcome, so a diagnostic
+// surface (/doctor connectivity) can tell the user the endpoint is unreachable,
+// the credentials are rejected, or the base URL path is wrong — instead of only
+// echoing the configured provider/model string. Mirrors Claude Code's
+// checkEndpoints() preflight (utils/preflightChecks.tsx:L17-L74): it reaches the
+// endpoint, picks the concrete failure, and distinguishes a connectivity error
+// (the whole probe threw / timed out / DNS / refused) from a reachable endpoint
+// that answered with an auth/path error. REUSES the single canonical
+// {@link httpGetJSON} transport and {@link diagnoseModelDiscovery} /
+// {@link classifyDiscoveryDiagnostic} classifiers — no parallel probe/classifier.
+// ---------------------------------------------------------------------------
+
+/** Structured outcome of {@link probeProviderConnectivity}. */
+export interface ProviderConnectivityResult {
+  /** The provider the probe targeted (from {@link detectProvider}). */
+  provider: string;
+  /** True when the endpoint ANSWERED (even with an auth/path error) — i.e. the
+   *  network path is up. False only for a true connectivity failure (timeout /
+   *  DNS / connection refused) or when no endpoint could be derived. */
+  reachable: boolean;
+  /** Probe status: `ok` (answered 2xx), `warn` (answered but auth/path error —
+   *  reachable), `error` (unreachable), or `skipped` (nonessential traffic off). */
+  status: 'ok' | 'warn' | 'error' | 'skipped';
+  /** Human-readable detail (reused diagnostic copy, secrets already redacted). */
+  detail: string;
+  /** Classified failure kind when the probe did not return 2xx. */
+  errorKind?: 'auth' | 'network' | 'api' | 'none';
+  /** Round-trip latency of the probe request in milliseconds, when one was made. */
+  latencyMs?: number;
+}
+
+/**
+ * Derive the model-list endpoint + auth headers to probe for `provider`. Returns
+ * undefined when no endpoint can be derived (a cloud-SDK provider with no base URL
+ * configured) so the caller can report a configuration error rather than a false
+ * "unreachable". Keeps provider-specific auth-header knowledge in ONE place.
+ */
+function connectivityProbeTarget(
+  provider: string,
+  config: ProviderConfig,
+): { url: string; headers: Record<string, string> } | undefined {
+  const base = config.baseUrl ? config.baseUrl.replace(/\/+$/, '') : '';
+  if (provider === 'google') {
+    const url = base
+      ? `${base}/models`
+      : (process.env.SI_GEMINI_MODELS_URL || 'https://generativelanguage.googleapis.com/v1beta/models');
+    const headers: Record<string, string> = {};
+    if (config.apiKey) headers['x-goog-api-key'] = config.apiKey;
+    return { url, headers };
+  }
+  if (provider === 'anthropic') {
+    const root = base || 'https://api.anthropic.com/v1';
+    const headers: Record<string, string> = { 'anthropic-version': '2023-06-01' };
+    if (config.apiKey) headers['x-api-key'] = config.apiKey;
+    return { url: `${root}/models`, headers };
+  }
+  // Generic OpenAI-compatible endpoint (and any provider with an explicit base URL).
+  if (!base) return undefined;
+  const headers: Record<string, string> = {};
+  if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+  return { url: `${base}/models`, headers };
+}
+
+/**
+ * Actively probe the configured provider's reachability by issuing a real request
+ * to its model-list endpoint and classifying the outcome. Respects the
+ * essential-traffic-only privacy opt-out (a live probe is nonessential background
+ * traffic → `status: 'skipped'`). A 2xx answer is `ok`; an endpoint that answers
+ * with an auth/path error is `warn` + `reachable: true` (the network path is up,
+ * the credentials or URL path are not); a timeout / DNS / connection-refused
+ * failure is `error` + `reachable: false`. The single live-connectivity capability,
+ * surfaced via `/doctor connectivity`.
+ */
+export async function probeProviderConnectivity(
+  config: ProviderConfig,
+): Promise<ProviderConnectivityResult> {
+  const provider = detectProvider(config);
+
+  if (isEssentialTrafficOnly()) {
+    return {
+      provider,
+      reachable: false,
+      status: 'skipped',
+      detail: `Connectivity probe skipped for ${provider}: nonessential network traffic is disabled. Unset SUPERINFERENCE_DISABLE_NONESSENTIAL_TRAFFIC to enable live probing.`,
+      errorKind: 'none',
+    };
+  }
+
+  const target = connectivityProbeTarget(provider, config);
+  if (!target) {
+    return {
+      provider,
+      reachable: false,
+      status: 'error',
+      detail: `No base URL configured for ${provider}. Set AI_BASE_URL (or pass --base-url) to probe connectivity.`,
+      errorKind: 'network',
+    };
+  }
+
+  const started = Date.now();
+  try {
+    await httpGetJSON(target.url, target.headers);
+    const latencyMs = Date.now() - started;
+    return {
+      provider,
+      reachable: true,
+      status: 'ok',
+      detail: `Reached ${provider} at ${target.url} (${latencyMs}ms).`,
+      errorKind: 'none',
+      latencyMs,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - started;
+    const diagnostic = diagnoseModelDiscovery(err, provider);
+    const errorKind = classifyDiscoveryDiagnostic(diagnostic);
+    // An auth/path (api) error proves the endpoint answered → the network path is
+    // reachable; only a timeout / DNS / connection-refused is a true connectivity
+    // failure. Mirrors Claude's connectivity-vs-config distinction.
+    const reachable = errorKind === 'auth' || errorKind === 'api';
+    return {
+      provider,
+      reachable,
+      status: reachable ? 'warn' : 'error',
+      detail: diagnostic,
+      errorKind,
+      latencyMs,
+    };
+  }
 }
 
 /**
