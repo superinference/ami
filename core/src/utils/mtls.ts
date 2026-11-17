@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as tls from 'node:tls';
 
 /**
  * Mutual-TLS (client-certificate) support.
@@ -38,6 +39,111 @@ export const MTLS_ENV = {
   /** NEW (parity): minimum negotiated TLS version (default TLSv1.2). */
   minVersion: 'AMI_CLIENT_TLS_MIN_VERSION',
 } as const;
+
+/** Ambient Node CA env var (read natively by Node at startup; merged here too). */
+export const NODE_EXTRA_CA_CERTS_ENV = 'NODE_EXTRA_CA_CERTS';
+
+/** Node runtime option flags that opt a process into the OS/system trust store. */
+export const SYSTEM_CA_NODE_OPTIONS = ['--use-system-ca', '--use-openssl-ca'] as const;
+
+/**
+ * True when `flag` is present in the Node runtime options — either as a process
+ * `execArgv` entry or inside the `NODE_OPTIONS` env string (bare `--flag` or
+ * `--flag=value` forms). Mirrors Claude Code's `hasNodeOption` so the
+ * `--use-system-ca` / `--use-openssl-ca` toggles are honored regardless of how
+ * Node was launched. Pure + injectable for tests.
+ */
+export function hasNodeOption(
+  flag: string,
+  execArgv: readonly string[] = process.execArgv,
+  nodeOptions: string | undefined = process.env.NODE_OPTIONS,
+): boolean {
+  const matches = (tok: string): boolean => tok === flag || tok.startsWith(flag + '=');
+  if (execArgv.some(matches)) return true;
+  if (nodeOptions) return nodeOptions.split(/\s+/).filter(Boolean).some(matches);
+  return false;
+}
+
+/** Injectable TLS accessors so the trust-store assembler is unit-testable offline. */
+export interface CATrustDeps {
+  rootCertificates?: readonly string[];
+  getSystemCACertificates?: () => readonly string[];
+  execArgv?: readonly string[];
+}
+
+/**
+ * Assemble the CA trust bundle to pin on a CUSTOM undici dispatcher (proxy /
+ * mTLS agent). Setting `ca` on an agent REPLACES Node's default store, so when
+ * any custom trust material is in play this returns the bundled Mozilla roots as
+ * the base and ADDS to them, never replacing — mirroring Claude Code's
+ * getCACertificates (caCerts.ts / mtls.ts / proxy.ts). Composed of, in order:
+ *   1. bundled roots (`tls.rootCertificates`) — the default store, preserved;
+ *   2. the OS/system trust store (`tls.getCACertificates('system')`) when
+ *      `--use-system-ca` / `--use-openssl-ca` is set (best-effort; skipped when
+ *      the runtime lacks the API);
+ *   3. `NODE_EXTRA_CA_CERTS` file contents (best-effort; a missing file is
+ *      skipped, matching Node's own non-fatal handling);
+ *   4. the explicit AMI client CA bundle (already-loaded PEM), when provided.
+ * Returns `undefined` when NONE of (system-ca option, NODE_EXTRA_CA_CERTS,
+ * `materialCa`) is present, so the default no-custom-CA path stays byte-for-byte
+ * unchanged (Node still honors NODE_EXTRA_CA_CERTS natively for non-dispatcher
+ * connections). Deduplicates while preserving order.
+ */
+export function assembleCATrustStore(
+  env: NodeJS.ProcessEnv = process.env,
+  materialCa?: string,
+  deps: CATrustDeps = {},
+): string[] | undefined {
+  const execArgv = deps.execArgv ?? process.execArgv;
+  const wantSystem = SYSTEM_CA_NODE_OPTIONS.some(f => hasNodeOption(f, execArgv, env.NODE_OPTIONS));
+  const extraPath = env[NODE_EXTRA_CA_CERTS_ENV];
+  if (!wantSystem && !extraPath && !materialCa) return undefined;
+
+  const roots = deps.rootCertificates ?? tls.rootCertificates;
+  const out: string[] = [...roots];
+
+  if (wantSystem) {
+    try {
+      const sys = deps.getSystemCACertificates
+        ? deps.getSystemCACertificates()
+        : (typeof tls.getCACertificates === 'function' ? tls.getCACertificates('system') : []);
+      out.push(...sys);
+    } catch {
+      // Best-effort: fall back to the bundled roots already collected.
+    }
+  }
+  if (extraPath) {
+    try {
+      out.push(loadPem(extraPath, NODE_EXTRA_CA_CERTS_ENV));
+    } catch {
+      // Node treats an unreadable NODE_EXTRA_CA_CERTS as a non-fatal warning;
+      // match that — the bundled roots still provide a working trust store.
+    }
+  }
+  if (materialCa) out.push(materialCa);
+
+  return [...new Set(out)];
+}
+
+/**
+ * Log-safe one-line summary of the assembled trust store (cert COUNT + which
+ * sources contributed). Private key material never flows through here. Returns
+ * `undefined` when no custom trust is assembled, so a caller can skip logging.
+ */
+export function describeCATrustStore(
+  env: NodeJS.ProcessEnv = process.env,
+  materialCa?: string,
+  deps: CATrustDeps = {},
+): string | undefined {
+  const bundle = assembleCATrustStore(env, materialCa, deps);
+  if (!bundle) return undefined;
+  const execArgv = deps.execArgv ?? process.execArgv;
+  const sources: string[] = ['bundled'];
+  if (SYSTEM_CA_NODE_OPTIONS.some(f => hasNodeOption(f, execArgv, env.NODE_OPTIONS))) sources.push('system');
+  if (env[NODE_EXTRA_CA_CERTS_ENV]) sources.push('extra-file');
+  if (materialCa) sources.push('client-ca');
+  return `${bundle.length} CA cert(s) [${sources.join('+')}]`;
+}
 
 /** Secure-by-default TLS protocol floor. */
 export const DEFAULT_MIN_TLS_VERSION: TLSMinVersion = 'TLSv1.2';

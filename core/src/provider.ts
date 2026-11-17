@@ -22,7 +22,15 @@ import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCall
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic } from './error-classifier';
-import { getMTLSConfig, getTLSConnectOptions, MTLS_ENV } from './utils/mtls';
+import {
+  getMTLSConfig,
+  getTLSConnectOptions,
+  MTLS_ENV,
+  assembleCATrustStore,
+  describeCATrustStore,
+  NODE_EXTRA_CA_CERTS_ENV,
+  SYSTEM_CA_NODE_OPTIONS,
+} from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
 import { log } from './logger';
@@ -1353,6 +1361,19 @@ export function resolveProxyForUrl(env: NodeJS.ProcessEnv, url: string): string 
   return proxy;
 }
 
+/**
+ * Test seam for the undici transport constructors so the proxy/mTLS dispatcher
+ * wiring is unit-testable without a real proxy or monkeypatching the frozen
+ * `undici` namespace. When a hook is set it overrides the lazily-imported ctor;
+ * unset (the default) → the real undici ctor is used. Mirrors the `retryHooks` /
+ * `requestIdHooks` DI pattern already used in this module.
+ */
+export const proxyTransportHooks: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ProxyAgent?: new (opts: any) => unknown;
+  Agent?: new (opts: unknown) => unknown;
+} = {};
+
 const proxyAgentCache = new Map<string, unknown>();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let proxyAgentCtorPromise: Promise<(new (opts: any) => unknown) | null> | undefined;
@@ -1381,35 +1402,179 @@ function loadUndiciAgentCtor(): Promise<(new (opts: unknown) => unknown) | null>
   return undiciAgentCtorPromise;
 }
 
+/**
+ * Env knob (AMI_PROXY_RESOLVES_HOSTS) enabling proxy-side DNS: when truthy the
+ * dispatcher hands the raw hostname to the proxy instead of resolving it locally,
+ * for sandboxes where DNS is only reachable THROUGH the proxy. Mirrors Claude
+ * Code's CLAUDE_CODE_PROXY_RESOLVES_HOSTS (utils/proxy.ts). Also accepts the
+ * Claude Code name for drop-in parity.
+ */
+export function proxyResolvesHosts(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.AMI_PROXY_RESOLVES_HOSTS) || isEnvTruthy(env.CLAUDE_CODE_PROXY_RESOLVES_HOSTS);
+}
+
+/**
+ * Normalize a DNS address-family hint (0 | 4 | 6 | 'IPv4' | 'IPv6' | undefined)
+ * to the numeric family undici's `lookup` callback expects. Mirrors Claude Code's
+ * getAddressFamily (utils/proxy.ts). `0` means "unspecified / either family".
+ */
+export function getAddressFamily(family: number | string | undefined): 0 | 4 | 6 {
+  if (family === 4 || family === 'IPv4') return 4;
+  if (family === 6 || family === 'IPv6') return 6;
+  return 0;
+}
+
+type ProxyLookup = (
+  hostname: string,
+  options: { family?: number | string },
+  callback: (err: Error | null, address: string | { address: string; family: number }[], family?: number) => void,
+) => void;
+
+/**
+ * A DNS `lookup` that SKIPS local resolution and returns the hostname verbatim so
+ * the proxy resolves it (proxy-side DNS). Installed on the dispatcher connect
+ * options when {@link proxyResolvesHosts} is on.
+ */
+function makeProxyLookup(): ProxyLookup {
+  return (hostname, options, callback) => {
+    callback(null, [{ address: hostname, family: getAddressFamily(options?.family) || 4 }]);
+  };
+}
+
+type ProxyConnectOptions = {
+  cert?: string;
+  key?: string;
+  passphrase?: string;
+  ca?: string | string[];
+  lookup?: ProxyLookup;
+};
+
+/**
+ * Build the undici `connect` / `requestTls` options for a custom dispatcher from
+ * the configured mTLS material + the ambient env: merges the CA trust store (so a
+ * custom `ca` never replaces the default roots — see {@link assembleCATrustStore})
+ * and installs a proxy-side DNS lookup when {@link proxyResolvesHosts} is set.
+ * Returns `undefined` when there is nothing to apply, so the default dispatcher
+ * stays byte-for-byte unchanged. Exported for direct unit testing.
+ */
+export function buildProxyConnectOptions(
+  env: NodeJS.ProcessEnv,
+  tls: { cert?: string; key?: string; passphrase?: string; ca?: string } | undefined,
+): ProxyConnectOptions | undefined {
+  const opts: ProxyConnectOptions = {};
+  if (tls?.cert) opts.cert = tls.cert;
+  if (tls?.key) opts.key = tls.key;
+  if (tls?.passphrase) opts.passphrase = tls.passphrase;
+  const caBundle = assembleCATrustStore(env, tls?.ca);
+  if (caBundle !== undefined) opts.ca = caBundle;
+  if (proxyResolvesHosts(env)) opts.lookup = makeProxyLookup();
+  return Object.keys(opts).length > 0 ? opts : undefined;
+}
+
+/** Cheap, content-light cache tag for a connect-options bundle (never the PEM). */
+function connectOptionsCacheTag(opts: ProxyConnectOptions | undefined): string {
+  if (!opts) return '';
+  const caLen = Array.isArray(opts.ca) ? opts.ca.length : (opts.ca ? 1 : 0);
+  return `cert:${opts.cert ? 1 : 0}|ca:${caLen}|dns:${opts.lookup ? 1 : 0}`;
+}
+
 async function getProxyAgent(
   proxyUrl: string,
-  tls?: { cert?: string; key?: string; passphrase?: string },
+  tls?: { cert?: string; key?: string; passphrase?: string; ca?: string },
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown | undefined> {
-  // Cache key folds in mTLS so a proxy agent with client-cert material is never
-  // confused with a plain one for the same URL.
-  const cacheKey = tls ? `${proxyUrl}\u0000mtls` : proxyUrl;
+  const connect = buildProxyConnectOptions(env, tls);
+  // Cache key folds in the connect material (client cert, CA bundle size,
+  // proxy-side DNS) so an agent built under one trust/DNS config is never reused
+  // after a reconfiguration changes it.
+  const cacheKey = connect ? `${proxyUrl}\u0000${connectOptionsCacheTag(connect)}` : proxyUrl;
   if (proxyAgentCache.has(cacheKey)) return proxyAgentCache.get(cacheKey) ?? undefined;
-  const Ctor = await loadProxyAgentCtor();
+  const Ctor = proxyTransportHooks.ProxyAgent ?? await loadProxyAgentCtor();
   // Present the client certificate to the upstream (requestTls) and, for HTTPS
   // proxies, to the proxy itself (connect).
   const agent = Ctor
-    ? new Ctor(tls ? { uri: proxyUrl, requestTls: tls, connect: tls } : { uri: proxyUrl })
+    ? new Ctor(connect ? { uri: proxyUrl, requestTls: connect, connect } : { uri: proxyUrl })
     : null;
   proxyAgentCache.set(cacheKey, agent);
+  if (agent) {
+    const caDesc = describeCATrustStore(env, tls?.ca);
+    log('provider', `proxy dispatcher created${caDesc ? ` with custom trust store (${caDesc})` : ''}${connect?.lookup ? ', proxy-side DNS resolution ON' : ''}`);
+  }
   return agent ?? undefined;
 }
 
 const mtlsAgentCache = new Map<string, unknown>();
 
 /** An undici Agent that presents the client certificate on direct TLS connections. */
-async function getMTLSAgent(tls: { cert?: string; key?: string; passphrase?: string }): Promise<unknown | undefined> {
-  const cacheKey = `${tls.cert ?? ''}\u0000${tls.key ?? ''}\u0000${tls.passphrase ?? ''}`;
+async function getMTLSAgent(
+  tls: { cert?: string; key?: string; passphrase?: string; ca?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<unknown | undefined> {
+  const connect = buildProxyConnectOptions(env, tls) ?? tls;
+  const cacheKey = `${tls.cert ?? ''}\u0000${tls.key ?? ''}\u0000${tls.passphrase ?? ''}\u0000${connectOptionsCacheTag(buildProxyConnectOptions(env, tls))}`;
   if (mtlsAgentCache.has(cacheKey)) return mtlsAgentCache.get(cacheKey) ?? undefined;
-  const Ctor = await loadUndiciAgentCtor();
-  const agent = Ctor ? new Ctor({ connect: tls }) : null;
+  const Ctor = proxyTransportHooks.Agent ?? await loadUndiciAgentCtor();
+  const agent = Ctor ? new Ctor({ connect }) : null;
   mtlsAgentCache.set(cacheKey, agent);
+  if (agent) {
+    const caDesc = describeCATrustStore(env, tls.ca);
+    log('provider', `mTLS dispatcher created${tls.cert ? ' with client certificate' : ''}${caDesc ? ` and custom trust store (${caDesc})` : ''}`);
+  }
   return agent ?? undefined;
 }
+
+/**
+ * Invalidate every cached HTTP dispatcher (proxy + mTLS agents). The agents embed
+ * proxy routing, client-cert, and CA-trust material captured at construction, so
+ * after a mid-session env mutation (rotated proxy, re-pointed CA, flipped
+ * proxy-side-DNS) the stale agents must be dropped and rebuilt against the new
+ * env — mirroring Claude Code's configureGlobalAgents() + cache clears on
+ * managed-env reconfiguration. Invoked from the settings-env re-apply path.
+ */
+export function clearProxyAgentCache(): void {
+  const cleared = proxyAgentCache.size + mtlsAgentCache.size;
+  proxyAgentCache.clear();
+  mtlsAgentCache.clear();
+  if (cleared > 0) log('provider', `cleared ${cleared} cached HTTP dispatcher(s) after env reconfiguration`);
+}
+
+/**
+ * Diagnostic: number of cached HTTP dispatchers (proxy + mTLS agents) currently
+ * held. Lets a reconfiguration path (or a test) observe that stale agents were
+ * dropped. Part of the proxy-agent lifecycle introspection surface.
+ */
+export function proxyAgentCacheSize(): number {
+  return proxyAgentCache.size + mtlsAgentCache.size;
+}
+
+/**
+ * Network/TLS env knobs surfaced via `ami --introspect` (repo invariant: every
+ * capability is discoverable). Co-located with the transport code that reads them
+ * so the manifest and runtime behavior cannot drift. Spread into the CLI feature
+ * manifest's `experimentalEnvFlags` (cli/src/index.ts).
+ */
+export const NETWORK_ENV_FLAGS: ReadonlyArray<{ flag: string; affects: string; description: string }> = [
+  {
+    flag: 'AMI_PROXY_RESOLVES_HOSTS',
+    affects: 'proxy-dns',
+    description: 'Truthy to let the proxy resolve DNS: the dispatcher hands the raw hostname to the proxy instead of resolving it locally, for sandboxes where DNS is only reachable through the proxy (also accepts CLAUDE_CODE_PROXY_RESOLVES_HOSTS)',
+  },
+  {
+    flag: MTLS_ENV.ca,
+    affects: 'tls-trust',
+    description: 'Custom CA bundle (file path or inline PEM) to TRUST for the upstream/proxy; merged WITH the bundled Mozilla roots (never replacing them) on the proxy/mTLS dispatcher so a private-CA endpoint is trusted without losing the default store',
+  },
+  {
+    flag: NODE_EXTRA_CA_CERTS_ENV,
+    affects: 'tls-trust',
+    description: 'Node ambient extra-CA file; its contents are additionally merged onto the custom proxy/mTLS dispatcher trust store (Node honors it natively for non-dispatcher connections)',
+  },
+  {
+    flag: SYSTEM_CA_NODE_OPTIONS.join(' / '),
+    affects: 'tls-trust',
+    description: 'Node runtime options (execArgv or NODE_OPTIONS) that opt the proxy/mTLS dispatcher into the OS/system trust store (tls.getCACertificates(\'system\')) in addition to the bundled roots',
+  },
+];
 
 function requestUrl(input: string | URL | { url?: unknown }): string | undefined {
   if (typeof input === 'string') return input;
@@ -1441,10 +1606,10 @@ export function withProxyDispatcher(
       const url = requestUrl(input as string | URL | { url?: unknown });
       const proxyUrl = url ? resolveProxyForUrl(env, url) : undefined;
       if (proxyUrl) {
-        const agent = await getProxyAgent(proxyUrl, mtls);
+        const agent = await getProxyAgent(proxyUrl, mtls, env);
         if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
       } else if (mtls) {
-        const agent = await getMTLSAgent(mtls);
+        const agent = await getMTLSAgent(mtls, env);
         if (agent) return base(input, { ...init, dispatcher: agent } as RequestInit);
       }
     }
