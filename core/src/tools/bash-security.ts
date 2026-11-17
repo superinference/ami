@@ -513,40 +513,147 @@ function validateBackslashEscapedOperators(command: string): SecurityCheckResult
 /**
  * Replace heredoc constructs — `<<DELIM … DELIM` and the dash form `<<-DELIM … <indent>DELIM`,
  * with quoted (`<<'EOF'` / `<<"EOF"`) or bare delimiters — with a single-line placeholder so the
- * newline guard does not treat a heredoc BODY (inert stdin data) as command separation (ui#26).
- * This loosens ONLY the structural newline check: any dangerous content inside a heredoc body is
- * still scanned by the destructive-command detectors (detectDangerousRm / detectNuclearCommand /
- * command-substitution guards), which run on the RAW command string, unaffected by this stripping.
+ * newline / redirection guards do not treat a heredoc BODY (inert stdin data) as command
+ * separation (ui#26). This loosens ONLY those structural checks: any dangerous content inside a
+ * heredoc body is still scanned by the destructive-command detectors (detectDangerousRm /
+ * detectNuclearCommand / command-substitution guards), which run on the RAW command string,
+ * unaffected by this stripping.
+ *
+ * Parsing fidelity (parity with Claude Code's extractHeredocs, utils/bash/heredoc.ts): a naive
+ * regex that treats every `<<WORD` as a heredoc lets an attacker HIDE real commands from the
+ * structural guards. This implementation refuses to strip in the cases where bash would NOT begin
+ * a heredoc body, so smuggled commands stay visible to the guards:
+ *   - `<<` inside single/double quotes is literal text, not an operator (`echo "x <<EOF"\nls`).
+ *   - `<<` after an unquoted `#` is inside a comment (`# <<EOF\nwhoami\nEOF`).
+ *   - `\<<EOF` (odd backslash run) is an escaped `<`, not a heredoc.
+ *   - the body begins at the first UNQUOTED newline (a quoted newline on the opening line extends
+ *     the logical line — `cat <<'EOF' 'a\nb' ; cmd\nEOF`).
+ *   - a backslash-newline continuation on the opening line joins the next physical line into the
+ *     COMMAND, not the body, so we bail.
+ *   - `<<-` strips leading TABS only (not spaces) when matching the closing delimiter, per POSIX.
+ *   - a bare `(( a << B ))` arithmetic context, `$'…'`/`$"…"` quoting, or a backtick before the
+ *     first `<<` can desync the simplified scanner, so we bail (leave the command fully visible).
  * Exported for unit coverage.
  */
 export function stripHeredocBodies(command: string): string {
-  // Opening operator: `<<` or `<<-`, optional spaces, optional quote, a delimiter WORD, matching
-  // quote. The delimiter charset ([A-Za-z_][\w]*) contains no regex metacharacters, so it can be
-  // interpolated into the closing matcher without escaping.
-  const open = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/g;
+  if (!command.includes('<<')) return command;
+
+  // Fail-SAFE bail-outs (match reference): constructs our simplified quote/comment scanner cannot
+  // track reliably. Leaving the command unchanged keeps ALL of it visible to the structural guards.
+  if (/\$['"]/.test(command)) return command; // ANSI-C / locale quoting ($'…', $"…")
+  const firstHeredocPos = command.indexOf('<<');
+  if (firstHeredocPos > 0) {
+    const before = command.slice(0, firstHeredocPos);
+    if (before.includes('`')) return command; // backtick before `<<` (PST_EOFTOKEN early closure)
+    const openArith = (before.match(/\(\(/g) || []).length;
+    const closeArith = (before.match(/\)\)/g) || []).length;
+    if (openArith > closeArith) return command; // `(( … << … ))` — `<<` is a bit-shift, not a heredoc
+  }
+
+  // Operator: `<<`/`<<-`, NOT part of a `<<<` herestring, optional spaces, then a delimiter WORD
+  // that is quoted (`<<'EOF'` / `<<"EOF"`, backslash may be literal inside quotes) or unquoted
+  // (`<<EOF`, an outer `\` is an escape). [ \t]* (not \s*) so the operator cannot span a newline.
+  const open = /(?<!<)<<(?!<)(-)?[ \t]*(?:(['"])(\\?\w+)\2|\\?(\w+))/g;
   let result = '';
   let lastIndex = 0;
   let m: RegExpExecArray | null;
+
+  // Incremental quote/comment/escape scanner (mirrors the reference advanceScan). scanPos tracks how
+  // far we have classified; state reflects the parser immediately BEFORE the next match position.
+  let scanPos = 0;
+  let inSingle = false, inDouble = false, inComment = false, dqEscape = false, backslashRun = 0;
+  const advanceScan = (target: number): void => {
+    for (let i = scanPos; i < target; i++) {
+      const ch = command[i];
+      if (ch === '\n') inComment = false; // any physical newline clears comment state
+      if (inSingle) { if (ch === "'") inSingle = false; continue; }
+      if (inDouble) {
+        if (dqEscape) { dqEscape = false; continue; }
+        if (ch === '\\') { dqEscape = true; continue; }
+        if (ch === '"') inDouble = false;
+        continue;
+      }
+      if (ch === '\\') { backslashRun++; continue; }
+      const escaped = backslashRun % 2 === 1;
+      backslashRun = 0;
+      if (escaped) continue;
+      if (ch === "'") inSingle = true;
+      else if (ch === '"') inDouble = true;
+      else if (!inComment && ch === '#') inComment = true;
+    }
+    scanPos = target;
+  };
+
   while ((m = open.exec(command)) !== null) {
-    const delim = m[2];
-    const dashForm = m[0].startsWith('<<-');
-    const opEnd = open.lastIndex;              // end of the `<<WORD` operator token
-    const lineEnd = command.indexOf('\n', opEnd);
-    if (lineEnd === -1) break; // no body line → not an active heredoc; leave the rest intact
-    // `<<-` permits a tab/space-indented closing delimiter; plain `<<` requires it at line start.
-    const close = dashForm
-      ? new RegExp(`\\n[ \\t]*${delim}(?=[\\s]|$)`)
-      : new RegExp(`\\n${delim}(?=[\\s]|$)`);
-    const rest = command.slice(lineEnd);
-    const cm = close.exec(rest);
-    if (!cm) continue; // unterminated heredoc → leave as-is (the raw newlines stay, still guarded)
-    const closeAbs = lineEnd + cm.index + cm[0].length;
-    // Drop the `<<WORD` operator itself AND the body+delimiter, but KEEP any remainder of the
-    // opening line (e.g. a trailing `| grep x` or `> file`) so other guards still see it.
-    result += command.slice(lastIndex, m.index) + ' '
-            + command.slice(opEnd, lineEnd) + ' __HEREDOC__';
-    lastIndex = closeAbs;
-    open.lastIndex = closeAbs;
+    if (m.index < lastIndex) continue; // `<<` inside a body we already stripped — not an operator
+    advanceScan(m.index);
+    // Skip `<<` that is not actually a heredoc operator in bash.
+    if (inSingle || inDouble) continue;   // inside a quoted string
+    if (inComment) continue;              // inside a `#` comment
+    if (backslashRun % 2 === 1) continue; // escaped `\<<`
+
+    const fullMatch = m[0];
+    const dashForm = m[1] === '-';
+    const quoteChar = m[2];
+    const delim = (m[3] ?? m[4]) as string;
+    const opEnd = m.index + fullMatch.length;
+    // Delimiter-capture sanity: a quoted delimiter must have its closing quote (\w+ stops at a
+    // space/hyphen), and the operator must be followed by a bash word terminator — otherwise our
+    // delimiter differs from bash's and we must not strip.
+    if (quoteChar && command[opEnd - 1] !== quoteChar) continue;
+    if (opEnd < command.length && !/^[ \t\n|&;()<>]$/.test(command[opEnd])) continue;
+
+    // Body starts at the first UNQUOTED newline after the operator (a quoted newline extends the
+    // logical opening line). Track quote state locally from a known-clean start (opEnd).
+    let bodyNl = -1;
+    {
+      let s = false, d = false;
+      for (let k = opEnd; k < command.length; k++) {
+        const ch = command[k];
+        if (s) { if (ch === "'") s = false; continue; }
+        if (d) { if (ch === '\\') { k++; continue; } if (ch === '"') d = false; continue; }
+        if (ch === '\n') { bodyNl = k; break; }
+        let bs = 0;
+        for (let j = k - 1; j >= opEnd && command[j] === '\\'; j--) bs++;
+        if (bs % 2 === 1) continue;
+        if (ch === "'") s = true; else if (ch === '"') d = true;
+      }
+    }
+    if (bodyNl === -1) continue; // logical line never ends (open quote) / no body → not stripped
+
+    // Backslash-newline continuation on the opening line joins the next physical line into the
+    // COMMAND (bash does this BEFORE heredoc parsing), so the "body" would hide a real command.
+    const sameLine = command.slice(opEnd, bodyNl);
+    let trailBs = 0;
+    for (let j = sameLine.length - 1; j >= 0 && sameLine[j] === '\\'; j--) trailBs++;
+    if (trailBs % 2 === 1) continue;
+
+    // Find the closing delimiter on its own line. `<<-` strips leading TABS only (not spaces).
+    const afterNl = command.slice(bodyNl + 1);
+    const contentLines = afterNl.split('\n');
+    let closeLine = -1;
+    for (let i = 0; i < contentLines.length; i++) {
+      const line = contentLines[i];
+      const stripped = dashForm ? line.replace(/^\t*/, '') : line;
+      if (stripped === delim) { closeLine = i; break; }
+      // Early-closure (PST_EOFTOKEN): a line starting with the delimiter followed by a shell
+      // metacharacter / substitution closer may close the heredoc early — bail rather than misparse.
+      if (stripped.length > delim.length && stripped.startsWith(delim) && /^[)}`|&;(<>]$/.test(stripped[delim.length])) {
+        closeLine = -1;
+        break;
+      }
+    }
+    if (closeLine === -1) continue; // unterminated / ambiguous → leave visible
+
+    const contentEnd = bodyNl + 1 + contentLines.slice(0, closeLine + 1).join('\n').length;
+    // Drop the `<<WORD` operator and the body+delimiter, but KEEP the opening line's remainder
+    // (e.g. a trailing `| grep x`) so the other guards still see it.
+    result += command.slice(lastIndex, m.index) + ' ' + sameLine + ' __HEREDOC__';
+    lastIndex = contentEnd;
+    // Re-sync the scanner past the stripped body (a fresh logical line, clean quote state).
+    scanPos = contentEnd;
+    inSingle = inDouble = inComment = dqEscape = false;
+    backslashRun = 0;
   }
   result += command.slice(lastIndex);
   return result;

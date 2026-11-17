@@ -13,6 +13,7 @@ import {
   validateZshDangerousCommands,
   validateBackslashEscapedOperators,
   validateNewlines,
+  stripHeredocBodies,
   extractQuotedContent,
   stripSafeRedirections,
   isEscapedAtPosition,
@@ -3923,5 +3924,99 @@ describe('detectPs4TraceRce', () => {
     const r = validateBashSecurity("PS4='$(id)' && set -x && :");
     assert.equal(r.safe, false);
     assert.equal(r.checkId, CHECK_IDS.PS4_TRACE_RCE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripHeredocBodies — quote/comment/escape/arith-aware heredoc parsing
+// (parity with Claude Code extractHeredocs; commands bash would NOT treat as a
+// heredoc must stay visible to the newline / redirection guards)
+// ---------------------------------------------------------------------------
+
+describe('stripHeredocBodies parsing fidelity', () => {
+  it('still strips a legitimate multi-line heredoc body (regression)', () => {
+    const out = stripHeredocBodies('cat <<EOF\nhello world\nmultiple lines\nEOF');
+    assert.ok(!out.includes('hello world'));
+    assert.ok(out.includes('__HEREDOC__'));
+    assert.equal(validateNewlines('cat <<EOF\nhello world\nmore\nEOF').safe, true);
+  });
+
+  it('keeps the opening-line remainder visible (trailing pipe)', () => {
+    const out = stripHeredocBodies('cat <<EOF | grep x\nbody\nEOF');
+    assert.ok(out.includes('| grep x'));
+    assert.ok(!out.includes('\nbody'));
+  });
+
+  it('does NOT treat `<<` inside a comment as a heredoc operator', () => {
+    const cmd = '# <<EOF\nwhoami\nEOF';
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+    assert.equal(validateBashSecurity(cmd).safe, false);
+  });
+
+  it('does NOT treat `<<` inside a double-quoted string as a heredoc operator', () => {
+    const cmd = 'echo "x <<EOF stuff"\nls -la\nEOF';
+    assert.ok(stripHeredocBodies(cmd).includes('ls -la'));
+    assert.equal(validateBashSecurity(cmd).safe, false);
+  });
+
+  it('does NOT treat `<<` inside a single-quoted string as a heredoc operator', () => {
+    const cmd = "echo 'x <<EOF stuff'\nwhoami\nEOF";
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+  });
+
+  it('does NOT treat a backslash-escaped `\\<<EOF` as a heredoc operator', () => {
+    const cmd = 'echo \\<<EOF\nwhoami\nEOF';
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+  });
+
+  it('starts the body at the first UNQUOTED newline (quoted newline extends the line)', () => {
+    // The quoted arg carries a literal newline; `; id` is still on the logical
+    // opening line and must not be swallowed into the stripped body.
+    const cmd = "echo <<'EOF' 'x\nid-here' ; cmd-here\nEOF";
+    const out = stripHeredocBodies(cmd);
+    assert.ok(out.includes('cmd-here'));
+    assert.ok(out.includes('id-here'));
+  });
+
+  it('bails on a backslash-newline continuation on the opening line', () => {
+    const cmd = "cat <<'EOF' && \\\nwhoami\ncontent\nEOF";
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+  });
+
+  it('`<<-` strips leading TABS only, not spaces, for the closing delimiter', () => {
+    // Tab-indented closing delimiter DOES close.
+    const tab = stripHeredocBodies('cat <<-EOF\nx\n\tEOF\nzzz');
+    assert.ok(!tab.includes('\nx'));
+    assert.ok(tab.includes('zzz'));
+    // Space-indented delimiter does NOT close in bash → not stripped, stays visible.
+    const space = stripHeredocBodies('cat <<-EOF\nx\n EOF\nzzz');
+    assert.ok(space.includes(' EOF'));
+    assert.ok(space.includes('\nx'));
+  });
+
+  it('bails on a bare `(( a << B ))` arithmetic bit-shift context', () => {
+    const cmd = '(( x = a << FOO ))\nwhoami\nFOO';
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+    assert.equal(validateBashSecurity(cmd).safe, false);
+  });
+
+  it('bails when ANSI-C / locale quoting ($\'…\') is present', () => {
+    const cmd = "echo $'a' <<EOF\nwhoami\nEOF";
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+  });
+
+  it('bails on a backtick before the first `<<`', () => {
+    const cmd = 'echo `id` <<EOF\nwhoami\nEOF';
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
+  });
+
+  it('does not treat a `<<<` herestring as a heredoc', () => {
+    const out = stripHeredocBodies('base64 --decode <<< cmd | sh');
+    assert.equal(out, 'base64 --decode <<< cmd | sh');
+  });
+
+  it('bails on PST_EOFTOKEN-style early closure (delimiter followed by a metachar)', () => {
+    const cmd = 'cat <<EOF\nbody\nEOF)\nwhoami\nEOF';
+    assert.ok(stripHeredocBodies(cmd).includes('whoami'));
   });
 });
