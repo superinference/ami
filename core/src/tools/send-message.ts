@@ -119,6 +119,22 @@ export interface PermissionRequest {
   requestId?: string;
   tool: string;
   description: string;
+  /**
+   * The tool_use id of the worker's pending call the lead is being asked to
+   * approve. Lets the resolver correlate the decision back to the exact blocked
+   * invocation (not just the worker). Mirrors Claude Code's SwarmPermissionRequest
+   * `toolUseId` (utils/swarm/permissionSync.ts). Optional — a forward that predates
+   * a concrete tool_use id omits it.
+   */
+  toolUseId?: string;
+  /**
+   * The arguments of the worker's pending tool call, so the lead can inspect WHAT
+   * the worker wants to run (e.g. the exact bash command / file path) before
+   * approving, and optionally return an edited `updatedInput`. Mirrors Claude
+   * Code's SwarmPermissionRequest `input`. Must be a plain object; a non-object is
+   * dropped (the request still forwards with its tool/description).
+   */
+  input?: Record<string, unknown>;
 }
 export interface PermissionResponse {
   type: 'permission_response';
@@ -139,6 +155,14 @@ export interface PermissionResponse {
    * SwarmPermissionResolution `updatedInput`.
    */
   updatedInput?: Record<string, unknown>;
+  /**
+   * Who resolved the forwarded request: the team `leader` (the normal path — a
+   * worker forwarded its prompt up and the lead decided) or the `worker` itself
+   * (it un-blocked locally, e.g. a timeout/self-approval fallback). Lets a consumer
+   * attribute the decision. Mirrors Claude Code's SwarmPermissionResolution
+   * `resolvedBy` enum. Optional; absent defaults to a leader-originated decision.
+   */
+  resolvedBy?: 'leader' | 'worker';
 }
 /**
  * A lifecycle notice that a teammate has terminated (exited or was force-killed),
@@ -315,9 +339,23 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
       }
       return { type, requestId, approve: coerceApprove(o), feedback: typeof o.feedback === 'string' ? o.feedback : undefined, permissionMode };
     }
-    case 'permission_request':
+    case 'permission_request': {
       if (typeof o.tool !== 'string') return { error: 'permission_request requires a tool' };
-      return { type, requestId: optionalReqId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
+      // The pending tool's arguments the lead is asked to approve — a plain object
+      // only (a string/array/primitive is dropped so a malformed `input` can't be
+      // forwarded as the args a worker would run).
+      const reqInput = (o.input && typeof o.input === 'object' && !Array.isArray(o.input))
+        ? (o.input as Record<string, unknown>)
+        : undefined;
+      return {
+        type,
+        requestId: optionalReqId,
+        tool: o.tool,
+        description: typeof o.description === 'string' ? o.description : '',
+        toolUseId: typeof o.toolUseId === 'string' ? o.toolUseId : undefined,
+        input: reqInput,
+      };
+    }
     case 'permission_response': {
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
       // A resolver-edited tool input must be a plain object (never a string/array/
@@ -327,12 +365,18 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
       const updatedInput = (o.updatedInput && typeof o.updatedInput === 'object' && !Array.isArray(o.updatedInput))
         ? (o.updatedInput as Record<string, unknown>)
         : undefined;
+      // Who resolved it: only the explicit enum values are honored; anything else
+      // (incl. absent) leaves it undefined → treated as a leader decision.
+      const resolvedBy = (o.resolvedBy === 'leader' || o.resolvedBy === 'worker')
+        ? o.resolvedBy
+        : undefined;
       return {
         type,
         requestId,
         approve: coerceApprove(o),
         feedback: typeof o.feedback === 'string' ? o.feedback : undefined,
         updatedInput,
+        resolvedBy,
       };
     }
     case 'sandbox_permission_request': {
@@ -489,6 +533,26 @@ export function getShutdownMessageSummary(content: string, from?: string): strin
 }
 
 /**
+ * Upper bound (chars) on the compact one-line projection of a permission request's
+ * pending tool `input`, so a large args blob never bloats the leader-facing summary.
+ */
+export const MAX_INPUT_PREVIEW_CHARS = 120;
+
+/**
+ * Compact one-line, length-bounded projection of a tool-call input object for the
+ * leader-facing permission-request summary. Collapses whitespace in the JSON and
+ * caps it at {@link MAX_INPUT_PREVIEW_CHARS} (with an ellipsis) so the lead sees the
+ * shape of the pending args without a multi-line blob. Falls back to '{…}' if the
+ * object cannot be stringified (e.g. a cyclic structure).
+ */
+export function compactInput(input: Record<string, unknown>): string {
+  let s: string;
+  try { s = JSON.stringify(input); } catch { return '{…}'; }
+  s = s.replace(/\s+/g, ' ').trim();
+  return s.length > MAX_INPUT_PREVIEW_CHARS ? s.slice(0, MAX_INPUT_PREVIEW_CHARS - 1) + '…' : s;
+}
+
+/**
  * A concise, human/model-readable one-line summary of any structured control
  * message, used to relay it into context WITHOUT exposing the raw JSON. Returns
  * null for plain text or a malformed protocol payload (nothing meaningful to
@@ -511,14 +575,20 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
         // the teammate always has an actionable next step (mirrors Claude Code's
         // PlanApprovalMessage: `[Plan Rejected] ${feedback || 'Please revise your plan'}`).
         : `[Plan Rejected] ${m.feedback || 'Please revise your plan'} — revise and call ExitPlanMode again`;
-    case 'permission_request':
-      return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}`;
+    case 'permission_request': {
+      // Surface the pending tool's args (compact one-line projection) so the lead
+      // sees WHAT it is approving, not just which tool. Mirrors Claude showing the
+      // request `input` in the leader's permission prompt.
+      const argTag = m.input ? ` args: ${compactInput(m.input)}` : '';
+      return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}${argTag}`;
+    }
     case 'permission_response': {
       const edited = m.updatedInput ? ' (input edited by approver)' : '';
-      if (m.approve) return `[Permission Granted]${edited}`;
+      const byTag = m.resolvedBy === 'worker' ? ' (resolved by worker)' : '';
+      if (m.approve) return `[Permission Granted]${edited}${byTag}`;
       // Default a missing rejection feedback to actionable guidance so the worker
       // always has a next step, mirroring Claude Code's feedback fallback.
-      return `[Permission Denied] ${m.feedback || 'request refused by the team lead'}`;
+      return `[Permission Denied] ${m.feedback || 'request refused by the team lead'}${byTag}`;
     }
     case 'sandbox_permission_request':
       return `[Sandbox Egress Request]${from ? ` from ${from}` : ''} — approve outbound network access to host "${m.host}"?`;
@@ -892,6 +962,38 @@ export function notifyLeadTeammateIdle(agentName: string): boolean {
     type: 'idle_notification',
     idleReason: 'available',
     ...(summary ? { summary } : {}),
+  };
+  enqueue(TEAM_LEAD_NAME, {
+    from: agentName,
+    to: TEAM_LEAD_NAME,
+    content: JSON.stringify(payload),
+    timestamp: Date.now(),
+  });
+  return true;
+}
+
+/**
+ * Proactively push a `teammate_terminated` notice into the team lead's mailbox when
+ * a teammate exits ABNORMALLY (killed / failed), so the lead learns a peer's work is
+ * orphaned and can release/reassign it — WITHOUT polling, and WITHOUT the dead agent
+ * having to send anything itself (it may have crashed). This is the termination
+ * counterpart of {@link notifyLeadTeammateIdle}: a clean finish pushes an
+ * idle/available notice, an abnormal exit pushes a termination notice. Mirrors Claude
+ * Code's killTeammate injecting a `teammate_terminated` system message into the lead's
+ * inbox (components/teams/TeamsDialog.tsx) and its always-run cleanup. The notice is
+ * surfaced silently by the receive-side relay ({@link relayIncomingMessage} drops it),
+ * never dumped as chatter. Routed through the canonical {@link enqueue} so it bumps the
+ * lead's revision and resolves any pending receiveMessage() waiter.
+ *
+ * No-op (returns false) when the exiting agent IS the lead (no lead to notify) or has
+ * no resolvable identity. Returns true when a notice was queued.
+ */
+export function notifyLeadTeammateTerminated(agentName: string, message?: string): boolean {
+  if (!agentName || !agentName.trim()) return false;
+  if (agentName.toLowerCase() === TEAM_LEAD_NAME.toLowerCase()) return false;
+  const payload: TeammateTerminated = {
+    type: 'teammate_terminated',
+    ...(message && message.trim() ? { message: message.trim() } : {}),
   };
   enqueue(TEAM_LEAD_NAME, {
     from: agentName,
@@ -1417,6 +1519,23 @@ function knownRecipientNames(exclude?: string): string[] {
   return [...names].sort();
 }
 
+/**
+ * Machine-readable error code carried on every input-SHAPE validation rejection of
+ * a send_message call — empty `to`, an empty scheme-address target, an `@` in a bare
+ * `to`, or empty content. Mirrors Claude Code's SendMessageTool.validateInput, which
+ * returns `errorCode: 9` for exactly these input-shape rejections. AMI validates
+ * inline in execute() rather than a separate validateInput pass, so the code rides on
+ * the ToolResult `metadata` channel (the same structured-hints field cron-delete uses
+ * for its `errorCode`), letting a programmatic consumer distinguish a malformed-input
+ * rejection from a downstream routing/permission error.
+ */
+export const SEND_MESSAGE_VALIDATION_ERROR_CODE = 9;
+
+/** Build an input-shape validation error carrying {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}. */
+function validationError(message: string): ToolResult {
+  return { output: `Error: ${message}`, isError: true, metadata: { errorCode: SEND_MESSAGE_VALIDATION_ERROR_CODE } };
+}
+
 export const sendMessageTool: ToolDefinition = {
   name: 'send_message',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
@@ -1496,7 +1615,7 @@ export const sendMessageTool: ToolDefinition = {
     const content = (input.message as string) ?? (input.content as string);
 
     if (!toRaw || !toRaw.trim()) {
-      return { output: 'Error: "to" must not be empty.', isError: true };
+      return validationError('"to" must not be empty.');
     }
     // Normalize the recipient name: a model frequently emits a padded name
     // (" worker ", "worker\n") copied from prose/UI. Without trimming, the
@@ -1507,7 +1626,7 @@ export const sendMessageTool: ToolDefinition = {
     // (Mirrors Claude Code normalizing the teammate name before resolution.)
     toRaw = toRaw.trim();
     if (!content || !content.trim()) {
-      return { output: 'Error: "content" must not be empty.', isError: true };
+      return validationError('"content" must not be empty.');
     }
     if (content.length > MAX_MESSAGE_CHARS) {
       return {
@@ -1521,13 +1640,13 @@ export const sendMessageTool: ToolDefinition = {
     // out-of-process. (Mirrors Claude Code's parseAddress.)
     const addr = parseAddress(toRaw);
     if (addr.scheme !== 'other' && !addr.target.trim()) {
-      return { output: 'Error: address target must not be empty.', isError: true };
+      return validationError('address target must not be empty.');
     }
     // Bare teammate names only — there is one team per session, so "@" or
     // "team@host" style addresses are rejected (mirrors Claude's validateInput).
     // Scheme-qualified addresses are exempt: they use the ":" separator, not "@".
     if (addr.scheme === 'other' && toRaw.includes('@')) {
-      return { output: 'Error: "to" must be a bare teammate name or "*" — do not use "@".', isError: true };
+      return validationError('"to" must be a bare teammate name or "*" — do not use "@".');
     }
 
     // Anti-impersonation: when we run inside a sub-agent, the sender is the

@@ -1025,23 +1025,35 @@ export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): b
  * teammate_name / team_name). Only fires when the id resolves to a real team
  * member; best-effort/fire-and-forget so hook failures never break teardown.
  */
-export function markTeammateIdle(context: ToolContext, taskId: string): void {
+export function markTeammateIdle(
+  context: ToolContext,
+  taskId: string,
+  terminalStatus?: 'completed' | 'failed' | 'killed',
+): void {
   setTeamMemberActive(taskId, false);
   const team = getCurrentTeam();
   if (!team) return;
   const member = team.members.find(m => m.name === taskId || m.agentId === taskId);
   if (!member) return;
-  // Proactive 'now idle / available' push to the team lead (PARITY, additive):
-  // a teammate that simply finishes its turn automatically tells the lead it is
-  // free to take new work, so the lead never has to poll. Mirrors Claude Code's
-  // Stop hook writing createIdleNotification(agentName, { idleReason: 'available' })
-  // to the leader's inbox. Best-effort — a messaging failure must never break
-  // teardown. Lazy require avoids a static import cycle (send-message lazy-requires
-  // task). A no-op when the finishing agent IS the lead.
+  // Proactive push to the team lead (PARITY, additive): a teammate that finishes
+  // its turn automatically tells the lead its status, so the lead never has to
+  // poll. A CLEAN finish (completed / unspecified) pushes an idle/available notice
+  // (Claude's Stop hook writing createIdleNotification(agentName,
+  // { idleReason: 'available' })); an ABNORMAL exit (killed / failed) instead
+  // pushes a teammate_terminated notice so the lead can release the dead agent's
+  // orphaned work (Claude's killTeammate injecting teammate_terminated into the
+  // lead's inbox) — reporting a crashed agent as "available" would be wrong.
+  // Best-effort — a messaging failure must never break teardown. Lazy require
+  // avoids a static import cycle (send-message lazy-requires task). A no-op when
+  // the finishing agent IS the lead.
   try {
-    const { notifyLeadTeammateIdle } = require('./send-message');
-    notifyLeadTeammateIdle(member.name);
-  } catch { /* best-effort — never fail teardown on an idle push */ }
+    const sm = require('./send-message');
+    if (terminalStatus === 'killed' || terminalStatus === 'failed') {
+      sm.notifyLeadTeammateTerminated(member.name, `agent ${terminalStatus}`);
+    } else {
+      sm.notifyLeadTeammateIdle(member.name);
+    }
+  } catch { /* best-effort — never fail teardown on a status push */ }
   if (!context._hookManager) return;
   context._hookManager.executeTeammateIdle({ teammateName: member.name, teamName: team.name }).catch(() => {});
 }
@@ -1584,18 +1596,20 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   // below AFTER the agent is marked terminal, so cleanup can run.
   const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
   let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
-  // The teammate has finished — mark it idle so team_delete no longer
-  // treats it as an active member blocking teardown, and fire TeammateIdle.
-  markTeammateIdle(context, taskId);
+  // Classify the terminal state up front (parity with Claude's completed/failed/
+  // killed): a stall-termination or an external abort (task_kill → abortFn →
+  // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
+  // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
+  // 'failed' would conflate a deliberate cancellation with a real error (and
+  // would clobber the 'killed' status task_kill already latched).
+  const killed = bgStalled || subAbort.signal.aborted;
+  const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
+  // The teammate has finished — mark it idle so team_delete no longer treats it as
+  // an active member blocking teardown, and fire TeammateIdle. Pass the terminal
+  // status so an abnormal exit (killed/failed) pushes a teammate_terminated notice
+  // to the lead instead of an idle/available one.
+  markTeammateIdle(context, taskId, terminalStatus);
   if (context.processManager) {
-    // Three terminal states (parity with Claude's completed/failed/killed):
-    // a stall-termination or an external abort (task_kill → abortFn →
-    // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
-    // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
-    // 'failed' would conflate a deliberate cancellation with a real error (and
-    // would clobber the 'killed' status task_kill already latched).
-    const killed = bgStalled || subAbort.signal.aborted;
-    const terminalStatus = killed ? 'killed' : sawError ? 'failed' : 'completed';
     const exitCode = terminalStatus === 'completed' ? 0 : 1;
     // Record the FINAL-result stats distinct from the live progress counters
     // (parity: Claude Code's AsyncAgentDetailDialog result-vs-progress split) — the
