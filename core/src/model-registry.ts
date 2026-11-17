@@ -9,6 +9,7 @@ import {
   warmModelCapabilitiesFromCache,
   writeModelCapabilitiesCache,
   discoveryToCacheEntries,
+  isFirstPartyProvider,
 } from './model-capabilities';
 import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
@@ -714,10 +715,15 @@ export async function validateModel(
   //  2. a RETIRED-id successor (suggestDeprecatedReplacement maps old → new),
   //  3. a too-new family id stepped DOWN to the prior generation the endpoint is
   //     likelier to carry (suggestFamilyVersionFallback — parity with Claude's
-  //     get3PModelFallbackSuggestion for third-party/self-hosted providers).
+  //     get3PModelFallbackSuggestion for third-party/self-hosted providers). This
+  //     step-down is INTENTIONALLY third-party-only (mirrors get3PModelFallbackSuggestion,
+  //     which self-gates on isFirstPartyProvider): on a first-party endpoint a
+  //     too-new id has no "prior generation the gateway likely carries" rationale,
+  //     so we leave the suggestion undefined rather than nudge a downgrade.
   const suggestion = partial.length > 0
     ? partial[0]
-    : (suggestDeprecatedReplacement(effective, ids) ?? suggestFamilyVersionFallback(effective, ids));
+    : (suggestDeprecatedReplacement(effective, ids)
+        ?? (isFirstPartyProvider() ? undefined : suggestFamilyVersionFallback(effective, ids)));
 
   return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }
