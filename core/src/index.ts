@@ -276,7 +276,7 @@ export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSetting
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { getSettingsTierShortName, getSettingsTierDisplayName, getSettingsTierDisplayNameLowercase, getSettingsTierLabels, getManagedSettingsSources } from './settings-guard';
 export type { ManagedSettingsSource } from './settings-guard';
-export { areSandboxSettingsLockedByPolicy, validateManagedPolicyValues } from './settings-guard';
+export { areSandboxSettingsLockedByPolicy, validateManagedPolicyValues, SANDBOX_POLICY_LOCK_MESSAGE, managedStatusSuffix, shouldAllowManagedSandboxDomainsOnly } from './settings-guard';
 export type { SandboxPolicyLockInput, ManagedPolicyWarning } from './settings-guard';
 export { getSettingsJSONSchema } from './settings-guard';
 export type { SettingsJSONSchema, SettingsSchemaProperty } from './settings-guard';

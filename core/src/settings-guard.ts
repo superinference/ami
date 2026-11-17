@@ -245,6 +245,11 @@ export const MANAGED_ONLY_KEYS = new Set([
   // tier setting it would let the restricted scope grant itself trust, so it is
   // managed-only. Parity: Claude Code's `allowedChannelPlugins` managed setting.
   'allowedChannelPlugins',
+  // Admin lockdown that forces the container sandbox to permit ONLY managed/approved
+  // network domains — a project/local/env/cli tier must not be able to relax the
+  // egress boundary on itself, so it is managed-only. Parity: Claude Code's
+  // `shouldAllowManagedSandboxDomainsOnly()` managed-policy knob.
+  'allowManagedSandboxDomainsOnly',
 ]);
 
 /**
@@ -330,6 +335,42 @@ export function areSandboxSettingsLockedByPolicy(
     s.autoAllowBashIfSandboxed !== undefined ||
     s.allowUnsandboxedCommands !== undefined
   );
+}
+
+/**
+ * The read-only affordance shown when a user tries to change a sandbox override
+ * that an admin/managed policy owns. A write to a policy-locked sandbox setting
+ * would be silently ineffective (`mergeConfigs` makes managed sandbox settings
+ * authoritative), so the frontend refuses it with this message + still shows the
+ * effective value. Parity: Claude Code's SandboxOverridesTab locked-override text
+ * ("Override settings are managed by a higher-priority configuration and cannot be
+ * changed locally.").
+ */
+export const SANDBOX_POLICY_LOCK_MESSAGE =
+  'Override settings are managed by a higher-priority configuration and cannot be changed locally.';
+
+/**
+ * The status suffix an admin/managed-owned setting carries so a user reads WHY a
+ * control is read-only (e.g. `Mode: container (managed)`). Empty when not locked.
+ * Parity: Claude Code's `(managed)`/`(Managed)` status label on policy-locked
+ * sandbox/toggle settings.
+ */
+export function managedStatusSuffix(locked: boolean): string {
+  return locked ? ' (managed)' : '';
+}
+
+/**
+ * True when admin/managed policy forces the container sandbox to permit ONLY
+ * managed/approved network domains via the managed `allowManagedSandboxDomainsOnly`
+ * knob. A {@link MANAGED_ONLY_KEYS} entry, so by the time a config is merged a
+ * truthy value here provably came from the managed tier (`mergeConfigs` copies it
+ * ONLY from managed) — a project/local/env/cli file can never set it. Parity:
+ * Claude Code's `shouldAllowManagedSandboxDomainsOnly()` policy knob.
+ */
+export function shouldAllowManagedSandboxDomainsOnly(
+  config: { allowManagedSandboxDomainsOnly?: unknown } | null | undefined,
+): boolean {
+  return config?.allowManagedSandboxDomainsOnly === true;
 }
 
 /**
@@ -444,6 +485,7 @@ const BOOLEAN_MANAGED_KEYS: ReadonlySet<string> = new Set([
   'allowManagedHooksOnly',
   'allowManagedPermissionRulesOnly',
   'channelsEnabled',
+  'allowManagedSandboxDomainsOnly',
 ]);
 
 /** Managed-only keys whose value is a list of strings. */

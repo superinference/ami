@@ -564,6 +564,22 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
     const managedOff = mergeConfigs({}, {}, null, null, null, { allowManagedHooksOnly: false });
     assert.equal(managedOff.allowManagedHooksOnly, undefined);
   });
+  it('honors managed allowManagedSandboxDomainsOnly and ignores non-managed attempts', () => {
+    const managedOn = mergeConfigs({}, {}, null, null, null, { allowManagedSandboxDomainsOnly: true });
+    assert.equal(managedOn.allowManagedSandboxDomainsOnly, true);
+    const nonManaged = mergeConfigs(
+      { allowManagedSandboxDomainsOnly: true } as Partial<ProjectConfig>, // cli (ignored)
+      { allowManagedSandboxDomainsOnly: true } as Partial<ProjectConfig>, // env (ignored)
+      { allowManagedSandboxDomainsOnly: true },                           // project (ignored)
+      { allowManagedSandboxDomainsOnly: true },                           // global (ignored)
+      { allowManagedSandboxDomainsOnly: true },                           // local (ignored)
+      null,                                                               // managed absent
+    );
+    assert.equal(nonManaged.allowManagedSandboxDomainsOnly, undefined,
+      'only the managed tier may lock sandbox egress to managed domains');
+    const managedOff = mergeConfigs({}, {}, null, null, null, { allowManagedSandboxDomainsOnly: false });
+    assert.equal(managedOff.allowManagedSandboxDomainsOnly, undefined);
+  });
   it('honors managed enabledPlugins/allowManagedModsOnly and ignores non-managed attempts', () => {
     // managed sets the plugin policy → merged carries it authoritatively.
     const managedOn = mergeConfigs({}, {}, null, null, null, {

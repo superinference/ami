@@ -126,6 +126,13 @@ export interface ProjectConfig {
    *  now also typed + merged across config layers). */
   sandboxExcludedCommands?: string[];
   /**
+   * Managed sandbox-egress lockdown: when true, the container sandbox permits ONLY
+   * managed/approved network domains — a project/local tier cannot widen egress. A
+   * {@link MANAGED_ONLY_KEYS} entry (managed tier is the sole source); authoritative
+   * in {@link mergeConfigs}. Parity: Claude Code's `shouldAllowManagedSandboxDomainsOnly`.
+   */
+  allowManagedSandboxDomainsOnly?: boolean;
+  /**
    * Environment variables to apply to the process from settings. Applied with
    * trust tiering by {@link applyConfigEnv}: project-scoped sources only apply
    * the SAFE_ENV_VARS allowlist, so a committed project file cannot inject a
@@ -653,7 +660,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['safeMode', 'boolean'], ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
-  ['allowManagedModsOnly', 'boolean'],
+  ['allowManagedModsOnly', 'boolean'], ['allowManagedSandboxDomainsOnly', 'boolean'],
   ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'string[]'],
   ['deniedMcpServers', 'string[]'],
   ['disabledMcpServers', 'string[]'], ['enabledMcpServers', 'string[]'],
@@ -1694,6 +1701,12 @@ export function mergeConfigs(
   // project may still exempt commands, so this only overrides when present.)
   if (managedConfig?.sandboxExcludedCommands) {
     merged.sandboxExcludedCommands = managedConfig.sandboxExcludedCommands;
+  }
+  // Managed sandbox-egress lockdown is MANAGED-authoritative: only the admin tier
+  // may force domains-only egress; a lower tier can never set (or clear) it. Parity:
+  // Claude's shouldAllowManagedSandboxDomainsOnly() policy knob.
+  if (managedConfig?.allowManagedSandboxDomainsOnly) {
+    merged.allowManagedSandboxDomainsOnly = true;
   }
   // Managed tier is HIGHEST-PRECEDENCE and authoritative for the security-relevant
   // scalar settings, not just the allowlists/killswitches handled above. The
