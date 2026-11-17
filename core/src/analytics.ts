@@ -10,6 +10,7 @@ import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
 import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
+import type { SpanNode } from './profiler';
 import {
   isEnvTruthy,
   getPrivacyLevel,
@@ -1784,6 +1785,23 @@ export interface AnalyticsTrackerOpts {
    * prefix strip.
    */
   localOnlyFieldPrefix?: string;
+  /**
+   * Point-in-time numeric metrics provider (typically the Profiler's getAll() split
+   * into gauges/counters). When set, {@link AnalyticsTracker.flushOtlp} exports an OTLP
+   * METRICS payload ({@link toOtlpMetricsPayload}) on every flush/shutdown — bridging
+   * AMI's rich quantitative data to any OTLP metrics backend. Mirrors Claude's metrics
+   * signal (PeriodicExportingMetricReader). The seam keeps the engine's profiler wiring
+   * a single injected function (no engine import into core).
+   */
+  metricsSource?: () => MetricSnapshot;
+  /**
+   * Span-tree provider (typically the Profiler's getSpanTree()). When set,
+   * {@link AnalyticsTracker.flushOtlp} exports an OTLP TRACES payload
+   * ({@link toOtlpTracePayload}) on every flush/shutdown — surfacing the nested
+   * interaction/llm/tool/hook timeline in any OTLP trace backend. Mirrors Claude's
+   * sessionTracing span emission; injected to avoid a core→engine dependency.
+   */
+  traceSource?: () => readonly SpanNode[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2018,6 +2036,12 @@ export class AnalyticsTracker {
   private _localOnly: LocalOnlyFieldMatcher | null;
   /** When true the batch sender flushes one batch per event (immediate-mode bypass). */
   private _immediate: boolean;
+  /** Injected numeric-metrics provider; when set, OTLP metrics are exported on flush. */
+  private _metricsSource: (() => MetricSnapshot) | undefined;
+  /** Injected span-tree provider; when set, OTLP traces are exported on flush. */
+  private _traceSource: (() => readonly SpanNode[]) | undefined;
+  /** Count of runtime telemetry reconfigurations applied via {@link reconfigureTelemetry}. */
+  private _reconfigureCount = 0;
   /**
    * ALS-backed invocation source. Unlike the mutable push/pop {@link _sourceStack},
    * a source established via {@link runWithSource} survives every `await` boundary in
@@ -2141,6 +2165,8 @@ export class AnalyticsTracker {
       localOnlyFieldPrefix: opts?.localOnlyFieldPrefix,
     });
     this._immediate = opts?.telemetryImmediateMode ?? isEnvTruthy(this._env.AMI_OTEL_IMMEDIATE_FLUSH);
+    this._metricsSource = opts?.metricsSource;
+    this._traceSource = opts?.traceSource;
     this._headersHelper = opts?.otlpHeadersHelper
       ? new OtelHeadersHelper(opts.otlpHeadersHelper.command, {
           exec: opts.otlpHeadersHelper.exec,
@@ -2633,6 +2659,10 @@ export class AnalyticsTracker {
     // runs even when nothing was logged THIS session (no live sender) — the whole
     // point is to recover a prior session's dropped telemetry.
     if (this._failedStore) await this.recoverPersistedBatches();
+    // Export the metrics + traces signals (when a source is wired) alongside logs, so a
+    // flush/shutdown drains all configured OTLP signals — even in a session that queued
+    // no log events (metrics/traces are independent of the logs batch queue).
+    await this._exportMetricsAndTraces();
     if (!this._telemetry) return;
     // Let any in-flight mid-session (onBatch) sends settle first so a boundary
     // batch is never POSTed concurrently with the shutdown drain.
@@ -2768,6 +2798,95 @@ export class AnalyticsTracker {
   }
 
   /**
+   * Export the metrics + traces OTLP signals when their source providers are wired.
+   * Best-effort and exception-isolated (a throwing source/export never breaks the logs
+   * drain). Invoked from {@link flushOtlp} so all configured signals drain together.
+   */
+  private async _exportMetricsAndTraces(): Promise<void> {
+    if (this._metricsSource) {
+      try { await this.exportMetrics(this._metricsSource()); } catch { /* best effort */ }
+    }
+    if (this._traceSource) {
+      try { await this.exportTrace(this._traceSource()); } catch { /* best effort */ }
+    }
+  }
+
+  /**
+   * Export a point-in-time {@link MetricSnapshot} as an OTLP METRICS payload to the
+   * resolved metrics endpoint (dedicated `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, else the
+   * generic endpoint with `/v1/metrics` appended), with the same retry/backoff + headers
+   * + proxy/mTLS transport as the logs path. Honors every egress guard (no endpoint /
+   * OTLP export disabled / shut down / telemetry disabled / sink killed / killswitch /
+   * test-suppressed) exactly like {@link flushOtlp}. Returns whether the POST succeeded.
+   */
+  async exportMetrics(snapshot: MetricSnapshot): Promise<boolean> {
+    if (!this._canExportSignal()) return false;
+    const ep = resolveOtlpSignalEndpoint('metrics', this._env) ?? { url: this._otlpEndpoint!, perSignal: false };
+    const payload = toOtlpMetricsPayload(snapshot, this._sessionId ?? 'unknown', this._otlpResourceAttrs, this._env);
+    return this._postSignal(otlpSignalUrl(ep.url, 'metrics', ep.perSignal), payload);
+  }
+
+  /**
+   * Export a Profiler span tree as an OTLP TRACES payload to the resolved traces
+   * endpoint (dedicated `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else the generic endpoint
+   * with `/v1/traces` appended), preserving the parent-child hierarchy
+   * ({@link toOtlpTracePayload}). Shares the metrics/logs guards, retry, headers and
+   * transport. A no-op (returns false) when there are no spans. Returns POST success.
+   */
+  async exportTrace(spans: readonly SpanNode[]): Promise<boolean> {
+    if (spans.length === 0) return false;
+    if (!this._canExportSignal()) return false;
+    const ep = resolveOtlpSignalEndpoint('traces', this._env) ?? { url: this._otlpEndpoint!, perSignal: false };
+    const payload = toOtlpTracePayload(spans, this._sessionId ?? 'unknown', this._otlpResourceAttrs, this._env);
+    return this._postSignal(otlpSignalUrl(ep.url, 'traces', ep.perSignal), payload);
+  }
+
+  /** Whether off-machine OTLP egress is currently permitted (shared metrics/traces guard). */
+  private _canExportSignal(): boolean {
+    if (!this._otlpEndpoint || !this._otlpExport || this._shutdown) return false;
+    if (isTelemetryDisabled(this._env) || this.isSinkKilled('otlp') || this._isKilled?.()) return false;
+    if (isTelemetrySuppressedForTest(this._env)) return false;
+    return true;
+  }
+
+  /** POST a pre-built OTLP signal payload with the shared retry/backoff + headers/transport. */
+  private async _postSignal(url: string, payload: Record<string, unknown>): Promise<boolean> {
+    const headers = this._resolveHeaders();
+    for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
+      const res = await postOtlpPayload(url, payload, {
+        fetchImpl: this._otlpFetch, headers, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher,
+      });
+      if (res.ok) return true;
+      if (!res.retryable || attempt === this._maxAttempts) return false;
+      const base = Math.min(this._maxBackoffMs, this._baseBackoffMs * attempt * attempt);
+      const jittered = res.retryAfterMs ?? Math.round(base * (0.5 + this._rand() * 0.5));
+      if (jittered > 0) await this._sleep(jittered);
+    }
+    return false;
+  }
+
+  /**
+   * Reconfigure the live telemetry batch pipeline at runtime (event-loss-safe: the
+   * current buffer is flushed before the param swap — see
+   * {@link TelemetryBatchSender.reconfigure}) AND keep the tracker's own resolved
+   * cadence/batch knobs in sync so a later lazily-created sender inherits the new values.
+   * Mirrors Claude's reinitialize1PEventLoggingIfConfigChanged.
+   */
+  reconfigureTelemetry(opts: TelemetryReconfigureOpts): void {
+    this._telemetry?.reconfigure(opts);
+    if (opts.flushIntervalMs !== undefined && opts.flushIntervalMs > 0) this._exportIntervalMs = opts.flushIntervalMs;
+    if (opts.maxBatchSize !== undefined) this._telemetryMaxBatchSize = opts.maxBatchSize;
+    if (opts.maxBatchBytes !== undefined) this._telemetryMaxBatchBytes = opts.maxBatchBytes ?? undefined;
+    if (opts.immediateMode !== undefined) this._immediate = opts.immediateMode;
+    this._reconfigureCount++;
+  }
+
+  /** Number of runtime telemetry reconfigurations applied (introspection surface). */
+  getTelemetryReconfigureCount(): number {
+    return this._reconfigureCount;
+  }
+
+  /**
    * Re-send any batches a PREVIOUS run (or an earlier flush) spooled to disk: each
    * file is reloaded and POSTed with the normal retry; a file that sends successfully
    * is deleted, one that still fails is left for the next attempt. No-op when
@@ -2858,6 +2977,28 @@ export interface TelemetryBatchSenderOpts {
    * `immediateMode`.
    */
   immediateMode?: boolean;
+  /**
+   * Apply LOSSLESS backpressure instead of lossy drop when the queue is full:
+   * {@link TelemetryBatchSender.enqueueAsync} awaits until drain frees space rather
+   * than dropping the newest event. Off by default (the synchronous {@link TelemetryBatchSender.enqueue}
+   * stays lossy — best-effort telemetry). Blocked producers are released when drain
+   * frees space OR on {@link TelemetryBatchSender.shutdown}. Mirrors Claude's
+   * SerialBatchEventUploader backpressure (enqueue awaits, close releases waiters).
+   */
+  backpressure?: boolean;
+}
+
+/**
+ * Runtime-reconfigurable batch-pipeline parameters (Claude-Code firstPartyEventLogger.ts
+ * reinitialize1PEventLoggingIfConfigChanged parity). Any subset may be changed on a live
+ * sender via {@link TelemetryBatchSender.reconfigure}; omitted fields are left unchanged.
+ */
+export interface TelemetryReconfigureOpts {
+  maxBatchSize?: number;
+  maxBatchBytes?: number | null;
+  flushIntervalMs?: number;
+  maxQueueSize?: number;
+  immediateMode?: boolean;
 }
 
 export class TelemetryBatchSender {
@@ -2879,6 +3020,12 @@ export class TelemetryBatchSender {
   private _immediate: boolean;
   /** Latched by shutdown() — rejects all further enqueue()/flush() (export guard). */
   private _shutdown = false;
+  /** When true, {@link enqueueAsync} blocks (awaits) on a full queue instead of dropping. */
+  private _backpressure: boolean;
+  /** Resolvers for producers blocked in {@link enqueueAsync}; released as space frees / on shutdown. */
+  private _backpressureResolvers: Array<() => void> = [];
+  /** Count of successful runtime {@link reconfigure} calls (introspection). */
+  private _reconfigureCount = 0;
 
   constructor(opts: TelemetryBatchSenderOpts) {
     this._sessionId = opts.sessionId;
@@ -2889,6 +3036,7 @@ export class TelemetryBatchSender {
     this._maxQueueSize = opts.maxQueueSize ?? 10_000;
     this._onBatch = opts.onBatch ?? null;
     this._immediate = opts.immediateMode ?? false;
+    this._backpressure = opts.backpressure ?? false;
   }
 
   enqueue(type: string, data: Record<string, unknown>, sequence?: number): boolean {
@@ -2908,6 +3056,36 @@ export class TelemetryBatchSender {
     }
     return true;
   }
+
+  /**
+   * LOSSLESS enqueue for callers that must not drop events: when backpressure mode is
+   * enabled (constructor opt) and the queue is full, this AWAITS until drain frees space
+   * rather than dropping the newest event, then enqueues it. Resolves `false` only when
+   * the sender is (or becomes) shut down. With backpressure OFF it is equivalent to the
+   * synchronous {@link enqueue} (no blocking — the lossy best-effort default). Blocked
+   * producers are released as {@link takeBatch} frees space or by {@link shutdown}.
+   * Mirrors Claude's SerialBatchEventUploader.enqueue await-until-space.
+   */
+  async enqueueAsync(type: string, data: Record<string, unknown>, sequence?: number): Promise<boolean> {
+    if (this._shutdown) { this._totalDropped++; return false; }
+    if (!this._backpressure) return this.enqueue(type, data, sequence);
+    while (this._queue.length >= this._maxQueueSize && !this._shutdown) {
+      await new Promise<void>(resolve => { this._backpressureResolvers.push(resolve); });
+    }
+    if (this._shutdown) { this._totalDropped++; return false; }
+    return this.enqueue(type, data, sequence);
+  }
+
+  /** Release every producer blocked in {@link enqueueAsync} (space freed, or shutdown). */
+  private _releaseBackpressure(): void {
+    if (this._backpressureResolvers.length === 0) return;
+    const resolvers = this._backpressureResolvers;
+    this._backpressureResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+
+  /** Number of producers currently blocked awaiting space in {@link enqueueAsync}. */
+  get blockedProducerCount(): number { return this._backpressureResolvers.length; }
 
   /**
    * Pull the next batch's worth of events off the queue, honoring both the count
@@ -2934,6 +3112,8 @@ export class TelemetryBatchSender {
       events.push(ev);
       bytes += size;
     }
+    // Space may have freed — wake any producers blocked in enqueueAsync (backpressure).
+    if (events.length > 0 && this._queue.length < this._maxQueueSize) this._releaseBackpressure();
     return events;
   }
 
@@ -2979,7 +3159,38 @@ export class TelemetryBatchSender {
   shutdown(): void {
     this._shutdown = true;
     this.stopAutoFlush();
+    // Release blocked producers so they observe the shutdown and resolve false
+    // (never left hanging) — mirrors Claude's close() waking backpressure waiters.
+    this._releaseBackpressure();
   }
+
+  /**
+   * Reconfigure the batch pipeline on a LIVE sender (Claude's
+   * reinitialize1PEventLoggingIfConfigChanged parity) with event-loss-safe ordering:
+   * (1) pause the auto-flush timer, (2) FORCE-FLUSH the current buffer so every
+   * already-queued event is drained through onBatch / retained for drain() BEFORE the
+   * swap (nothing buffered is lost), (3) apply the new batch params, (4) restart the
+   * timer (with the new interval) only if it was running. A no-op after {@link shutdown}.
+   * An omitted field is left unchanged; a non-positive flushIntervalMs is ignored.
+   */
+  reconfigure(opts: TelemetryReconfigureOpts): void {
+    if (this._shutdown) return;
+    const wasRunning = this._timer !== null;
+    this.stopAutoFlush();
+    // Loss-safe flush-before-swap: drain the buffered events first (each takeBatch
+    // always removes >=1 event when the queue is non-empty, so this terminates).
+    while (this._queue.length > 0) this._emit();
+    if (opts.maxBatchSize !== undefined) this._maxBatchSize = Math.max(1, Math.floor(opts.maxBatchSize));
+    if (opts.maxBatchBytes !== undefined) this._maxBatchBytes = opts.maxBatchBytes;
+    if (opts.flushIntervalMs !== undefined && opts.flushIntervalMs > 0) this._flushIntervalMs = opts.flushIntervalMs;
+    if (opts.maxQueueSize !== undefined) this._maxQueueSize = Math.max(1, Math.floor(opts.maxQueueSize));
+    if (opts.immediateMode !== undefined) this._immediate = opts.immediateMode;
+    this._reconfigureCount++;
+    if (wasRunning) this.startAutoFlush();
+  }
+
+  /** Number of successful runtime {@link reconfigure} calls (introspection). */
+  get reconfigureCount(): number { return this._reconfigureCount; }
 
   /** Whether this sender has been shut down (post-shutdown export guard). */
   get isShutdown(): boolean { return this._shutdown; }
@@ -3181,9 +3392,21 @@ export function toOtlpLogsPayload(
  * gets `/v1/logs` appended unless it already ends in an explicit `/v1/{signal}` path.
  */
 export function otlpLogsUrl(endpoint: string, perSignal = false): string {
-  if (perSignal) return endpoint; // signal-specific endpoint: used as-is (no /v1/logs)
+  return otlpSignalUrl(endpoint, 'logs', perSignal);
+}
+
+/**
+ * Resolve the OTLP URL for ANY signal (logs / metrics / traces). A `perSignal`
+ * endpoint (sourced from the dedicated `OTEL_EXPORTER_OTLP_{SIGNAL}_ENDPOINT`) is used
+ * VERBATIM — the OTEL spec forbids appending the signal path to a signal-specific
+ * endpoint. A generic endpoint gets `/v1/{signal}` appended unless it already ends in
+ * an explicit `/v1/{logs|metrics|traces}` path. Single source of truth shared by the
+ * logs, metrics, and traces exporters (no per-signal URL duplication).
+ */
+export function otlpSignalUrl(endpoint: string, signal: 'logs' | 'metrics' | 'traces', perSignal = false): string {
+  if (perSignal) return endpoint; // signal-specific endpoint: used as-is (no /v1/{signal})
   const trimmed = endpoint.replace(/\/+$/, '');
-  return /\/v1\/(logs|traces|metrics)$/.test(trimmed) ? trimmed : `${trimmed}/v1/logs`;
+  return /\/v1\/(logs|traces|metrics)$/.test(trimmed) ? trimmed : `${trimmed}/v1/${signal}`;
 }
 
 /** A resolved OTLP logs endpoint plus whether it was sourced signal-specifically. */
@@ -3206,11 +3429,177 @@ export interface OtlpLogsEndpoint {
  * when no endpoint is configured. Blank/whitespace-only values are ignored.
  */
 export function resolveOtlpLogsEndpoint(env: NodeJS.ProcessEnv = process.env): OtlpLogsEndpoint | null {
-  const perSignal = env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT?.trim();
+  return resolveOtlpSignalEndpoint('logs', env);
+}
+
+/**
+ * Resolve the OTLP endpoint for ANY signal honoring signal-specific selection: the
+ * dedicated `OTEL_EXPORTER_OTLP_{SIGNAL}_ENDPOINT` wins and is marked `perSignal`
+ * (used verbatim); otherwise the generic `OTEL_EXPORTER_OTLP_ENDPOINT` (then AMI's
+ * `SUPERINFERENCE_OTLP_ENDPOINT`) is used and gets `/v1/{signal}` appended. Returns
+ * null when no endpoint is configured. Single source of truth shared by logs, metrics,
+ * and traces resolution (no per-signal copy). Blank/whitespace-only values are ignored.
+ */
+export function resolveOtlpSignalEndpoint(
+  signal: 'logs' | 'metrics' | 'traces',
+  env: NodeJS.ProcessEnv = process.env,
+): OtlpLogsEndpoint | null {
+  const perSignal = env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_ENDPOINT`]?.trim();
   if (perSignal) return { url: perSignal, perSignal: true };
   const generic = (env.OTEL_EXPORTER_OTLP_ENDPOINT || env.SUPERINFERENCE_OTLP_ENDPOINT)?.trim();
   if (generic) return { url: generic, perSignal: false };
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// OTLP METRICS signal (Claude-Code instrumentation.ts L113-215 parity): AMI's
+// logs-only OTLP export is extended with a metrics signal so the rich quantitative
+// data the Profiler already computes (per-label durations, TTFT, p50/p95/p99,
+// counters/gauges via its getAll() snapshot) can be bridged to any OTLP metrics
+// backend over HTTP/JSON (AMI ships no @opentelemetry SDK). The aggregation
+// temporality defaults to 'delta' — the saner default Claude picks — while remaining
+// overridable via OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE.
+// ---------------------------------------------------------------------------
+
+/** OTLP aggregation-temporality enum values (proto: DELTA=1, CUMULATIVE=2). */
+export const OTLP_TEMPORALITY = { delta: 1, cumulative: 2 } as const;
+export type MetricsTemporality = keyof typeof OTLP_TEMPORALITY;
+
+/**
+ * Resolve the metrics aggregation-temporality preference, DEFAULTING TO 'delta' (the
+ * saner default Claude's instrumentation.ts L113-116 sets) while honoring
+ * `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. Only an explicit `cumulative`
+ * selects cumulative; anything else (unset / unknown / blank) falls back to delta.
+ */
+export function resolveMetricsTemporalityPreference(env: NodeJS.ProcessEnv = process.env): MetricsTemporality {
+  const raw = env.OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE?.trim().toLowerCase();
+  return raw === 'cumulative' ? 'cumulative' : 'delta';
+}
+
+/**
+ * A point-in-time numeric metrics snapshot split by instrument kind: `gauges` are
+ * point-in-time values (percentiles, memory, current depth) and `counters` are
+ * monotonic sums (event/tool/turn totals). Mirrors the shape of the Profiler's
+ * getAll() output once a caller has classified each key.
+ */
+export interface MetricSnapshot {
+  gauges?: Record<string, number>;
+  counters?: Record<string, number>;
+}
+
+/**
+ * Convert a numeric {@link MetricSnapshot} into an OTLP/JSON MetricsData payload:
+ * gauges become `gauge` dataPoints and counters become monotonic `sum` dataPoints
+ * carrying the resolved aggregation temporality ({@link resolveMetricsTemporalityPreference},
+ * default delta). Non-finite values are skipped. The resource attributes mirror the
+ * logs payload (same {@link buildTelemetryResourceAttrs}), so a collector segments
+ * metrics and logs identically. Mirrors Claude's metrics signal, hand-built over
+ * HTTP/JSON since AMI has no OTEL SDK dependency.
+ */
+export function toOtlpMetricsPayload(
+  snapshot: MetricSnapshot,
+  sessionId: string,
+  resourceAttrs: Record<string, string> = {},
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> {
+  const now = String(Date.now() * 1_000_000);
+  const temporality = OTLP_TEMPORALITY[resolveMetricsTemporalityPreference(env)];
+  const metrics: Array<Record<string, unknown>> = [];
+  for (const [name, value] of Object.entries(snapshot.gauges ?? {})) {
+    if (!Number.isFinite(value)) continue;
+    metrics.push({ name, gauge: { dataPoints: [{ asDouble: value, timeUnixNano: now }] } });
+  }
+  for (const [name, value] of Object.entries(snapshot.counters ?? {})) {
+    if (!Number.isFinite(value)) continue;
+    metrics.push({
+      name,
+      sum: {
+        dataPoints: [{ asDouble: value, timeUnixNano: now }],
+        aggregationTemporality: temporality,
+        isMonotonic: true,
+      },
+    });
+  }
+  return {
+    resourceMetrics: [{
+      resource: { attributes: otlpAttrs(buildTelemetryResourceAttrs(sessionId, env, resourceAttrs)) },
+      scopeMetrics: [{
+        scope: { name: AMI_CLIENT_NAME, version: AMI_VERSION },
+        metrics,
+      }],
+    }],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OTLP TRACES signal (Claude-Code sessionTracing.ts L176-655 parity): AMI's Profiler
+// already reconstructs a parent-child span tree (interaction -> llm_request / tool ->
+// tool.execution / blocked_on_user / hook) via getSpanTree(); this bridges that tree
+// to an OTLP/JSON TracesData payload so the nested interaction timeline renders in any
+// OTLP trace backend (Jaeger, console exporter) as a navigable introspection surface.
+// otlpLogsUrl already recognised a /v1/traces path; now there is a real traces body.
+// ---------------------------------------------------------------------------
+
+/** Deterministic 16-hex-char OTLP spanId from a profiler span id (stable across a run). */
+function otlpSpanId(id: string): string {
+  return crypto.createHash('sha256').update(id).digest('hex').slice(0, 16);
+}
+
+/** Deterministic 32-hex-char OTLP traceId from a seed (one trace per session export). */
+function otlpTraceId(seed: string): string {
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32);
+}
+
+/**
+ * Convert a Profiler span tree ({@link SpanNode}[] from `getSpanTree()`) into an
+ * OTLP/JSON TracesData payload, preserving the parent-child hierarchy: each node
+ * becomes a span with a deterministic spanId (and the parent's spanId as parentSpanId),
+ * start/end nanos derived from its ms timings, and attributes carrying `span.type`,
+ * `agent.id`, `duration_ms` (when closed) plus the node's own attrs. All spans share
+ * one session-scoped traceId so the whole interaction renders as a single navigable
+ * trace. Mirrors Claude's claude_code.interaction/llm_request/tool span emission.
+ */
+export function toOtlpTracePayload(
+  spans: readonly SpanNode[],
+  sessionId: string,
+  resourceAttrs: Record<string, string> = {},
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> {
+  const traceId = otlpTraceId(sessionId || AMI_CLIENT_NAME);
+  const out: Array<Record<string, unknown>> = [];
+  const walk = (node: SpanNode, parentSpanId?: string): void => {
+    const spanId = otlpSpanId(node.id);
+    const startNano = String(Math.round(node.startMs * 1_000_000));
+    const endNano = node.endMs !== undefined ? String(Math.round(node.endMs * 1_000_000)) : startNano;
+    const attrs: Record<string, unknown> = {
+      'span.type': node.type,
+      'agent.id': node.agentId,
+      ...(node.parentAgentId !== undefined ? { 'parent.agent.id': node.parentAgentId } : {}),
+      ...(node.durationMs !== undefined ? { duration_ms: node.durationMs } : {}),
+      ...node.attrs,
+    };
+    out.push({
+      traceId,
+      spanId,
+      ...(parentSpanId ? { parentSpanId } : {}),
+      name: node.name,
+      kind: 1, // SPAN_KIND_INTERNAL
+      startTimeUnixNano: startNano,
+      endTimeUnixNano: endNano,
+      attributes: otlpAttrs(attrs),
+    });
+    for (const child of node.children) walk(child, spanId);
+  };
+  for (const root of spans) walk(root);
+  return {
+    resourceSpans: [{
+      resource: { attributes: otlpAttrs(buildTelemetryResourceAttrs(sessionId, env, resourceAttrs)) },
+      scopeSpans: [{
+        scope: { name: AMI_CLIENT_NAME, version: AMI_VERSION },
+        spans: out,
+      }],
+    }],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3403,12 +3792,30 @@ export async function postOtlpBatch(
   batch: TelemetryBatch,
   deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown; perSignal?: boolean } = {},
 ): Promise<OtlpSendResult> {
-  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
-  if (!fetchImpl) return { ok: false, retryable: false };
   const env = deps.env ?? process.env;
   // Extra resource attributes: an explicit map wins; otherwise fall back to
   // OTEL_RESOURCE_ATTRIBUTES so a direct caller honors the env knob too.
   const resourceAttrs = deps.resourceAttrs ?? parseOtelResourceAttrs(env.OTEL_RESOURCE_ATTRIBUTES);
+  return postOtlpPayload(otlpLogsUrl(endpoint, deps.perSignal), toOtlpLogsPayload(batch, resourceAttrs, env), {
+    fetchImpl: deps.fetchImpl, timeoutMs: deps.timeoutMs, headers: deps.headers, dispatcher: deps.dispatcher,
+  });
+}
+
+/**
+ * POST an already-built OTLP/JSON payload (logs, metrics, OR traces) to a resolved
+ * signal URL, returning the rich retryable/Retry-After result. The single HTTP egress
+ * primitive shared by all three signals (logs via {@link postOtlpBatch}, metrics via
+ * {@link toOtlpMetricsPayload}, traces via {@link toOtlpTracePayload}) — one place that
+ * attaches the proxy/mTLS dispatcher, bounds the request with an abort timeout, and
+ * classifies the response. Best-effort: never throws (network error/timeout → retryable).
+ */
+export async function postOtlpPayload(
+  url: string,
+  payload: Record<string, unknown>,
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; dispatcher?: unknown } = {},
+): Promise<OtlpSendResult> {
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
+  if (!fetchImpl) return { ok: false, retryable: false };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5000);
   try {
@@ -3418,11 +3825,11 @@ export async function postOtlpBatch(
     const init: RequestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(deps.headers ?? {}) },
-      body: JSON.stringify(toOtlpLogsPayload(batch, resourceAttrs, env)),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     };
     if (deps.dispatcher) (init as { dispatcher?: unknown }).dispatcher = deps.dispatcher;
-    const res = await fetchImpl(otlpLogsUrl(endpoint, deps.perSignal), init);
+    const res = await fetchImpl(url, init);
     if (res.ok) return { ok: true, status: res.status, retryable: false };
     const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
     return { ok: false, status: res.status, retryable: isRetryableStatus(res.status), retryAfterMs };
