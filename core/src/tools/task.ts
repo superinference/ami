@@ -27,7 +27,7 @@ import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions'
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel, getRuntimeMainLoopModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot } from '../skills';
+import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness } from '../skills';
 import { withFrontmatterHookPluginRoot } from '../hooks';
 import { buildAgentMemoryPrompt } from '../memory';
 import { log } from '../logger';
@@ -849,6 +849,120 @@ export function connectedMcpServerNames(context: ToolContext): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Poll cadence + ceiling for the pre-spawn required-MCP-server readiness gate.
+ * Parity with Claude Code's AgentTool requiredMcpServers wait (AgentTool.tsx:L376-391):
+ * poll every 500ms for up to 30s while a required server is still connecting.
+ */
+export const REQUIRED_MCP_POLL_INTERVAL_MS = 500;
+export const REQUIRED_MCP_MAX_WAIT_MS = 30_000;
+
+/**
+ * Normalize a raw MCP server/client state into the `connected|failed|pending`
+ * vocabulary {@link requiredMcpServerReadiness} understands. A server is
+ * `connected` only when fully ready; still-connecting states (`pending`/`connecting`)
+ * are `pending`; every terminal non-ready state (`error`, `needs-auth`,
+ * `disconnected`, `stopped`, `disabled`) is `failed` so the gate fails fast on a
+ * server that will never come up rather than polling the full ceiling.
+ */
+export function normalizeMcpServerState(raw: string): 'connected' | 'failed' | 'pending' {
+  switch (raw) {
+    case 'ready':
+    case 'connected':
+      return 'connected';
+    case 'pending':
+    case 'connecting':
+      return 'pending';
+    default:
+      return 'failed';
+  }
+}
+
+/**
+ * Read the current `{ serverName -> normalized-state }` map from the tool context's
+ * MCP manager (empty when no manager / `listAllServers` is wired). Normalizes each
+ * raw state via {@link normalizeMcpServerState} so {@link ensureRequiredMcpServersReady}
+ * can classify readiness without knowing the manager's internal state vocabulary.
+ */
+export function readMcpServerStates(context: ToolContext): Record<string, string> {
+  const mgr = context._mcpManager as { listAllServers?: () => Array<{ name: string; state: string }> } | undefined;
+  if (!mgr || typeof mgr.listAllServers !== 'function') return {};
+  try {
+    const out: Record<string, string> = {};
+    for (const s of mgr.listAllServers()) {
+      if (s && typeof s.name === 'string' && typeof s.state === 'string') {
+        out[s.name] = normalizeMcpServerState(s.state);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+const defaultMcpGateSleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
+
+/** Knobs for {@link ensureRequiredMcpServersReady} (poll ceiling + injectable clock/sleep for tests). */
+export interface RequiredMcpGateOptions {
+  maxWaitMs?: number;
+  pollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * Pre-spawn gate: block a subagent spawn until its agent definition's
+ * `requiredMcpServers` are all connected. While ANY required server is still
+ * connecting (and none has failed yet) it polls up to a bounded ceiling, EARLY-EXITING
+ * the moment a required server enters a failed state (no point waiting on siblings
+ * when the check will fail regardless). Returns `{ ready: true }` when every
+ * requirement is satisfied (or there are no requirements), and
+ * `{ ready: false, error }` — carrying the unsatisfied server patterns, the list of
+ * connected servers, and a `/mcp` configure hint — when a required server is
+ * failed/missing (or still pending after the ceiling). Mirrors Claude Code's
+ * AgentTool requiredMcpServers readiness gate (AgentTool.tsx:L367-410). The state
+ * reader is injected (not the manager) so this stays a pure, testable building block.
+ */
+export async function ensureRequiredMcpServersReady(
+  required: readonly string[] | undefined,
+  readStates: () => Record<string, string>,
+  agentLabel: string,
+  opts: RequiredMcpGateOptions = {},
+): Promise<{ ready: true } | { ready: false; error: string }> {
+  if (!required || required.length === 0) return { ready: true };
+  const maxWaitMs = opts.maxWaitMs ?? REQUIRED_MCP_MAX_WAIT_MS;
+  const pollIntervalMs = opts.pollIntervalMs ?? REQUIRED_MCP_POLL_INTERVAL_MS;
+  const sleep = opts.sleep ?? defaultMcpGateSleep;
+  const now = opts.now ?? Date.now;
+
+  let readiness = requiredMcpServerReadiness(required, readStates());
+  // Wait only while something is still connecting AND nothing has already failed —
+  // a failed/missing requirement can never be satisfied by waiting.
+  if (!readiness.ready && readiness.pending.length > 0 && readiness.failed.length === 0) {
+    const deadline = now() + maxWaitMs;
+    while (now() < deadline) {
+      await sleep(pollIntervalMs);
+      readiness = requiredMcpServerReadiness(required, readStates());
+      if (readiness.ready) break;
+      if (readiness.failed.length > 0) break; // early-exit: a required server failed
+      if (readiness.pending.length === 0) break; // resolved to failed/missing
+    }
+  }
+  if (readiness.ready) return { ready: true };
+  const connected = Object.entries(readStates())
+    .filter(([, st]) => st === 'connected')
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+  const unsatisfied = [...readiness.failed, ...readiness.missing, ...readiness.pending];
+  return {
+    ready: false,
+    error:
+      `Error: agent "${agentLabel}" requires MCP server(s) matching: ${unsatisfied.join(', ')}. `
+      + `Connected MCP servers: ${connected.length > 0 ? connected.join(', ') : 'none'}. `
+      + 'Use /mcp to configure and authenticate the required MCP servers.',
+  };
 }
 
 /** The sentinel a sub-agent model request uses to mean "inherit the parent's model". */
@@ -2598,6 +2712,19 @@ export const taskTool: ToolDefinition = {
       if (!agentDef) {
         return { output: `Error: agent "${subagentType}" not found. Available agents: ${context._skillManager.listAgents().map(a => a.name).join(', ') || '(none)'}`, isError: true };
       }
+      // PARITY (additive): an agent definition that declares `requiredMcpServers`
+      // cannot do its job until those servers are connected — so before building the
+      // sub-engine, wait for any still-connecting required server (bounded poll,
+      // early-exit on a failed one) and refuse the spawn with a guided error if a
+      // required server is failed/missing. Mirrors Claude Code's AgentTool
+      // requiredMcpServers readiness gate (AgentTool.tsx:L367-410). No-op for agents
+      // without the field, so existing spawns are untouched.
+      const mcpGate = await ensureRequiredMcpServersReady(
+        (agentDef as { requiredMcpServers?: string[] }).requiredMcpServers,
+        () => readMcpServerStates(context),
+        subagentType,
+      );
+      if (!mcpGate.ready) return { output: mcpGate.error, isError: true };
       agentSystemPrompt = agentDef.systemPrompt;
       // Per-agent `systemPromptMode` (parity: Claude swarm teammate systemPromptMode).
       // 'append' layers the agent's own prompt AFTER the base subagent stance so the
