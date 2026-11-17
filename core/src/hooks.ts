@@ -141,6 +141,17 @@ export interface PostToolUseContext extends HookContext {
   isError: boolean;
   /** Elapsed time for the tool execution in milliseconds. */
   durationMs?: number;
+  /** The tool's error text (Claude Code PostToolUseFailure `error`). Lets a
+   *  failure hook react to WHAT failed, not just that something did. Serialized as
+   *  `error`. Optional — populated for the postToolUseFailure event. */
+  error?: string;
+  /** Whether the failure was a user/turn interrupt rather than an ordinary error
+   *  (Claude Code `is_interrupt`): a failure hook can skip remediation when the
+   *  user themselves cancelled. Serialized as `is_interrupt`. */
+  isInterrupt?: boolean;
+  /** Correlation id of the failed tool call (Claude Code `tool_use_id`) so a
+   *  failure hook can tie back to the exact call. Serialized as `tool_use_id`. */
+  toolUseId?: string;
 }
 
 export interface PreSamplingContext extends HookContext {
@@ -292,6 +303,13 @@ export interface PermissionContext {
    *  Ctrl-C). Parity with Claude threading `abortController.signal` into
    *  `executePermissionRequestHooks` / the classifier. */
   abortSignal?: AbortSignal;
+  /** Correlation id of the pending tool call this permission request is for
+   *  (Claude Code's permission-prompt-tool `tool_use_id`). Threaded through to the
+   *  hook's stdin payload (serialized as `tool_use_id`) so a delegated
+   *  permission-prompt tool / SDK hook can tie its decision back to the exact call
+   *  and dedup/correlate concurrent requests. Optional: callers that don't have an
+   *  id (synthetic/non-tool contexts) omit it. */
+  toolUseId?: string;
 }
 
 export interface TaskEventContext {
@@ -687,6 +705,49 @@ export function truncateHookOutput(content: string): string {
   return content;
 }
 
+/**
+ * Hard ceiling on how many bytes of a command hook's stdout / stderr are held in
+ * memory while it runs (Claude Code's TaskOutput pipe-mode `#maxMemory`, 8 MiB).
+ * A hook's decision JSON is parsed from the HEAD of stdout, so once this cap is
+ * reached further output is dropped (head-preserving) rather than growing the
+ * buffer unbounded — a runaway hook that floods stdout can no longer OOM the
+ * agent. The low-order boundary is kept so the decision at the head always
+ * survives.
+ */
+export const MAX_HOOK_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Head-preserving bounded append for a command hook's captured stream. Appends
+ * `chunk` to `current` only up to `maxBytes` total (measured in UTF-8 bytes);
+ * once the cap is reached nothing more is retained. Returns the new text and
+ * whether this append hit/exceeded the cap (so the caller can emit a single
+ * truncation notice at close). Canonical — reused for both stdout and stderr so
+ * the bounding logic is never re-implemented per stream.
+ */
+export function boundedHookAppend(
+  current: string,
+  chunk: string,
+  maxBytes: number,
+): { text: string; truncated: boolean } {
+  const curBytes = Buffer.byteLength(current, 'utf-8');
+  if (curBytes >= maxBytes) return { text: current, truncated: true };
+  const remaining = maxBytes - curBytes;
+  if (Buffer.byteLength(chunk, 'utf-8') <= remaining) {
+    return { text: current + chunk, truncated: false };
+  }
+  // Keep exactly `remaining` bytes of the chunk (byte-accurate; a split
+  // multibyte sequence degrades to the Unicode replacement char — acceptable at
+  // a truncation boundary).
+  const slice = Buffer.from(chunk, 'utf-8').subarray(0, remaining).toString('utf-8');
+  return { text: current + slice, truncated: true };
+}
+
+/** Terminal marker appended to a command hook's stream when it overflowed the
+ *  in-memory cap, mirroring TaskOutput's "Output truncated" notice. */
+export function hookOutputTruncationNotice(stream: 'stdout' | 'stderr'): string {
+  return `\n[hook ${stream} truncated - exceeded ${MAX_HOOK_COMMAND_OUTPUT_BYTES} bytes]`;
+}
+
 export const BLOCKED_HOOK_COMMANDS: ReadonlySet<string> = new Set([
   'rm -rf /',
   'mkfs',
@@ -1070,6 +1131,12 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   notificationType: 'notification_type',
   permissionMode: 'permission_mode',
   samplingOrigin: 'sampling_origin',
+  // Correlation id for the pending tool call (Claude Code's `tool_use_id`): lets a
+  // permission-prompt / PostToolUseFailure hook tie its decision to the exact call.
+  toolUseId: 'tool_use_id',
+  // Snake-case parity for a tool-failure payload (Claude Code PostToolUseFailure
+  // emits is_error / is_interrupt; previously AMI emitted only the camelCase keys).
+  isError: 'is_error', isInterrupt: 'is_interrupt',
 };
 
 /**
@@ -1562,9 +1629,9 @@ const EXIT_CODE_OBSERVE =
 const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: string }> = {
   preToolUse: { summary: 'Before tool execution', description: 'Input: JSON of the tool call (tool_name, tool_input).' + EXIT_CODE_BLOCKING },
   postToolUse: { summary: 'After tool execution', description: 'Input: JSON with tool_name, tool_input, tool_response, duration_ms.' + EXIT_CODE_BLOCKING },
-  postToolUseFailure: { summary: 'After a tool execution fails', description: 'Input: JSON with tool_name, is_error, duration_ms.' + EXIT_CODE_OBSERVE },
-  permissionRequest: { summary: 'When a tool needs permission', description: 'Input: JSON with tool_name, tool_input. Return a permissionDecision (allow|deny|ask).' + EXIT_CODE_BLOCKING },
-  permissionDenied: { summary: 'After a permission is denied', description: 'Input: JSON with tool_name. Return {retry:true} to let the model retry.' + EXIT_CODE_OBSERVE },
+  postToolUseFailure: { summary: 'After a tool execution fails', description: 'Input: JSON with tool_name, is_error, duration_ms, error, is_interrupt, tool_use_id.' + EXIT_CODE_OBSERVE },
+  permissionRequest: { summary: 'When a tool needs permission', description: 'Input: JSON with tool_name, tool_input, tool_use_id. Return a permissionDecision (allow|deny|ask).' + EXIT_CODE_BLOCKING },
+  permissionDenied: { summary: 'After a permission is denied', description: 'Input: JSON with tool_name, tool_use_id. Return {retry:true} to let the model retry.' + EXIT_CODE_OBSERVE },
   preSampling: { summary: 'Before a model sampling call', description: 'Input: JSON event marker.' + EXIT_CODE_BLOCKING },
   postSampling: { summary: 'After a model sampling call', description: 'Input: JSON event marker.' + EXIT_CODE_OBSERVE },
   userPromptSubmit: { summary: 'When the user submits a prompt', description: 'Input: JSON with prompt, turn_count. May inject additionalContext or block.' + EXIT_CODE_BLOCKING },
@@ -2048,8 +2115,20 @@ async function runCommandHookAsync(
     // stderr. `output` keeps the combined stream for back-compat logging.
     let stdout = '';
     let stderr = '';
-    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    // Bound in-memory capture so a hook that floods a stream cannot OOM the agent
+    // (Claude Code TaskOutput pipe-mode memory boundary). Head-preserving: the
+    // decision JSON parsed from the head of stdout always survives; the overflow
+    // tail is dropped and a one-time notice is appended at close.
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    proc.stdout?.on('data', (d: Buffer) => {
+      const r = boundedHookAppend(stdout, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES);
+      stdout = r.text; if (r.truncated) stdoutTruncated = true;
+    });
+    proc.stderr?.on('data', (d: Buffer) => {
+      const r = boundedHookAppend(stderr, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES);
+      stderr = r.text; if (r.truncated) stderrTruncated = true;
+    });
 
     proc.stdin?.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code !== 'EPIPE') coreLog('hooks', `Hook stdin error: ${err.message}`);
@@ -2082,6 +2161,8 @@ async function runCommandHookAsync(
     proc.on('close', (code) => {
       clearTimeout(timer);
       detach();
+      if (stdoutTruncated) stdout += hookOutputTruncationNotice('stdout');
+      if (stderrTruncated) stderr += hookOutputTruncationNotice('stderr');
       resolve({ exitCode: code ?? 1, stdout, stderr, output: stdout + stderr });
     });
 
@@ -2964,7 +3045,7 @@ export class HookManager extends EventEmitter {
             // Surface the active posture + already-suggested rule updates to the
             // hook (Claude's permissionMode + suggestions params), and thread the
             // turn abort signal so a slow command hook is cancelled on interrupt.
-            const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput, permissionMode: ctx.permissionMode, suggestions: ctx.suggestions });
+            const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput, permissionMode: ctx.permissionMode, suggestions: ctx.suggestions, toolUseId: ctx.toolUseId });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.permissionRequestHooks, fn, 'permissionRequest');
             if (result.startsWith('DENY:')) return { action: 'deny' as const, reason: result.slice(5).trim() };
             if (result === 'ALLOW' || result.startsWith('ALLOW:')) return { action: 'allow' as const };
@@ -3016,7 +3097,7 @@ export class HookManager extends EventEmitter {
         case 'permissionDenied': {
           const fn: PermissionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('permissionDenied', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName });
+            const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName, toolUseId: ctx.toolUseId });
             await this.runArmHook(hookConfig, cwd, eventData, undefined, this.permissionDeniedHooks, fn, 'permissionDenied');
           };
           this.onPermissionDenied(fn);
@@ -3070,7 +3151,7 @@ export class HookManager extends EventEmitter {
           const fn: PostToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesHookIf(hookConfig.if, ctx.toolName, ctx.toolInput)) return;
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return;
-            const eventData = serializeHookEvent({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs });
+            const eventData = serializeHookEvent({ event: 'postToolUseFailure', toolName: ctx.toolName, isError: ctx.isError, duration_ms: ctx.durationMs, error: ctx.error, isInterrupt: ctx.isInterrupt, toolUseId: ctx.toolUseId });
             await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.postToolUseFailureHooks, fn, 'postToolUseFailure');
           };
           this.onPostToolUseFailure(fn);
