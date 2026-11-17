@@ -825,22 +825,74 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string
   return cfg;
 }
 
+/** The isolation backend {@link wrapWithSandbox} will actually use on this host:
+ *  `'unshare'` = full namespace isolation (filesystem + network); `'ulimits'` =
+ *  the DEGRADED resource-limits-only fallback (CPU/memory/process caps only, NO
+ *  filesystem or network isolation), used on non-Linux or when `unshare` /
+ *  unprivileged user namespaces are unavailable. Pure: `platform` and the
+ *  unshare-availability probe are injectable so both arms are deterministically
+ *  testable on any host; the defaults read the live host (memoized). This is the
+ *  single source of the wrap-time backend decision, reused by
+ *  {@link describeSandboxFallbackWarning} so the surfaced warning can never drift
+ *  from the branch {@link wrapWithSandbox} actually took. */
+export function resolveSandboxMethod(
+  platform: string = process.platform,
+  unshareAvailable: () => boolean = isUnshareAvailable,
+): 'unshare' | 'ulimits' {
+  if (platform !== 'linux') return 'ulimits';
+  return unshareAvailable() ? 'unshare' : 'ulimits';
+}
+
 export function wrapWithSandbox(
   command: string,
   cwd: string,
   config: Partial<SandboxConfig> = {},
 ): string {
   const cfg = { ...DEFAULT_SANDBOX_CONFIG, ...config };
-
-  if (process.platform !== 'linux') {
-    return wrapWithResourceLimits(command, cfg);
-  }
-
-  if (isUnshareAvailable()) {
+  if (resolveSandboxMethod() === 'unshare') {
     return wrapWithUnshare(command, cwd, cfg);
   }
-
   return wrapWithResourceLimits(command, cfg);
+}
+
+/**
+ * PARITY (explicit weaker-fallback warning — Claude's "Cannot block …" degraded-
+ * mode notices): when the host sandbox silently degrades to the resource-limits-
+ * only backend (namespace isolation unavailable) but the operator EXPLICITLY
+ * configured one or more network/filesystem carve-outs, enumerate the requested
+ * protections that are now UNenforced so the user/model is told which isolation
+ * was lost instead of believing the command ran fully sandboxed. Returns null when
+ * the full `unshare` backend is in use (nothing degraded) OR when no explicit
+ * carve-out was requested (the bare auto-sandbox has nothing beyond the ulimits it
+ * still applies — stays silent to avoid noise). Inspects ONLY the caller-set
+ * fields of `cfg` (not the merged defaults), mirroring
+ * {@link checkSandboxDependencies}'s "a REQUESTED control is silently
+ * unenforced" contract. `method` defaults to the live {@link resolveSandboxMethod}
+ * and is injectable for tests.
+ */
+export function describeSandboxFallbackWarning(
+  cfg: Partial<SandboxConfig> = {},
+  method: 'unshare' | 'ulimits' = resolveSandboxMethod(),
+): string | null {
+  if (method === 'unshare') return null;
+  const lost: string[] = [];
+  if ((cfg.allowedDomains?.length ?? 0) > 0) lost.push('outbound network allowlist (allowedDomains)');
+  if ((cfg.deniedDomains?.length ?? 0) > 0) lost.push('outbound network denylist (deniedDomains)');
+  if ((cfg.denyReadPaths?.length ?? 0) > 0) lost.push('filesystem read denials (denyRead)');
+  if ((cfg.denyWritePaths?.length ?? 0) > 0) lost.push('filesystem write denials (denyWrite)');
+  if (cfg.denyConfigWrites) lost.push('config-write protection (denyConfigWrites)');
+  if (cfg.denyBareGitPoisoning) lost.push('bare-repo poisoning guard (denyBareGitPoisoning)');
+  if ((cfg.allowedUnixSockets?.length ?? 0) > 0) lost.push('per-path Unix-socket controls (allowUnixSockets)');
+  if (lost.length === 0) return null;
+  return (
+    'the host sandbox degraded to resource-limits-only because namespace isolation ' +
+    '(`unshare` / unprivileged user namespaces) is unavailable on this host, so the ' +
+    'following REQUESTED sandbox protections are NOT enforced for this command: ' +
+    lost.join('; ') +
+    '. Only CPU/memory/process limits apply. Install util-linux and enable ' +
+    'unprivileged user namespaces, or set sandbox.failIfUnavailable=true / ' +
+    'allowUnsandboxedFallback=false to refuse running when the sandbox cannot start.'
+  );
 }
 
 export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {

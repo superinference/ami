@@ -8,7 +8,7 @@ import { execCommand, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, type SandboxExemptionOptions } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, type SandboxExemptionOptions } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
@@ -148,6 +148,11 @@ export const _bashHooks = {
   // namespace. Defaults are the real implementations — production is unchanged.
   shouldUseSandbox: shouldUseSandbox as typeof shouldUseSandbox,
   wrapWithSandbox: wrapWithSandbox as typeof wrapWithSandbox,
+  // Weaker-fallback warning seam: lets tests drive the degraded-isolation advisory
+  // (host sandbox fell back to ulimits-only while a carve-out was requested)
+  // deterministically without a host that actually lacks `unshare`. Default is the
+  // real pure helper — production surfaces the live backend decision.
+  describeSandboxFallbackWarning: describeSandboxFallbackWarning as typeof describeSandboxFallbackWarning,
 };
 
 function isReadOnlyBashCommand(command: string): boolean {
@@ -1337,6 +1342,11 @@ export const bashTool: ToolDefinition = {
     const sessionEnvScript = await getSessionEnvironmentScript(context.sessionId);
     const commandToRun = sessionEnvScript ? `${sessionEnvScript}\n${command}` : command;
     let effectiveCommand: string;
+    // Surfaced when the host sandbox degraded to resource-limits-only while a
+    // network/filesystem carve-out was explicitly requested (see
+    // describeSandboxFallbackWarning) — appended to the command output below so the
+    // lost protection is not silent.
+    let sandboxFallbackAdvisory: string | null = null;
     // PARITY (sandbox.enabledPlatforms): when the current platform is excluded,
     // the sandbox (container OR host) is disabled entirely and the command runs
     // on the host — undefined=all, []=none, else a membership test. Gates both
@@ -1432,9 +1442,15 @@ export const bashTool: ToolDefinition = {
       // backend (see wrapWithDocker above), so the host sandbox silently ignored
       // every configured restriction. hostSandboxConfigFromPolicy yields {} when
       // no carve-outs are set, preserving the prior defaults.
+      const hostCfg = hostSandboxConfigFromPolicy(context.sandbox, context.cwd);
       effectiveCommand = useSandbox
-        ? _bashHooks.wrapWithSandbox(commandToRun, context.cwd, hostSandboxConfigFromPolicy(context.sandbox, context.cwd))
+        ? _bashHooks.wrapWithSandbox(commandToRun, context.cwd, hostCfg)
         : commandToRun;
+      // When the command IS sandboxed but the host backend silently degraded to
+      // the weaker ulimits-only path, surface which REQUESTED carve-outs are now
+      // unenforced (null when the full namespace sandbox is in use or no carve-out
+      // was requested).
+      if (useSandbox) sandboxFallbackAdvisory = _bashHooks.describeSandboxFallbackWarning(hostCfg);
     }
 
     if (runInBackground && context.processManager) {
@@ -1578,6 +1594,7 @@ export const bashTool: ToolDefinition = {
     if (forcePushAdvisory) output += `\n\n[Warning: ${forcePushAdvisory}]`;
     if (compoundCdGitAdvisory) output += `\n\n[Warning: ${compoundCdGitAdvisory}]`;
     if (cwdResetNote) output += `\n\n[Warning: ${cwdResetNote}]`;
+    if (sandboxFallbackAdvisory) output += `\n\n[Warning: ${sandboxFallbackAdvisory}]`;
 
     let exitCodeInfo: ExitCodeInfo | null = null;
     if (result.exitCode !== 0) {
