@@ -73,6 +73,18 @@ export interface SkillDefinition {
    *  Code's `getIsGit()` guard in worktree-spawning commands like `/batch`). Checked by
    *  the skill tool via {@link isGitRepo}; declarative metadata (reviewed-safe). */
   requiresGitRepo?: boolean;
+  /** Least-privilege sandbox for a FORKED skill (parity with Claude's forked-agent
+   *  `createAutoMemCanUseTool`): when true, the forked sub-engine's `bash` is capped to
+   *  read-only commands via a {@link ToolCapabilityCeiling} — a HARD cap enforced ahead
+   *  of the sub-engine's permission mode. Declarative metadata; frontmatter
+   *  `read-only-bash: true`. No effect on an inline skill. */
+  sandboxReadOnlyBash?: boolean;
+  /** Directories a FORKED skill's file writes are confined to (parity with Claude's
+   *  autoMem write-path confinement, writes only within the memory dir). When set, the
+   *  forked sub-engine denies edit/write outside these roots regardless of mode.
+   *  Relative entries resolve against the skill's run cwd. Frontmatter
+   *  `confine-writes-to:` (comma/newline list). Declarative metadata. */
+  sandboxWriteRoots?: string[];
   /** Programmatic dynamic-prompt builder (parity with Claude's bundled-skill
    *  `getPromptForCommand(args)`, e.g. `/batch`, `/claude-api`). When present, the
    *  skill body is COMPUTED per invocation from the raw argument string (plus any
@@ -585,7 +597,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
-  'requiresGitRepo',
+  'requiresGitRepo', 'sandboxReadOnlyBash', 'sandboxWriteRoots',
   'isSensitive', 'disableNonInteractive', 'supportsNonInteractive',
   'shell', 'templateVars', 'kind',
   // Stance/tool-restriction properties (reviewed-safe declarative metadata the

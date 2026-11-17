@@ -4,6 +4,7 @@ import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
 import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules, parseMcpServerWildcard, isMcpToolOfServer, mcpToolNamespacePrefix, deriveMcpToolAllowlist } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
+import { buildSkillSandboxCeiling } from './scoped-permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
 import { isGitRepo } from '../utils/git';
@@ -733,6 +734,20 @@ export const skillTool: ToolDefinition = {
       subConfig.thinking = { enabled: true, level: skillDef.effort as any };
     }
 
+    // FUNCTIONAL (parity/security): least-privilege capability ceiling for the forked
+    // sub-engine (parity with Claude's forked-agent createAutoMemCanUseTool). When the
+    // skill declares a sandbox (`read-only-bash` / `confine-writes-to`), cap the forked
+    // agent to read-only bash and/or writes confined to the listed dirs — a HARD ceiling
+    // enforced ahead of the sub-engine's permission mode, independent of auto-allow. This
+    // lets an autonomous forked skill (e.g. from an installed catalog) run under a reduced
+    // ceiling instead of whatever its ambient mode would otherwise permit.
+    const sandboxCeiling = buildSkillSandboxCeiling(
+      skillDef?.sandboxReadOnlyBash,
+      skillDef?.sandboxWriteRoots,
+      context.cwd,
+    );
+    if (sandboxCeiling) subConfig.capabilityCeiling = sandboxCeiling;
+
     if (!context._engineFactory) {
       return { output: 'Error: engine factory not available in this context.', isError: true };
     }
@@ -765,7 +780,14 @@ export const skillTool: ToolDefinition = {
     }
 
     const agentNote = agentDef ? ` · agent ${agentDef.name}` : '';
-    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}${agentNote}]${warningText}`;
+    // Surface the least-privilege ceiling (if any) in the byline + metadata so the
+    // sandboxing a forked skill ran under is VISIBLE (introspection), not silent.
+    const sandboxParts: string[] = [];
+    if (sandboxCeiling?.readOnlyBashOnly) sandboxParts.push('read-only bash');
+    if (sandboxCeiling?.writeRoots) sandboxParts.push(`writes confined to ${sandboxCeiling.writeRoots.length} dir${sandboxCeiling.writeRoots.length === 1 ? '' : 's'}`);
+    const sandboxNote = sandboxParts.length > 0 ? ` · sandbox: ${sandboxParts.join(', ')}` : '';
+    const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}${agentNote}${sandboxNote}]${warningText}`;
+    const sandboxMeta = sandboxCeiling ? { sandbox: { readOnlyBash: !!sandboxCeiling.readOnlyBashOnly, writeRoots: sandboxCeiling.writeRoots ?? [] } } : {};
 
     // FUNCTIONAL (parity/errors): a sub-skill that was aborted mid-run (parent
     // cancel forwarded into subAbort, or the parent signal itself aborted) ended
@@ -783,6 +805,7 @@ export const skillTool: ToolDefinition = {
           toolCount: tools.length,
           cancelled: true,
           ...(agentDef ? { agent: agentDef.name } : {}),
+          ...sandboxMeta,
           ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
         },
       };
@@ -797,6 +820,7 @@ export const skillTool: ToolDefinition = {
         model: providerConfig.model,
         toolCount: tools.length,
         ...(agentDef ? { agent: agentDef.name } : {}),
+        ...sandboxMeta,
         ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
       },
     };

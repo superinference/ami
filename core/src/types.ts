@@ -1,4 +1,5 @@
 import type { SuperInferenceConfig } from './superinference/types';
+import type { ToolCapabilityCeiling } from './tools/scoped-permissions';
 
 /**
  * Type-branded session id: a nominal `string` subtype so a raw string can't be silently
@@ -1322,6 +1323,12 @@ export interface EngineConfig {
   allowManagedHooksOnly?: boolean;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
+  /** Least-privilege capability ceiling for a forked/background sub-engine (parity:
+   *  Claude's forked-agent `canUseTool`). A HARD cap enforced ahead of every mode —
+   *  confines the sub-agent to read-only bash and/or writes within a directory even
+   *  under auto-allow. Set by the skill tool when a forked skill declares a sandbox;
+   *  undefined for the main engine (inert). */
+  capabilityCeiling?: ToolCapabilityCeiling;
   /** Extra absolute paths/dirs the user has granted read access to OUTSIDE the launch
    *  cwd (e.g. dirs of `--context-file`/`--image` targets, or `--add-dir`). The tools are
    *  confined to the launch cwd; these roots widen that boundary to user-pointed resources. */

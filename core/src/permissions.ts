@@ -10,6 +10,8 @@ import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
+import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
+import { isReadOnlyBashCommand } from './tools/bash-cache';
 import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
@@ -3601,6 +3603,13 @@ export class PermissionManager {
    *  just bash. Absent → only bash destructiveness is considered (unchanged). */
   private toolDestructiveResolver?: (toolName: string, input: Record<string, unknown>) => boolean;
 
+  /** Least-privilege capability ceiling for a forked/background sub-agent (parity:
+   *  Claude's `createAutoMemCanUseTool`). When set, {@link check} enforces it BEFORE
+   *  and INDEPENDENT of the ambient mode — a non-read-only bash command or a write
+   *  outside the confined roots is denied even under auto-allow/bypass. Undefined →
+   *  inert (gated exactly as before). Set per sub-engine from EngineConfig. */
+  private capabilityCeiling?: ToolCapabilityCeiling;
+
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
   private totalDenials = 0;
@@ -3757,6 +3766,18 @@ export class PermissionManager {
   }
 
   /**
+   * Install a least-privilege {@link ToolCapabilityCeiling} for this manager's
+   * engine (parity: Claude's forked-agent `canUseTool`). The ceiling is a HARD cap
+   * enforced ahead of every mode: it can only deny (never grant), so a forked skill
+   * sub-agent can be confined to read-only bash + writes within a directory even when
+   * its ambient mode is auto-allow. The engine sets this per sub-engine from
+   * `EngineConfig.capabilityCeiling`. Passing `undefined` disables it.
+   */
+  setCapabilityCeiling(ceiling: ToolCapabilityCeiling | undefined): void {
+    this.capabilityCeiling = ceiling;
+  }
+
+  /**
    * Register a resolver that reports whether a tool call is DESTRUCTIVE (irreversible:
    * delete / overwrite / send) for the given input, generalizing the bash
    * destructive-command guard to ANY tool (parity: Claude's `Tool.isDestructive(input)`).
@@ -3872,6 +3893,20 @@ export class PermissionManager {
     if (toolName === 'bash' && typeof input.command === 'string') {
       const hardline = detectHardlineCommand(input.command);
       if (hardline.blocked) return 'deny';
+    }
+
+    // Least-privilege capability ceiling (parity: Claude's forked-agent canUseTool).
+    // A HARD cap on a forked/background sub-agent — enforced ahead of every mode, so a
+    // non-read-only bash command or a write outside the confined roots is denied even
+    // under auto-allow/bypass. Inert (never set) for the main engine.
+    if (this.capabilityCeiling) {
+      const denial = evaluateToolCeiling(
+        this.capabilityCeiling,
+        toolName,
+        input,
+        isReadOnlyBashCommand,
+      );
+      if (denial) return 'deny';
     }
 
     // dangerouslyDisableSandbox always requires explicit confirmation
