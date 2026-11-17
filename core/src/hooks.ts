@@ -594,6 +594,27 @@ export interface StopHookResult {
 /** Stop hook: may block turn-end (blockingError) or prevent continuation. */
 export type StopHookFn = (context: HookContext) => Promise<{ blockingError?: string; preventContinuation?: boolean; stopReason?: string } | void>;
 
+/**
+ * Default human-readable reason attached when a Stop hook halts the agent loop
+ * without supplying its own `stopReason` (Claude Code's hook_stopped_continuation
+ * attachment default — stopHooks.ts:L268-280 "Stop hook prevented continuation").
+ * Gives the engine/operator an introspectable record of WHY the turn stopped even
+ * when the hook was terse.
+ */
+export const DEFAULT_STOP_HOOK_PREVENT_REASON = 'Stop hook prevented continuation';
+
+/**
+ * Resolve the reason surfaced for a Stop-hook-initiated halt: the hook's own
+ * `stopReason` when it provided a non-empty one, otherwise the canonical
+ * {@link DEFAULT_STOP_HOOK_PREVENT_REASON} wording. Pure; used by
+ * {@link HookManager.executeStop} so a prevented continuation always carries a
+ * displayable reason.
+ */
+export function formatHookStoppedContinuation(stopReason?: string): string {
+  const r = stopReason?.trim();
+  return r ? r : DEFAULT_STOP_HOOK_PREVENT_REASON;
+}
+
 /** Per-hook timing + error record from a Stop-hook run (Claude Code's hookInfos
  *  in createStopHookSummaryMessage). One entry per Stop hook that actually ran. */
 export interface StopHookInfo {
@@ -1112,15 +1133,26 @@ export function sanitizeHeaderValue(value: string): string {
  * exfiltrate arbitrary secrets through a header. The fully-interpolated value is
  * then CRLF/NUL-sanitized (sanitizeHeaderValue) so neither the template literal
  * NOR a resolved env value can inject an extra header.
+ *
+ * `onWarn` (when supplied) is invoked once per DISTINCT env var reference that was
+ * skipped because it is not on the allowlist, so a caller can surface Claude Code's
+ * explanatory "env var $<name> not in allowedEnvVars, skipping interpolation"
+ * warning (execHttpHook.ts:L89-108) — otherwise a user who writes `$TOKEN` in a
+ * header value silently gets the empty string with no hint why.
  */
 export function interpolateHookHeaderEnv(
   value: string,
   allowed: Set<string>,
   env: Record<string, string | undefined> = process.env,
+  onWarn?: (name: string) => void,
 ): string {
+  const warned = new Set<string>();
   const interpolated = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, braced, bare) => {
     const name = braced ?? bare;
-    if (!allowed.has(name)) return '';
+    if (!allowed.has(name)) {
+      if (onWarn && !warned.has(name)) { warned.add(name); onWarn(name); }
+      return '';
+    }
     return env[name] ?? '';
   });
   return sanitizeHeaderValue(interpolated);
@@ -4223,6 +4255,10 @@ export class HookManager extends EventEmitter {
       } finally {
         this._stopHookActive = false;
       }
+      // A prevented continuation always carries a displayable reason: fall back to
+      // the canonical "Stop hook prevented continuation" wording when the hook was
+      // terse (Claude Code's hook_stopped_continuation default — stopHooks.ts:L268-280).
+      if (preventContinuation) stopReason = formatHookStoppedContinuation(stopReason);
       // Build + retain + emit the per-hook summary (operator-facing; NEVER fed to
       // the model). Only when hooks actually ran — a no-op turn gets no summary.
       if (hookInfos.length > 0) {
@@ -4356,7 +4392,16 @@ export class HookManager extends EventEmitter {
       const budgetMs = getSessionEndHookTimeoutMs();
       const run = (async () => {
         for (const hook of this.sessionEndHooks) {
-          try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+          try { await hook(ctx); } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            coreLog('hooks', 'Hook error', { error: message });
+            // Surface the failure instead of swallowing it into the debug log:
+            // the session UI is already unmounting, so a failed teardown hook would
+            // otherwise be invisible (Claude Code writes 'SessionEnd hook failed: …'
+            // to stderr — utils/hooks.ts:L4127-4134). Emitted on the same `hookError`
+            // channel as command/http/agent hook failures.
+            this.emit('hookError', { hookType: 'command', hook: 'SessionEnd hook', error: message });
+          }
         }
       })();
       try {
@@ -5115,12 +5160,13 @@ export class HookManager extends EventEmitter {
     const providerConfig = { ...(this._providerConfig || {}) };
     if (model) {
       providerConfig.model = model;
-    } else if (kind === 'prompt') {
-      // A prompt hook is a cheap, single-shot verification verdict — default it to
-      // the operator-configured small/fast model when one is set, so it doesn't burn
-      // the main model's budget/latency. Parity: execPromptHook `model: hook.model ??
-      // getSmallFastModel()`. With no env set, getSmallFastModel() returns undefined
-      // and the session model is kept unchanged (current behavior preserved).
+    } else {
+      // A prompt OR agent hook is a cheap verification verdict — default it to the
+      // operator-configured small/fast model when one is set, so it doesn't burn the
+      // main model's budget/latency. Parity: BOTH execPromptHook AND execAgentHook
+      // default `model: hook.model ?? getSmallFastModel()` (execAgentHook.ts:L118).
+      // With no env set, getSmallFastModel() returns undefined and the session model
+      // is kept unchanged (current behavior preserved).
       const fast = getSmallFastModel();
       if (fast) providerConfig.model = fast;
     }
@@ -5271,7 +5317,12 @@ export class HookManager extends EventEmitter {
     );
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     for (const [k, v] of Object.entries(config.headers ?? {})) {
-      headers[k] = interpolateHookHeaderEnv(v, envAllow);
+      // Surface Claude Code's explanatory warning (execHttpHook.ts:L89-108) when a
+      // header references an env var that is NOT on the allowlist, so the user learns
+      // WHY `$TOKEN` resolved to empty instead of being silently dropped.
+      headers[k] = interpolateHookHeaderEnv(v, envAllow, process.env, (name) =>
+        coreLog('hooks', `HTTP hook header env var $${name} not in allowedEnvVars, skipping interpolation`),
+      );
     }
 
     // (5) Cancellation + hard timeout as ONE combined signal (the canonical
