@@ -5,6 +5,7 @@ import type { McpOAuthProvider, AuthorizeFn, FetchLike, XaaConfig } from './oaut
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
+import { classifyMcpToolForCollapse } from './classify-collapse';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
@@ -435,6 +436,29 @@ export interface McpServerConfig {
   transport?: 'stdio' | 'sse' | 'http' | 'ws' | 'wss';
   url?: string;
   containerConfig?: ContainerConfig;
+  /**
+   * User-entered config values for a plugin/bundle-declared server, keyed by the
+   * field name the plugin's `userConfig` schema declares. Referenced from the
+   * server's `command`/`args`/`url`/`env`/`headers` via `${user_config.<key>}`
+   * placeholders (Claude-parity `resolvePluginMcpEnvironment`,
+   * mcpPluginIntegration.ts:L475-490). Substituted BEFORE general `${ENV}`
+   * expansion so a user/plugin value wins over a same-named process env var.
+   */
+  userConfig?: Record<string, string>;
+  /**
+   * Install directory of the plugin that packaged this server. Injected into a
+   * stdio server's env as `CLAUDE_PLUGIN_ROOT` and substitutable via
+   * `${CLAUDE_PLUGIN_ROOT}` so a bundled stdio server can locate its own files
+   * (Claude-parity, mcpPluginIntegration.ts:L510-521).
+   */
+  pluginRoot?: string;
+  /**
+   * Persistent per-plugin data directory. Injected into a stdio server's env as
+   * `CLAUDE_PLUGIN_DATA` and substitutable via `${CLAUDE_PLUGIN_DATA}`. The two
+   * injected env keys are literal paths — NOT run through `${ENV}` expansion
+   * (Claude-parity, mcpPluginIntegration.ts:L517).
+   */
+  pluginDataDir?: string;
   /** Enable OAuth 2.1 for this (http/sse) server. The authorizer is wired at the manager level. */
   oauth?: {
     redirectUri?: string;
@@ -2536,7 +2560,16 @@ export class McpManager extends EventEmitter {
     const lower = toolName.toLowerCase();
     const tokens = new Set(normalizeMcpToolName(toolName).split('_').filter(Boolean));
     const classify = (verbs: string[]) => verbs.some(v => tokens.has(v) || lower.startsWith(v));
-    const isReadOnly = classify(readOnlyVerbs);
+    // Union the verb heuristic with the curated per-tool read/search allowlist
+    // (Claude-parity SEARCH_TOOLS/READ_TOOLS, classifyForCollapse.ts) so a
+    // low-signal read/search op whose verb is NOT a token — `whoami`, `esql`,
+    // `explain`, `aggregate`, `count`, `recommend`, `atlassian_user_info`, … —
+    // is still classified read-only instead of defaulting to false. This reuses
+    // the ONE canonical classifier (no second allowlist) and is a strict
+    // superset of the prefix heuristic: a tool the allowlist cannot prove is a
+    // read/search op still falls back to the verb check.
+    const collapse = classifyMcpToolForCollapse('', toolName);
+    const isReadOnly = classify(readOnlyVerbs) || collapse.isRead || collapse.isSearch;
     const isDestructive = classify(destructiveVerbs);
     const isOpenWorld = classify(openWorldVerbs);
 
@@ -2891,8 +2924,18 @@ export class McpManager extends EventEmitter {
 
   private expandConfigEnv(config: McpServerConfig, missingOut?: Set<string>): McpServerConfig {
     const result = { ...config };
+    // Plugin-scoped substitution tier (${user_config.X}, ${CLAUDE_PLUGIN_ROOT},
+    // ${CLAUDE_PLUGIN_DATA}) runs BEFORE general ${ENV} expansion so a user/plugin
+    // value wins over a same-named process env var (Claude-parity precedence).
+    const pluginVars: PluginMcpVars = {
+      userConfig: config.userConfig,
+      pluginRoot: config.pluginRoot,
+      pluginDataDir: config.pluginDataDir,
+    };
+    const hasPluginVars = config.userConfig !== undefined || config.pluginRoot !== undefined || config.pluginDataDir !== undefined;
     const expand = (v: string): string => {
-      const { expanded, missingVars } = expandEnvVarsTracked(v);
+      const substituted = hasPluginVars ? substitutePluginMcpVars(v, pluginVars) : v;
+      const { expanded, missingVars } = expandEnvVarsTracked(substituted);
       if (missingOut) for (const m of missingVars) missingOut.add(m);
       return expanded;
     };
@@ -2912,6 +2955,19 @@ export class McpManager extends EventEmitter {
         expanded[k] = expand(v);
       }
       result.env = expanded;
+    }
+
+    // For a stdio server, inject the plugin root/data dir into the launch env as
+    // literal paths so a bundled stdio server can locate its own install + data
+    // directory. These two keys are NOT run through ${ENV} expansion
+    // (Claude-parity, mcpPluginIntegration.ts:L517): they are already resolved
+    // absolute paths. Explicit env entries win, so an author can still override.
+    const isStdio = !result.url && (result.transport === undefined || result.transport === 'stdio');
+    if (isStdio && (config.pluginRoot !== undefined || config.pluginDataDir !== undefined)) {
+      const injected: Record<string, string> = {};
+      if (config.pluginRoot !== undefined) injected.CLAUDE_PLUGIN_ROOT = config.pluginRoot;
+      if (config.pluginDataDir !== undefined) injected.CLAUDE_PLUGIN_DATA = config.pluginDataDir;
+      result.env = { ...injected, ...(result.env ?? {}) };
     }
 
     return result;
@@ -3169,13 +3225,16 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
   if (c.args !== undefined && (!Array.isArray(c.args) || c.args.some((a) => typeof a !== 'string'))) {
     issues.push('`args` must be an array of strings');
   }
-  for (const key of ['env', 'headers'] as const) {
+  for (const key of ['env', 'headers', 'userConfig'] as const) {
     const v = c[key];
     if (v !== undefined) {
       if (typeof v !== 'object' || v === null || Array.isArray(v) || Object.values(v as Record<string, unknown>).some((x) => typeof x !== 'string')) {
         issues.push(`\`${key}\` must be an object of string values`);
       }
     }
+  }
+  for (const key of ['pluginRoot', 'pluginDataDir'] as const) {
+    if (c[key] !== undefined && typeof c[key] !== 'string') issues.push(`\`${key}\` must be a string`);
   }
   if (c.transport !== undefined && !SUPPORTED_MCP_TRANSPORTS.has(String(c.transport))) {
     issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, or wss)`);
@@ -3353,6 +3412,37 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
 
 export function expandEnvVars(value: string): string {
   return expandEnvVarsTracked(value).expanded;
+}
+
+/** The plugin-scoped substitution variables resolved AHEAD of `${ENV}` expansion. */
+export interface PluginMcpVars {
+  /** `${user_config.<key>}` values declared by the plugin's userConfig schema. */
+  userConfig?: Record<string, string>;
+  /** `${CLAUDE_PLUGIN_ROOT}` — the plugin install dir. */
+  pluginRoot?: string;
+  /** `${CLAUDE_PLUGIN_DATA}` — the persistent per-plugin data dir. */
+  pluginDataDir?: string;
+}
+
+/**
+ * Substitute the plugin-scoped variable classes in a config string BEFORE the
+ * general `${ENV}` tier runs (Claude-parity `resolvePluginMcpEnvironment`,
+ * mcpPluginIntegration.ts:L475-490):
+ *   - `${user_config.<key>}` → the user-entered value for `<key>` (empty string
+ *     when the key is absent, so a stale placeholder never leaks a literal
+ *     `${user_config.x}` onto a command line);
+ *   - `${CLAUDE_PLUGIN_ROOT}` → `vars.pluginRoot`;
+ *   - `${CLAUDE_PLUGIN_DATA}` → `vars.pluginDataDir`.
+ * Any OTHER `${...}` reference is left untouched for {@link expandEnvVarsTracked}
+ * to resolve, giving plugin/user values precedence over a same-named env var.
+ */
+export function substitutePluginMcpVars(value: string, vars: PluginMcpVars): string {
+  return value.replace(/\$\{(user_config\.[A-Za-z0-9_]+|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA)\}/g, (_match, ref: string) => {
+    if (ref === 'CLAUDE_PLUGIN_ROOT') return vars.pluginRoot ?? '';
+    if (ref === 'CLAUDE_PLUGIN_DATA') return vars.pluginDataDir ?? '';
+    const key = ref.slice('user_config.'.length);
+    return vars.userConfig?.[key] ?? '';
+  });
 }
 
 /**
