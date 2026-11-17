@@ -541,6 +541,21 @@ export interface ProjectConfig {
    */
   sessionMemoryEnabled?: boolean;
   /**
+   * Off-switch for loading the shared TEAM-memory store (the `.ami/memory/team/`
+   * subtree {@link MemoryManager.loadTeamMemories} reads into the system prompt).
+   * Parity: Claude Code gates team memory behind an enable flag
+   * (`feature('TEAMMEM')` + `isTeamMemoryEnabled()`); AMI previously ALWAYS loaded any
+   * present team-memory files with no config knob. This additive tri-state lets a user
+   * or org turn team-memory loading OFF — set `false` and the team subtree is never
+   * read/rendered (a project may not want VCS-shared memories injected into every
+   * session). Unset/`true` keeps AMI's default (load when present), so the knob is a
+   * pure superset off-switch. Resolved per workspace by {@link resolveTeamMemoryLoadingEnabled}
+   * across the full config waterfall with the usual {@link mergeConfigs} last-wins
+   * precedence (local > project > global > managed). Distinct from the WRITE-classification
+   * gate ({@link isTeamMemoryEnabled}, env-only) — this governs READING the shared store.
+   */
+  teamMemoryEnabled?: boolean;
+  /**
    * Persist whether the per-turn conversation-title generation pass runs (read by
    * `engine-factory` {@link resolveTitleGenerationEnabled}). An explicit boolean is the
    * config tier of its precedence waterfall (opt flag > `AMI_ENABLE_TITLE_GENERATION`
@@ -1404,7 +1419,8 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // Engine-behavior knobs (round 2) the engine factory already reads but mergeConfigs
   // previously dropped — declared here so they are recognized + base-type validated.
   ['autoMemoryEnabled', 'boolean'], ['autoDreamEnabled', 'boolean'],
-  ['sessionMemoryEnabled', 'boolean'], ['enableTitleGeneration', 'boolean'],
+  ['sessionMemoryEnabled', 'boolean'], ['teamMemoryEnabled', 'boolean'],
+  ['enableTitleGeneration', 'boolean'],
   ['worktreeToolsEnabled', 'boolean'], ['terminalProgressBarEnabled', 'boolean'],
   ['showTurnDuration', 'boolean'], ['autoConnectIde', 'boolean'],
   // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
@@ -3072,6 +3088,7 @@ export function mergeConfigs(
     if (layer.autoMemoryEnabled !== undefined) merged.autoMemoryEnabled = layer.autoMemoryEnabled;
     if (layer.autoDreamEnabled !== undefined) merged.autoDreamEnabled = layer.autoDreamEnabled;
     if (layer.sessionMemoryEnabled !== undefined) merged.sessionMemoryEnabled = layer.sessionMemoryEnabled;
+    if (layer.teamMemoryEnabled !== undefined) merged.teamMemoryEnabled = layer.teamMemoryEnabled;
     if (layer.enableTitleGeneration !== undefined) merged.enableTitleGeneration = layer.enableTitleGeneration;
     if (layer.worktreeToolsEnabled !== undefined) merged.worktreeToolsEnabled = layer.worktreeToolsEnabled;
     if (layer.autoConnectIde !== undefined) merged.autoConnectIde = layer.autoConnectIde;
@@ -3228,6 +3245,33 @@ export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
     managed,
   );
   return merged.memoryExcludes ?? [];
+}
+
+/**
+ * Resolve whether the shared TEAM-memory store should be LOADED for a workspace by
+ * merging the full config waterfall and reading {@link ProjectConfig.teamMemoryEnabled}
+ * with the usual {@link mergeConfigs} last-wins precedence (local > project > global >
+ * managed). Defaults to `true` (load when present) so an unset knob preserves AMI's
+ * always-load behavior; returns `false` only when the highest-priority tier that sets it
+ * uses `false`. Kept in the config layer (not memory.ts) so there is ONE place that reads
+ * the config files and applies the merge semantics, mirroring
+ * {@link resolveConfiguredMemoryExcludes}. Parity: Claude Code gating team memory behind
+ * an enable flag before reading the shared store.
+ */
+export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
+  let managed: ProjectConfig | null = null;
+  // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
+  // team-memory gate lookup must never abort memory loading over it — treat it as absent.
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return merged.teamMemoryEnabled ?? true;
 }
 
 /**

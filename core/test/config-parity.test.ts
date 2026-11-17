@@ -82,6 +82,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // Round-2 engine-behavior knobs (w80): memory/dream/session-memory toggles,
       // title generation, worktree tools, OSC 9;4 progress bar, turn-duration.
       autoMemoryEnabled: true, autoDreamEnabled: false, sessionMemoryEnabled: true,
+      teamMemoryEnabled: false,
       enableTitleGeneration: true, worktreeToolsEnabled: false,
       autoConnectIde: true,
       terminalProgressBarEnabled: true, showTurnDuration: false,

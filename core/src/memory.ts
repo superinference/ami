@@ -17,7 +17,7 @@ import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
 import { scanForSecrets } from './tools/tool-utils';
-import { resolveConfiguredMemoryExcludes, resolveConfiguredExternalMemoryImports } from './config';
+import { resolveConfiguredMemoryExcludes, resolveConfiguredExternalMemoryImports, resolveTeamMemoryLoadingEnabled } from './config';
 import { sequential } from './utils/sequential';
 import {
   isMemoryFileAccess,
@@ -2096,6 +2096,10 @@ export class MemoryManager {
    *  ({@link resolveExternalMemoryImportConsent}) for {@link cwd} — read once and
    *  reused across every `@import` resolved this load. */
   private _externalImportConsent: { approved: boolean; roots: string[] } | null = null;
+  /** Lazily-resolved, per-instance cache of the config-sourced team-memory LOADING
+   *  gate ({@link ProjectConfig.teamMemoryEnabled}) for {@link cwd} — read once and
+   *  reused so every {@link loadTeamMemories} call in one load shares the decision. */
+  private _teamMemoryLoadingEnabled: boolean | null = null;
   /** Absolute ADDITIONAL instruction directories (the engine's `allowedReadRoots`
    *  — dirs granted via `--add-dir` / `--context-file`). Loaded into the prompt only
    *  when {@link additionalInstructionDirsEnabled}. Empty when none supplied. */
@@ -3433,7 +3437,23 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Team memories live in .ami/memory/team/ and are
    * typically committed to version control for shared context.
    */
+  /**
+   * Whether shared TEAM-memory loading is enabled for this workspace, resolved once
+   * per instance from the config waterfall ({@link resolveTeamMemoryLoadingEnabled},
+   * default ON) and reused. An explicit `teamMemoryEnabled: false` in any config tier
+   * (project/global/local/managed) turns the shared-store read OFF.
+   */
+  private teamMemoryLoadingEnabled(): boolean {
+    if (this._teamMemoryLoadingEnabled === null) {
+      this._teamMemoryLoadingEnabled = resolveTeamMemoryLoadingEnabled(this.cwd);
+    }
+    return this._teamMemoryLoadingEnabled;
+  }
+
   loadTeamMemories(): string[] {
+    // Config off-switch: when a tier sets `teamMemoryEnabled: false`, the shared
+    // team-memory subtree is never read/rendered (parity: Claude's TEAMMEM enable gate).
+    if (!this.teamMemoryLoadingEnabled()) return [];
     const teamDir = path.join(this.getMemoryDir(), 'team');
     if (!fs.existsSync(teamDir)) return [];
     return this.loadMemoriesFromDir(teamDir);
