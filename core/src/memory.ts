@@ -337,6 +337,22 @@ export interface MemoryDiagnostic {
   file: string;
   /** Raw character length of the file, when the diagnostic is size-driven. */
   chars?: number;
+  /**
+   * Compact, locale-aware "last modified" label for the offending file
+   * (e.g. `3d ago`), computed via {@link formatRelativeTimeAgo} from the file's
+   * mtime. Lets the `/doctor` surface show HOW STALE an oversized file is so a
+   * user can triage (an untouched-for-months bloated file is a stronger prune
+   * candidate than one edited today). Omitted when the mtime cannot be read.
+   */
+  modifiedAgo?: string;
+  /**
+   * `true` when the offending file is AMI-MANAGED memory (inside the auto-memory
+   * tree — stored/session/team memory), `false` when it is a USER-MANAGED
+   * instruction file (CLAUDE.md / AGENTS.md / `.ami/rules/*`). Mirrors Claude
+   * Code's `isAutoManagedMemoryFile` classification so a UI can route a managed
+   * file to `/memory` and an instruction file to a plain editor.
+   */
+  managed?: boolean;
 }
 
 export interface MemoryEntry {
@@ -572,6 +588,32 @@ function ensureMemoryDirMode(dir: string): void {
 }
 
 /**
+ * Create `filePath` as an empty, owner-only file IF it does not already exist,
+ * PRESERVING the content of an existing file. Uses the exclusive-create `wx`
+ * flag (parity with Claude Code's `writeFile(path, '', { flag: 'wx' })` in
+ * commands/memory/memory.tsx): the write atomically fails with `EEXIST` when the
+ * file is already present, which is the ONE expected error and is swallowed so
+ * the existing content survives; any OTHER errno (EACCES, EROFS, ENOENT on a
+ * missing parent, …) is re-thrown so a genuine failure is never silently masked.
+ *
+ * This is the correct primitive for "ensure the index/log file exists before
+ * appending" without the read-then-write race a `try-read / catch / write`
+ * sequence has (two processes can both observe the file absent and the second
+ * write clobbers the first).
+ *
+ * @returns `true` when this call created the file, `false` when it already existed.
+ */
+function createFileIfAbsent(filePath: string): boolean {
+  try {
+    fs.writeFileSync(filePath, '', { encoding: 'utf-8', flag: 'wx', mode: MEMORY_FILE_MODE });
+    return true;
+  } catch (err) {
+    if (errnoCode(err) === 'EEXIST') return false;
+    throw err;
+  }
+}
+
+/**
  * Environment variable that force-disables ALL auto-memory behavior (the stored-
  * memory / team-memory prompt injection, the oversized-file health warning, and
  * the memory save/recall guidance block). Parity with Claude Code's
@@ -602,6 +644,20 @@ export function isAutoMemoryEnabled(
   }
   if (settingsEnabled !== undefined) return settingsEnabled;
   return true;
+}
+
+const ENABLE_TEAM_MEMORY_ENV = 'AMI_ENABLE_TEAM_MEMORY';
+
+/**
+ * Whether the shared TEAM-memory capability is enabled. Parity with Claude
+ * Code's `feature('TEAMMEM')` gate (utils/memory/types.ts, teamMemoryOps.ts):
+ * team memory is OFF by default (it writes into VCS-shared files, so it is opt-in)
+ * and is turned on with a truthy {@link ENABLE_TEAM_MEMORY_ENV} env value. Gates
+ * {@link MemoryManager.classifyTeamMemoryToolUse} so team-memory op classification
+ * is inert unless the capability has been enabled.
+ */
+export function isTeamMemoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[ENABLE_TEAM_MEMORY_ENV]);
 }
 
 /**
@@ -883,6 +939,115 @@ function memoryFreshness(ageDays: number): string {
   if (ageDays <= 7) return `${ageDays} days ago`;
   if (ageDays <= 30) return `${Math.floor(ageDays / 7)} weeks ago`;
   return `${Math.floor(ageDays / 30)} months ago`;
+}
+
+/** Rendering style for {@link formatRelativeTime}. `narrow` uses AMI's compact
+ *  custom units (`3d ago`, `in 2h`); `short`/`long` defer to the localized
+ *  `Intl.RelativeTimeFormat` for full-word output (`3 days ago`). */
+export type RelativeTimeStyle = 'narrow' | 'short' | 'long';
+
+/** Options for {@link formatRelativeTime} / {@link formatRelativeTimeAgo}
+ *  (parity with Claude Code's `RelativeTimeOptions`, utils/format.ts). */
+export interface RelativeTimeOptions {
+  /** @default 'narrow' */
+  style?: RelativeTimeStyle;
+  /** Whether the localized formatter always emits a number or may say
+   *  "yesterday"/"now". @default 'always' */
+  numeric?: 'always' | 'auto';
+}
+
+/** Interval table (largest → smallest) driving the unit selection in
+ *  {@link formatRelativeTime}. Each row carries the full unit (for the localized
+ *  `Intl.RelativeTimeFormat`) and the compact `narrow` suffix. */
+const RELATIVE_TIME_INTERVALS = [
+  { unit: 'year', seconds: 31536000, shortUnit: 'y' },
+  { unit: 'month', seconds: 2592000, shortUnit: 'mo' },
+  { unit: 'week', seconds: 604800, shortUnit: 'w' },
+  { unit: 'day', seconds: 86400, shortUnit: 'd' },
+  { unit: 'hour', seconds: 3600, shortUnit: 'h' },
+  { unit: 'minute', seconds: 60, shortUnit: 'm' },
+  { unit: 'second', seconds: 1, shortUnit: 's' },
+] as const;
+
+/** Memoized `Intl.RelativeTimeFormat` instances — constructing one per call is
+ *  measurably expensive, and the (style, numeric) space is tiny. Parity with
+ *  Claude Code's cached `getRelativeTimeFormat` (utils/intl.ts). */
+const relativeTimeFormatCache = new Map<string, Intl.RelativeTimeFormat>();
+function getRelativeTimeFormat(
+  style: 'short' | 'long' | 'narrow',
+  numeric: 'always' | 'auto',
+): Intl.RelativeTimeFormat {
+  const key = `${style}\u0000${numeric}`;
+  let fmt = relativeTimeFormatCache.get(key);
+  if (fmt === undefined) {
+    fmt = new Intl.RelativeTimeFormat('en-US', { style, numeric });
+    relativeTimeFormatCache.set(key, fmt);
+  }
+  return fmt;
+}
+
+/**
+ * Format `date` relative to `now` (default: the current time) using an
+ * interval-table algorithm. Parity with Claude Code's `formatRelativeTime`
+ * (utils/format.ts) + its localized `Intl.RelativeTimeFormat` wrapper
+ * (utils/intl.ts): the largest interval whose magnitude the gap meets or exceeds
+ * selects the unit (truncating toward zero), so a 90-minute gap renders as the
+ * hour unit, not 90 minutes.
+ *
+ * `narrow` (the default) emits AMI's compact `${value}${shortUnit} ago` / `in
+ * ${value}${shortUnit}` form; `short`/`long` defer to the memoized localized
+ * `Intl.RelativeTimeFormat` for full-word, locale-aware output. A matched
+ * interval ≥ 1 day always renders with the long localized form regardless of
+ * `style` (matching the reference), and a sub-second gap degrades to `0s ago` /
+ * `in 0s` (narrow) or the localized zero-second string.
+ */
+export function formatRelativeTime(
+  date: Date,
+  options: RelativeTimeOptions & { now?: Date } = {},
+): string {
+  const { style = 'narrow', numeric = 'always', now = new Date() } = options;
+  const diffInMs = date.getTime() - now.getTime();
+  // Truncate toward zero so a 1.9s future gap is 1s (not rounded up to 2s) and a
+  // past gap is handled symmetrically.
+  const diffInSeconds = Math.trunc(diffInMs / 1000);
+
+  for (const { unit, seconds, shortUnit } of RELATIVE_TIME_INTERVALS) {
+    if (Math.abs(diffInSeconds) >= seconds) {
+      const value = Math.trunc(diffInSeconds / seconds);
+      if (style === 'narrow') {
+        return diffInSeconds < 0
+          ? `${Math.abs(value)}${shortUnit} ago`
+          : `in ${value}${shortUnit}`;
+      }
+      // Days-and-longer always read best in the long localized form.
+      return getRelativeTimeFormat('long', numeric).format(value, unit);
+    }
+  }
+
+  // Less than one second in either direction.
+  if (style === 'narrow') {
+    return diffInSeconds <= 0 ? '0s ago' : 'in 0s';
+  }
+  return getRelativeTimeFormat(style, numeric).format(0, 'second');
+}
+
+/**
+ * {@link formatRelativeTime} specialized for a PAST timestamp: forces
+ * `numeric: 'always'` for past dates so the output is a definite "X units ago"
+ * rather than a localized "yesterday", while a future date falls through to the
+ * caller's options unchanged. Parity with Claude Code's `formatRelativeTimeAgo`
+ * (utils/format.ts). Used by {@link MemoryManager.buildMemoryDiagnostics} to
+ * stamp each health warning with how recently the offending file changed.
+ */
+export function formatRelativeTimeAgo(
+  date: Date,
+  options: RelativeTimeOptions & { now?: Date } = {},
+): string {
+  const { now = new Date(), ...rest } = options;
+  if (date > now) {
+    return formatRelativeTime(date, { ...rest, now });
+  }
+  return formatRelativeTime(date, { ...rest, numeric: 'always', now });
 }
 
 /**
@@ -1712,7 +1877,31 @@ export class MemoryManager {
       }
     }
 
+    // Enrich each row with a managed/user-managed classification
+    // ({@link isAutoManagedMemoryFile}) and a compact relative mtime
+    // ({@link formatRelativeTimeAgo}) so the `/doctor` surface can show HOW STALE
+    // an offending file is and whether to route it to `/memory` or a plain editor.
+    for (const d of diags) {
+      d.managed = this.isAutoManagedMemoryFile(d.file);
+      const ago = this.fileModifiedAgo(d.file);
+      if (ago !== undefined) d.modifiedAgo = ago;
+    }
+
     return diags;
+  }
+
+  /**
+   * Compact, locale-aware "last modified" label for `filePath` (e.g. `3d ago`),
+   * derived from its mtime via {@link formatRelativeTimeAgo}. Returns `undefined`
+   * when the file cannot be stat-ed (missing/inaccessible) so a diagnostic row is
+   * never blocked by a failed stat. Used to stamp {@link buildMemoryDiagnostics}.
+   */
+  private fileModifiedAgo(filePath: string): string | undefined {
+    try {
+      return formatRelativeTimeAgo(new Date(this._statSync(filePath).mtimeMs));
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -2292,6 +2481,120 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   }
 
   /**
+   * Is `absPath` a USER-MANAGED instruction file — one a human authors and edits
+   * directly (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md and the other recognized
+   * {@link INSTRUCTION_FILES}, their `.local.md` variants, or a rule file under
+   * `.ami/rules/` or `.claude/rules/`)? These are NOT part of the auto-memory
+   * system and should keep full-diff / direct-edit treatment. Mirrors the
+   * "excludes" half of Claude Code's `isAutoManagedMemoryFile`
+   * (utils/memoryFileDetection.ts). Matching is on the basename for the named
+   * instruction files and on the normalized path for the rules sub-tree.
+   */
+  isUserManagedInstructionFile(absPath: string): boolean {
+    const base = path.basename(absPath);
+    if ((INSTRUCTION_FILES as readonly string[]).includes(base)) return true;
+    if ((LOCAL_VARIANTS as readonly string[]).includes(base)) return true;
+    const norm = absPath.replace(/\\/g, '/');
+    // `.ami/rules/*.md|txt` or `.claude/rules/*.md|txt` (any nesting depth).
+    return /(?:^|\/)\.(?:ami|claude)\/rules\/.+\.(?:md|txt)$/i.test(norm);
+  }
+
+  /**
+   * Is `absPath` an AMI-MANAGED memory file — a file the memory system writes and
+   * curates (stored memory, session memory, team memory, daily logs) rather than
+   * a human-authored instruction file? Parity with Claude Code's
+   * `isAutoManagedMemoryFile` (utils/memoryFileDetection.ts): a path inside the
+   * auto-memory tree ({@link isMemoryFilePath}, which already spans the private
+   * root and the nested team sub-dir) that is NOT a user-managed instruction file
+   * ({@link isUserManagedInstructionFile}). Used by collapse/badge/diagnostic
+   * logic to decide whether a file edit should route to `/memory` (managed) or a
+   * plain editor (user-managed), and to tag {@link buildMemoryDiagnostics} rows.
+   */
+  isAutoManagedMemoryFile(absPath: string): boolean {
+    if (this.isUserManagedInstructionFile(absPath)) return false;
+    return this.isMemoryFilePath(absPath);
+  }
+
+  /**
+   * Classify a TOOL USE as targeting TEAM memory, returning the kind of
+   * operation or `null` when it does not. Parity with Claude Code's
+   * `isTeamMemorySearch` + `isTeamMemoryWriteOrEdit` (utils/teamMemoryOps.ts): a
+   * read/search tool (`file_read`, `grep`, `glob`) whose `path`/`file_path`
+   * targets a team file is `'search'`; a mutation tool (`file_edit`) whose
+   * `file_path`/`path` targets a team file is `'write'`. Gated by
+   * {@link isTeamMemoryEnabled} — when the team-memory capability is off this is
+   * always `null` (matching Claude Code's `feature('TEAMMEM')` gate), so no
+   * surface treats an op as team-scoped unless the user opted in.
+   */
+  classifyTeamMemoryToolUse(
+    toolName: string,
+    toolInput: unknown,
+    env: NodeJS.ProcessEnv = process.env,
+  ): 'search' | 'write' | null {
+    if (!isTeamMemoryEnabled(env)) return null;
+    const input = toolInput as { path?: string; file_path?: string } | undefined;
+    if (!input) return null;
+    if (toolName === 'file_edit') {
+      const target = input.file_path ?? input.path;
+      return target !== undefined && this.isTeamMemFile(target) ? 'write' : null;
+    }
+    if (toolName === 'file_read' || toolName === 'grep' || toolName === 'glob') {
+      const target = input.path ?? input.file_path;
+      return target !== undefined && this.isTeamMemFile(target) ? 'search' : null;
+    }
+    return null;
+  }
+
+  /**
+   * Absolute path of the DATE-PARTITIONED daily memory log for `date` (default:
+   * today): `<memoryDir>/logs/YYYY/MM/YYYY-MM-DD.md`. Parity with Claude Code's
+   * `getAutoMemDailyLogPath` (memdir/paths.ts): rather than only maintaining the
+   * live MEMORY.md index, the agent can APPEND timestamped working notes to a
+   * per-day log that a later consolidation pass distills. The month is
+   * zero-padded so the path sorts lexicographically by date.
+   */
+  getDailyMemoryLogPath(date: Date = new Date()): string {
+    const yyyy = date.getFullYear().toString();
+    const mm = (date.getMonth() + 1).toString().padStart(2, '0');
+    const dd = date.getDate().toString().padStart(2, '0');
+    return path.join(this.getMemoryDir(), 'logs', yyyy, mm, `${yyyy}-${mm}-${dd}.md`);
+  }
+
+  /**
+   * Append `entry` (a single working note) to today's (or `date`'s)
+   * {@link getDailyMemoryLogPath}, creating the `logs/YYYY/MM/` tree and the log
+   * file on first write. Content is {@link sanitizeMemoryContent | sanitized} and
+   * {@link redactCredentials | credential-redacted} before it is persisted — a
+   * daily log is as sensitive as any other stored memory. The file is created
+   * owner-only and a trailing newline terminates each entry so successive appends
+   * stay line-separated. Returns the log path written to.
+   */
+  appendDailyMemoryLog(entry: string, date: Date = new Date()): string {
+    const logPath = this.getDailyMemoryLogPath(date);
+    ensureMemoryDirMode(path.dirname(logPath));
+    createFileIfAbsent(logPath);
+    const clean = redactCredentials(sanitizeMemoryContent(entry)).trimEnd();
+    fs.appendFileSync(logPath, `${clean}\n`, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+    try { fs.chmodSync(logPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+    return logPath;
+  }
+
+  /**
+   * Create `absPath` as an empty file IF it does not already exist, without
+   * clobbering an existing file (EEXIST-safe `wx` write via
+   * {@link createFileIfAbsent}). Parity with Claude Code's `handleSelectMemoryFile`
+   * (commands/memory/memory.tsx): the `/memory` surface synthesizes rows for
+   * absent User/Project memory files so the user can create one from the menu;
+   * selecting such a row creates the file (preserving content if it raced into
+   * existence) before opening it for edit. Ensures the parent directory exists
+   * first. Returns `true` when this call created the file.
+   */
+  createMemoryFileIfAbsent(absPath: string): boolean {
+    ensureMemoryDirMode(path.dirname(absPath));
+    return createFileIfAbsent(absPath);
+  }
+
+  /**
    * Save session memory facts to a session-specific markdown file.
    *
    * Facts are stored as `.ami/memory/session-<sessionId>.md`
@@ -2604,6 +2907,11 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     try {
       await fsp.mkdir(path.dirname(indexPath), { recursive: true, mode: MEMORY_DIR_MODE });
       try { await fsp.chmod(path.dirname(indexPath), MEMORY_DIR_MODE); } catch { /* best effort */ }
+      // Atomically create the index if absent WITHOUT clobbering existing content
+      // (EEXIST-safe `wx` write via {@link createFileIfAbsent}) — closes the
+      // read-then-write race where two concurrent appends both observe the file
+      // missing and the second overwrites the first's entry.
+      createFileIfAbsent(indexPath);
       let content = '';
       try { content = await fsp.readFile(indexPath, 'utf-8'); } catch { /* file doesn't exist */ }
       const next = computeIndexAppend(content, entry);
