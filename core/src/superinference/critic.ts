@@ -21,6 +21,29 @@ export function isCriticDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boo
   return env.CLAUDE_CODE_DISABLE_CRITIC === '1' || env.SUPERINFERENCE_DISABLE_CRITIC === '1';
 }
 
+/**
+ * JSON Schema for the critic's verdict, forwarded as provider-native structured
+ * output ({@link ProviderConfig.responseFormat}) so the reviewer model is
+ * CONSTRAINED to emit schema-valid `{approved, score, reason}` JSON rather than
+ * being asked in free text to "respond with ONLY JSON" and then parsed
+ * best-effort. This removes the parse-failure failure mode from the critic's
+ * decision path — a formatting miss can no longer masquerade as a substantive
+ * negative verdict that wrongly DECREASES belief. {@link Critic.extractJSON}
+ * remains the fallback for providers that ignore structured output. Parity:
+ * Claude Code's `outputFormat: { type: 'json_schema', schema }` on auxiliary
+ * LLM-judge calls (commands/rename/generateSessionName.ts).
+ */
+export const CRITIC_VERDICT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    approved: { type: 'boolean', description: 'Whether the result correctly and completely answers the query.' },
+    score: { type: 'number', description: 'Confidence in the verdict, 0.0 (no) to 1.0 (yes).' },
+    reason: { type: 'string', description: 'Brief explanation of the verdict.' },
+  },
+  required: ['approved', 'score', 'reason'],
+  additionalProperties: false,
+};
+
 export class Critic {
   private α: number;  // False approval rate (Eq. 3)
   private β: number;  // False rejection rate (Eq. 3)
@@ -93,7 +116,16 @@ Respond with ONLY a JSON object:
       // than throwing for retry-exhausted/HTTP failures; a non-network/SSL error is still
       // rethrown and handled by the catch below.
       for await (const chunk of streamChatCompletionWithRetry(
-        { ...provider, model: reviewerModel, maxTokens: 200, temperature: 0 },
+        {
+          ...provider,
+          model: reviewerModel,
+          maxTokens: 200,
+          temperature: 0,
+          // Constrain the reviewer to schema-valid JSON via provider-native
+          // structured output; extractJSON below stays as the fallback for
+          // providers that don't honor it. See CRITIC_VERDICT_SCHEMA.
+          responseFormat: { type: 'json_schema', schema: CRITIC_VERDICT_SCHEMA, name: 'critic_verdict' },
+        },
         messages,
         [],
         abortSignal,

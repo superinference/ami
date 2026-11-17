@@ -1061,6 +1061,26 @@ export interface ProviderConfig {
    * unchanged); an explicit falsy config value overrides a truthy env knob.
    */
   nonStreamingFallback?: boolean;
+  /**
+   * Provider-native structured output: constrain the model response to a JSON
+   * Schema so the returned text is GUARANTEED schema-valid JSON instead of being
+   * coaxed by a "respond with ONLY JSON" prompt and then parsed best-effort.
+   * Threaded into the AI SDK `output: Output.object({ schema })` option, which
+   * each provider maps to its native structured-output mechanism (OpenAI
+   * `response_format: { type: 'json_schema' }`, Anthropic tool-schema). Set on
+   * auxiliary/LLM-judge calls (e.g. the critic's {approved,score,reason} verdict)
+   * so a formatting miss can never masquerade as a substantive negative verdict.
+   * Omitted (free-form text) when unset. Mirrors Claude Code's `outputFormat:
+   * { type: 'json_schema', schema }` on auxiliary queries (commands/rename/
+   * generateSessionName.ts → services/api/claude.ts output_config.format).
+   */
+  responseFormat?: {
+    type: 'json_schema';
+    /** JSON Schema object the model output must satisfy. */
+    schema: Record<string, unknown>;
+    /** Optional schema name forwarded to providers that use it for LLM guidance. */
+    name?: string;
+  };
 }
 
 export const STREAM_CHUNK_TYPES = ['content_delta', 'tool_call_delta', 'thinking_delta', 'done', 'error'] as const;

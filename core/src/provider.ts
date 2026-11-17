@@ -1,4 +1,4 @@
-import { streamText, generateText, jsonSchema } from 'ai';
+import { streamText, generateText, jsonSchema, Output } from 'ai';
 import type { ModelMessage, ToolSet, ToolCallRepairFunction } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -3707,6 +3707,22 @@ export async function* streamChatCompletion(
       ? { stopSequences: config.stopSequences }
       : {};
 
+    // Provider-native structured output (parity: Claude Code's `outputFormat:
+    // { type: 'json_schema', schema }` on auxiliary queries). When a caller sets
+    // config.responseFormat, forward the JSON Schema as the AI SDK `output`
+    // specification so the SDK constrains the model to emit schema-valid JSON
+    // (OpenAI `response_format` json_schema / Anthropic tool-schema) — removing
+    // the parse-failure failure mode from JSON-returning auxiliary calls. Omitted
+    // when unset so the request is byte-identical for the common free-form case.
+    const responseFormatOpt = config.responseFormat
+      ? {
+          output: Output.object({
+            schema: jsonSchema(config.responseFormat.schema),
+            ...(config.responseFormat.name ? { name: config.responseFormat.name } : {}),
+          }),
+        }
+      : {};
+
     // Request metadata user id (Anthropic metadata.user_id / OpenAI user) from
     // config or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID env knob,
     // folded together with any AMI_EXTRA_METADATA / CLAUDE_CODE_EXTRA_METADATA JSON.
@@ -3726,6 +3742,7 @@ export async function* streamChatCompletion(
       tools: toolsForModel,
       ...toolChoiceOpt,
       ...stopSequencesOpt,
+      ...responseFormatOpt,
       maxOutputTokens: fitOutputTokens(
         // When the caller omits maxTokens, use the model's conservative DEFAULT
         // budget (Claude's getModelMaxOutputTokens().default) rather than a flat
