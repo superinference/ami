@@ -4,6 +4,7 @@ import { coerceBool, coerceNumber } from '../utils/coerce';
 import { formatSize } from './spill-output';
 import { formatUsageClause } from '../process-manager';
 import { agentResultPath } from './task';
+import { validateBoundedIntEnvVar } from '../config';
 
 /**
  * Default cap on how long a blocking task_output wait runs before giving up and
@@ -15,8 +16,32 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 1000;
 /** Hard upper bound on the blocking wait timeout (mirrors Claude's 600000 cap). */
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 const WAIT_POLL_INTERVAL_MS = 400;
-/** Hard character cap on returned task output so a chatty task can't flood context. */
-const MAX_OUTPUT_CHARS = 100_000;
+/**
+ * Default hard character cap on returned task output so a chatty task can't flood
+ * context. Operator-tunable via `AMI_TASK_MAX_OUTPUT_CHARS` (see `maxOutputChars`).
+ */
+const MAX_OUTPUT_CHARS_DEFAULT = 100_000;
+/** Floor the cap can be lowered to; a lower env value is rejected to the default. */
+const MAX_OUTPUT_CHARS_MIN = 1_000;
+/** Ceiling the cap can be raised to; a higher env value is clamped to this. */
+const MAX_OUTPUT_CHARS_MAX = 1_000_000;
+
+/**
+ * PARITY (additive): operator-tunable hard character cap on returned task output,
+ * mirroring Claude Code's `getMaxTaskOutputLength()` (outputFormatting.ts), which
+ * reads `TASK_MAX_OUTPUT_LENGTH` through `validateBoundedIntEnvVar`. AMI reads
+ * `AMI_TASK_MAX_OUTPUT_CHARS` through the SAME canonical bounded-int validator so
+ * the knob can never disable the cap or set an unbounded value: absent/garbage →
+ * default, below the floor → default, above the ceiling → clamped. Re-read per call
+ * so a `/env`-style session override takes effect without a restart.
+ */
+export function maxOutputChars(): number {
+  return validateBoundedIntEnvVar('AMI_TASK_MAX_OUTPUT_CHARS', process.env.AMI_TASK_MAX_OUTPUT_CHARS, {
+    default: MAX_OUTPUT_CHARS_DEFAULT,
+    min: MAX_OUTPUT_CHARS_MIN,
+    max: MAX_OUTPUT_CHARS_MAX,
+  }).effective;
+}
 /** Default number of tail lines returned when none is requested (mirrors Claude). */
 const DEFAULT_TAIL_LINES = 50;
 /**
@@ -24,8 +49,8 @@ const DEFAULT_TAIL_LINES = 50;
  * `TASK_OUTPUT_READ_BYTES` of the on-disk log (a positioned tail read) instead of
  * loading the whole file into memory on every poll — bounding memory/IO no matter
  * how large the log grew (mirrors Claude Code's tailFile byte cap). Set well above
- * MAX_OUTPUT_CHARS so the char cap, not the byte window, is the effective limit for
- * normal output while still reporting how much earlier output was elided.
+ * the default char cap so the char cap, not the byte window, is the effective limit
+ * for normal output while still reporting how much earlier output was elided.
  */
 const TASK_OUTPUT_READ_BYTES = 512 * 1024;
 /**
@@ -75,8 +100,9 @@ export function getAgentOutputTaskId(filePath: unknown): string | null {
  * the incremental (since_offset) read paths.
  */
 function capBody(body: string): string {
-  if (body.length <= MAX_OUTPUT_CHARS) return body;
-  return `... [output truncated to the last ${MAX_OUTPUT_CHARS} chars]\n` + body.slice(body.length - MAX_OUTPUT_CHARS);
+  const cap = maxOutputChars();
+  if (body.length <= cap) return body;
+  return `... [output truncated to the last ${cap} chars]\n` + body.slice(body.length - cap);
 }
 
 /** Apply a regex line filter then a tail to a raw chunk of output (incremental path). */
