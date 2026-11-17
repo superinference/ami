@@ -145,22 +145,38 @@ export function detectConfigEscalationVectors(settings: Record<string, unknown> 
   return flagged;
 }
 
+/** Canonical, absolute, trailing-separator-stripped form of a path used as a
+ *  trusted-root key / ancestor-walk node, so a listed root and the `cwd` being
+ *  checked compare identically regardless of `.`/`..`/trailing-slash spelling.
+ *  The filesystem root collapses to a single separator rather than the empty
+ *  string so the root is still a comparable, non-empty key. */
+function normalizeTrustNode(p: string): string {
+  const n = path.normalize(path.isAbsolute(p) ? p : path.resolve(p));
+  return n.replace(/[/\\]+$/, '') || path.sep;
+}
+
 /**
  * Is `cwd` trusted by inheritance — i.e. itself or a descendant of a previously
  * trusted root (e.g. the git-root/original project path the user already
- * accepted)? Mirrors Claude's computeTrustDialogAccepted ancestor/git-root walk,
- * so a subdirectory of an already-trusted project does not re-prompt.
+ * accepted)? Walks UP from `cwd` through every parent directory, stopping at the
+ * filesystem-root boundary (where `path.dirname(x) === x`), and returns true as
+ * soon as a trusted root is hit — so trusting a parent directory implies trust of
+ * every descendant. Mirrors Claude's `computeTrustDialogAccepted` / `isPathTrusted`
+ * ancestor walk exactly (an explicit parent traversal with a root boundary, rather
+ * than a prefix test that could be fooled by sibling paths sharing a name prefix).
  */
 export function isTrustedByAncestor(cwd: string, trustedRoots: string[]): boolean {
   if (!cwd || !trustedRoots.length) return false;
-  const strip = (p: string) => p.replace(/[/\\]+$/, '') || p;
-  const c = strip(path.normalize(path.isAbsolute(cwd) ? cwd : path.resolve(cwd)));
-  for (const root of trustedRoots) {
-    if (!root) continue;
-    const r = strip(path.normalize(path.isAbsolute(root) ? root : path.resolve(root)));
-    if (c === r || c.startsWith(r + path.sep)) return true;
+  const trustedSet = new Set(trustedRoots.filter(Boolean).map(normalizeTrustNode));
+  if (!trustedSet.size) return false;
+  let current = normalizeTrustNode(cwd);
+  for (;;) {
+    if (trustedSet.has(current)) return true;
+    const parent = path.dirname(current);
+    // Root boundary: dirname of the filesystem root is itself — stop the walk.
+    if (parent === current) return false;
+    current = parent;
   }
-  return false;
 }
 
 /** Settings files (relative to a project cwd) that are honored as project-local
@@ -200,6 +216,16 @@ export interface TrustIndicators {
    *  If `cwd` is one of these or a descendant, safe mode is NOT forced for the
    *  trust indicators (inheritance), mirroring computeTrustDialogAccepted. */
   trustedRoots?: string[];
+  /** `cwd` has a PERSISTED folder-trust grant resolved from the config waterfall
+   *  (Claude-parity `hasTrustDialogAccepted` / `trustedProjectPaths`, walked up the
+   *  ancestor chain by `config.isPathTrusted`). Supplied by the caller so the pure
+   *  decision here stays side-effect free while still honoring durable, cross-session
+   *  trust: when true the SOFT trust signals (untrusted/cloned project) are suppressed
+   *  exactly like an in-memory `trustedRoots` match — so a user who recorded trust for
+   *  this folder (or a parent) is not forced to re-establish it every session. The HARD
+   *  config/hook/bash/env escalation signals still engage even in a trusted folder
+   *  (deliberate AMI superset over Claude's all-or-nothing trust). */
+  persistentlyTrusted?: boolean;
 }
 
 /** Result of scanning a project's own settings files for trust/escalation signals:
@@ -416,15 +442,19 @@ export interface SafeModeDecision {
  * Every independently-detected dangerous source is OR-combined — ANY one present
  * engages safe mode (parity with Claude's TrustDialog, which forces a trust
  * decision when ANY of hooks / bash execution / credential helpers / dangerous
- * env vars / MCP servers is present). Ancestor/git-root trust inheritance still
- * suppresses the untrusted-project / cloned-from-unknown flags for a cwd inside an
- * already-trusted root; the hard config/hook/bash/env escalation signals engage
- * safe mode even there. The legacy prompt-override+MCP pairing is retained as a
+ * env vars / MCP servers is present). Trust inheritance — an in-memory
+ * {@link TrustIndicators.trustedRoots} ancestor match OR a persisted
+ * {@link TrustIndicators.persistentlyTrusted} folder-trust grant (Claude-parity
+ * `hasTrustDialogAccepted` / `trustedProjectPaths`) — still suppresses the
+ * untrusted-project / cloned-from-unknown flags for a cwd inside an already-trusted
+ * root; the hard config/hook/bash/env escalation signals engage safe mode even
+ * there. The legacy prompt-override+MCP pairing is retained as a
  * deliberate AMI design (MCP servers are a normal configured capability, so MCP
  * alone does not force safe mode) and is evaluated last.
  */
 export function evaluateSafeMode(cwd: string, indicators: TrustIndicators): SafeModeDecision {
-  const inherited = indicators.trustedRoots ? isTrustedByAncestor(cwd, indicators.trustedRoots) : false;
+  const inherited = indicators.persistentlyTrusted === true
+    || (indicators.trustedRoots ? isTrustedByAncestor(cwd, indicators.trustedRoots) : false);
   if (!inherited) {
     if (indicators.untrustedProject) return { enabled: true, reason: 'untrusted project directory' };
     if (indicators.clonedFromUnknown) return { enabled: true, reason: 'cloned from an unknown source' };
