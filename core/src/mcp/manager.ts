@@ -1346,73 +1346,7 @@ export class McpManager extends EventEmitter {
     // OAuth 2.1 (2025-06-18): for an http/sse server that opts in, give the client
     // a session that discovers the auth server on 401, drives consent, and manages
     // tokens. The interactive consent leg comes from the manager-level authorizer.
-    let oauth: McpOAuthProvider | undefined;
-    if (config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url) {
-      // Resolve the loopback redirect URI + whether a dynamic free-port lookup is
-      // needed, with Claude-parity precedence: explicit config redirectUri > per-server
-      // `callbackPort` (`mcp add --callback-port`) > global MCP_OAUTH_CALLBACK_PORT env
-      // knob > dynamic discovery at consent time.
-      const redirect = resolveMcpOAuthRedirect(config.oauth, getConfiguredOAuthCallbackPort());
-      // Persist tokens per server so authentication survives restarts (H22/H45).
-      // Key the token file on the server NAME *and* a hash of its connection config
-      // (type/url/headers) so a reconfigured server (changed URL/transport/headers)
-      // does not reuse a stale grant that no longer applies — parity with Claude's
-      // getServerKey. (Labeled functional change: the token filename now embeds the
-      // config hash; an old name-only token file is simply re-authed, not reused.)
-      const tokenStore = new FileOAuthTokenStore(
-        this.mcpTokenFilePath(name, config),
-        // Proactive refresh-ahead window: refresh this many ms before real expiry
-        // so a long-running session never presents an expired token mid-request.
-        { skewMs: config.oauth.refreshBufferMs },
-      );
-      // Per-server cancellation: aborting this controller (on stop/remove) aborts
-      // any in-flight OAuth HTTP request so a user-cancelled / torn-down server
-      // does not leave a hung consent/discovery call running.
-      const oauthAbort = new AbortController();
-      this._oauthAbort.get(name)?.abort();
-      this._oauthAbort.set(name, oauthAbort);
-      oauth = new McpOAuthSession({
-        serverUrl: config.url,
-        fetchImpl: this._fetch,
-        store: tokenStore,
-        signal: oauthAbort.signal,
-        // Step-by-step diagnostic logging: attribute each leg (discovery, DCR,
-        // consent, token exchange, refresh, revoke) to the MCP log so an auth
-        // failure is traceable to the exact leg. URLs/bodies are pre-redacted.
-        onLog: (ev) => coreLog('mcp', `oauth[${name}] ${ev.step}: ${ev.message}${ev.ok === false ? ' (failed)' : ''}${ev.error ? ` — ${ev.error}` : ''}`),
-        authorize: (params) => {
-          // Record the URL before delegating so even a headless authorizer that
-          // refuses still leaves the URL available to relay to the model (H46/H48/H49).
-          this._lastAuthUrls.set(name, params.authorizationUrl);
-          this.emit('oauth-authorization-url', name, params.authorizationUrl);
-          return this._oauthAuthorizer(params);
-        },
-        // Port precedence: an explicit config redirectUri wins; else a per-server
-        // callbackPort or the pinned MCP_OAUTH_CALLBACK_PORT env knob (fixed,
-        // firewall-friendly); else a dynamically-discovered free loopback port at
-        // consent time so a busy port never wedges auth (see resolveMcpOAuthRedirect).
-        redirectUri: redirect.redirectUri,
-        resolveRedirectUri: redirect.dynamic
-          ? async () => buildRedirectUri(await findAvailablePort())
-          : undefined,
-        clientId: config.oauth.clientId,
-        clientSecret: config.oauth.clientSecret,
-        // CIMD (SEP-991): when configured (or via MCP_OAUTH_CLIENT_METADATA_URL) and
-        // the AS advertises client_id_metadata_document_supported, the flow uses this
-        // URL as the client_id instead of Dynamic Client Registration.
-        clientMetadataUrl: config.oauth.clientMetadataUrl,
-        scope: config.oauth.scope,
-        authServerMetadataUrl: config.oauth.authServerMetadataUrl,
-        loginHint: config.oauth.loginHint,
-        // Browserless enterprise SSO (SEP-990): when configured + env-gated, skip the
-        // browser and use the token-exchange flow with the pre-obtained id_token.
-        xaa: config.oauth.xaa,
-        // Proactively refresh long-lived server tokens ahead of expiry so a
-        // long-running session never presents an expired token mid-request. The
-        // background timer is unref'd and torn down with the per-server abort signal.
-        autoRefresh: true,
-      });
-    }
+    const oauth = this.buildOAuthProvider(name, config);
 
     const client = this._createClient({
       command: resolvedCommand,
@@ -1985,6 +1919,152 @@ export class McpManager extends EventEmitter {
   async restartServer(name: string): Promise<void> {
     await this.stopServer(name);
     await this.ensureConnected(name);
+  }
+
+  /**
+   * Build the OAuth 2.1 provider for an http/sse server that opts in, or
+   * `undefined` for a stdio server / one without an `oauth` block. Shared by
+   * {@link registerClient} (consent-on-connect) and {@link authenticate}
+   * (pre-authentication, no connect) so both drive the EXACT same discovery /
+   * DCR / consent / token-exchange / refresh path against the SAME per-server
+   * token store and cancellation controller — one canonical OAuth construction,
+   * no second parallel implementation.
+   */
+  private buildOAuthProvider(name: string, config: McpServerConfig): McpOAuthProvider | undefined {
+    if (!(config.oauth && (config.transport === 'http' || config.transport === 'sse') && config.url)) {
+      return undefined;
+    }
+    // Resolve the loopback redirect URI + whether a dynamic free-port lookup is
+    // needed, with Claude-parity precedence: explicit config redirectUri > per-server
+    // `callbackPort` (`mcp add --callback-port`) > global MCP_OAUTH_CALLBACK_PORT env
+    // knob > dynamic discovery at consent time.
+    const redirect = resolveMcpOAuthRedirect(config.oauth, getConfiguredOAuthCallbackPort());
+    // Persist tokens per server so authentication survives restarts (H22/H45).
+    // Key the token file on the server NAME *and* a hash of its connection config
+    // (type/url/headers) so a reconfigured server (changed URL/transport/headers)
+    // does not reuse a stale grant that no longer applies — parity with Claude's
+    // getServerKey. (Labeled functional change: the token filename now embeds the
+    // config hash; an old name-only token file is simply re-authed, not reused.)
+    const tokenStore = new FileOAuthTokenStore(
+      this.mcpTokenFilePath(name, config),
+      // Proactive refresh-ahead window: refresh this many ms before real expiry
+      // so a long-running session never presents an expired token mid-request.
+      { skewMs: config.oauth.refreshBufferMs },
+    );
+    // Per-server cancellation: aborting this controller (on stop/remove) aborts
+    // any in-flight OAuth HTTP request so a user-cancelled / torn-down server
+    // does not leave a hung consent/discovery call running.
+    const oauthAbort = new AbortController();
+    this._oauthAbort.get(name)?.abort();
+    this._oauthAbort.set(name, oauthAbort);
+    return new McpOAuthSession({
+      serverUrl: config.url,
+      fetchImpl: this._fetch,
+      store: tokenStore,
+      signal: oauthAbort.signal,
+      // Step-by-step diagnostic logging: attribute each leg (discovery, DCR,
+      // consent, token exchange, refresh, revoke) to the MCP log so an auth
+      // failure is traceable to the exact leg. URLs/bodies are pre-redacted.
+      onLog: (ev) => coreLog('mcp', `oauth[${name}] ${ev.step}: ${ev.message}${ev.ok === false ? ' (failed)' : ''}${ev.error ? ` — ${ev.error}` : ''}`),
+      authorize: (params) => {
+        // Record the URL before delegating so even a headless authorizer that
+        // refuses still leaves the URL available to relay to the model (H46/H48/H49).
+        this._lastAuthUrls.set(name, params.authorizationUrl);
+        this.emit('oauth-authorization-url', name, params.authorizationUrl);
+        return this._oauthAuthorizer(params);
+      },
+      // Port precedence: an explicit config redirectUri wins; else a per-server
+      // callbackPort or the pinned MCP_OAUTH_CALLBACK_PORT env knob (fixed,
+      // firewall-friendly); else a dynamically-discovered free loopback port at
+      // consent time so a busy port never wedges auth (see resolveMcpOAuthRedirect).
+      redirectUri: redirect.redirectUri,
+      resolveRedirectUri: redirect.dynamic
+        ? async () => buildRedirectUri(await findAvailablePort())
+        : undefined,
+      clientId: config.oauth.clientId,
+      clientSecret: config.oauth.clientSecret,
+      // CIMD (SEP-991): when configured (or via MCP_OAUTH_CLIENT_METADATA_URL) and
+      // the AS advertises client_id_metadata_document_supported, the flow uses this
+      // URL as the client_id instead of Dynamic Client Registration.
+      clientMetadataUrl: config.oauth.clientMetadataUrl,
+      scope: config.oauth.scope,
+      authServerMetadataUrl: config.oauth.authServerMetadataUrl,
+      loginHint: config.oauth.loginHint,
+      // Browserless enterprise SSO (SEP-990): when configured + env-gated, skip the
+      // browser and use the token-exchange flow with the pre-obtained id_token.
+      xaa: config.oauth.xaa,
+      // Proactively refresh long-lived server tokens ahead of expiry so a
+      // long-running session never presents an expired token mid-request. The
+      // background timer is unref'd and torn down with the per-server abort signal.
+      autoRefresh: true,
+    });
+  }
+
+  /**
+   * Pre-authenticate a declared-but-not-connected http/sse OAuth server WITHOUT
+   * establishing a full MCP session (Claude-parity MCPAgentServerMenu
+   * `handleAuthenticate`, MCPAgentServerMenu.tsx:L56-81).
+   *
+   * Agent/skill-scoped MCP servers are lazy-connect: they only come up when the
+   * stance that declares them is pinned. That makes their first tool call pay the
+   * full interactive OAuth consent cost mid-run. This runs the OAuth flow ahead of
+   * time — building a temp OAuth provider from the server's `{transport, url}`
+   * config and driving discovery → consent → token-exchange so the credential is
+   * cached before first use — and resolves WITHOUT spawning the transport or
+   * discovering tools, exactly like Claude's temp-config `performMCPOAuthFlow`.
+   *
+   * Returns `{ authenticated }` — `true` when a token was obtained (cached for the
+   * eventual connect) and `false` when no auth was required. Non-OAuth / stdio
+   * servers (no `oauth` block or no `url`) throw, since there is nothing to
+   * pre-authenticate. The `oauth-authorization-url` event fires during the flow
+   * (same path as a live connect) so a frontend can relay the consent URL; an
+   * optional AbortSignal cancels an in-flight flow.
+   */
+  async authenticate(name: string, opts?: { signal?: AbortSignal }): Promise<{ authenticated: boolean }> {
+    const signal = opts?.signal;
+    if (signal?.aborted) {
+      throw new Error(`OAuth flow for "${name}" was aborted before it started`);
+    }
+    const config = this.configs.get(name) ?? this.pendingServers.get(name)?.config;
+    if (!config) {
+      throw new Error(`Unknown MCP server "${name}" — nothing to authenticate`);
+    }
+    const oauth = this.buildOAuthProvider(name, config);
+    if (!oauth) {
+      throw new Error(
+        `MCP server "${name}" is not an OAuth http/sse server — pre-authentication only applies to remote servers with an \`oauth\` config`,
+      );
+    }
+    // Drop any cached guaranteed-401 marker so an explicit pre-auth always re-probes
+    // (parity with reconnect's clearMcpAuthCache on manual auth).
+    this.clearNeedsAuthCache(name);
+    // Mid-flight cancellation: aborting the external signal aborts the per-server
+    // OAuth controller (cancelling any in-flight discovery/consent/token HTTP leg)
+    // AND wins a race so the caller gets a deterministic abort rejection — the
+    // underlying flow swallows a cancelled discovery into a `false` return, which
+    // would otherwise be indistinguishable from "no auth required".
+    let abortListener: (() => void) | undefined;
+    const abortPromise = signal
+      ? new Promise<never>((_resolve, reject) => {
+          abortListener = () => {
+            this._oauthAbort.get(name)?.abort();
+            reject(new Error(`OAuth flow for "${name}" was aborted`));
+          };
+          signal.addEventListener('abort', abortListener, { once: true });
+        })
+      : undefined;
+    // onUnauthorized(null) drives the full flow (silent refresh if a grant exists,
+    // otherwise discovery → consent → token exchange) and returns true once a
+    // token is cached in the per-server store — no transport is ever spawned.
+    const flow = oauth.onUnauthorized(null).then((authenticated) => ({ authenticated }));
+    try {
+      return await (abortPromise ? Promise.race([flow, abortPromise]) : flow);
+    } finally {
+      if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+      // Never leak an unhandled rejection from the detached flow once the race has
+      // already been decided (completed or aborted).
+      flow.catch(() => {});
+    }
   }
 
   /**
