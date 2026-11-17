@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomInt } from './words';
+import { stripBom } from './config';
 
 /**
  * Graded helpfulness scale for a learned entry. The three coarse values
@@ -183,7 +184,13 @@ export class Skillbook {
   private loadFromDisk(): void {
     try {
       if (fs.existsSync(this.persistPath)) {
-        const data = JSON.parse(fs.readFileSync(this.persistPath, 'utf-8'));
+        // Strip a leading UTF-8 BOM before parsing: the skillbook file is a
+        // project-cwd JSON (`.ami/skillbook.json`) that may be committed and
+        // re-written by Windows editors / PowerShell 5.x (Out-File, Set-Content),
+        // which prepend U+FEFF. Without this, JSON.parse throws "Unexpected
+        // token" and the whole file reads as corrupt. Reuses the one canonical
+        // {@link stripBom} helper rather than re-implementing it.
+        const data = JSON.parse(stripBom(fs.readFileSync(this.persistPath, 'utf-8')));
         // Discard on schema mismatch so a future/incompatible format is never
         // trusted. (Add a migration branch here when SCHEMA_VERSION is bumped.)
         if (data?.version !== SCHEMA_VERSION) return;

@@ -126,6 +126,22 @@ describe('Skillbook', () => {
     fs.rmSync(corruptDir, { recursive: true, force: true });
   });
 
+  it('loads a BOM-prefixed skillbook file (PowerShell 5.x / Windows editors)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-bom-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    const json = JSON.stringify({
+      version: 1,
+      entries: [{ id: 'bom', section: 'context', keywords: ['k'], issue: 'i', insight: 'survives the BOM', helpfulCount: 1, harmfulCount: 0, neutralCount: 0, occurrences: [], createdAt: 1, updatedAt: 1 }],
+    });
+    // Write the file WITH a leading UTF-8 BOM (U+FEFF), exactly as PowerShell
+    // 5.x Out-File / Set-Content and several Windows editors do.
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), '﻿' + json);
+    const sb = new Skillbook(dir);
+    assert.equal(sb.getAll().length, 1);
+    assert.equal(sb.getAll()[0].insight, 'survives the BOM');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('TAG returns null for non-existent entry', () => {
     const result = skillbook.apply({ type: 'TAG', id: 'nonexistent', feedback: 'helpful' });
     assert.equal(result, null);
