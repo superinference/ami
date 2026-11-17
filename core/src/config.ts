@@ -587,6 +587,15 @@ export interface ConfigDiagnostic {
   sourceName?: string;
   /** Where the corrupt file was backed up, or the most recent known-good backup. */
   backupPath?: string;
+  /**
+   * A copy-pasteable shell command that restores the most recent known-GOOD
+   * pre-write snapshot (`<file>.backup-<ms>`) over the damaged file, e.g.
+   * `cp "<backup>" "<file>"`. Present only on a fatal `parse-error`/`not-object`
+   * diagnostic when such a good backup exists, so the user is told HOW to recover
+   * rather than only that the file is broken. Parity: Claude Code's
+   * `cp "<backup>" "<file>"` restore hint printed on a corrupt-config read.
+   */
+  restoreHint?: string;
   /** For `invalid-value`: the per-field issues (grouped by this file). */
   issues?: ConfigValueIssue[];
   /** For `unknown-key`: the unrecognized top-level keys (likely typos). */
@@ -844,10 +853,23 @@ export function salvageManagedConfig(config: ProjectConfig, sourcePath: string):
 
 /**
  * Back up a corrupt config file so the user's content is never silently lost.
- * Returns the backup path, or null if the backup itself failed.
+ * Returns the backup path (a fresh one, or an existing byte-identical one), or
+ * null if the backup itself failed.
+ *
+ * CONTENT-DEDUP: a corrupt config is commonly re-read many times in one session
+ * (the project/local/global waterfall, repeated `/doctor` sweeps, a watcher echo),
+ * and each read would otherwise spawn another `.corrupt-<ts>` quarantine copy of
+ * the SAME broken bytes — a backup storm. Before writing, the existing
+ * `<file>.corrupt-*` quarantines are scanned; when one already holds byte-identical
+ * content, that existing path is returned and NO new file is written. Parity:
+ * Claude Code's corrupted-config quarantine skips the copy when an existing
+ * corrupted backup is byte-identical (content dedup).
  */
 export function backupCorruptConfig(configPath: string, content: string): string | null {
   try {
+    // Dedup against an existing quarantine of the identical broken bytes.
+    const existing = findIdenticalCorruptBackup(configPath, content);
+    if (existing) return existing;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = `${configPath}.corrupt-${stamp}`;
     fsHooks.writeFileSync(backupPath, content, 'utf-8');
@@ -855,6 +877,29 @@ export function backupCorruptConfig(configPath: string, content: string): string
   } catch {
     return null;
   }
+}
+
+/**
+ * The newest existing `<file>.corrupt-*` quarantine whose on-disk bytes are
+ * IDENTICAL to `content`, or null when none match. Used by
+ * {@link backupCorruptConfig} to avoid re-quarantining the same broken file.
+ */
+function findIdenticalCorruptBackup(configPath: string, content: string): string | null {
+  try {
+    const dir = path.dirname(configPath);
+    const base = path.basename(configPath);
+    const candidates = (fsHooks.readdirSync(dir) as string[])
+      .filter(e => e.startsWith(`${base}.corrupt-`))
+      .sort()
+      .reverse();
+    for (const name of candidates) {
+      const full = path.join(dir, name);
+      try {
+        if ((fsHooks.readFileSync(full, 'utf-8') as string) === content) return full;
+      } catch { /* unreadable candidate — skip it */ }
+    }
+  } catch { /* unreadable dir — fall through to a fresh write */ }
+  return null;
 }
 
 /**
@@ -948,8 +993,13 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // Append actionable recovery guidance so the user learns HOW to fix the malformed
     // file, not merely that the parse failed (parity: Claude's JSON syntax-error tip).
     const message = `${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`;
-    coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}`);
-    return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath } };
+    // Point the user at the most recent known-GOOD pre-write snapshot (`.backup-*`),
+    // if any, with a copy-pasteable restore command (parity: Claude's `cp` restore
+    // hint). Distinct from `backupPath`, which quarantines the CORRUPT bytes.
+    const good = findMostRecentConfigBackup(configPath);
+    const restoreHint = good ? `cp "${good}" "${configPath}"` : undefined;
+    coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}${restoreHint ? ` [restore: ${restoreHint}]` : ''}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath, restoreHint } };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     const message = `Expected a JSON object, got ${describeJsonType(parsed)}`;
@@ -1842,6 +1892,18 @@ function listConfigBackups(filePath: string): string[] {
 }
 
 /**
+ * The most recent known-GOOD pre-write snapshot (`<file>.backup-<ms>`) beside
+ * `filePath`, or null when none exists. These snapshots are written by
+ * {@link backupConfigBeforeWrite} before every overwrite, so the newest one is
+ * the last byte-valid config AMI persisted — the right source to restore over a
+ * corrupt file. Distinct from {@link findMostRecentBackup}, which finds the
+ * `.corrupt-*` QUARANTINE of a broken file (not a restore source).
+ */
+export function findMostRecentConfigBackup(filePath: string): string | null {
+  return listConfigBackups(filePath)[0] ?? null;
+}
+
+/**
  * Resolve the REAL file a config write must land on: when `filePath` is a symlink
  * (e.g. a dotfile-managed `~/.ami/config.json` stow/chezmoi link), return its
  * target so the write updates the target IN PLACE and preserves the symlink —
@@ -1933,6 +1995,45 @@ function writeFileDurable(filePath: string, content: string, mode: number, prese
   }
 }
 
+// ---------------------------------------------------------------------------
+// Global-config write-count introspection (parity: Claude's globalConfigWriteCount
+// / CONFIG_WRITE_DISPLAY_THRESHOLD). A pathological write RATE to the shared global
+// config (a save loop, two fighting instances) is the classic precursor to a
+// corrupt `~/.ami/config.json`; before this it was invisible until the file broke.
+// The per-process counter + exported getter make the churn observable, and a
+// one-time warning is logged the moment the rate crosses the display threshold.
+// ---------------------------------------------------------------------------
+
+/**
+ * Write-rate at which an unusually high global-config churn is surfaced (parity:
+ * Claude Code's CONFIG_WRITE_DISPLAY_THRESHOLD=20). Reached once per process, a
+ * single warning is logged — a steady trickle of saves never spams.
+ */
+export const CONFIG_WRITE_DISPLAY_THRESHOLD = 20;
+
+/** Number of successful writes to the GLOBAL config file this process. */
+let globalConfigWriteCount = 0;
+
+/**
+ * How many times the GLOBAL config (`~/.ami/config.json`) has been written this
+ * process. Introspection surface over config churn (parity: Claude's
+ * getGlobalConfigWriteCount) — a value at/over {@link CONFIG_WRITE_DISPLAY_THRESHOLD}
+ * signals a likely write loop before it damages the file.
+ */
+export function getGlobalConfigWriteCount(): number {
+  return globalConfigWriteCount;
+}
+
+/** Count a successful global-config write + warn once on crossing the threshold. */
+function recordGlobalConfigWrite(target: string): void {
+  const globalPath = getGlobalConfigPath();
+  if (globalPath === null || path.resolve(target) !== path.resolve(globalPath)) return;
+  globalConfigWriteCount++;
+  if (globalConfigWriteCount === CONFIG_WRITE_DISPLAY_THRESHOLD) {
+    coreLog('config', `global config at ${target} has been written ${globalConfigWriteCount} times this process — an unusually high rate may indicate a write loop (watch for corruption).`);
+  }
+}
+
 export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
   // Write THROUGH a symlinked config path to its target so a dotfile-managed
   // settings symlink is updated in place rather than clobbered by a regular file
@@ -1967,6 +2068,9 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
     try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     throw err;
   }
+  // Count a successful write to the shared GLOBAL config so pathological churn
+  // (a save loop, two fighting instances) is observable before it corrupts the file.
+  recordGlobalConfigWrite(target);
 }
 
 /** Why a {@link updateConfigFile} call did (or did not) persist. */
