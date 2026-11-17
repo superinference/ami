@@ -7,6 +7,7 @@ import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type Skil
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { levenshteinDistance } from './tools/path-suggest';
+import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT } from './tools/tool-gates';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 
 /**
@@ -650,6 +651,24 @@ export interface ProjectConfig {
    * An explicit `AMI_SPINNER_VERBS` env value still WINS.
    */
   spinnerVerbs?: { mode?: 'append' | 'replace'; verbs?: string[] };
+  /**
+   * Persisted toggle for background-task functionality (parity: Claude Code's
+   * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` env gate behind which the entire
+   * background-task path — the bash tool's `run_in_background` parameter, its
+   * background guidance, and the task tool's background mode — is disabled). AMI
+   * already honors this as the {@link import('./tools/tool-gates').DISABLE_BACKGROUND_TASKS_ENV}
+   * env knob (`AMI_DISABLE_BACKGROUND_TASKS` / the Claude-compatible
+   * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` alias) consumed by {@link isBackgroundTasksDisabled}
+   * in `tools/bash.ts` + `tools/task.ts`, but there was no way to PERSIST the choice —
+   * a value in `.ami/config.json` (any file tier) was silently dropped. An explicit
+   * `false` disables background tasks by seeding that env knob via
+   * {@link applyConfigBackgroundTasks}, so the drop takes effect from the first turn
+   * (the bash tool schema omits `run_in_background` and a background-requested command
+   * runs in the foreground). An explicit `AMI_DISABLE_BACKGROUND_TASKS` /
+   * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` env value still WINS (one-shot override).
+   * Unset/`true` keeps background tasks on (AMI's default).
+   */
+  backgroundTasksEnabled?: boolean;
 }
 
 /**
@@ -1268,6 +1287,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['verbose', 'boolean'], ['copyOnSelect', 'boolean'],
   ['syntaxHighlightingDisabled', 'boolean'], ['showThinkingSummaries', 'boolean'],
   ['messageIdleNotifThresholdMs', 'number'], ['spinnerVerbs', 'object'],
+  ['backgroundTasksEnabled', 'boolean'],
 ];
 
 /**
@@ -2730,6 +2750,7 @@ export function mergeConfigs(
     if (layer.showThinkingSummaries !== undefined) merged.showThinkingSummaries = layer.showThinkingSummaries;
     if (layer.messageIdleNotifThresholdMs !== undefined) merged.messageIdleNotifThresholdMs = layer.messageIdleNotifThresholdMs;
     if (layer.spinnerVerbs !== undefined) merged.spinnerVerbs = layer.spinnerVerbs;
+    if (layer.backgroundTasksEnabled !== undefined) merged.backgroundTasksEnabled = layer.backgroundTasksEnabled;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -3334,6 +3355,31 @@ export function applyConfigSpinnerVerbs(
 }
 
 /**
+ * Bridge the persisted {@link ProjectConfig.backgroundTasksEnabled} knob into the
+ * existing `AMI_DISABLE_BACKGROUND_TASKS` env gate the core bash/task tools already read
+ * (via {@link isBackgroundTasksDisabled}) — so a user can persist "no background tasks"
+ * in the settings waterfall (`.ami/config.json`) instead of exporting the env var
+ * (parity: Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`). `backgroundTasksEnabled
+ * === false` arms the gate (sets `'1'`); unset/`true` is a no-op (background tasks stay
+ * on — AMI's default). An explicit {@link DISABLE_BACKGROUND_TASKS_ENV} OR its
+ * Claude-compatible {@link DISABLE_BACKGROUND_TASKS_ENV_COMPAT} alias already in `target`
+ * WINS (one-shot override — the tool gate honors either spelling, so a pre-set alias must
+ * not be clobbered). Because {@link isBackgroundTasksDisabled} is evaluated at tool
+ * schema-build + execution time (after engine setup), seeding the env here from the
+ * MERGED config makes the drop take effect from the first turn.
+ */
+export function applyConfigBackgroundTasks(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[DISABLE_BACKGROUND_TASKS_ENV] !== undefined) return;
+  if (target[DISABLE_BACKGROUND_TASKS_ENV_COMPAT] !== undefined) return;
+  if (config?.backgroundTasksEnabled === false) {
+    target[DISABLE_BACKGROUND_TASKS_ENV] = '1';
+  }
+}
+
+/**
  * Apply every startup config→runtime knob bridge in one call (the env-targeting
  * ones): CA certs, glob-gitignore, auto-compaction, plans directory, Anthropic betas,
  * the OSC 9;4 progress kill-switch, the per-turn duration suppression, and the cosmetic/
@@ -3360,6 +3406,7 @@ export function applyConfigStartupKnobs(
   applyConfigSyntaxHighlighting(config, target);
   applyConfigIdleNotifThreshold(config, target);
   applyConfigSpinnerVerbs(config, target);
+  applyConfigBackgroundTasks(config, target);
 }
 
 /**

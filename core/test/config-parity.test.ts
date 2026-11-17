@@ -90,6 +90,9 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       verbose: true, copyOnSelect: false, syntaxHighlightingDisabled: true,
       showThinkingSummaries: false, messageIdleNotifThresholdMs: 60000,
       spinnerVerbs: { mode: 'append', verbs: ['Churning'] },
+      // Background-task gate (U010 w88): bridged to AMI_DISABLE_BACKGROUND_TASKS by
+      // applyConfigStartupKnobs; declared/validated/merged like the above.
+      backgroundTasksEnabled: false,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
