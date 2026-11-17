@@ -319,6 +319,26 @@ export interface LargeMemoryFile {
   chars: number;
 }
 
+/**
+ * A user-facing memory/instruction-file HEALTH diagnostic produced by
+ * {@link MemoryManager.buildMemoryDiagnostics}. Parity with Claude Code's
+ * `buildMemoryDiagnostics` (utils/status.tsx) + the doctor context warnings
+ * (utils/doctorContextWarnings.ts) + the large-memory-file status notice
+ * (utils/statusNoticeDefinitions.tsx): an oversized / soon-to-be-truncated /
+ * unreadable memory or CLAUDE.md/AGENTS.md file is SURFACED to the user (with a
+ * char count and a remediation pointer) instead of being handled silently.
+ */
+export interface MemoryDiagnostic {
+  /** Severity — always a warning today (these are non-fatal health signals). */
+  level: 'warn';
+  /** Human-readable, home-redacted message (safe to show + log). */
+  message: string;
+  /** Absolute path of the offending file. */
+  file: string;
+  /** Raw character length of the file, when the diagnostic is size-driven. */
+  chars?: number;
+}
+
 export interface MemoryEntry {
   path: string;
   content: string;
@@ -1582,6 +1602,117 @@ export class MemoryManager {
     }
     large.sort((a, b) => b.chars - a.chars);
     return large;
+  }
+
+  /**
+   * Collect the absolute paths of every INSTRUCTION file the loader would read
+   * for this cwd — the per-directory highest-priority project file + any present
+   * local variants (CLAUDE.local.md / SUPERINFERENCE.local.md) up the parent
+   * chain (stopping at the git root, honoring {@link MEMORY_EXCLUDES_ENV}), plus
+   * the user-global files (~/.ami, ~/.claude). Shares the exact discovery
+   * primitives used by {@link loadProjectInstructions} / {@link loadUserGlobalInstructions}
+   * ({@link findInstructionFile}, {@link isInstructionExcluded}, {@link isGitRoot}),
+   * so the diagnostic walk can never diverge from what is actually loaded. Returns
+   * de-duplicated paths. Used by {@link buildMemoryDiagnostics}.
+   */
+  private collectInstructionFilePaths(): string[] {
+    const found = new Set<string>();
+    const excludes = resolveMemoryExcludes();
+    let currentDir = path.resolve(this.cwd);
+    const root = path.parse(currentDir).root;
+    let depth = 0;
+    while (depth <= MAX_PARENT_SCAN_DEPTH) {
+      const project = this.findInstructionFile(currentDir);
+      if (project && !isInstructionExcluded(project, excludes)) found.add(project);
+      for (const localFile of LOCAL_VARIANTS) {
+        const localPath = path.join(currentDir, localFile);
+        if (isInstructionExcluded(localPath, excludes)) continue;
+        try {
+          if (fs.statSync(localPath).isFile()) found.add(localPath);
+        } catch { /* missing/inaccessible — handled as a read diagnostic below if listed */ }
+      }
+      const parentDir = path.dirname(currentDir);
+      if (parentDir === currentDir || currentDir === root) break;
+      if (isGitRoot(currentDir)) break;
+      currentDir = parentDir;
+      depth++;
+    }
+    for (const base of [path.join(os.homedir(), '.ami'), path.join(os.homedir(), '.claude')]) {
+      const g = this.findInstructionFile(base);
+      if (g) found.add(g);
+    }
+    return [...found];
+  }
+
+  /**
+   * Build the user-facing memory/instruction-file health diagnostics for the
+   * `/doctor` surface. Parity with Claude Code's `buildMemoryDiagnostics`
+   * (utils/status.tsx) + `checkClaudeMdFiles` (utils/doctorContextWarnings.ts):
+   * every oversized memory or instruction file is SURFACED with its char count
+   * and a `/memory to edit` remediation pointer instead of being silently clipped.
+   *
+   * Three boundary conditions, all previously invisible to the user:
+   *  1. A stored memory file over the recommended {@link MAX_MEMORY_CHARACTER_COUNT}
+   *     (reuses {@link getLargeMemoryFiles}, already largest-first).
+   *  2. An instruction file (CLAUDE.md / AGENTS.md / local variant / user-global)
+   *     over {@link MAX_MEMORY_CHARACTER_COUNT} → the same "will impact performance"
+   *     warning; or over {@link MAX_INSTRUCTION_FILE_SIZE} (10 KB) → a "will be
+   *     truncated — content is dropped from context" warning (AMI truncates these
+   *     silently today).
+   *  3. An instruction file that exists but cannot be read (permission/corruption)
+   *     → a "cannot read" warning rather than a silent skip.
+   *
+   * All paths are home-redacted ({@link abbreviateHome}) so a message shown in the
+   * terminal / written to a log never leaks the user's home directory. Returns an
+   * empty list when every file is healthy.
+   */
+  buildMemoryDiagnostics(): MemoryDiagnostic[] {
+    const diags: MemoryDiagnostic[] = [];
+    const n = (v: number): string => v.toLocaleString('en-US');
+
+    // 1. Oversized stored memory files (already sorted largest-first).
+    for (const f of this.getLargeMemoryFiles()) {
+      diags.push({
+        level: 'warn',
+        file: f.path,
+        chars: f.chars,
+        message: `Large ${abbreviateHome(f.path)} will impact performance (${n(f.chars)} chars > ${n(MAX_MEMORY_CHARACTER_COUNT)}) · /memory to edit`,
+      });
+    }
+
+    // 2/3. Instruction files: oversized / to-be-truncated / unreadable.
+    for (const file of this.collectInstructionFilePaths()) {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(file, 'utf-8');
+      } catch (err) {
+        if (isExpectedMissing(err)) continue;
+        diags.push({
+          level: 'warn',
+          file,
+          message: `Cannot read instruction file ${abbreviateHome(file)} (${errnoCode(err) || 'unknown'}) — it will be skipped`,
+        });
+        continue;
+      }
+      const chars = raw.length;
+      if (chars > MAX_MEMORY_CHARACTER_COUNT) {
+        diags.push({
+          level: 'warn',
+          file,
+          chars,
+          message: `Large ${abbreviateHome(file)} will impact performance (${n(chars)} chars > ${n(MAX_MEMORY_CHARACTER_COUNT)}) · /memory to edit`,
+        });
+      } else if (chars > MAX_INSTRUCTION_FILE_SIZE) {
+        diags.push({
+          level: 'warn',
+          file,
+          chars,
+          message: `${abbreviateHome(file)} is ${n(chars)} chars and will be truncated to the ${n(MAX_INSTRUCTION_FILE_SIZE)}-byte cap — content past the cap is dropped from context · /memory to edit`,
+        });
+      }
+    }
+
+    return diags;
   }
 
   /**
