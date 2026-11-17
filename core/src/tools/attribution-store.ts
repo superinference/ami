@@ -56,3 +56,33 @@ export function getSessionFileAttribution(
 ): Record<string, FileAttributionState> {
   return sessionFileAttribution.get(keyFor(sessionId)) ?? {};
 }
+
+/**
+ * Session-scoped count of USER PROMPTS (each top-level engine `submit()` is one
+ * prompt — a "shot"). This is the honest source for the "N-shotted" figure in a
+ * commit's attribution introspection (parity: Claude Code's transcript
+ * `countUserPromptsFromEntries` / "N-shotted by …"). Keyed like the file
+ * attribution store so a commit can read the live count via the same `sessionId`
+ * the tool executor already threads. Process-lifetime only; the git note is the
+ * durable surface.
+ */
+const sessionPromptCount = new Map<string, number>();
+
+/**
+ * Record that one user prompt was submitted in this session (increments the
+ * session-scoped "shot" counter). Wired from the engine's `submit()` entry so the
+ * count reflects genuine user turns, not internal tool loops.
+ */
+export function recordUserPrompt(sessionId: string | undefined): void {
+  const key = keyFor(sessionId);
+  sessionPromptCount.set(key, (sessionPromptCount.get(key) ?? 0) + 1);
+}
+
+/**
+ * The number of user prompts ("shots") recorded for a session so far, or `0` when
+ * none were recorded (bare engines / tests). Read by `git_commit` to compose the
+ * "N-shotted" attribution-introspection figure.
+ */
+export function getSessionPromptCount(sessionId: string | undefined): number {
+  return sessionPromptCount.get(keyFor(sessionId)) ?? 0;
+}

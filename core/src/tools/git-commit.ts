@@ -7,8 +7,9 @@ import { generateTempFilePath } from '../utils/tempfile';
 import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
-import { getSessionFileAttribution } from './attribution-store';
+import { getSessionFileAttribution, getSessionPromptCount } from './attribution-store';
 import { agentContributionRatio } from '../session';
+import { MemoryManager } from '../memory';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
@@ -179,6 +180,8 @@ export interface CommitFileContribution {
   path: string;
   /** Characters the agent authored in this file across the session. */
   agentContribution: number;
+  /** The file's current character size (committed content length), 0 when unreadable. */
+  totalChars: number;
   /** Fraction (0..1) of the file's current character size the agent authored. */
   ratio: number;
 }
@@ -200,8 +203,107 @@ export interface CommitAttributionNote {
   /** Per-file agent character contribution for committed files that the agent
    *  authored this session (omitted when none was tracked). */
   fileContributions?: CommitFileContribution[];
+  /** Overall integer percent (0..100) of the committed, agent-tracked files'
+   *  CURRENT size that the agent authored this session — the honest, MEASURED
+   *  aggregate of {@link fileContributions} (omitted when nothing was tracked).
+   *  Parity: Claude Code's `claudePercent`, but computed from real char counts. */
+  contributionPercent?: number;
+  /** User prompts ("shots") recorded for the session when the commit was made —
+   *  the "N-shotted" figure. Parity: Claude Code's transcript prompt count. */
+  promptCount?: number;
+  /** Distinct memory files the agent recalled (read) this session — the
+   *  "M memories recalled" figure. Parity: Claude Code's `memoryAccessCount`. */
+  memoriesRecalled?: number;
+  /** The rendered one-line contribution byline (e.g. "93% 3-shotted by opus-4-8,
+   *  2 memories recalled"), or omitted when no signal was present (all-zero).
+   *  Parity: Claude Code's enhanced PR-attribution suffix ({@link formatContributionByline}). */
+  byline?: string;
   /** ISO timestamp the attribution record was produced. */
   committedAt: string;
+}
+
+/**
+ * The three computed attribution signals that compose the contribution byline
+ * (parity: Claude Code's `getEnhancedPRAttribution` inputs): the overall
+ * agent-authored percent, the user-prompt ("shot") count, and the
+ * memories-recalled count, plus the normalized model name.
+ */
+export interface ContributionStats {
+  /** Overall integer percent (0..100) the agent authored across committed files. */
+  contributionPercent: number;
+  /** User-prompt ("shot") count for the session. */
+  promptCount: number;
+  /** Distinct memory files recalled this session. */
+  memoriesRecalled: number;
+  /** Normalized short model name ({@link sanitizeModelName}), or undefined. */
+  model: string | undefined;
+}
+
+/**
+ * Overall integer percent (0..100) of the committed files' CURRENT size that the
+ * agent authored this session, aggregated from the per-file
+ * {@link CommitFileContribution} list: `round(100 * Σ agentContribution / Σ totalChars)`,
+ * clamped to [0,100]. Returns `0` when nothing was tracked or every tracked file
+ * is empty (zero total size). This is a truthful, MEASURED aggregate — never a
+ * fabricated figure — the aggregate analogue of {@link agentContributionRatio}.
+ */
+export function aggregateAgentContributionPercent(
+  contributions: readonly CommitFileContribution[],
+): number {
+  let authored = 0;
+  let total = 0;
+  for (const c of contributions) {
+    authored += c.agentContribution > 0 ? c.agentContribution : 0;
+    total += c.totalChars > 0 ? c.totalChars : 0;
+  }
+  if (total <= 0) return 0;
+  const pct = Math.round((100 * authored) / total);
+  return Math.min(100, Math.max(0, pct));
+}
+
+/**
+ * Count the DISTINCT memory files the agent recalled (read) this session, from the
+ * tool-context's `filesRead` set. A path counts when it falls inside the
+ * workspace's memory directory per the canonical {@link MemoryManager.detectMemoryFileAccess}
+ * predicate (reused — no duplicated memory-dir logic, §0b.6). Returns `0` when
+ * nothing was read or no memory file was among the reads. Parity: Claude Code's
+ * `countMemoryFileAccessFromEntries` / `memoryAccessCount`.
+ */
+export function countMemoriesRecalled(
+  cwd: string,
+  filesRead: ReadonlySet<string> | undefined,
+): number {
+  if (!filesRead || filesRead.size === 0) return 0;
+  const mem = new MemoryManager(cwd);
+  let count = 0;
+  for (const fp of filesRead) {
+    if (mem.detectMemoryFileAccess('file_read', { file_path: fp })) count++;
+  }
+  return count;
+}
+
+/**
+ * Render the agent-contribution introspection byline from its three computed
+ * signals, e.g. `93% 3-shotted by opus-4-8, 2 memories recalled`. Parity with
+ * Claude Code's enhanced PR-attribution suffix (attribution.ts L369-374): the
+ * `N-shotted` prompt count, the short model name, and a `M memories recalled`
+ * clause with correct singular/plural handling (`1 memory recalled` vs
+ * `2 memories recalled`, omitted at zero). When every signal is zero/absent (no
+ * percent, no prompts, no memories) it returns the empty string — the all-zero
+ * fallback, so a caller can omit the byline entirely rather than stamp noise.
+ * The AMI commit trailer identity is unchanged; this is purely the computed stat.
+ */
+export function formatContributionByline(stats: ContributionStats): string {
+  const { contributionPercent, promptCount, memoriesRecalled, model } = stats;
+  if (contributionPercent <= 0 && promptCount <= 0 && memoriesRecalled <= 0) {
+    return '';
+  }
+  const by = model ? ` by ${model}` : '';
+  const memSuffix =
+    memoriesRecalled > 0
+      ? `, ${memoriesRecalled} ${memoriesRecalled === 1 ? 'memory' : 'memories'} recalled`
+      : '';
+  return `${contributionPercent}% ${promptCount}-shotted${by}${memSuffix}`;
 }
 
 /**
@@ -213,7 +315,11 @@ export interface CommitAttributionNote {
  * percentage would be worse than none. When the edit/write tools tracked
  * per-file character contributions for this session, they are passed through as
  * {@link CommitFileContribution}s — a truthful, measured figure (not a fabricated
- * overall percent). `now` is injectable for deterministic tests.
+ * overall percent). The overall `contributionPercent`, `promptCount`
+ * ("N-shotted"), and `memoriesRecalled` signals are likewise MEASURED (char
+ * aggregate, session prompt counter, memory-file reads) and composed into a
+ * human-readable `byline` via {@link formatContributionByline}; each is omitted
+ * when it carries no signal. `now` is injectable for deterministic tests.
  */
 export function buildAttributionNote(
   params: {
@@ -222,6 +328,9 @@ export function buildAttributionNote(
     trailerApplied: boolean;
     files: string[];
     fileContributions?: CommitFileContribution[];
+    contributionPercent?: number;
+    promptCount?: number;
+    memoriesRecalled?: number;
   },
   now: Date = new Date(),
 ): CommitAttributionNote {
@@ -237,6 +346,19 @@ export function buildAttributionNote(
   if (params.fileContributions && params.fileContributions.length > 0) {
     note.fileContributions = params.fileContributions;
   }
+  const contributionPercent = params.contributionPercent ?? 0;
+  const promptCount = params.promptCount ?? 0;
+  const memoriesRecalled = params.memoriesRecalled ?? 0;
+  if (contributionPercent > 0) note.contributionPercent = contributionPercent;
+  if (promptCount > 0) note.promptCount = promptCount;
+  if (memoriesRecalled > 0) note.memoriesRecalled = memoriesRecalled;
+  const byline = formatContributionByline({
+    contributionPercent,
+    promptCount,
+    memoriesRecalled,
+    model: params.model,
+  });
+  if (byline) note.byline = byline;
   return note;
 }
 
@@ -265,6 +387,7 @@ export function collectCommitFileContributions(
     out.push({
       path: rel,
       agentContribution: state.agentContribution,
+      totalChars,
       ratio: agentContributionRatio(state, totalChars),
     });
   }
@@ -597,12 +720,21 @@ export const gitCommitTool: ToolDefinition = {
         try {
           // rev-parse HEAD always resolves right after a successful commit.
           const sha = (await execCommand('git rev-parse HEAD', execOpts)).stdout.trim();
+          const fileContributions = collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths);
           const note = buildAttributionNote({
             surface: resolveClientSurface(env),
             model: resolveCommitModel(env),
             trailerApplied: trailer !== null,
             files: stagedPaths,
-            fileContributions: collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths),
+            fileContributions,
+            // Computed contribution-introspection signals (all MEASURED): overall
+            // agent-authored percent across the committed tracked files, the
+            // session's user-prompt ("N-shotted") count, and the number of memory
+            // files recalled this session. buildAttributionNote renders these into
+            // a `byline` and omits any zero signal.
+            contributionPercent: aggregateAgentContributionPercent(fileContributions),
+            promptCount: getSessionPromptCount(context.sessionId),
+            memoriesRecalled: countMemoriesRecalled(context.cwd, context.filesRead),
           });
           await writeCommitAttributionNote(sha, note, execOpts);
         } catch { /* best-effort introspection — never fail the commit */ }
