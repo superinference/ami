@@ -1,7 +1,41 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { projectStateDir } from '../reference-journal';
+import { validateBoundedIntEnvVar } from '../config';
 import * as path from 'path';
+
+/**
+ * Built-in default ceiling for a subagent/task transcript (parity: Claude Code's
+ * TASK_MAX_OUTPUT_DEFAULT). Applied EVEN WHEN no output budget is configured, so a
+ * chatty subagent can never return an unbounded transcript into the parent context.
+ */
+export const DEFAULT_TASK_MAX_CHARS = 32_000;
+
+/**
+ * Enforced upper bound for the task output cap (parity: Claude Code's
+ * TASK_MAX_OUTPUT_UPPER_LIMIT). A misconfigured or hostile override cannot push the
+ * cap above this, so the "don't blow up the parent context" guard can't be disabled.
+ */
+export const TASK_MAX_OUTPUT_UPPER_LIMIT = 160_000;
+
+/**
+ * Resolve the effective character cap for a subagent/task transcript. The cap is
+ * ALWAYS finite (mirrors Claude Code's getMaxTaskOutputLength): an explicit per-run
+ * budget wins (clamped to the upper bound), else the `TASK_MAX_OUTPUT_LENGTH` env
+ * knob (validated + bounded), else the built-in {@link DEFAULT_TASK_MAX_CHARS}. This
+ * guarantees subagent output is bounded out of the box — no env var, no project
+ * config required — closing the "uncapped transcript floods the parent" hole.
+ */
+export function resolveTaskMaxChars(configured?: number): number {
+  if (configured !== undefined && Number.isFinite(configured) && configured > 0) {
+    return Math.min(configured, TASK_MAX_OUTPUT_UPPER_LIMIT);
+  }
+  return validateBoundedIntEnvVar('TASK_MAX_OUTPUT_LENGTH', process.env.TASK_MAX_OUTPUT_LENGTH, {
+    default: DEFAULT_TASK_MAX_CHARS,
+    min: 1,
+    max: TASK_MAX_OUTPUT_UPPER_LIMIT,
+  }).effective;
+}
 
 /**
  * Human-readable size for a character/byte count (e.g. 4906 -> "4.8 KB").

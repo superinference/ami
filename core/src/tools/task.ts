@@ -9,7 +9,7 @@ import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
-import { spillToolText } from './spill-output';
+import { spillToolText, resolveTaskMaxChars } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { collapseReadSearchRun } from './tool-activity-class';
 import { inheritBedrockRegionPrefix } from '../bedrock';
@@ -2994,12 +2994,12 @@ export const taskTool: ToolDefinition = {
       }
     }
 
-    // Cap the subagent transcript to the configured budget (spills overflow to
-    // disk), so a chatty subagent cannot blow up the parent's context.
-    const taskMaxChars = context.outputBudget?.taskMaxChars;
-    const cappedResult = taskMaxChars && taskMaxChars > 0
-      ? spillToolText(context.cwd, 'task', deliverable, taskMaxChars)
-      : deliverable;
+    // Cap the subagent transcript (spills overflow to disk) so a chatty subagent
+    // cannot blow up the parent's context. The cap is ALWAYS applied: an explicit
+    // outputBudget wins, else TASK_MAX_OUTPUT_LENGTH, else the built-in default —
+    // so subagent output is bounded even with no env var and no project config.
+    const taskMaxChars = resolveTaskMaxChars(context.outputBudget?.taskMaxChars);
+    const cappedResult = spillToolText(context.cwd, 'task', deliverable, taskMaxChars);
 
     // A stall-kill or an abort is a FAILURE, not a successful result — surface it
     // so the parent does not treat a cancelled/timed-out run as a finished one

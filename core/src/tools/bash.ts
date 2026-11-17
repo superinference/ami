@@ -59,13 +59,23 @@ function parseEnvMs(name: string, maxMs: number): number | undefined {
 }
 
 /**
+ * Enforced upper bound for the bash output cap (parity: Claude Code's
+ * BASH_MAX_OUTPUT_UPPER_LIMIT). AMI keeps its deliberately generous 200k default
+ * (a superset of Claude's 30k default) and makes that the enforced ceiling too, so
+ * a mistaken or hostile `BASH_MAX_OUTPUT_LENGTH=99999999` cannot flow through and
+ * exhaust the context (resource-exhaustion / DoS) — it is capped to this bound.
+ */
+export const BASH_MAX_OUTPUT_UPPER_LIMIT = MAX_OUTPUT_LENGTH;
+
+/**
  * [functional parity] Resolve the effective bash output-character cap. Honors
  * BASH_MAX_OUTPUT_LENGTH (parity: Claude Code's BASH_MAX_OUTPUT_LENGTH tuning
- * knob — already registered in env-protection's SAFE_ENV_VARS and merged by the
- * config layer, but previously never READ by the tool, so setting it had no
- * effect). Falls back to the 200k default when unset, non-numeric, or
- * non-positive; a positive value is floored at MIN_OUTPUT_LENGTH so the head+tail
- * truncation math stays valid. Mirrors resolveBashTimeout's env-override pattern.
+ * knob — registered in env-protection's SAFE_ENV_VARS and merged by the config
+ * layer). Routes through the canonical {@link validateBoundedIntEnvVar} so the knob
+ * is bounded, not just defaulted: absent/invalid/below-MIN_OUTPUT_LENGTH falls back
+ * to the 200k default, and a value above {@link BASH_MAX_OUTPUT_UPPER_LIMIT} is
+ * capped (previously an absurd value flowed through verbatim — a DoS hole). One
+ * implementation of "parse a bounded output limit", shared with the task cap.
  */
 export function resolveBashMaxOutput(): number {
   // Routed through the canonical bounded-int helper so an absent/non-positive
