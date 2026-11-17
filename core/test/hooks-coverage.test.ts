@@ -1272,7 +1272,7 @@ describe('runHookByType — command hook JSON output', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('parses decision=ask as ASK (treated as allow for preToolUse)', async () => {
+  it('parses decision=ask as a HookDecision ask (forces the permission prompt)', async () => {
     const tmpDir = writeTmpHooks([
       { event: 'preToolUse', hook: { type: 'command', command: 'printf \'{"decision":"ask","reason":"needs confirmation"}\'' } },
     ]);
@@ -1280,12 +1280,15 @@ describe('runHookByType — command hook JSON output', () => {
     hm.loadFromFile(tmpDir);
 
     const decision = await hm.executePreToolUse(makePreToolUseCtx());
-    // ASK: prefix is returned, but since it does not start with DENY: or MODIFY:, it resolves to allow
-    assert.equal(decision.action, 'allow');
+    // U007 w77: a hook's ASK: no longer silently downgrades to allow — it becomes
+    // an 'ask' decision that forces the interactive permission prompt (Claude Code
+    // permissionDecision:'ask' parity), carrying the hook's reason.
+    assert.equal(decision.action, 'ask');
+    assert.equal((decision as { reason?: string }).reason, 'needs confirmation');
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('parses permissionDecision=ask as ASK', async () => {
+  it('parses permissionDecision=ask as a HookDecision ask', async () => {
     const tmpDir = writeTmpHooks([
       { event: 'preToolUse', hook: { type: 'command', command: 'printf \'{"permissionDecision":"ask"}\'' } },
     ]);
@@ -1293,7 +1296,7 @@ describe('runHookByType — command hook JSON output', () => {
     hm.loadFromFile(tmpDir);
 
     const decision = await hm.executePreToolUse(makePreToolUseCtx());
-    assert.equal(decision.action, 'allow');
+    assert.equal(decision.action, 'ask');
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

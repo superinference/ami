@@ -15,7 +15,7 @@ import {
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
-import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from './session-environment';
+import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import type { PermissionUpdate, PermissionMode } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
@@ -149,6 +149,13 @@ export interface PreSamplingContext extends HookContext {
 export type HookDecision =
   | { action: 'allow'; additionalContext?: string }
   | { action: 'deny'; reason: string; additionalContext?: string }
+  // Claude Code's PreToolUse `permissionDecision: 'ask'` — the hook does not
+  // allow or deny outright but FORCES an interactive permission confirmation,
+  // optionally with its own `reason` (shown at the prompt) and `updatedInput`
+  // (the input the user is asked to approve). The consumer (tool-executor) must
+  // surface the prompt even when a standing rule / auto-allow would have skipped
+  // it. Without this arm a hook's `ask` silently downgrades to `allow`.
+  | { action: 'ask'; reason?: string; updatedInput?: Record<string, unknown>; additionalContext?: string }
   | { action: 'modify'; updatedInput?: Record<string, unknown>; updatedMessages?: Message[]; additionalContext?: string };
 
 // ---------------------------------------------------------------------------
@@ -2283,6 +2290,8 @@ export class HookManager extends EventEmitter {
     // `once:true` async hook self-removes just like its synchronous sibling
     // (previously an async once-hook was never removed and re-fired every event).
     onSuccess?: () => void,
+    // Per-hook env-file hint forwarded to runHookByType (CLAUDE_ENV_FILE parity).
+    envFileHint?: { event: string; index: number },
   ): void {
     const ac = new AbortController();
     const onAbort = () => ac.abort();
@@ -2301,7 +2310,7 @@ export class HookManager extends EventEmitter {
     const timer = setTimeout(onAbort, asyncTimeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
     const outcome = { success: true };
-    const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal, outcome)
+    const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal, outcome, envFileHint)
       .then(() => { if (outcome.success && onSuccess) onSuccess(); })
       .catch(() => { /* async hooks never surface errors to the turn */ })
       .finally(() => {
@@ -2331,15 +2340,20 @@ export class HookManager extends EventEmitter {
     fn: T,
     event: string,
   ): Promise<string> {
+    // Index of this hook within its event array — keys the per-hook env-file path
+    // so two hooks on the same event export into distinct, deterministic fragments.
+    const idx = arr.indexOf(fn);
+    const envFileHint = idx >= 0 ? { event, index: idx } : undefined;
     if (config.async) {
       this.fireAsyncHook(
         config, cwd, eventData, event, signal,
         config.once ? () => this.removeHookOnce(arr, fn, event) : undefined,
+        envFileHint,
       );
       return '';
     }
     const outcome = { success: true };
-    const result = await this.runHookByType(config, cwd, eventData, signal, outcome);
+    const result = await this.runHookByType(config, cwd, eventData, signal, outcome, envFileHint);
     if (config.once && outcome.success) this.removeHookOnce(arr, fn, event);
     return result;
   }
@@ -2377,8 +2391,8 @@ export class HookManager extends EventEmitter {
     return paths;
   }
 
-  private buildHookEnv(event: string, toolName?: string): Record<string, string> {
-    return {
+  private buildHookEnv(event: string, toolName?: string, envFileHint?: { event: string; index: number }): Record<string, string> {
+    const base: Record<string, string> = {
       ...sanitizeHookEnv(process.env as Record<string, string | undefined>),
       SUPERINFERENCE_PROJECT_DIR: this._cwd,
       SUPERINFERENCE_SESSION_ID: this._sessionId,
@@ -2395,6 +2409,36 @@ export class HookManager extends EventEmitter {
       // persists across stateless tool calls (Claude Code CLAUDE_ENV_FILE parity).
       SUPERINFERENCE_SESSION_ENV_DIR: sessionEnvDirPath(this._sessionId),
     };
+    // Per-hook env-file path (Claude Code's hookIndex-derived CLAUDE_ENV_FILE):
+    // an env-ingestible lifecycle hook (setup/sessionStart/cwdChanged/fileChanged)
+    // gets the EXACT deterministic fragment path to append `export KEY=VAL` to,
+    // so it does not have to reconstruct the `<event>-hook-<index>.sh` naming
+    // convention itself. Re-ingested by getSessionEnvironmentScript for later bash
+    // calls. The CLAUDE_ENV_FILE alias keeps cross-framework hooks working verbatim.
+    if (envFileHint) {
+      const envFile = hookEnvFragmentPath(this._sessionId, envFileHint.event, envFileHint.index);
+      if (envFile) {
+        // Ensure the session-env directory exists so the hook can append to the
+        // handed path without first mkdir-ing it (a missing dir would make the
+        // hook's `>> "$CLAUDE_ENV_FILE"` fail silently on the fail-open path).
+        try { fs.mkdirSync(path.dirname(envFile), { recursive: true }); } catch { /* best-effort */ }
+        base.SUPERINFERENCE_ENV_FILE = envFile;
+        base.CLAUDE_ENV_FILE = envFile;
+      }
+    }
+    return base;
+  }
+
+  /**
+   * Surface a hook EXECUTION failure (throw / hard-timeout / transport error /
+   * non-2xx) as a visible `hookError` event so a crashed or misconfigured hook is
+   * never silent on the fail-OPEN path — Claude Code always yields a
+   * `hook_error_during_execution` attachment with the formatted error + hook name.
+   * This is distinct from a hook's DENY *decision* (a successful run that chose to
+   * block, already surfaced to the model). The engine forwards it to the operator.
+   */
+  private emitHookError(config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig, error: string): void {
+    this.emit('hookError', { hookType: config.type, hook: describeHookContent(config), error });
   }
 
   private postSamplingHooks: HookFn[] = [];
@@ -2697,6 +2741,13 @@ export class HookManager extends EventEmitter {
             const eventData = serializeHookEvent({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.preToolUseHooks, fn, 'preToolUse');
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
+            // ASK: a PreToolUse hook (decision/permissionDecision 'ask') forces an
+            // interactive permission prompt rather than allowing/denying outright.
+            // The sentinel carries the optional reason to show at the prompt; a
+            // MODIFY-style updatedInput can also travel with it when the hook wants
+            // the user to approve a rewritten input (Claude Code hookPermissionResult
+            // { behavior:'ask', updatedInput, message }).
+            if (result.startsWith('ASK:')) return { action: 'ask', reason: result.slice(4).trim() || undefined };
             if (result.startsWith('MODIFY:')) {
               try {
                 const parsed = JSON.parse(result.slice(7));
@@ -3549,8 +3600,15 @@ export class HookManager extends EventEmitter {
     return this.withConcurrencyGate('taskCompleted', async (): Promise<{ blockingErrors: string[] } | void> => {
       const blockingErrors: string[] = [];
       for (const hook of this.taskCompletedHooks) {
+        // Cancellation boundary (Claude Code parity: executeTaskCompletedHooks is
+        // driven by context.abortController.signal). An already-aborted turn runs
+        // no further completion hooks, and a hook that blocks (e.g. spawns a
+        // subprocess) is actively cancelled via raceAbort so it cannot leak past a
+        // Ctrl-C / engine abort — the forwarded signal is also on ctx for the hook
+        // itself to observe.
+        if (ctx.signal?.aborted) break;
         try {
-          const r = await hook(ctx);
+          const r = await raceAbort(hook(ctx), ctx.signal);
           if (r?.blockingError) blockingErrors.push(r.blockingError);
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
@@ -3890,10 +3948,34 @@ export class HookManager extends EventEmitter {
             updatedMessages: decision.updatedMessages ?? (accumulated.action === 'modify' ? accumulated.updatedMessages : undefined),
             additionalContext: decision.additionalContext ?? accumulated.additionalContext,
           };
+        } else if (decision.action === 'ask') {
+          // 'ask' forces an interactive permission prompt. It is stricter than
+          // allow/modify (verdictRank 2) so it holds against a later allow and is
+          // only overridden by a deny (handled above). Carry its reason +
+          // updatedInput so the user is prompted to approve the hook's rewrite.
+          // The carry values are read (with explicit types) BEFORE reassigning so
+          // the new value does not reference `accumulated` circularly.
+          const carryReason: string | undefined = accumulated.action === 'ask' ? accumulated.reason : undefined;
+          // Both the prior `ask` and `modify` arms carry `updatedInput`; read it
+          // structurally (allow/deny arms simply have none → undefined).
+          const carryInput: Record<string, unknown> | undefined = (accumulated as { updatedInput?: Record<string, unknown> }).updatedInput;
+          const carryCtx: string | undefined = accumulated.additionalContext;
+          accumulated = {
+            action: 'ask',
+            reason: decision.reason ?? carryReason,
+            updatedInput: decision.updatedInput ?? carryInput,
+            additionalContext: decision.additionalContext ?? carryCtx,
+          };
         } else if (decision.action === 'allow') {
           // An explicit "allow" can loosen a prior "modify"; the hold-over
-          // check at the end guards against user-tier loosening.
-          accumulated = { action: 'allow', additionalContext: decision.additionalContext ?? accumulated.additionalContext };
+          // check at the end guards against user-tier loosening. A prior "ask"
+          // (forced prompt) is NOT loosened by a later allow — keep the prompt,
+          // just fold in any additionalContext.
+          if (accumulated.action === 'ask') {
+            accumulated = { action: 'ask', reason: accumulated.reason, updatedInput: accumulated.updatedInput, additionalContext: decision.additionalContext ?? accumulated.additionalContext };
+          } else {
+            accumulated = { action: 'allow', additionalContext: decision.additionalContext ?? accumulated.additionalContext };
+          }
         }
       } catch (err) {
         // Gap 2: Fail-closed — hook errors deny the action
@@ -3922,6 +4004,10 @@ export class HookManager extends EventEmitter {
     // (exit 0 / no engine error / 2xx) leaves it true even if the hook returned a
     // DENY *decision* — that is a successful execution that happened to block.
     outcome?: { success: boolean },
+    // Per-hook env-file hint: the real lifecycle event + this hook's index, so an
+    // env-ingestible command hook receives its deterministic CLAUDE_ENV_FILE path
+    // (see buildHookEnv). Absent for non-arm callers / non-ingestible events.
+    envFileHint?: { event: string; index: number },
   ): Promise<string> {
     switch (config.type) {
       case 'command': {
@@ -3931,6 +4017,7 @@ export class HookManager extends EventEmitter {
         const hookEnv = this.buildHookEnv(
           'command',
           eventData ? (() => { try { return JSON.parse(eventData).toolName; } catch { return undefined; } })() : undefined,
+          envFileHint,
         );
         // Plugin/skill-contributed command hooks resolve their own base directory:
         // inject CLAUDE_PLUGIN_ROOT (+ AMI_PLUGIN_ROOT alias) into the child env and
@@ -4023,6 +4110,10 @@ export class HookManager extends EventEmitter {
           if ((config as CommandHookConfig).onFailure === 'block') {
             return `DENY:Hook execution failed (fail-closed): ${err instanceof Error ? err.message : String(err)}`;
           }
+          // Fail-OPEN: the hook did not block, but a crashed/timed-out hook must
+          // not be invisible — emit a visible error notice (Claude Code's
+          // hook_error_during_execution) so a misconfigured hook is observable.
+          this.emitHookError(config, err instanceof Error ? err.message : String(err));
           return '';
         }
       }
@@ -4041,6 +4132,9 @@ export class HookManager extends EventEmitter {
     const r = await this.runEngineHook('prompt', config.prompt, 'Event data', config.model, config.timeout, 30_000, eventData, signal);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
+    // Fail-OPEN: a prompt hook whose sub-engine errored/timed out returns '' —
+    // surface the error visibly so it is not silent (Claude Code parity).
+    if (r.error) this.emitHookError(config, r.error);
     if (config.asyncRewake && r.error) this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${r.error}` });
     if (config.asyncRewake && r.output.startsWith('DENY:')) this.emit('hookRewake', { event: 'prompt', message: r.output });
     return r.output;
@@ -4191,6 +4285,9 @@ export class HookManager extends EventEmitter {
     const onFailWith = (detail: string) => {
       coreLog('hooks', `HTTP hook error: ${detail}`);
       if (outcome) outcome.success = false;
+      // Fail-OPEN transport error/timeout would otherwise return '' silently —
+      // surface it visibly (Claude Code parity). The block path already DENYs.
+      if (config.onFailure !== 'block') this.emitHookError(config, detail);
       return config.onFailure === 'block' ? `DENY:HTTP hook failed: ${detail}` : '';
     };
 
@@ -4282,6 +4379,9 @@ export class HookManager extends EventEmitter {
     const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
+    // Fail-OPEN: surface a visible error notice when the agent hook errored so it
+    // is not silent (Claude Code parity).
+    if (r.error) this.emitHookError(config, r.error);
     return r.output;
   }
 

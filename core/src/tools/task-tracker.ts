@@ -644,7 +644,7 @@ export const taskTrackerTool: ToolDefinition = {
           if (existing && existing.status !== 'completed') {
             let blocking: string[] = [];
             try {
-              const r = await context._hookManager.executeTaskCompleted({ taskId: String(id), subject: existing.subject });
+              const r = await context._hookManager.executeTaskCompleted({ taskId: String(id), subject: existing.subject, signal: context.abortSignal });
               const errs = (r as { blockingErrors?: unknown } | void)?.blockingErrors;
               if (Array.isArray(errs)) blocking = errs.filter((e): e is string => typeof e === 'string');
             } catch {

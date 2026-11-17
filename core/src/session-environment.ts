@@ -83,6 +83,33 @@ const HOOK_ENV_PRIORITY: Record<string, number> = {
 const HOOK_ENV_REGEX = /^(setup|sessionstart|cwdchanged|filechanged)-hook-(\d+)\.sh$/;
 
 /**
+ * The deterministic per-hook env-fragment path a lifecycle hook may write
+ * `export KEY=VAL` lines into to persist environment across later bash commands
+ * (Claude Code's `hookIndex`-derived `CLAUDE_ENV_FILE` for SessionStart hooks).
+ * Only the env-ingestible events (`setup`, `sessionStart`, `cwdChanged`,
+ * `fileChanged` — the ones {@link getSessionEnvironmentScript} re-reads) get a
+ * path; any other event returns null (writing one would never be re-ingested, so
+ * handing a hook a dead path would be misleading). The event is lowercased to the
+ * on-disk fragment naming (`<event>-hook-<index>.sh`) so the file sorts and
+ * re-loads deterministically. The index keys the file per-hook so two hooks on
+ * the same event do not clobber each other's exports.
+ */
+export function hookEnvFragmentPath(
+  sessionId: string | undefined,
+  event: string,
+  index: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const key = event.toLowerCase();
+  if (!(key in HOOK_ENV_PRIORITY)) return null;
+  if (!Number.isInteger(index) || index < 0) return null;
+  const dir = sessionEnvDirPath(sessionId, env);
+  const file = path.join(dir, `${key}-hook-${index}.sh`);
+  assertPathWithin(file, dir);
+  return file;
+}
+
+/**
  * Deterministic order for hook env fragments: first by event-type priority
  * (setup < sessionstart < cwdchanged < filechanged; unknown → 99), then by the
  * numeric hook index. Makes the concatenated env reproducible regardless of
