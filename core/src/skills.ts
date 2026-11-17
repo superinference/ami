@@ -212,6 +212,42 @@ export function isStanceSkill(skill: SkillDefinition): boolean {
 export const AGENT_SOURCES = ['built-in', 'plugin', 'user', 'project'] as const;
 export type AgentSource = (typeof AGENT_SOURCES)[number];
 
+/**
+ * A source *selector* for an agent listing: a concrete {@link AgentSource} or the
+ * aggregate `'all'` (every source). Mirrors Claude Code's rich agent-source
+ * parameter (`'all' | 'built-in' | 'plugin' | SettingSource`), collapsed onto
+ * AMI's four provenance tiers plus the aggregate.
+ */
+export type AgentSourceSelector = AgentSource | 'all';
+
+/**
+ * Human-readable display name for an agent source selector (parity with Claude
+ * Code's `getAgentSourceDisplayName`, components/agents/utils.ts). Turns a raw
+ * provenance token ('built-in', 'plugin', 'user', 'project') — or the aggregate
+ * 'all' — into the short prose label an `/agents` listing groups under, so a user
+ * reads WHERE each agent came from instead of an opaque token:
+ *   - `'all'`      → `'All sources'`  (the aggregate selector)
+ *   - `'built-in'` → `'Built-in'`
+ *   - `'plugin'`   → `'Plugin'`
+ *   - `'user'`     → `'User'`
+ *   - `'project'`  → `'Project'`
+ * An unknown/absent source yields `'Unknown'` so a malformed provenance never
+ * surfaces as a blank label. This is the ONE canonical agent-source label map:
+ * the SkillManager (common/) derives its `AGENT_SOURCE_LABELS` + grouped
+ * `AGENT_SOURCE_GROUPS` headers (`<label> agents`) from it rather than keeping a
+ * second literal copy. Pure (no I/O) so every listing surface shares it.
+ */
+export function getAgentSourceDisplayName(source: AgentSourceSelector | undefined): string {
+  switch (source) {
+    case 'all': return 'All sources';
+    case 'built-in': return 'Built-in';
+    case 'plugin': return 'Plugin';
+    case 'user': return 'User';
+    case 'project': return 'Project';
+    default: return 'Unknown';
+  }
+}
+
 export interface AgentDefinition {
   name: string;
   description: string;
