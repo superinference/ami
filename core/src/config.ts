@@ -145,8 +145,17 @@ export interface ProjectConfig {
    * entry, so only a managed/enterprise config tier can set it.
    */
   allowManagedMcpServersOnly?: boolean;
-  /** SL1: shell command whose stdout is rendered as a custom status line. */
-  statusLine?: string;
+  /**
+   * SL1: custom status line. Either a bare shell command string whose stdout is
+   * rendered as the status line, OR the Claude-Code-compatible object form
+   * {@link StatusLineConfig} `{ command, padding }` — so a settings file ported from
+   * Claude Code (`statusLine: { command, padding }`) parses unchanged instead of being
+   * rejected as "must be a string". The object form's `padding` takes precedence over
+   * the `SUPERINFERENCE_STATUSLINE_PADDING` env knob. Normalize both shapes with
+   * {@link normalizeStatusLine}; the command auto-run trust gate still applies.
+   * Parity: Claude Code's `settings.statusLine` object `{ type, command, padding }`.
+   */
+  statusLine?: string | StatusLineConfig;
   /** Bash commands exempted from the container sandbox (audit #4: settable + consumed,
    *  now also typed + merged across config layers). */
   sandboxExcludedCommands?: string[];
@@ -251,6 +260,40 @@ export interface ProjectConfig {
    * `resolveMemoryExcludes`.
    */
   memoryExcludes?: string[];
+}
+
+/**
+ * Object form of {@link ProjectConfig.statusLine} (Claude-Code-compatible
+ * `settings.statusLine`): the shell `command` whose stdout is rendered, plus an
+ * optional horizontal `padding` (spaces per side, CC's `<Box paddingX>`). The bare
+ * string form of `statusLine` is equivalent to `{ command }` with no padding.
+ */
+export interface StatusLineConfig {
+  /** Shell command whose stdout is rendered as the status line. */
+  command: string;
+  /** Horizontal padding (spaces per side) applied to each rendered line. */
+  padding?: number;
+}
+
+/**
+ * Normalize either {@link ProjectConfig.statusLine} shape — a bare command string or
+ * the `{ command, padding }` object — into a single `{ command?, padding? }` result so
+ * every consumer reads one shape. A blank/whitespace command resolves to `undefined`
+ * (no status line). A non-finite/≤0 object `padding` is dropped (treated as unset so
+ * the env/default fallback applies). Parity: Claude Code accepting `statusLine` as
+ * either a command string or a `{ command, padding }` object.
+ */
+export function normalizeStatusLine(
+  value: string | StatusLineConfig | undefined,
+): { command?: string; padding?: number } {
+  if (value === undefined) return {};
+  if (typeof value === 'string') {
+    const command = value.trim();
+    return command ? { command } : {};
+  }
+  const command = typeof value.command === 'string' && value.command.trim() ? value.command.trim() : undefined;
+  const padding = typeof value.padding === 'number' && Number.isFinite(value.padding) && value.padding > 0 ? value.padding : undefined;
+  return { ...(command ? { command } : {}), ...(padding !== undefined ? { padding } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +808,7 @@ type ConfigFieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'object';
 const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, ConfigFieldType]> = [
   ['model', 'string'], ['provider', 'string'], ['baseUrl', 'string'],
   ['thinkingLevel', 'string'], ['maxEffortLevel', 'string'], ['fallbackModel', 'string'],
-  ['compactionModel', 'string'], ['skill', 'string'], ['statusLine', 'string'],
+  ['compactionModel', 'string'], ['skill', 'string'],
   ['language', 'string'],
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
@@ -798,6 +841,10 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
 export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
   ...PROJECT_CONFIG_FIELD_TYPES.map(([k]) => k as string),
   ...PROJECT_CONFIG_ENUMS.map(([k]) => k as string),
+  // Fields with a union/custom shape not expressible in the single-type table above are
+  // validated bespoke in {@link validateProjectConfigValues} but must still count as
+  // recognized keys so they never surface as a spurious unknown-key typo warning.
+  'statusLine',
 ]);
 
 /**
@@ -987,6 +1034,24 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     }
     if (wt.sparsePaths !== undefined && !matchesConfigFieldType(wt.sparsePaths, 'string[]')) {
       issues.push({ field: 'worktree.sparsePaths', message: `must be a string[] (got ${describeJsonType(wt.sparsePaths)})`, value: wt.sparsePaths, tip: getConfigValidationTip('worktree.sparsePaths', { kind: 'type', type: 'string[]' }) });
+    }
+  }
+  // 6. `statusLine` union: a bare command string OR a `{ command, padding }` object
+  //    (Claude-Code-compatible). It is NOT in the single-type table above because the
+  //    type depends on the shape; validate both forms here so a ported CC object config
+  //    is ACCEPTED while a genuinely malformed value (array/number, or an object with a
+  //    non-string command / non-number padding) is still surfaced.
+  if (config.statusLine !== undefined) {
+    const sl = config.statusLine as unknown;
+    if (typeof sl !== 'string' && !isPlainObject(sl)) {
+      issues.push({ field: 'statusLine', message: `must be a string or a { command, padding } object (got ${describeJsonType(sl)})`, value: sl, tip: 'Use a command string, e.g. "statusline.sh", or an object { "command": "...", "padding": 2 }.' });
+    } else if (isPlainObject(sl)) {
+      if (typeof sl.command !== 'string') {
+        issues.push({ field: 'statusLine.command', message: `must be a string (got ${describeJsonType(sl.command)})`, value: sl.command, tip: getConfigValidationTip('statusLine.command', { kind: 'type', type: 'string' }) });
+      }
+      if (sl.padding !== undefined && !matchesConfigFieldType(sl.padding, 'number')) {
+        issues.push({ field: 'statusLine.padding', message: `must be a number (got ${describeJsonType(sl.padding)})`, value: sl.padding, tip: getConfigValidationTip('statusLine.padding', { kind: 'type', type: 'number' }) });
+      }
     }
   }
   // Attach a per-field documentation anchor to EVERY issue in one place (parity:
@@ -1423,6 +1488,17 @@ export interface ConfigServiceOptions {
   fallbackPollMs?: number;
   /** Override the watcher (re-)establish retry interval (ms). Test seam. */
   watchRetryMs?: number;
+  /**
+   * Also hot-reload the GLOBAL (`~/.ami/config.json`) config tier, not just the
+   * project tier. When enabled, a runtime edit to the user's global config fires the
+   * {@link ConfigService.onConfigChange} callbacks with `source: 'global'` (vs the
+   * project tier's `'project'`), so a consumer can tell WHICH tier changed and the
+   * engine re-applies the full waterfall (env / permissions / managed) on a global
+   * edit too. Defaults off so a plain `new ConfigService(cwd)` keeps the
+   * project-only behavior. Parity: Claude Code's `useSettingsChange` watching every
+   * SettingSource and threading the real `source` tier through `onChange`.
+   */
+  watchGlobal?: boolean;
 }
 
 export class ConfigService {
@@ -1444,6 +1520,12 @@ export class ConfigService {
   private readonly deletionGraceMs: number;
   private readonly fallbackPollMs: number;
   private readonly watchRetryMs: number;
+  /** Global-tier (`~/.ami/config.json`) watch, when `watchGlobal` is enabled. */
+  private readonly globalConfigPath: string | null;
+  private globalWatcher: fs.FSWatcher | null = null;
+  private globalDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last-seen serialized global config, so a no-op watcher echo never fires a change. */
+  private globalSnapshot: string | null = null;
 
   constructor(cwd: string, opts: ConfigServiceOptions = {}) {
     this.configPath = path.join(cwd, '.ami', 'config.json');
@@ -1454,6 +1536,12 @@ export class ConfigService {
     this.deletionGraceMs = opts.deletionGraceMs ?? CONFIG_DELETION_GRACE_MS;
     this.fallbackPollMs = opts.fallbackPollMs ?? CONFIG_FALLBACK_POLL_MS;
     this.watchRetryMs = opts.watchRetryMs ?? CONFIG_WATCH_RETRY_MS;
+    // Resolve the global-tier path only when global watching is requested AND it is a
+    // DISTINCT file from the project tier (a project rooted at ~ shares the same path —
+    // then the project watcher already covers it, so there is no second tier to watch).
+    const globalPath = opts.watchGlobal ? getGlobalConfigPath() : null;
+    this.globalConfigPath = globalPath && globalPath !== this.configPath ? globalPath : null;
+    if (this.globalConfigPath) this.globalSnapshot = this.readGlobalSnapshot();
   }
 
   /**
@@ -1484,7 +1572,67 @@ export class ConfigService {
     if (this.started) return;
     this.started = true;
     this.ensureWatch();
+    this.ensureGlobalWatch();
     this.startFallbackPoll();
+  }
+
+  /**
+   * Establish the global-tier (`~/.ami/config.json`) watcher when `watchGlobal` is on
+   * and its directory exists. A change to the global file fires the onConfigChange
+   * callbacks tagged `source: 'global'` (vs the project tier's `'project'`). Kept
+   * deliberately lean — it only NOTIFIES which tier changed (the engine's change
+   * handler re-reads the whole waterfall), so it does not replicate the project tier's
+   * merge/env/deletion machinery. A missing global dir is a quiet no-op (a user with no
+   * global config simply has no second tier to watch).
+   */
+  private ensureGlobalWatch(): void {
+    if (!this.globalConfigPath || this.globalWatcher) return;
+    const dir = path.dirname(this.globalConfigPath);
+    if (!fsHooks.existsSync(dir)) return;
+    try {
+      this.globalWatcher = fsHooks.watch(dir, (_e, filename) => this.onGlobalWatchEvent(filename));
+      this.globalWatcher.unref();
+      // A watcher error simply drops global hot-reload for this session (the project
+      // tier is unaffected); re-establishment is not attempted to keep this lean.
+      this.globalWatcher.on('error', () => {
+        if (this.globalWatcher) { try { this.globalWatcher.close(); } catch { /* already dead */ } this.globalWatcher = null; }
+      });
+      coreLog('config', `watching global config ${this.globalConfigPath} for changes`);
+    } catch {
+      // watch() can throw (inotify exhaustion); leave global hot-reload off rather than
+      // breaking the project watcher.
+      this.globalWatcher = null;
+    }
+  }
+
+  /** Serialize the current global config (or `null` when absent) for change detection. */
+  private readGlobalSnapshot(): string {
+    const cfg = this.globalConfigPath ? loadConfigFile(this.globalConfigPath) : null;
+    return JSON.stringify(cfg ?? null);
+  }
+
+  /** Debounce a global config.json event into a single change notification. */
+  private onGlobalWatchEvent(filename: string | null): void {
+    if (!this.globalConfigPath || filename !== path.basename(this.globalConfigPath)) return;
+    // Swallow the echo of AMI's own write to the global file (a `/config set --global`).
+    if (consumeInternalWrite(this.globalConfigPath)) return;
+    if (this.globalDebounceTimer) clearTimeout(this.globalDebounceTimer);
+    this.globalDebounceTimer = setTimeout(() => {
+      this.globalDebounceTimer = null;
+      this.processGlobalChange();
+    }, this.debounceMs);
+    this.globalDebounceTimer.unref();
+  }
+
+  /** Fire onConfigChange('global', …) when the global file's content actually changed. */
+  private processGlobalChange(): void {
+    const next = this.readGlobalSnapshot();
+    if (next === this.globalSnapshot) return;
+    this.globalSnapshot = next;
+    coreLog('config', `global config ${this.globalConfigPath} changed; notifying listeners`);
+    for (const cb of this.onConfigChangeCallbacks) {
+      try { cb('global', this.globalConfigPath!); } catch (err) { coreLog('config', 'onConfigChange callback error', { error: String(err) }); }
+    }
   }
 
   /**
@@ -1672,9 +1820,14 @@ export class ConfigService {
     if (this.deletionTimer) { clearTimeout(this.deletionTimer); this.deletionTimer = null; }
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.globalDebounceTimer) { clearTimeout(this.globalDebounceTimer); this.globalDebounceTimer = null; }
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
+    }
+    if (this.globalWatcher) {
+      this.globalWatcher.close();
+      this.globalWatcher = null;
     }
     this.started = false;
   }
