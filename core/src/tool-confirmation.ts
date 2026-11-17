@@ -14,8 +14,46 @@ export function deepSortKeys(obj: unknown): unknown {
   return obj;
 }
 
-/** @public Scope of a remembered approval/deny decision. */
-export type ApprovalScope = 'once' | 'session' | 'workspace';
+/**
+ * @public Scope of a remembered approval/deny decision.
+ *
+ * `once` is consumed on first match; `session` is cleared by
+ * {@link ToolConfirmationService.clearSession}. The remaining tiers persist
+ * across session clears and mirror Claude's permission-update destinations so a
+ * library/automated caller can distinguish *where* a standing grant lives
+ * instead of collapsing every durable grant into one bucket:
+ * - `workspace` — the current working directory / repo (AMI's original durable tier);
+ * - `user` — user-global settings (`userSettings`);
+ * - `project` — shared project settings (`projectSettings`);
+ * - `local` — machine-local, un-shared project settings (`localSettings`).
+ */
+export type ApprovalScope =
+  | 'once'
+  | 'session'
+  | 'workspace'
+  | 'user'
+  | 'project'
+  | 'local';
+
+/** Every known scope, used for revoke-all and iteration. */
+const ALL_SCOPES: readonly ApprovalScope[] = [
+  'once',
+  'session',
+  'workspace',
+  'user',
+  'project',
+  'local',
+];
+
+/**
+ * Scopes cleared by {@link ToolConfirmationService.clearSession} when a
+ * session/agent ends. Everything else (`workspace`/`user`/`project`/`local`)
+ * is a durable persistence tier that survives the clear.
+ */
+const EPHEMERAL_SCOPES: ReadonlySet<ApprovalScope> = new Set<ApprovalScope>([
+  'once',
+  'session',
+]);
 
 /** @public Whether a remembered decision allows or denies execution. */
 export type ApprovalBehavior = 'allow' | 'deny';
@@ -50,6 +88,35 @@ export interface ToolApproval {
   behavior: ApprovalBehavior;
   /** When set, this is a content-based (scoped) record matched via {@link ApprovalMatcher}. */
   match?: ApprovalMatcher;
+}
+
+/**
+ * @public A classifier-driven auto-approval, recorded per tool-use (keyed by
+ * `toolUseId`) and kept distinct from user-/library-granted {@link ToolApproval}
+ * records. Captures whether an auto/yolo mode granted it and which prompt rule
+ * matched, for provenance/audit surfacing.
+ */
+export interface ClassifierApproval {
+  /** The tool-use id this decision was recorded for. */
+  toolUseId: string;
+  /** True when granted by an auto/yolo permission mode (no explicit named rule). */
+  auto: boolean;
+  /** The matched prompt-rule name, when one was identified. */
+  matchedRule?: string;
+  /** The raw auto-mode reason string, when granted by auto/yolo mode. */
+  reason?: string;
+  /** Epoch ms the decision was recorded. */
+  approvedAt: number;
+}
+
+/**
+ * @public Extract the named rule from a classifier reason string of the form
+ * `Allowed by prompt rule: "<rule>"`, falling back to the raw reason when it
+ * does not match. Mirrors Claude's
+ * `reason.match(/^Allowed by prompt rule: "(.+)"$/)?.[1] ?? reason`.
+ */
+export function extractPromptRule(reason: string): string {
+  return reason.match(/^Allowed by prompt rule: "(.+)"$/)?.[1] ?? reason;
 }
 
 /** Options for {@link ToolConfirmationService.isApproved}. */
@@ -207,7 +274,7 @@ export class ToolConfirmationService {
     params: Record<string, unknown> | null,
     scope?: ApprovalScope,
   ): number {
-    const scopes: ApprovalScope[] = scope ? [scope] : ['once', 'session', 'workspace'];
+    const scopes: readonly ApprovalScope[] = scope ? [scope] : ALL_SCOPES;
     const behaviors: ApprovalBehavior[] = ['allow', 'deny'];
     let removed = 0;
     for (const s of scopes) {
@@ -289,9 +356,75 @@ export class ToolConfirmationService {
 
   clearSession(): void {
     for (const [key, rec] of this.approvals) {
-      if (rec.scope === 'once' || rec.scope === 'session') {
+      if (EPHEMERAL_SCOPES.has(rec.scope)) {
         this.approvals.delete(key);
       }
+    }
+    // Classifier decisions are per-tool-use and never outlive the session.
+    this.classifierApprovals.clear();
+  }
+
+  // --- Classifier-approval cache (keyed by toolUseId) ---------------------
+  //
+  // Separate from user-/library-granted approvals above: this records that a
+  // tool call was auto-approved by a *classifier* (the bash-safety classifier
+  // or an auto/yolo permission mode), keyed per tool-use so the decision's
+  // provenance can be surfaced and audited distinctly from a standing user
+  // grant. Mirrors Claude's setClassifierApproval / setYoloClassifierApproval
+  // (toolPermission interactiveHandler) and its classifierMatchedRule UI field.
+
+  private classifierApprovals: Map<string, ClassifierApproval> = new Map();
+
+  /**
+   * Record a classifier auto-approval for a named prompt rule (non-auto-mode).
+   * Mirrors Claude's `setClassifierApproval(toolUseID, matchedRule)`.
+   */
+  setClassifierApproval(toolUseId: string, matchedRule: string): void {
+    this.classifierApprovals.set(toolUseId, {
+      toolUseId,
+      auto: false,
+      matchedRule,
+      approvedAt: Date.now(),
+    });
+    this.evictClassifierIfNeeded();
+  }
+
+  /**
+   * Record a classifier auto-approval granted by an auto/yolo permission mode
+   * (no named rule). Mirrors Claude's `setYoloClassifierApproval(toolUseID,
+   * reason)`: it still extracts a prompt-rule name from the reason when one is
+   * embedded (`Allowed by prompt rule: "…"`), keeping `matchedRule` populated.
+   */
+  setYoloClassifierApproval(toolUseId: string, reason: string): void {
+    this.classifierApprovals.set(toolUseId, {
+      toolUseId,
+      auto: true,
+      reason,
+      matchedRule: extractPromptRule(reason),
+      approvedAt: Date.now(),
+    });
+    this.evictClassifierIfNeeded();
+  }
+
+  /** Read a recorded classifier approval for a tool-use, if any. */
+  getClassifierApproval(toolUseId: string): ClassifierApproval | undefined {
+    return this.classifierApprovals.get(toolUseId);
+  }
+
+  /**
+   * Forget a classifier approval once its tool-use settles (parity with
+   * Claude's `clearClassifierChecking(toolUseID)`). Returns whether one was
+   * removed.
+   */
+  clearClassifierApproval(toolUseId: string): boolean {
+    return this.classifierApprovals.delete(toolUseId);
+  }
+
+  private evictClassifierIfNeeded(): void {
+    while (this.classifierApprovals.size > this.maxApprovals) {
+      const oldest = this.classifierApprovals.keys().next().value;
+      if (oldest === undefined) break;
+      this.classifierApprovals.delete(oldest);
     }
   }
 }

@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   ToolConfirmationService,
   DEFAULT_MAX_APPROVALS,
+  extractPromptRule,
 } from '../src/tool-confirmation';
 
 describe('ToolConfirmationService', () => {
@@ -231,5 +232,110 @@ describe('ToolConfirmationService — revoke / bounded cache', () => {
     assert.ok(DEFAULT_MAX_APPROVALS > 1);
     for (let i = 0; i < 5; i++) svc.approve('bash', { command: `c${i}` }, 'session');
     assert.equal(svc.size(), 5); // not capped at 0
+  });
+});
+
+describe('ToolConfirmationService — persistence-tier scopes (user/project/local)', () => {
+  it('each durable tier is independently honored', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', { command: 'u' }, 'user');
+    svc.approve('bash', { command: 'p' }, 'project');
+    svc.approve('bash', { command: 'l' }, 'local');
+    assert.equal(svc.isApproved('bash', { command: 'u' }), true);
+    assert.equal(svc.isApproved('bash', { command: 'p' }), true);
+    assert.equal(svc.isApproved('bash', { command: 'l' }), true);
+  });
+
+  it('clearSession keeps user/project/local tiers (they are not ephemeral)', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', { command: 'u' }, 'user');
+    svc.approve('bash', { command: 'p' }, 'project');
+    svc.approve('bash', { command: 'l' }, 'local');
+    svc.approve('bash', { command: 's' }, 'session'); // ephemeral
+    svc.clearSession();
+    assert.equal(svc.isApproved('bash', { command: 's' }), false); // session gone
+    assert.equal(svc.isApproved('bash', { command: 'u' }), true);
+    assert.equal(svc.isApproved('bash', { command: 'p' }), true);
+    assert.equal(svc.isApproved('bash', { command: 'l' }), true);
+  });
+
+  it('a project-tier deny still beats a broader user-tier allow (precedence)', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', null, 'user'); // broad user allow
+    svc.deny('bash', { command: 'rm -rf /' }, 'project'); // narrow project deny
+    assert.equal(svc.isApproved('bash', { command: 'rm -rf /' }), false);
+    assert.equal(svc.isApproved('bash', { command: 'ls' }), true);
+  });
+
+  it('revoke with no scope clears every tier; scoped revoke targets one tier', () => {
+    const svc = new ToolConfirmationService();
+    svc.approve('bash', { command: 'x' }, 'user');
+    svc.approve('bash', { command: 'x' }, 'project');
+    svc.approve('bash', { command: 'x' }, 'local');
+    // scoped: only the project tier removed
+    assert.equal(svc.revoke('bash', { command: 'x' }, 'project'), 1);
+    assert.equal(svc.isApproved('bash', { command: 'x' }), true); // user/local remain
+    // unscoped: every remaining tier removed (2 records)
+    assert.equal(svc.revoke('bash', { command: 'x' }), 2);
+    assert.equal(svc.isApproved('bash', { command: 'x' }), false);
+  });
+});
+
+describe('ToolConfirmationService — classifier-approval cache (keyed by toolUseId)', () => {
+  it('extractPromptRule pulls the named rule, else returns the raw reason', () => {
+    assert.equal(extractPromptRule('Allowed by prompt rule: "Bash(npm test)"'), 'Bash(npm test)');
+    assert.equal(extractPromptRule('auto-accept mode'), 'auto-accept mode');
+  });
+
+  it('records a named-rule classifier approval distinct from user approvals', () => {
+    const svc = new ToolConfirmationService();
+    svc.setClassifierApproval('tu_1', 'bash-classifier:safe');
+    const rec = svc.getClassifierApproval('tu_1');
+    assert.ok(rec);
+    assert.equal(rec.auto, false);
+    assert.equal(rec.matchedRule, 'bash-classifier:safe');
+    // it does NOT leak into the user/library approval store
+    assert.equal(svc.size(), 0);
+    assert.equal(svc.isApproved('bash', { command: 'ls' }), false);
+  });
+
+  it('records an auto/yolo classifier approval and extracts an embedded rule', () => {
+    const svc = new ToolConfirmationService();
+    svc.setYoloClassifierApproval('tu_2', 'Allowed by prompt rule: "Bash(git status)"');
+    const rec = svc.getClassifierApproval('tu_2');
+    assert.ok(rec);
+    assert.equal(rec.auto, true);
+    assert.equal(rec.reason, 'Allowed by prompt rule: "Bash(git status)"');
+    assert.equal(rec.matchedRule, 'Bash(git status)');
+  });
+
+  it('auto-mode reason without an embedded rule keeps the raw reason as matchedRule', () => {
+    const svc = new ToolConfirmationService();
+    svc.setYoloClassifierApproval('tu_3', 'yolo mode');
+    assert.equal(svc.getClassifierApproval('tu_3')?.matchedRule, 'yolo mode');
+  });
+
+  it('clearClassifierApproval forgets a single tool-use decision', () => {
+    const svc = new ToolConfirmationService();
+    svc.setClassifierApproval('tu_4', 'r');
+    assert.equal(svc.clearClassifierApproval('tu_4'), true);
+    assert.equal(svc.getClassifierApproval('tu_4'), undefined);
+    assert.equal(svc.clearClassifierApproval('tu_4'), false);
+  });
+
+  it('clearSession clears classifier approvals too', () => {
+    const svc = new ToolConfirmationService();
+    svc.setClassifierApproval('tu_5', 'r');
+    svc.clearSession();
+    assert.equal(svc.getClassifierApproval('tu_5'), undefined);
+  });
+
+  it('classifier cache honors the maxApprovals cap with oldest-first eviction', () => {
+    const svc = new ToolConfirmationService(2);
+    svc.setClassifierApproval('a', 'r');
+    svc.setClassifierApproval('b', 'r');
+    svc.setClassifierApproval('c', 'r');
+    assert.equal(svc.getClassifierApproval('a'), undefined); // oldest evicted
+    assert.ok(svc.getClassifierApproval('c'));
   });
 });
