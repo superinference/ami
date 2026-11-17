@@ -195,15 +195,46 @@ describe('validateModel — family-version fallback suggestion (integration via 
   after(async () => { await new Promise<void>(r => server.close(() => r())); });
 
   it('suggests the prior family version when the requested newer model is absent', async () => {
-    const res = await validateModel(
-      { provider: 'openai', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'm' } as ProviderConfig,
-      'claude-opus-4-6',
-    );
-    assert.equal(res.valid, false);
-    assert.ok(res.suggestion, 'should produce a fallback suggestion');
-    assert.ok(
-      res.suggestion!.includes('claude-opus-4-1'),
-      `expected an opus-4-1 fallback, got ${res.suggestion}`,
-    );
+    // The family-version downgrade is INTENTIONALLY third-party-only (mirrors
+    // get3PModelFallbackSuggestion, which self-gates on isFirstPartyProvider): on a
+    // first-party endpoint a too-new id yields no downgrade nudge. isFirstPartyProvider
+    // keys off the THIRD_PARTY_BASE_URL_ENV vars, so declare one for this run to put
+    // validateModel on a third-party endpoint where the fallback is meaningful.
+    const prevBaseUrl = process.env.OPENAI_BASE_URL;
+    process.env.OPENAI_BASE_URL = `http://127.0.0.1:${port}/v1`;
+    try {
+      const res = await validateModel(
+        { provider: 'openai', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'm' } as ProviderConfig,
+        'claude-opus-4-6',
+      );
+      assert.equal(res.valid, false);
+      assert.ok(res.suggestion, 'should produce a fallback suggestion');
+      assert.ok(
+        res.suggestion!.includes('claude-opus-4-1'),
+        `expected an opus-4-1 fallback, got ${res.suggestion}`,
+      );
+    } finally {
+      if (prevBaseUrl === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = prevBaseUrl;
+    }
+  });
+
+  it('offers NO family-version downgrade on a first-party endpoint', async () => {
+    // Discriminator for the first-party gate: with no THIRD_PARTY_BASE_URL_ENV set,
+    // a too-new id is invalid but carries no downgrade suggestion (the step-down is
+    // third-party-only — parity with get3PModelFallbackSuggestion).
+    const envKeys = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'AI_BASE_URL', 'PROVIDER_BASE_URL', 'OLLAMA_BASE_URL'];
+    const saved: Record<string, string | undefined> = {};
+    for (const k of envKeys) { saved[k] = process.env[k]; delete process.env[k]; }
+    try {
+      const res = await validateModel(
+        { provider: 'openai', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'm' } as ProviderConfig,
+        'claude-opus-4-6',
+      );
+      assert.equal(res.valid, false);
+      assert.equal(res.suggestion, undefined, 'no downgrade suggestion on a first-party endpoint');
+    } finally {
+      for (const k of envKeys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    }
   });
 });
