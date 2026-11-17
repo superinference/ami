@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, MAX_AGE_DAYS, type CronJob } from '../cron';
+import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, cronRuntimeBehaviorNote, localTimeZoneLabel, MAX_AGE_DAYS, type CronJob } from '../cron';
 import { coerceBool } from '../utils/coerce';
 import { isCronEnabled } from './tool-gates';
 
@@ -46,16 +46,42 @@ export function findDuplicateCronJob(
   return jobs.find(j => j.cron === cron && j.prompt === prompt && j.recurring === recurring);
 }
 
+/**
+ * PARITY (additive): a canonical, copy-pasteable valid 5-field cron example. Echoed
+ * in the invalid-expression error so a model/user that typo'd a schedule has a
+ * concrete, correct expression to self-correct from (AGENTS.md "invalid input must
+ * show valid options"). Kept as one constant so description + error never drift.
+ */
+export const CRON_EXAMPLE = '0 9 * * 1-5';
+
+/**
+ * PARITY (additive): annotated 5-field cron examples with human-readable meanings,
+ * mirroring the reference's scheduling guidance (src/skills/bundled/scheduleRemoteAgents.ts).
+ * A richer authoring reference than a single example so the model can map common
+ * phrasings ("every weekday at 9am", "every 2 hours", "first of the month") to a
+ * correct expression without guessing.
+ */
+export const CRON_ANNOTATED_EXAMPLES: ReadonlyArray<readonly [string, string]> = [
+  ['*/5 * * * *', 'every 5 minutes'],
+  ['0 9 * * 1-5', 'at 9:00am on weekdays'],
+  ['0 */2 * * *', 'every 2 hours'],
+  ['0 0 * * *', 'daily at midnight'],
+  ['30 14 * * 1', 'at 2:30pm every Monday'],
+  ['0 8 1 * *', 'at 8:00am on the first of the month'],
+];
+
 export const cronCreateTool: ToolDefinition = {
   name: 'cron_create',
   // PARITY (additive): declarative per-tool gate for the cron subsystem.
   isEnabled: () => isCronEnabled(),
   description:
     'Schedule a prompt to run at a future time or on a recurring schedule. ' +
-    'Uses standard 5-field cron in LOCAL time: minute hour day-of-month month day-of-week. ' +
-    'Examples: "*/5 * * * *" every 5 minutes; "0 9 * * 1-5" at 9:00am on weekdays; ' +
-    'for a one-shot, pin the date fields and pass recurring:false (e.g. "30 14 25 12 *" = 2:30pm on Dec 25). ' +
+    `Uses standard 5-field cron (minimum interval 60s) in LOCAL time (your timezone: ${localTimeZoneLabel()}): minute hour day-of-month month day-of-week; pass utc:true to interpret the fields in UTC instead. ` +
+    'Examples: ' +
+    CRON_ANNOTATED_EXAMPLES.map(([expr, meaning]) => `"${expr}" ${meaning}`).join('; ') + '. ' +
+    'For a one-shot, pin the date fields and pass recurring:false (e.g. "30 14 25 12 *" = 2:30pm on Dec 25). ' +
     'Prefer OFF-MINUTE times (avoid :00 and :30) to dodge the thundering-herd of everyone\'s round-number schedules. ' +
+    cronRuntimeBehaviorNote() + ' ' +
     `Recurring jobs auto-expire after ${MAX_AGE_DAYS} days unless permanent:true (or a custom maxAgeDays, 0=never) — tell the user about this limit. ` +
     'Durability: use durable:true ONLY when the user explicitly asks for a schedule that survives a restart ' +
     '(it is persisted to disk). Most "remind me in 5 minutes" / "check back in an hour" requests should stay ' +
@@ -147,7 +173,7 @@ export const cronCreateTool: ToolDefinition = {
     if (fieldError) {
       // Echo the offending expression so the model can self-correct the exact
       // token that failed, matching the reference's actionable error text.
-      return { output: `Error: invalid cron expression "${cron}" (${fieldError}). Expected 5 fields: minute hour day-of-month month day-of-week.`, isError: true };
+      return { output: `Error: invalid cron expression "${cron}" (${fieldError}). Expected 5 fields: minute hour day-of-month month day-of-week — e.g. "${CRON_EXAMPLE}" (at 9:00am on weekdays).`, isError: true };
     }
     if (!prompt || !prompt.trim()) {
       return { output: 'Error: prompt must not be empty.', isError: true };
@@ -195,7 +221,10 @@ export const cronCreateTool: ToolDefinition = {
       return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
     const schedule = sched.formatSchedule(cron, { utc });
-    const nextRun = job.nextRun ? new Date(job.nextRun).toLocaleString() : 'unknown';
+    // Label the next-run instant with the host timezone so "9:00:00 AM" cannot be
+    // mistaken for UTC (parity: reference surfaces the resolved local timezone).
+    const tz = localTimeZoneLabel();
+    const nextRun = job.nextRun ? `${new Date(job.nextRun).toLocaleString()} (${tz})` : 'unknown';
     // Reflect the EFFECTIVE expiry window: permanent / maxAgeDays:0 never expire;
     // a custom maxAgeDays overrides the MAX_AGE_DAYS default. Interpolated from the
     // single source constant so the message can never drift from expireOld().

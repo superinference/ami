@@ -73,6 +73,42 @@ export const DEFAULT_CRON_JITTER: CronJitterConfig = {
   oneShotMinuteMod: 30,
 };
 
+/**
+ * PARITY (additive): the host's resolved IANA timezone name (e.g.
+ * "America/New_York"), or "local" as a fallback when the runtime does not expose
+ * Intl timezone data. Mirrors Claude's `Intl.DateTimeFormat().resolvedOptions().timeZone`
+ * surfacing so cron output/guidance can state WHICH timezone a non-UTC schedule is
+ * interpreted in — a bare "9:00 AM" cannot otherwise be told apart from UTC.
+ */
+export function localTimeZoneLabel(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+/**
+ * PARITY (additive): one-line human description of the scheduler's runtime firing
+ * behavior (idle-gated + deterministic jitter), derived from the jitter config so
+ * it can NEVER drift from the jitter actually applied in tick()/computeJitter().
+ * Surfaced in the cron_create tool description so the model and user know fire
+ * times are nudged and only fire while the session is idle. Mirrors the reference's
+ * "## Runtime behavior" guidance (src/tools/ScheduleCronTool/prompt.ts).
+ */
+export function cronRuntimeBehaviorNote(cfg: CronJitterConfig = DEFAULT_CRON_JITTER): string {
+  const pct = Math.round(cfg.recurringFrac * 100);
+  const capMin = Math.round(cfg.recurringCapMs / 60000);
+  const oneShotSec = Math.round(cfg.oneShotMaxMs / 1000);
+  return (
+    'Runtime behavior: jobs fire ONLY while the session is idle (never mid-query). ' +
+    'The scheduler adds a small deterministic jitter on top of your schedule: ' +
+    `recurring jobs fire up to ${pct}% of their period late (max ${capMin} min); ` +
+    `one-shot jobs landing on a :00 or :30 minute fire up to ${oneShotSec}s early. ` +
+    'Picking an off-minute is still the bigger lever.'
+  );
+}
+
 /** Cross-field validation of a jitter config (mirrors Claude's zod `.refine` on
  *  CronJitterConfig): every knob must be a finite, non-negative number and the
  *  one-shot floor can never exceed the one-shot cap (an inverted window would make

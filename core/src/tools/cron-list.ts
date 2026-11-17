@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler } from '../cron';
+import { getScheduler, localTimeZoneLabel } from '../cron';
 import type { CronJob } from '../cron';
 import { isCronEnabled } from './tool-gates';
 import { getTimeZone } from '../rate-limit-parser';
@@ -135,6 +135,9 @@ export const cronListTool: ToolDefinition = {
     }
 
     const sched = getScheduler(context.cwd);
+    // Label displayed instants with the host timezone so a next/last fire time
+    // cannot be mistaken for UTC (parity: reference surfaces the resolved tz).
+    const tz = localTimeZoneLabel();
     // Teammate-scoped visibility: a sub-agent sees only global + its own jobs.
     let jobs = sched.list(context.agentId);
     if (status === 'active') jobs = jobs.filter(isActiveJob);
@@ -155,14 +158,14 @@ export const cronListTool: ToolDefinition = {
       // label so a server/remote schedule reads as "when it fires here".
       const schedule = sched.formatSchedule(j.cron, { utc: j.utc });
       const active = isActiveJob(j);
-      const next = active ? new Date(j.nextRun as number).toLocaleString() : 'N/A';
+      const next = active ? `${new Date(j.nextRun as number).toLocaleString()} (local, ${tz})` : 'N/A';
       const flags = formatJobFlags(j);
       // Surface the last fire so a user can tell a job that has run from one that
       // never has; omitted entirely for jobs that have not yet fired.
       const lastLine = typeof j.lastRun === 'number'
-        ? `\n    Last: ${new Date(j.lastRun).toLocaleString()} (${tz})`
+        ? `\n    Last: ${new Date(j.lastRun).toLocaleString()} (local, ${tz})`
         : '';
-      return `  ${j.id}: ${schedule} (${flags})\n    Next: ${next} (${tz})${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
+      return `  ${j.id}: ${schedule} (${flags})\n    Next: ${next}${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
     });
 
     return { output: `${jobs.length} scheduled job(s):\n${lines.join('\n')}` };
