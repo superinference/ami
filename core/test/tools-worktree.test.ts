@@ -166,7 +166,10 @@ describe('worktree tools – lifecycle', () => {
     }
   });
 
-  it('rejects duplicate worktree name', async () => {
+  it('resumes an existing worktree name instead of erroring (idempotent by name)', async () => {
+    // Behavior change (U066 fast-resume, parity with Claude's getOrCreateWorktree
+    // existed-path): re-entering an existing named worktree now RESUMES it rather than
+    // hard-erroring, so enter_worktree is idempotent by name.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));
 
     try {
@@ -174,10 +177,12 @@ describe('worktree tools – lifecycle', () => {
       fs.writeFileSync(path.join(tmpDir, 'f.txt'), 'x');
       child_process.execSync('git add . && git commit -m "init"', { cwd: tmpDir, stdio: 'ignore' });
 
-      await enterWorktreeTool.execute({ name: 'dup-test' }, ctx({ cwd: tmpDir }));
+      const first = await enterWorktreeTool.execute({ name: 'dup-test' }, ctx({ cwd: tmpDir }));
+      assert.ok(!first.isError, first.output);
       const dup = await enterWorktreeTool.execute({ name: 'dup-test' }, ctx({ cwd: tmpDir }));
-      assert.ok(dup.isError);
-      assert.ok(dup.output.includes('already exists'));
+      assert.ok(!dup.isError, dup.output);
+      assert.ok(/resumed existing worktree/i.test(dup.output));
+      assert.equal((dup.metadata as { existed?: boolean }).existed, true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -301,6 +301,48 @@ export function resolveRef(cwd: string, ref: string): string | null {
 }
 
 /**
+ * Read the committed HEAD SHA of a LINKED git worktree directory by reading its
+ * `.git` pointer file DIRECTLY — no git subprocess, no upward `findGitRoot` walk.
+ * A `rev-parse HEAD` spawn burns ~15-55ms of process overhead even for a 2ms task,
+ * so a fast-resume probe that may run on every `enter_worktree` reads the ref store
+ * off disk instead (parity with Claude Code's `readWorktreeHeadSha`).
+ *
+ * `<worktreePath>/.git` for a linked worktree is a FILE containing `gitdir: <path>`;
+ * HEAD lives in that per-worktree gitdir, while a branch HEAD's `refs/heads/<name>`
+ * resolves through the shared common dir (followed by {@link resolveRef}). Returns:
+ *   - the 40-char SHA when `worktreePath` is a valid, registered linked worktree;
+ *   - `null` when the directory is absent, is not a linked worktree (`.git` is a
+ *     directory, or not a `gitdir:` pointer), or its HEAD is missing/malformed.
+ * A `null` return is the caller's signal that the path is NOT a resumable worktree.
+ */
+export function readWorktreeHeadSha(worktreePath: string): string | null {
+  let pointer: string;
+  try {
+    pointer = fs.readFileSync(path.join(worktreePath, '.git'), 'utf-8').trim();
+  } catch {
+    return null;
+  }
+  const m = pointer.match(/^gitdir:\s*(.+)$/);
+  if (!m) return null;
+  const perWorktreeGitDir = path.resolve(worktreePath, m[1].trim());
+  let head: string;
+  try {
+    head = fs.readFileSync(path.join(perWorktreeGitDir, 'HEAD'), 'utf-8').trim();
+  } catch {
+    return null;
+  }
+  const sym = head.match(/^ref:\s*(.+)$/);
+  if (sym) {
+    // Branch HEAD: refs/heads/<name> lives in the shared common dir, which
+    // resolveGitDir reaches by following the worktree's `commondir` pointer.
+    const gitDir = resolveGitDir(worktreePath);
+    if (!gitDir) return null;
+    return readRefFrom(gitDir, sym[1].trim(), 0);
+  }
+  return /^[0-9a-f]{40}$/i.test(head) ? head : null;
+}
+
+/**
  * In-progress (transient) multi-step git operations, keyed by the on-disk marker
  * the operation leaves in the git dir, in the priority order git itself resolves
  * them. Mirrors Claude Code's `isGitTransientState` indicator set

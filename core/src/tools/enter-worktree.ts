@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import { ToolContext, ToolDefinition, ToolResult } from '../types';
-import { computeDefaultBranch, findRemoteBase, isShallowClone, resolveRef } from '../utils/git';
+import { computeDefaultBranch, findRemoteBase, isShallowClone, readWorktreeHeadSha, resolveRef } from '../utils/git';
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -24,6 +24,16 @@ const GIT_NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' } as const
  */
 const DEFAULT_GIT_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * Generous default stdout cap applied to EVERY captured git subprocess (parity
+ * with Claude's centralized execFileNoThrow `maxBuffer` default). Node's bare
+ * `execFileSync` cap is 1 MiB; a repo with very many registered worktrees makes
+ * `git worktree list --porcelain` exceed it and throw an opaque ENOBUFS that
+ * truncates the capture. Bounding it here (and still handling overflow in the
+ * caller's catch) keeps the output buffer uniform instead of crashing.
+ */
+const DEFAULT_GIT_MAX_BUFFER = 64 * 1024 * 1024;
+
 /** Options for a single no-shell git invocation. */
 export interface GitExecOpts {
   cwd: string;
@@ -33,6 +43,8 @@ export interface GitExecOpts {
   env?: NodeJS.ProcessEnv;
   /** Abort signal; a cancelled turn kills the in-flight git process. */
   signal?: AbortSignal;
+  /** Per-call stdout cap; falls back to {@link DEFAULT_GIT_MAX_BUFFER} when omitted. */
+  maxBuffer?: number;
 }
 
 /**
@@ -76,6 +88,7 @@ export function buildGitExecOptions(
     encoding: 'utf-8',
     stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
     timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS,
+    maxBuffer: opts.maxBuffer ?? DEFAULT_GIT_MAX_BUFFER,
     env: { ...(opts.env ?? process.env), ...GIT_NO_PROMPT_ENV },
     ...(opts.signal ? { signal: opts.signal } : {}),
   } as child_process.ExecFileSyncOptionsWithStringEncoding;
@@ -348,6 +361,67 @@ function switchHookSession(
   context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
 }
 
+/**
+ * Fast-resume an already-existing, registered worktree (parity with Claude's
+ * getOrCreateWorktree `existed: true` path): re-establish the worktree session and
+ * switch the context cwd into it WITHOUT any fetch or `git worktree add`. The caller
+ * has already confirmed the dir is a valid worktree (its HEAD SHA was read directly
+ * off disk). Reuses the canonical createWorktreeSession factory (one session path),
+ * which no-ops the on-disk add for an existing dir and bumps its mtime so the
+ * stale-sweep cannot reap a worktree that is actively being resumed.
+ */
+function resumeExistingWorktree(
+  context: ToolContext,
+  repoRoot: string,
+  worktreeDir: string,
+  flatSlug: string,
+  headSha: string,
+): ToolResult {
+  const { createWorktreeSession, setWorktreeSession } = require('../worktree-manager');
+  let symlinkWarnings: string[] = [];
+  let session: { worktreePath: string; worktreeBranch: string };
+  try {
+    session = createWorktreeSession(repoRoot, flatSlug);
+    setWorktreeSession(session);
+    // Re-ensure the symlinked large dirs exist (idempotent); honors the opt-in
+    // settings.worktree.symlinkDirectories knob, undefined keeping AMI's node_modules default.
+    symlinkWarnings = _enterWorktreeHooks.symlinkLargeDirs(repoRoot, session.worktreePath, resolveSymlinkDirs(repoRoot));
+  } catch (e) {
+    // Re-establishing the session for an EXISTING worktree failed. Unlike the create
+    // path we do NOT tear the worktree down — it predates this call and may hold the
+    // user's uncommitted work; just clear any partial session state and surface the error.
+    setWorktreeSession(null);
+    return { output: `Error: failed to resume worktree "${flatSlug}": ${e instanceof Error ? e.message : String(e)}`, isError: true };
+  }
+
+  const originalCwd = context.cwd;
+  if (context.cwd) {
+    (context as any)._originalCwd = context.cwd;
+    (context as any).cwd = worktreeDir;
+  }
+  // Fire CwdChanged (parity with the create path) so cwd-scoped lifecycle wiring —
+  // the persisted session-env invalidation (clearCwdEnvFiles/invalidateSessionEnvCache)
+  // and the file-watcher re-bind — re-evaluates against the resumed worktree's dir.
+  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
+
+  const warnLines = symlinkWarnings.length ? `\n  Warning: ${symlinkWarnings.join('; ')}.` : '';
+  // Report the branch using the SAME `worktree/<slug>` convention the create path
+  // stamped onto the actual git branch (createWorktreeSession's session branch uses a
+  // different internal naming), so a resume's reported branch matches the live ref.
+  const branchName = `worktree/${flatSlug}`;
+  const resumedMessage =
+    `Resumed existing worktree (session switched to it):\n` +
+    `  Path: ${worktreeDir}\n  Branch: ${branchName}\n  HEAD: ${headSha.slice(0, 8)}\n` +
+    '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).' +
+    warnLines;
+  return {
+    output: resumedMessage,
+    // `existed: true` mirrors Claude's getOrCreateWorktree result so a programmatic
+    // consumer can tell a resume from a fresh creation.
+    metadata: { worktreePath: worktreeDir, worktreeBranch: branchName, message: resumedMessage, existed: true },
+  };
+}
+
 export const enterWorktreeTool: ToolDefinition = {
   name: 'enter_worktree',
   description:
@@ -513,7 +587,10 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000, signal });
+        // Bound the captured output with a generous maxBuffer (parity with Claude's
+        // execFileNoThrow maxBuffer): a repo with very many registered worktrees would
+        // otherwise exceed Node's 1 MiB default and throw an opaque ENOBUFS mid-capture.
+        const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000, signal, maxBuffer: DEFAULT_GIT_MAX_BUFFER });
         // NFC-normalize parsed worktree paths before the identity comparison.
         const worktrees = list.split('\n').filter(l => l.startsWith('worktree ')).map(l => l.slice(9).normalize('NFC'));
         const resolved = path.resolve(existingPath).normalize('NFC');
@@ -535,6 +612,12 @@ export const enterWorktreeTool: ToolDefinition = {
           return { output: `Error: "${existingPath}" is not a registered worktree.${avail}`, isError: true };
         }
       } catch (e) {
+        // A buffer overflow (ENOBUFS) despite the generous cap means a pathological
+        // number of worktrees; surface it as an actionable message rather than the
+        // opaque "maxBuffer length exceeded" so the user knows to prune worktrees.
+        if ((e as NodeJS.ErrnoException)?.code === 'ENOBUFS') {
+          return { output: 'Error: the repository has too many registered worktrees to enumerate; prune stale worktrees (git worktree prune) and retry.', isError: true };
+        }
         return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
       // Name the branch the entered worktree is on (parity with Claude's
@@ -608,8 +691,28 @@ export const enterWorktreeTool: ToolDefinition = {
     // flattenSlug helper is reused so there is one canonical flattening.
     const flatSlug: string = flattenSlug(slug);
 
-    // Opportunistically clean up stale worktrees (> 30 days, no uncommitted changes)
     const worktreesBase = path.join(repoRoot, '.ami', 'worktrees');
+    const worktreeDir = path.join(worktreesBase, flatSlug);
+
+    // Fast-resume (parity with Claude's getOrCreateWorktree existed-path): a named
+    // worktree reuses the same on-disk path across invocations, so when the computed
+    // dir ALREADY exists and is a valid registered worktree, re-establish its session
+    // and switch into it instead of hard-erroring — enter_worktree is idempotent by
+    // name. The HEAD SHA is read DIRECTLY off the `.git` pointer (no subprocess, no
+    // fetch, no `git worktree add`), skipping ~15-55ms of spawn overhead. This runs
+    // BEFORE the stale-sweep and the MAX_WORKTREES ceiling so resuming an existing
+    // worktree is never reaped or blocked by the cap.
+    if (fs.existsSync(worktreeDir)) {
+      const existingHead = readWorktreeHeadSha(worktreeDir);
+      if (existingHead) {
+        return resumeExistingWorktree(context, repoRoot, worktreeDir, flatSlug, existingHead);
+      }
+      // The dir exists but is NOT a resumable worktree (never registered, or its
+      // `.git` pointer/HEAD is corrupt) — fail loud rather than resuming debris.
+      return { output: `Error: "${flatSlug}" exists at ${worktreeDir} but is not a valid git worktree (stale or corrupt). Remove it (or use exit_worktree) before recreating.`, isError: true };
+    }
+
+    // Opportunistically clean up stale worktrees (> 30 days, no uncommitted changes)
     if (fs.existsSync(worktreesBase)) {
       const { cleanupStaleWorktrees } = require('../worktree-manager');
       try { cleanupStaleWorktrees(repoRoot); } catch { /* non-critical */ }
@@ -633,11 +736,6 @@ export const enterWorktreeTool: ToolDefinition = {
         }
       }
     } catch { /* unreadable worktrees dir — do not block creation */ }
-
-    const worktreeDir = path.join(repoRoot, '.ami', 'worktrees', flatSlug);
-    if (fs.existsSync(worktreeDir)) {
-      return { output: `Error: worktree "${flatSlug}" already exists at ${worktreeDir}. Use path to enter an existing worktree.`, isError: true };
-    }
 
     const defaultBranch = getDefaultBranch(repoRoot, signal);
     const branchName = `worktree/${flatSlug}`;
