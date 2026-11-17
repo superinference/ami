@@ -1395,10 +1395,61 @@ export function powershellCommandIsSafe(
     }
   }
 
-  // (Download cradles — IWR|IEX piped and $r=IWR;IEX $r.Content cross-statement —
-  // are covered already: the IEX leg is caught by the Invoke-Expression check
-  // above, and bash-security's detectPowerShellExecution flags the download+iex
-  // whole-command pattern in the synchronous path. No parallel check here.)
+  // Encoded command: a nested PowerShell executable carrying -EncodedCommand (or
+  // any `-e…` abbreviation, alt-dash tolerant) runs a base64 script that is
+  // opaque to analysis. Checked BEFORE the nested-process check so the more
+  // specific "encoded parameters" message wins (mirrors the reference order).
+  for (const cmd of allCommands) {
+    if (
+      isPowerShellExecutable(cmd.name) &&
+      psParamAbbrevAltAware(cmd, '-encodedcommand', '-e')
+    ) {
+      return askResult('Command uses encoded parameters which obscure intent');
+    }
+  }
+
+  // Nested PowerShell process: ANY powershell executable in command position
+  // (`pwsh -Command …`, `pwsh -File x.ps1`, or a bare `pwsh` receiving stdin)
+  // spawns a child shell whose script cannot be statically validated. Same
+  // reasoning as checkStartProcess's nested-target vector.
+  for (const cmd of allCommands) {
+    if (isPowerShellExecutable(cmd.name)) {
+      return askResult(
+        'Command spawns a nested PowerShell process which cannot be validated',
+      );
+    }
+  }
+
+  // (Download cradles — a downloader piped/split to Invoke-Expression — are
+  // already asked by the Invoke-Expression check above, which alias-resolves
+  // `iex` and scans every statement; a dedicated cradle check here would be
+  // unreachable, so it is intentionally not duplicated.)
+
+  // LOLBAS download utilities: the download operation itself (no IEX required).
+  // Start-BitsTransfer is purpose-built for transfer; certutil / bitsadmin are
+  // only flagged with the -urlcache / /transfer download arguments (both have
+  // legitimate non-download uses).
+  for (const cmd of allCommands) {
+    const lower = cmd.name.toLowerCase();
+    if (lower === 'start-bitstransfer') {
+      return askResult('Command downloads files via BITS transfer');
+    }
+    if (lower === 'certutil' || lower === 'certutil.exe') {
+      if (
+        cmd.args.some((a) => {
+          const la = a.toLowerCase();
+          return la === '-urlcache' || la === '/urlcache';
+        })
+      ) {
+        return askResult('Command uses certutil to download from a URL');
+      }
+    }
+    if (lower === 'bitsadmin' || lower === 'bitsadmin.exe') {
+      if (cmd.args.some((a) => a.toLowerCase() === '/transfer')) {
+        return askResult('Command downloads files via BITS transfer');
+      }
+    }
+  }
 
   // Script-block injection triage: a denylisted cmdlet carrying a script block
   // executes it as arbitrary code; otherwise, all script-block consumers must be
