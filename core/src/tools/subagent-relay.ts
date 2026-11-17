@@ -127,6 +127,11 @@ export function summarizeErrorOutput(output: string, max = 120): string {
  *  - `tool_use_progress` as a bounded `text` activity so a long-running child tool
  *    (e.g. a slow `bash`) surfaces live output instead of going dark;
  *  - a failed `tool_use_result` with a bounded failure reason, not just a ✗ glyph;
+ *  - `user_question` as a `waiting` activity (approval affordance) so a child
+ *    BLOCKED on a permission `ask` / `AskUserQuestion` / plan-mode consent reads as
+ *    "awaiting approval" on the roster instead of freezing on its last row — parity
+ *    with Claude Code's swarmWorkerHandler `pendingWorkerRequest` "waiting for leader
+ *    approval" indicator;
  * and drops whitespace-only deltas / empty progress so the roster never flickers
  * blank lines, with ALL relayed free text clamped via {@link clampRelayPreview}.
  */
@@ -208,6 +213,24 @@ export function mapChildToSubagentEvent(
         activity: child.willRetry ? 'retry' : 'error',
         detail: `${child.category}${child.willRetry ? ' (retrying)' : ''}`,
       };
+    case 'user_question': {
+      // PARITY (additive): a child engine yields `user_question` whenever it is
+      // BLOCKED on a human decision — an interactive permission `ask`, an
+      // `AskUserQuestion`, or plan-mode enter/exit consent. Relay it as a dedicated
+      // `waiting` activity with an "awaiting approval" affordance so the roster shows
+      // the sub-agent is stalled on the user, not frozen on its last tool/text row
+      // (Claude Code's swarmWorkerHandler `pendingWorkerRequest`). The optional
+      // `toolInputSummary` (WHAT the ask is about) is woven in so the row conveys the
+      // pending action, bounded via clampRelayPreview like every other relayed detail.
+      const q = child.question && child.question.trim() ? child.question.trim() : 'a decision';
+      const ctx = child.toolInputSummary && child.toolInputSummary.trim()
+        ? ` — ${child.toolInputSummary.trim()}`
+        : '';
+      return {
+        type: 'subagent_progress', nodeId, depth, activity: 'waiting',
+        detail: clampRelayPreview(`⏳ awaiting approval: ${q}${ctx}`),
+      };
+    }
     default:
       return null;
   }

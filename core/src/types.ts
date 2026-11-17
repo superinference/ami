@@ -1385,8 +1385,14 @@ export function reconcileSessionMode(
  * reasoning, and tool calls; `error`/`retry` surface failure + retry liveness on
  * the roster the moment they happen (parity: Claude Code's AgentTool relaying a
  * sub-agent's error/retry so the roster reflects it instead of appearing frozen).
+ * `waiting` surfaces that the sub-agent is BLOCKED on an interactive
+ * approval/question (a permission `ask`, an `AskUserQuestion`, or plan-mode
+ * consent) so the roster shows "awaiting approval" instead of freezing on the
+ * child's last tool/text row — parity: Claude Code's swarmWorkerHandler
+ * `pendingWorkerRequest` "waiting for leader approval" affordance + the
+ * AssistantToolUseMessage hook-progress "waiting" subtree.
  */
-export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry';
+export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry' | 'waiting';
 
 /**
  * Why a request is being retried, carried on the `retry_attempt` {@link EngineEvent}

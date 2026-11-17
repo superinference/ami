@@ -68,4 +68,33 @@ describe('mapChildToSubagentEvent', () => {
     assert.equal(r?.type === 'subagent_progress' && r.nodeId, 'node-9');
     assert.equal(r?.type === 'subagent_progress' && r.depth, 3);
   });
+
+  // Parity (Claude Code swarmWorkerHandler `pendingWorkerRequest` + AssistantToolUseMessage
+  // HookProgress "waiting for leader approval"): a sub-agent blocked on an interactive
+  // question/consent must surface a dedicated `waiting` activity so the roster shows it is
+  // stalled awaiting approval instead of freezing on its last tool/text row.
+  it('maps user_question → subagent_progress(waiting) with an approval affordance detail', () => {
+    const r = map({
+      type: 'user_question', toolCallId: 'q1',
+      question: 'Allow running `rm -rf build`?', options: [], allowFreeText: false,
+    });
+    assert.equal(r?.type === 'subagent_progress' && r.activity, 'waiting');
+    assert.ok(r?.type === 'subagent_progress' && r.detail.includes('Allow running'));
+    assert.ok(r?.type === 'subagent_progress' && /await/i.test(r.detail));
+  });
+
+  it('weaves a user_question toolInputSummary into the waiting detail', () => {
+    const r = map({
+      type: 'user_question', toolCallId: 'q2',
+      question: 'Approve this edit?', options: [], allowFreeText: false,
+      toolInputSummary: 'file_edit src/app.ts',
+    });
+    assert.ok(r?.type === 'subagent_progress' && r.detail.includes('file_edit src/app.ts'));
+  });
+
+  it('falls back to a generic waiting label when a user_question has no question text', () => {
+    const r = map({ type: 'user_question', toolCallId: 'q3', question: '   ', options: [], allowFreeText: false });
+    assert.equal(r?.type === 'subagent_progress' && r.activity, 'waiting');
+    assert.ok(r?.type === 'subagent_progress' && r.detail.trim().length > 0);
+  });
 });
