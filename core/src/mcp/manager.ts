@@ -708,6 +708,20 @@ export class McpManager extends EventEmitter {
    * install-scoped history, not live transport state.
    */
   private _everConnected = new Set<string>();
+  /**
+   * Config-loaded server names that were SUPPRESSED as duplicates of an
+   * already-registered server of the same name (Claude-parity
+   * `mcp-server-suppressed-duplicate`, services/mcp/config.ts:L1216-L1229). AMI
+   * resolves MCP config by first-wins precedence (a higher-precedence scope's
+   * server keeps the name), so a lower-precedence config declaring the same name is
+   * dropped. Previously that drop surfaced as a FATAL "already registered" validation
+   * error; it is instead recorded here as an INFORMATIONAL diagnostic (name →
+   * `duplicateOf`, the winning server's name) so a user with two configs hitting the
+   * same name learns WHY their second entry isn't showing up rather than seeing a
+   * spurious parse failure. Surfaced via {@link getSuppressedDuplicates} and folded
+   * into {@link getConfigDiagnostics} as a warning. Cleared on {@link disconnectAll}.
+   */
+  private _suppressedDuplicates = new Map<string, string>();
 
   /** Timestamp (ms) of the last tool call per server name. */
   _lastUsedAt = new Map<string, number>();
@@ -902,6 +916,18 @@ export class McpManager extends EventEmitter {
   }
 
   /**
+   * Config-loaded servers that were suppressed as duplicates of an
+   * already-registered server with the same name (first-wins precedence) —
+   * `{ name, duplicateOf }` pairs for a /mcp diagnostics view (Claude-parity
+   * `mcp-server-suppressed-duplicate`). Informational, not an error: the duplicate
+   * entry simply never registered because a higher-precedence config already owns
+   * the name.
+   */
+  getSuppressedDuplicates(): Array<{ name: string; duplicateOf: string }> {
+    return [...this._suppressedDuplicates].map(([name, duplicateOf]) => ({ name, duplicateOf }));
+  }
+
+  /**
    * Unified, severity-tagged, per-entry MCP config diagnostics (Claude-parity
    * McpParsingWarnings `ValidationError` + `mcpErrorMetadata`): one flat list that
    * merges every config problem — whole-file PARSE failures and per-server shape
@@ -943,6 +969,16 @@ export class McpManager extends EventEmitter {
           message,
         });
       }
+    }
+    // Suppressed duplicates (informational): a lower-precedence config entry
+    // dropped because a server with the same name is already registered.
+    for (const [name, duplicateOf] of this._suppressedDuplicates) {
+      warnings.push({
+        severity: 'warning',
+        serverName: name,
+        jsonPath: `mcpServers.${name}`,
+        message: `MCP server "${name}" was suppressed: it duplicates the already-configured "${duplicateOf}" (first-wins precedence).`,
+      });
     }
     const byServer = (a: McpConfigDiagnostic, b: McpConfigDiagnostic): number =>
       (a.serverName ?? '').localeCompare(b.serverName ?? '');
@@ -1885,15 +1921,7 @@ export class McpManager extends EventEmitter {
         this._lastUsedAt.set(name, Date.now());
 
         const tools = await client.listTools();
-        for (const tool of tools) {
-          const key = `${name}:${tool.name}`;
-          const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
-          const existing = this.findToolByName(tool.name);
-          if (existing && existing.serverName !== name) {
-            coreLog('mcp', `tool name conflict: "${tool.name}" provided by both "${existing.serverName}" and "${name}" — use qualified name "${key}" to disambiguate`);
-          }
-          this._allTools.set(key, { serverName: name, schema });
-        }
+        this.ingestServerTools(name, tools);
         return;
       } catch (err) {
         lastErr = err;
@@ -2376,6 +2404,7 @@ export class McpManager extends EventEmitter {
     this._allTools.clear();
     this.pendingServers.clear();
     this.serverErrors.clear();
+    this._suppressedDuplicates.clear();
     this._serverScopes.clear();
     this._serverSources.clear();
     this._serverConfigHashes.clear();
@@ -2615,6 +2644,18 @@ export class McpManager extends EventEmitter {
             coreLog('mcp', `skipping rejected project MCP server "${name}"`);
             continue;
           }
+          // First-wins precedence: a higher-precedence scope (e.g. local/project
+          // over user) already owns this name. Rather than letting addServer throw a
+          // FATAL "already registered" error, record the drop as an INFORMATIONAL
+          // suppressed-duplicate diagnostic (Claude-parity mcp-server-suppressed-
+          // duplicate) so the user learns why their second config entry isn't showing
+          // up. The winning server keeps its scope/config untouched.
+          if (this.clients.has(name) || this.pendingServers.has(name)) {
+            this._suppressedDuplicates.set(name, name);
+            coreLog('mcp', `suppressing duplicate MCP server "${name}": a server with this name is already configured (first-wins)`);
+            this.emit('duplicate-suppressed', name, name);
+            continue;
+          }
           // Tag the server with its config-source scope + path BEFORE registering it
           // so the add paths see the recorded scope rather than defaulting to dynamic.
           this.recordServerScope(name, opts.scope, opts.sourcePath);
@@ -2683,17 +2724,43 @@ export class McpManager extends EventEmitter {
     try {
       const tools = await client.listTools();
       this.invalidateToolCache(name);
-      for (const tool of tools) {
-        const key = `${name}:${tool.name}`;
-        const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
-        const existing = this.findToolByName(tool.name);
-        if (existing && existing.serverName !== name) {
-          coreLog('mcp', `tool name conflict: "${tool.name}" provided by both "${existing.serverName}" and "${name}" — use qualified name "${key}" to disambiguate`);
-        }
-        this._allTools.set(key, { serverName: name, schema });
-      }
+      this.ingestServerTools(name, tools);
     } catch (err) {
       coreLog('mcp', `Failed to refresh tools for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Ingest a server's advertised tools into the live tool cache, applying the
+   * per-server tool-count cap ({@link MAX_MCP_TOOLS_PER_SERVER}, Claude-parity):
+   * a server that advertises more than the cap has only its first `cap` tools
+   * loaded, and a recoverable config warning is recorded (surfaced in /mcp
+   * diagnostics) so the drop is visible instead of silent — defending the model's
+   * context + tool list against a misbehaving/malicious server flooding it. A
+   * cross-server tool-name conflict is logged (qualified names still disambiguate).
+   * Shared by {@link connectServer} and {@link refreshToolsForServer} so the cache
+   * population + cap live in one place and cannot drift.
+   */
+  private ingestServerTools(name: string, tools: McpToolSchema[]): void {
+    let accepted = tools;
+    if (tools.length > MAX_MCP_TOOLS_PER_SERVER) {
+      accepted = tools.slice(0, MAX_MCP_TOOLS_PER_SERVER);
+      const warning = `advertises ${tools.length} tools; only the first ${MAX_MCP_TOOLS_PER_SERVER} are loaded (per-server tool cap)`;
+      coreLog('mcp', `MCP server "${name}" ${warning}`);
+      const existing = this._configWarnings.get(name) ?? [];
+      if (!existing.includes(warning)) {
+        this._configWarnings.set(name, [...existing, warning]);
+        this.emit('config-warning', name, [warning]);
+      }
+    }
+    for (const tool of accepted) {
+      const key = `${name}:${tool.name}`;
+      const schema = { ...tool, description: this.truncateDescription(tool.description || '') };
+      const existing = this.findToolByName(tool.name);
+      if (existing && existing.serverName !== name) {
+        coreLog('mcp', `tool name conflict: "${tool.name}" provided by both "${existing.serverName}" and "${name}" — use qualified name "${key}" to disambiguate`);
+      }
+      this._allTools.set(key, { serverName: name, schema });
     }
   }
 
@@ -2835,6 +2902,27 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
     issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, or wss)`);
   }
   return issues;
+}
+
+/**
+ * Validate a user-supplied MCP SERVER name before it is persisted (Claude-parity
+ * `addMcpConfig` name check, services/mcp/config.ts:L630-L679). A server name becomes
+ * part of the model-facing qualified tool namespace (`mcp__<server>__<tool>`) and
+ * AMI's own `serverName:toolName` call resolution splits on the first `:`, so a name
+ * containing a space, colon, dot, slash, or any other non-`[A-Za-z0-9_-]` character
+ * would corrupt qualified-tool resolution or produce an ambiguous tool name. Returns
+ * a human-readable error message for an empty or ill-formed name, else `null` (valid).
+ * Enforced at `/mcp add` time (not config load) so a hand-edited config stays lenient,
+ * exactly like Claude's add-time-only validation.
+ */
+export function validateMcpServerName(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return 'MCP server name must not be empty';
+  const bad = trimmed.match(/[^a-zA-Z0-9_-]/);
+  if (bad) {
+    return `Invalid MCP server name "${trimmed}": only letters, numbers, hyphens, and underscores are allowed (found ${JSON.stringify(bad[0])}). The name becomes part of the "mcp__<server>__<tool>" tool namespace.`;
+  }
+  return null;
 }
 
 /**
@@ -3013,7 +3101,16 @@ export function findMcpConfigScopes(cwd: string): Array<{ path: string; scope: M
   // tree), so auto-loading it would silently spin up unrelated servers. Users
   // who want global servers in AMI put them in ~/.ami/mcp.json.
 
-  // 1. AMI project (.ami/mcp.json in cwd) — highest.
+  // 0. AMI local (machine-private, uncommitted `.ami/mcp.local.json` in cwd) — a
+  //    per-user, NOT-committed project override (Claude-parity `local` ConfigScope):
+  //    add a server for THIS repo on THIS machine only. Highest precedence
+  //    (first-wins) so it overrides a committed project entry of the same name, and
+  //    is NEVER approval-gated (the user authored it themselves, like the user scope),
+  //    since the engine only treats `scope === 'project'` as untrusted/approval-gated.
+  const localConfig = path.join(cwd, '.ami', 'mcp.local.json');
+  if (fs.existsSync(localConfig)) entries.push({ path: localConfig, scope: 'local' });
+
+  // 1. AMI project (.ami/mcp.json in cwd).
   const projectConfig = path.join(cwd, '.ami', 'mcp.json');
   if (fs.existsSync(projectConfig)) entries.push({ path: projectConfig, scope: 'project' });
 
