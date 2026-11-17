@@ -223,6 +223,28 @@ export function extractLastPrompt(messages: Message[]): string {
 }
 
 /**
+ * Derive a single-line title base from a transcript's first user message
+ * (parity: Claude's `deriveFirstPrompt`). Finds the first non-sidechain `user`
+ * turn, resolves its content to text ({@link contentToText} — handles a string,
+ * an offloaded blob preview, or a multimodal array's first text block), then
+ * COLLAPSES all whitespace to single spaces and caps at 100 chars. Collapsing is
+ * the whole point: a pasted multi-line stack / code block otherwise flows into a
+ * saved title and breaks the one-line resume/fork hint. Returns the shared
+ * `'Branched conversation'` fallback when there is no first user message, it has
+ * no text, or it is whitespace-only. The ONE canonical single-line title deriver,
+ * reused by {@link SessionManager.fork}'s base-name logic (no duplicated
+ * collapse/slice/fallback — §0b.6).
+ */
+export function deriveFirstPrompt(messages: Message[]): string {
+  const FALLBACK = 'Branched conversation';
+  const firstUser = messages.find(m => m.role === 'user' && !m.isSidechain);
+  if (!firstUser) return FALLBACK;
+  const text = contentToText((firstUser as { content?: unknown }).content);
+  const flat = text.replace(/\s+/g, ' ').trim().slice(0, 100);
+  return flat || FALLBACK;
+}
+
+/**
  * Resolve a session's display summary by the precedence chain customTitle >
  * aiTitle > lastPrompt > firstPrompt, returning `undefined` when none exist (a
  * metadata-only session). The `'(no messages)'` sentinel is treated as absent so
@@ -625,6 +647,58 @@ export function isValidSessionId(id: unknown): id is string {
   if (id.length === 0 || id.length > 255) return false;
   if (id === '.' || id === '..' || id.includes('..')) return false;
   return !UNSAFE_SESSION_ID_RE.test(id);
+}
+
+/**
+ * Classification of a `--resume`/`--continue` argument (parity: Claude's
+ * `parseSessionIdentifier`): a value the user passes can be a transcript FILE
+ * path, a managed session ID, or a cloud-ingress URL.
+ *  - `'jsonl'` — a path ending in `.jsonl` → resume from that transcript file and
+ *    mint a fresh session id (checked FIRST because a Windows absolute path like
+ *    `C:\x\s.jsonl` otherwise parses as a URL with `c:` as the protocol);
+ *  - `'id'` — a bare, format-valid managed session id ({@link isValidSessionId});
+ *  - `'url'` — an `http`/`https` URL (cloud session ingress).
+ */
+export type ParsedSessionIdentifier =
+  | { kind: 'jsonl'; path: string }
+  | { kind: 'id'; id: string }
+  | { kind: 'url'; url: string };
+
+/**
+ * Classify a `--resume` argument into {@link ParsedSessionIdentifier}, or `null`
+ * when it is none of the three forms (a non-string, empty/whitespace, or a
+ * path/string that is neither a `.jsonl` file, a safe session id, nor an
+ * http(s) URL). The `.jsonl` test runs before URL parsing so a Windows absolute
+ * transcript path is never misread as a URL. The id branch reuses the SAME
+ * {@link isValidSessionId} safety boundary `load()` uses, so a `--resume <id>`
+ * that classifies here is exactly the set of ids `load()` will accept — no
+ * second, divergent id grammar (§0b.6).
+ *
+ * FUNCTIONAL (intentional parity divergence): the URL branch is restricted to
+ * `http:`/`https:` schemes (Claude accepts any `new URL()`), so a transport-smuggling
+ * scheme (`ext::`, `file:`, `ssh:`) can never be classified as a resumable session
+ * URL — the same hardening posture AMI applies to other untrusted URL inputs.
+ */
+export function parseSessionIdentifier(arg: unknown): ParsedSessionIdentifier | null {
+  if (typeof arg !== 'string') return null;
+  const value = arg.trim();
+  if (!value) return null;
+  // JSONL transcript path first — a Windows absolute path parses as a URL otherwise.
+  if (value.toLowerCase().endsWith(TRANSCRIPT_FILE_EXTENSION)) {
+    return { kind: 'jsonl', path: value };
+  }
+  // A managed session id — same acceptance boundary as load()/delete().
+  if (isValidSessionId(value)) {
+    return { kind: 'id', id: value };
+  }
+  // A cloud-ingress URL (http/https only).
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return { kind: 'url', url: url.href };
+    }
+  } catch { /* not a URL */ }
+  return null;
 }
 
 /**
@@ -1214,15 +1288,12 @@ export class SessionManager {
   }
 
   /** Base name for a fork title: the source's display title, else its first user
-   *  prompt (whitespace-collapsed, 100-char capped), else a generic fallback. */
+   *  prompt via the shared {@link deriveFirstPrompt} single-line deriver
+   *  (whitespace-collapsed, 100-char capped, generic fallback). */
   private deriveForkBaseName(source: Session): string {
     const title = resolveSessionTitle(source);
     if (title && title.trim()) return title.trim();
-    const firstUser = source.messages.find(m => m.role === 'user' && !m.isSidechain);
-    const raw = firstUser && (firstUser as { content?: unknown }).content;
-    const text = contentToText(raw);
-    const flat = text.replace(/\s+/g, ' ').trim().slice(0, 100);
-    return flat || 'Branched conversation';
+    return deriveFirstPrompt(source.messages);
   }
 
   /**
@@ -2151,6 +2222,45 @@ export function getAllLockInfo(
     } catch { /* best effort — skip an unreadable dir */ }
   }
   return out;
+}
+
+/**
+ * Bulk reclaim stale session locks across a set of session directories, returning
+ * the number swept. For each dir's `.session.lock`: a corrupt/unparseable lock,
+ * or one whose holder is no longer active ({@link lockHolderActive} — a dead,
+ * sentinel, reused, or cross-host-expired PID), is UNLINKED so a crashed/abandoned
+ * session can't wedge `--resume` for that directory forever. A lock currently held
+ * by THIS process ({@link isSessionLockHeldLocally}) is never swept, and per-dir
+ * errors are isolated so one unreadable dir never aborts the sweep.
+ *
+ * This is the proactive counterpart to the lazy reclaim in {@link acquireSessionLock}
+ * (which only reclaims when a NEW acquire hits the same dir): it garbage-collects
+ * orphaned locks in dirs that are never re-acquired. Parity: Claude's
+ * `cleanupStaleLocks(locksDir)` directory sweep, adapted to AMI's one-lock-per-
+ * session-dir model (callers pass {@link SessionManager.listProjectSessionDirs}).
+ */
+export function cleanupStaleLocks(
+  sessionDirs: string[],
+  depsOverride?: Partial<SessionLockDeps>,
+): number {
+  const deps: SessionLockDeps = { ...DEFAULT_LOCK_DEPS, ...depsOverride };
+  let cleaned = 0;
+  for (const dir of sessionDirs) {
+    try {
+      const lockPath = path.join(dir, SESSION_LOCK_FILE);
+      if (!fs.existsSync(lockPath)) continue;
+      // Never sweep a lock this process still owns.
+      if (isSessionLockHeldLocally(dir)) continue;
+      const payload = readLockPayload(lockPath);
+      if (payload && lockHolderActive(payload, deps)) continue; // live, verified holder
+      // Corrupt/unparseable OR dead-holder lock → reclaim.
+      try {
+        fsHooks.unlinkSync(lockPath);
+        cleaned++;
+      } catch { /* raced away — already gone */ }
+    } catch { /* per-dir error isolated — never abort the sweep */ }
+  }
+  return cleaned;
 }
 
 // ---------------------------------------------------------------------------
