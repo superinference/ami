@@ -95,6 +95,20 @@ export interface ProjectConfig {
    * re-applied authoritatively in {@link mergeConfigs}.
    */
   hasTrustDialogAccepted?: boolean;
+  /**
+   * Allowlist of ABSOLUTE directory paths the user has recorded as trusted (parity:
+   * Claude Code's per-project trust records resolved by `computeTrustDialogAccepted` /
+   * `isPathTrusted`). Trust is INHERITED down the tree: a workspace is trusted when it
+   * is — or is nested under — any listed path, so trusting a parent directory implies
+   * trust of all its children. Normally persisted in the GLOBAL config (`~/.ami/
+   * config.json`) but, like every key, merged across the full waterfall (entries
+   * ACCUMULATE across layers — a higher layer adds trusted roots, never removes a lower
+   * one). Consumed by {@link isPathTrusted} (→ {@link resolveWorkspaceTrustAccepted} →
+   * `HookManager.loadFromFile`). Complements the single-workspace
+   * {@link hasTrustDialogAccepted} boolean: that grants trust for exactly one project;
+   * this grants it for a directory and everything beneath it. Only ever PROMOTES trust.
+   */
+  trustedProjectPaths?: string[];
   /** Session-wide cap on web_search tool calls. */
   maxWebSearchesPerSession?: number;
   /**
@@ -1178,6 +1192,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
   ['cleanupPeriodDays', 'number'],
   ['safeMode', 'boolean'], ['hasTrustDialogAccepted', 'boolean'],
+  ['trustedProjectPaths', 'string[]'],
   ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
@@ -2473,6 +2488,10 @@ export function mergeConfigs(
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
     if (layer.hasTrustDialogAccepted !== undefined) merged.hasTrustDialogAccepted = layer.hasTrustDialogAccepted;
+    // Trusted-path roots ACCUMULATE across layers (concat + dedupe) like the other
+    // allowlists below: a higher layer adds more trusted roots, never drops a lower
+    // layer's — trust only ever widens across the waterfall.
+    if (layer.trustedProjectPaths !== undefined) merged.trustedProjectPaths = mergeConfigArray(merged.trustedProjectPaths, layer.trustedProjectPaths);
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.cleanupPeriodDays !== undefined) merged.cleanupPeriodDays = layer.cleanupPeriodDays;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
@@ -2716,19 +2735,48 @@ export function resolveConfiguredExternalMemoryImports(cwd: string): { approved:
 }
 
 /**
- * Resolve whether the workspace rooted at `cwd` has been granted FOLDER TRUST via the
- * persisted {@link ProjectConfig.hasTrustDialogAccepted} knob, by merging the full
- * config waterfall (managed > global > project > local — CLI/env carry no trust flag).
- * Returns `true` only when the merged flag is exactly `true`; a missing/false value is
- * the untrusted default. Kept in the config layer (not hooks.ts) so there is ONE place
+ * Normalize a directory path into the canonical, absolute form used as a trusted-path
+ * key / ancestor-walk node (parity: Claude Code's `normalizePathForConfigKey`). A single
+ * normalizer so a path listed in {@link ProjectConfig.trustedProjectPaths} and the `cwd`
+ * being checked compare identically regardless of `.`/`..`/trailing-separator spelling.
+ */
+export function normalizeTrustPath(p: string): string {
+  return path.resolve(p);
+}
+
+/**
+ * True-only trust latch (parity: Claude Code's `computeTrustDialogAccepted` latch that
+ * caches ONLY the positive result). Workspace trust only ever PROMOTES within a running
+ * process — once a directory resolves trusted it stays trusted for the lifetime of the
+ * process even if the backing config is later edited to remove the grant, so a mid-
+ * session config edit can never silently REVOKE trust the session already acted on. A
+ * `false` result is never cached (a trust grant added mid-session still takes effect on
+ * the next check). Keyed by {@link normalizeTrustPath}.
+ */
+const workspaceTrustLatch = new Set<string>();
+
+/**
+ * Resolve whether the workspace rooted at `cwd` has been granted FOLDER TRUST, by
+ * merging the full config waterfall (managed > global > project > local — CLI/env carry
+ * no trust flag) and honoring BOTH trust surfaces:
+ *  1. the single-workspace {@link ProjectConfig.hasTrustDialogAccepted} boolean, and
+ *  2. the inherited {@link ProjectConfig.trustedProjectPaths} allowlist — the normalized
+ *     `cwd` is trusted when it equals, or is nested under, ANY listed path (an ancestor
+ *     walk from `cwd` up to the filesystem root), so trusting a parent directory implies
+ *     trust of all its children. Parity: Claude Code's `computeTrustDialogAccepted`
+ *     walking `resolve(path, '..')` up every ancestor returning true if any has trust.
+ *
+ * A positive result is latched (see {@link workspaceTrustLatch}) so trust never silently
+ * revokes mid-session. Kept in the config layer (not hooks.ts) so there is ONE place
  * that reads the config files and applies the merge semantics — the same pattern as
  * {@link resolveConfiguredMemoryExcludes}. A broken/untrusted managed policy fails
- * closed ({@link ManagedConfigError}); a trust lookup must never abort hook loading
- * over it, so it is treated as absent. Parity: Claude Code's
- * `checkHasTrustDialogAccepted()` read of the per-project config knob, consumed by
+ * closed ({@link ManagedConfigError}); a trust lookup must never abort hook loading over
+ * it, so it is treated as absent. Consumed by {@link resolveWorkspaceTrustAccepted} →
  * {@link import('./hooks').HookManager.loadFromFile} to set workspace trust.
  */
-export function resolveWorkspaceTrustAccepted(cwd: string): boolean {
+export function isPathTrusted(cwd: string): boolean {
+  const normalized = normalizeTrustPath(cwd);
+  if (workspaceTrustLatch.has(normalized)) return true;
   let managed: ProjectConfig | null = null;
   try { managed = loadManagedConfig(); } catch { managed = null; }
   const merged = mergeConfigs(
@@ -2739,7 +2787,35 @@ export function resolveWorkspaceTrustAccepted(cwd: string): boolean {
     loadLocalConfig(cwd),
     managed,
   );
-  return merged.hasTrustDialogAccepted === true;
+  let trusted = merged.hasTrustDialogAccepted === true;
+  if (!trusted) {
+    const roots = merged.trustedProjectPaths;
+    if (Array.isArray(roots) && roots.length > 0) {
+      const trustedSet = new Set(roots.map(r => normalizeTrustPath(r)));
+      // Ancestor walk: from the normalized cwd up through every parent until the
+      // filesystem root (where dirname(x) === x), stopping as soon as a trusted root
+      // is hit — so a trusted ancestor transitively trusts every descendant.
+      let current = normalized;
+      for (;;) {
+        if (trustedSet.has(current)) { trusted = true; break; }
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    }
+  }
+  if (trusted) workspaceTrustLatch.add(normalized);
+  return trusted;
+}
+
+/**
+ * Resolve whether the workspace rooted at `cwd` has been granted FOLDER TRUST. Thin
+ * alias of {@link isPathTrusted} kept as the stable name consumed by
+ * {@link import('./hooks').HookManager.loadFromFile}; see that function for the full
+ * (boolean + inherited trusted-path + latch) resolution semantics.
+ */
+export function resolveWorkspaceTrustAccepted(cwd: string): boolean {
+  return isPathTrusted(cwd);
 }
 
 // ---------------------------------------------------------------------------
