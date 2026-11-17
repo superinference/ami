@@ -16,6 +16,14 @@ export interface RateLimitStatus {
   severity?: 'warning' | 'error';
   /** User-facing, graded warning message, when shouldWarn is true. */
   warnMessage?: string;
+  /**
+   * Server-directed cooldown (ms) parsed from the most recent response's
+   * `Retry-After` header (null when the server did not direct one). Authoritative:
+   * callers prefer this over a locally-guessed backoff (e.g. the coordinator feeds
+   * it into credential-pool cooldowns). Cleared whenever a response arrives without
+   * the header, so it only reflects the latest directive.
+   */
+  retryAfterMs: number | null;
 }
 
 /** Tunable thresholds for a {@link RateLimitTracker}. */
@@ -67,6 +75,8 @@ export class RateLimitTracker {
   // reset), used to estimate how much of the window has elapsed for burn-rate.
   private requestsWindowMs = 0;
   private tokensWindowMs = 0;
+  // Server-directed Retry-After (ms) from the most recent response, or null.
+  private retryAfterMs: number | null = null;
   private readonly warnThreshold: number;
   private readonly errorThreshold: number;
 
@@ -77,6 +87,10 @@ export class RateLimitTracker {
 
   update(headers: Record<string, string>): void {
     const info = parseRateLimitHeaders(headers);
+    // Capture the server's Retry-After directive from this response (null when
+    // absent). It is a per-response directive, so a later response without the
+    // header clears it rather than letting a stale directive linger.
+    this.retryAfterMs = info.retryAfterMs;
     const reqReset = headers['x-ratelimit-reset-requests'];
 
     if (info.limitRequests !== null && info.remainingRequests !== null) {
@@ -133,6 +147,7 @@ export class RateLimitTracker {
       requestsPercent: Math.round(reqPct * 100),
       tokensPercent: Math.round(tokPct * 100),
       shouldWarn,
+      retryAfterMs: this.retryAfterMs,
     };
 
     if (shouldWarn) {

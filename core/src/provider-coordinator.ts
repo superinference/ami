@@ -175,9 +175,29 @@ export class ProviderCoordinator {
     return this.rateLimits.getStatus();
   }
 
+  /**
+   * Put the active credential into cooldown. When the caller omits an explicit
+   * cooldown, prefer the SERVER-DIRECTED delay: the coordinator already ingests
+   * each response's headers via {@link updateRateLimits}, so the latest parsed
+   * `Retry-After` (ms) is honored verbatim by the pool (clamped, no escalation)
+   * instead of the fixed escalating default. This mirrors Claude Code's
+   * getRetryDelay, which uses the server `retry-after` header as the delay and
+   * only falls back to exponential backoff when the server did not direct one.
+   */
   markCredentialExhausted(cooldownMs?: number): void {
     if (this.credentialPool && this.activeCredentialId) {
-      this.credentialPool.markExhausted(this.activeCredentialId, cooldownMs);
+      if (cooldownMs === undefined) {
+        const serverRetryAfterMs = this.rateLimits.getStatus().retryAfterMs;
+        if (serverRetryAfterMs !== null && serverRetryAfterMs > 0) {
+          // Authoritative server directive — used verbatim (clamped) by the pool.
+          this.credentialPool.markExhausted(this.activeCredentialId, { retryAfterMs: serverRetryAfterMs });
+        } else {
+          // No server directive: fall back to the pool's escalating default.
+          this.credentialPool.markExhausted(this.activeCredentialId);
+        }
+      } else {
+        this.credentialPool.markExhausted(this.activeCredentialId, cooldownMs);
+      }
       this.activeCredentialId = null;
     }
   }
