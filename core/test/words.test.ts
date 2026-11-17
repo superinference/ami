@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { generateWordSlug, generateShortWordSlug, randomInt, pickRandom } from '../src/words';
+import { generateWordSlug, generateShortWordSlug, generateUniqueSlug, randomInt, pickRandom } from '../src/words';
+
+const SLUG_RE = /^[a-z]+-[a-z]+-[a-z]+$/;
 
 describe('words — generateWordSlug', () => {
   it('produces an adjective-verb-noun slug (three lowercase parts)', () => {
@@ -67,5 +69,35 @@ describe('words — randomInt / pickRandom (unbiased crypto helpers)', () => {
     const seen = new Set<number>();
     for (let i = 0; i < 500; i++) seen.add(pickRandom(arr));
     assert.equal(seen.size, arr.length);
+  });
+});
+
+describe('words — generateUniqueSlug (collision-aware)', () => {
+  it('returns the first word slug when nothing is taken', () => {
+    let calls = 0;
+    const slug = generateUniqueSlug(() => { calls++; return false; });
+    assert.equal(calls, 1, 'the sole candidate should be checked exactly once');
+    assert.match(slug, SLUG_RE);
+  });
+
+  it('retries until it finds a free slug and never returns a rejected one', () => {
+    let calls = 0;
+    const slug = generateUniqueSlug(() => { calls++; return calls <= 2; });
+    assert.ok(calls >= 3, `expected at least 3 predicate calls, got ${calls}`);
+    assert.match(slug, SLUG_RE);
+  });
+
+  it('consults the predicate at most maxRetries times before giving up', () => {
+    let calls = 0;
+    const slug = generateUniqueSlug(() => { calls++; return true; }, 3);
+    assert.equal(calls, 3);
+    assert.match(slug, SLUG_RE);
+  });
+
+  it('does not consult the predicate when maxRetries is zero', () => {
+    let calls = 0;
+    const slug = generateUniqueSlug(() => { calls++; return true; }, 0);
+    assert.equal(calls, 0);
+    assert.match(slug, SLUG_RE);
   });
 });

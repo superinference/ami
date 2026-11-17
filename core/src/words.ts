@@ -147,3 +147,25 @@ export function generateWordSlug(): string {
 export function generateShortWordSlug(): string {
   return `${pickRandom(ADJECTIVES)}-${pickRandom(NOUNS)}`;
 }
+
+/**
+ * Generate a {@link generateWordSlug} that does not collide with an existing
+ * artifact. The caller supplies a `taken` predicate (e.g. "a plan file with this
+ * slug already exists on disk"); candidates are regenerated until one is free or
+ * `maxRetries` attempts are exhausted, in which case the last candidate is
+ * returned anyway so the caller always gets a usable name. Keeping the existence
+ * check in the caller leaves this module free of I/O (pure building block).
+ *
+ * @param taken predicate returning true when a candidate slug is already in use
+ * @param maxRetries maximum number of collision retries before giving up (default 10)
+ */
+export function generateUniqueSlug(
+  taken: (slug: string) => boolean,
+  maxRetries = 10,
+): string {
+  let slug = generateWordSlug();
+  for (let i = 0; i < maxRetries && taken(slug); i++) {
+    slug = generateWordSlug();
+  }
+  return slug;
+}
