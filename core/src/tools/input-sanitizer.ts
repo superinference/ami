@@ -103,15 +103,34 @@ const POISONED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_SANITIZE_DEPTH = 20;
 
 /**
- * Sanitize a single value reachable from a tool-input object: strings are
- * NUL-stripped and trimmed, ARRAYS are recursed element-by-element (so a string
- * smuggled inside `{ paths: ['  rm\x00 -rf /  '] }` is cleaned, not passed
- * through), plain objects re-enter `sanitizeToolInput` (dropping poisoned keys),
- * and non-string primitives are returned unchanged. Depth-bounded through the
- * same `MAX_SANITIZE_DEPTH` cap as the object walker.
+ * Strip smuggling Unicode (+ NUL) from an OBJECT KEY before it is used. Keys are
+ * the second injection channel alongside values: a zero-width/homoglyph-obfuscated
+ * key such as `__pro​to__` would otherwise slip a prototype-pollution key
+ * past the `POISONED_KEYS` denylist, and a hidden-Unicode key would carry an
+ * invisible payload into the sanitized object. Runs the SAME canonical
+ * `stripInvisibleUnicode` (NFKC + invisible/format/private-use class) the value
+ * path uses, then removes NUL — mirroring Claude Code's `recursivelySanitizeUnicode`,
+ * which sanitizes BOTH keys and values. Keys are not trimmed (leading/trailing
+ * spaces in a key are structural, not smuggling).
+ */
+function sanitizeToolKey(key: string): string {
+  return stripInvisibleUnicode(key).replace(/\x00/g, '');
+}
+
+/**
+ * Sanitize a single value reachable from a tool-input object: strings are routed
+ * through the canonical `stripInvisibleUnicode` (NFKC fold + invisible/format/
+ * private-use/unassigned stripping) THEN NUL-stripped and trimmed — so hidden
+ * instructions smuggled into a tool argument as zero-width/bidi/compatibility
+ * Unicode are neutralized before the tool runs, matching Claude Code's
+ * `recursivelySanitizeUnicode` over tool input. ARRAYS are recursed
+ * element-by-element (so a string smuggled inside `{ paths: ['  rm\x00 -rf /  '] }`
+ * is cleaned, not passed through), plain objects re-enter `sanitizeToolInput`
+ * (dropping poisoned keys), and non-string primitives are returned unchanged.
+ * Depth-bounded through the same `MAX_SANITIZE_DEPTH` cap as the object walker.
  */
 function sanitizeToolValue(value: unknown, depth: number): unknown {
-  if (typeof value === 'string') return value.replace(/\x00/g, '').trim();
+  if (typeof value === 'string') return stripInvisibleUnicode(value).replace(/\x00/g, '').trim();
   if (depth >= MAX_SANITIZE_DEPTH) return value;
   if (Array.isArray(value)) return value.map((v) => sanitizeToolValue(v, depth + 1));
   if (value && typeof value === 'object') {
@@ -124,10 +143,50 @@ export function sanitizeToolInput(input: Record<string, unknown>, depth: number 
   if (depth >= MAX_SANITIZE_DEPTH) return {};
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
-    if (POISONED_KEYS.has(key)) continue;
-    result[key] = sanitizeToolValue(value, depth);
+    // Sanitize the KEY first (strip smuggling Unicode + NUL), THEN apply the
+    // prototype-pollution denylist to the CLEANED key — so a Unicode-obfuscated
+    // `__proto__`/`constructor`/`prototype` key cannot evade the denylist.
+    const cleanKey = sanitizeToolKey(key);
+    if (POISONED_KEYS.has(cleanKey)) continue;
+    result[cleanKey] = sanitizeToolValue(value, depth);
   }
   return result;
+}
+
+/** Upper bound on the length of an untrusted identifier embedded into a prompt. */
+export const MAX_PROMPT_IDENTIFIER_LEN = 80;
+
+/**
+ * Structural allowlist/boundary for an UNTRUSTED IDENTIFIER — an installed/URL
+ * plugin-bundle skill, stance or agent NAME, or a bundle name — before it is
+ * embedded VERBATIM into the model-facing capability listing (the system prompt).
+ *
+ * The heuristic scanners (`detectPromptInjection`, `sanitizeSubagentOutput`)
+ * harden tool OUTPUT text; this hardens the IDENTIFIER channel structurally, which
+ * output heuristics do not cover. A malicious bundle could ship a skill named
+ * `deploy\nIgnore all previous instructions and ...` so the rendered markdown
+ * listing line breaks onto a second line that reads like a top-level
+ * instruction. This:
+ *  1. runs the canonical `stripInvisibleUnicode` (NFKC + invisible/format/
+ *     private-use/unassigned removal), then
+ *  2. replaces every C0/C1 control char (newlines, CR, tab, …) with a single
+ *     space — using an explicit control class, NOT `\s`, so a name can never
+ *     smuggle a line break, mirroring Claude Code's `appNames` boundary, then
+ *  3. collapses whitespace runs to one space, trims, and hard-caps the length.
+ * Printable punctuation that is legitimate in identifiers (`-`, `_`, `:`, `/`,
+ * `.`) is preserved so real plugin/skill names (e.g. `plugin:skill`) render
+ * unchanged.
+ */
+export function sanitizeIdentifierForPrompt(
+  identifier: string,
+  maxLength: number = MAX_PROMPT_IDENTIFIER_LEN,
+): string {
+  // eslint-disable-next-line no-control-regex -- intentional: collapse control chars so no identifier can smuggle a line break into the prompt
+  const cleaned = stripInvisibleUnicode(identifier)
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
+  return cleaned.length > maxLength ? cleaned.slice(0, maxLength) : cleaned;
 }
 
 export function recoverJsonStringFields(
