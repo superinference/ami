@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
+import { coerceNumber } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import { trackFileHistory } from './file-history';
 import { captureLspBaseline } from './file-edit';
@@ -165,7 +166,25 @@ export const notebookEditTool: ToolDefinition = {
   ): Promise<ToolResult> {
     const notebookPath = input.notebook_path as string;
     const newSource = input.new_source as string;
-    let cellNumber = input.cell_number as number | undefined;
+    // PARITY (semanticNumber, utils/coerce.ts): models/providers frequently
+    // serialize a numeric tool argument as a QUOTED string ("2"). A raw
+    // `input.cell_number as number` kept that string, so range checks and array
+    // indexing ran against `"2"` — mixing string/number comparisons and silently
+    // mis-targeting cells. Coerce a finite number or numeric string to a real
+    // integer; reject any other non-empty shape (e.g. "abc", {}) up front instead
+    // of letting a garbage index fall through. Absent/null stays `undefined`.
+    let cellNumber: number | undefined;
+    const rawCellNumber = input.cell_number;
+    if (rawCellNumber !== undefined && rawCellNumber !== null) {
+      const coerced = coerceNumber(rawCellNumber, NaN, { integer: true });
+      if (!Number.isFinite(coerced)) {
+        return {
+          output: `Error: cell_number must be a number. Got ${JSON.stringify(rawCellNumber)}.`,
+          isError: true,
+        };
+      }
+      cellNumber = coerced;
+    }
     const cellId = input.cell_id as string | undefined;
     const cellType = (input.cell_type as string) ?? undefined;
     let editMode = (input.edit_mode as string) ?? 'replace';
@@ -173,6 +192,20 @@ export const notebookEditTool: ToolDefinition = {
     // --- Validate inputs ---
     const nullCheck = validateFilePath(notebookPath || '');
     if (nullCheck) return nullCheck;
+
+    // PARITY (Claude write-path glob guard; mirrors file-edit.ts): a glob pattern
+    // is never a valid write/edit target — the tool uses the path literally, so a
+    // `*`/`?` wildcard can only be a model mistake that would create a literally
+    // named file or silently miss the intended notebook. Reject with an actionable,
+    // self-correcting message. Only the unambiguous wildcards `*`/`?` are flagged so
+    // legitimate bracket/brace filenames stay editable (same superset divergence as
+    // file-edit.ts).
+    if (notebookPath && /[*?]/.test(notebookPath)) {
+      return {
+        output: `Error: Glob patterns are not allowed in write operations. Please specify an exact file path (got "${notebookPath}").`,
+        isError: true,
+      };
+    }
 
     if (notebookPath && (notebookPath.startsWith('\\\\') || notebookPath.startsWith('//'))) {
       return { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${notebookPath}`, isError: true };
