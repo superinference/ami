@@ -3076,6 +3076,20 @@ export interface BashCommandSpec {
   valueFlags: ReadonlySet<string>;
   /** Scoped-prefix depth in words (command + subcommands). Defaults to 2. */
   depth?: number;
+  /**
+   * Per-FIRST-SUBCOMMAND depth overrides, keyed by the lowercased first subcommand
+   * word. A deep subcommand tree under one group needs a larger prefix than the
+   * command's default `depth` to reach a meaningful leaf (e.g. `gcloud compute
+   * instances describe` needs depth 6, while `gcloud config list` is fine at 4).
+   * When the first subcommand after the command matches a key here, that value
+   * REPLACES `depth` for this invocation. Mirrors Claude's `DEPTH_RULES` COMPOUND
+   * keys (`${command} ${firstSubcommand}` → depth), e.g. `gcloud compute`:6,
+   * `gcloud beta`:6 (utils/shell/specPrefix.ts DEPTH_RULES / staticPrefix.ts
+   * calculateDepth, which consults the `${command} ${sub}` key before the bare
+   * command key). Keyed on the first subcommand only (not arbitrary pairs) because
+   * that is the sole compound form Claude's table uses.
+   */
+  subcommandDepth?: Readonly<Record<string, number>>;
 }
 
 export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
@@ -3088,7 +3102,18 @@ export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
   helm: { valueFlags: new Set(['-n', '--namespace', '--kube-context', '--kubeconfig']), depth: 3 },
   aws: { valueFlags: new Set(['--region', '--profile', '--endpoint-url', '--output', '--cli-read-timeout']), depth: 4 },
   az: { valueFlags: new Set(['--subscription', '--output', '-o']), depth: 4 },
-  gcloud: { valueFlags: new Set(['--project', '--account', '--configuration', '--format', '--verbosity']), depth: 4 },
+  gcloud: {
+    valueFlags: new Set(['--project', '--account', '--configuration', '--format', '--verbosity']),
+    depth: 4,
+    // Claude's DEPTH_RULES compound keys: `gcloud compute`/`gcloud beta` nest
+    // deeper (service → resource → verb) so a 4-word prefix stops short of the
+    // real leaf; 6 reaches it.
+    subcommandDepth: { compute: 6, beta: 6 },
+  },
+  // .NET CLI: a meaningful action lives at the 3rd word (`dotnet tool install`,
+  // `dotnet nuget push`, `dotnet workload install`) — parity with Claude's
+  // DEPTH_RULES[dotnet]=3. No global value-flags worth skipping before the verb.
+  dotnet: { valueFlags: new Set(['-v', '--verbosity']), depth: 3 },
   npm: { valueFlags: new Set(['--prefix', '-w', '--workspace', '--registry']) },
   pnpm: { valueFlags: new Set(['--prefix', '-w', '--workspace', '--filter', '-C', '--dir']) },
   yarn: { valueFlags: new Set(['--cwd']) },
@@ -3146,10 +3171,20 @@ export function getSimpleCommandPrefix(command: string): string | null {
   const cmd = tokens[i];
   if (!cmd) return null;
   const spec = BASH_COMMAND_SPECS[cmd];
-  const depth = spec?.depth ?? 2;
-  const parts = [cmd];
   // Skip leading global flags (and any value they consume) to reach the subcommand.
   i = skipGlobalFlags(tokens, i + 1, spec);
+  // Resolve the effective depth: a COMPOUND (`command firstSubcommand`) override
+  // from the spec's `subcommandDepth` wins over the command's default `depth`, so
+  // a deep subcommand tree (`gcloud compute …`) extends to its real leaf while a
+  // shallow sibling keeps the default. Mirrors Claude's DEPTH_RULES compound-key
+  // lookup (`${command} ${sub}` before the bare `${command}`).
+  let depth = spec?.depth ?? 2;
+  const firstSub = tokens[i];
+  if (firstSub && spec?.subcommandDepth) {
+    const override = spec.subcommandDepth[firstSub.toLowerCase()];
+    if (override !== undefined) depth = override;
+  }
+  const parts = [cmd];
   // Collect subcommand-shaped words up to the spec depth; stop at the first flag
   // or non-subcommand-shaped token once collection has begun.
   while (parts.length < depth && i < tokens.length) {
