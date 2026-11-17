@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+
 export const PROVENANCE_TIERS = ['builtin', 'managed', 'user', 'unknown'] as const;
 export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
 
@@ -188,6 +190,57 @@ export function isProvenanceTrusted(tier: ProvenanceTier): boolean {
   return tier === 'builtin' || tier === 'managed';
 }
 
+/**
+ * Compute the canonical content signature (sha256 hex) for an integrity check.
+ * Pure and deterministic — identical bytes always yield the same signature — so a
+ * source's content can be compared against an expected hash or a prior baseline.
+ */
+export function computeContentSignature(content: string | Uint8Array): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Constant-time equality for two hex signature strings. Unequal lengths are an
+ * immediate mismatch (timingSafeEqual requires equal-length buffers); equal
+ * lengths are compared without an early-exit side channel.
+ */
+function signaturesMatch(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+/** Outcome of a content-integrity comparison. */
+export interface IntegrityCheckResult {
+  /** 'verified' when the content matched the expected signature, else 'failed'. */
+  integrity: 'verified' | 'failed';
+  /** The signature actually computed from the supplied content. */
+  actual: string;
+  /** The signature the content was compared against. */
+  expected: string;
+}
+
+/**
+ * Compare content against an externally-supplied expected signature. Returns
+ * 'verified' ONLY on an exact constant-time match, 'failed' otherwise. This is
+ * the real cryptographic check that the 'verified' integrity state is reserved
+ * for — it is never derived from the origin tier. A 'failed' result is the
+ * tampering/MITM analog of Claude's changed-host-key detection: the content does
+ * not match the trusted reference, so it must not be silently trusted.
+ */
+export function verifyContentSignature(
+  content: string | Uint8Array,
+  expectedSignature: string,
+): IntegrityCheckResult {
+  const actual = computeContentSignature(content);
+  return {
+    integrity: signaturesMatch(actual, expectedSignature) ? 'verified' : 'failed',
+    actual,
+    expected: expectedSignature,
+  };
+}
+
 /** The subset of risk capabilities a record actually introduces. */
 export function elevatedCapabilities(record: ProvenanceRecord): RiskCapabilityName[] {
   return RISK_CAPABILITIES.filter(k => record.capabilities[k]);
@@ -257,6 +310,46 @@ export class ProvenanceTracker {
     return record;
   }
 
+  /**
+   * Record a baseline content signature for an already-registered source WITHOUT
+   * changing its integrity state. Establishes the reference a later
+   * {@link verifyIntegrity} compares against (drift detection); recording a
+   * baseline is not a trusted-hash match, so it never claims 'verified'. Returns
+   * the record's current integrity, or undefined when the name is unknown.
+   */
+  recordSignature(name: string, content: string | Uint8Array): ProvenanceIntegrity | undefined {
+    const record = this._records.get(name);
+    if (!record) return undefined;
+    record.signature = computeContentSignature(content);
+    return record.integrity;
+  }
+
+  /**
+   * Verify a registered source's content against an expected signature and persist
+   * the result on its record. This is the ONLY path that can produce the honest
+   * 'verified' (content matched a trusted hash) or 'failed' (mismatch — possible
+   * tampering) integrity states that {@link register} alone, deriving integrity
+   * from the origin tier, can never claim. The record's `signature` is updated to
+   * the freshly-computed hash. A 'failed' check also logs an untrusted-access entry
+   * so the tampering is auditable via {@link getUntrustedAccess}. Returns the new
+   * integrity, or undefined when the name is unknown.
+   */
+  verifyIntegrity(
+    name: string,
+    content: string | Uint8Array,
+    expectedSignature: string,
+  ): ProvenanceIntegrity | undefined {
+    const record = this._records.get(name);
+    if (!record) return undefined;
+    const result = verifyContentSignature(content, expectedSignature);
+    record.signature = result.actual;
+    record.integrity = result.integrity;
+    if (result.integrity === 'failed') {
+      this._untrustedAccess.push({ name, tier: record.tier, timestamp: Date.now() });
+    }
+    return record.integrity;
+  }
+
   getRecord(name: string): ProvenanceRecord | undefined {
     return this._records.get(name);
   }
@@ -302,6 +395,14 @@ export interface ProvenanceSummary {
   elevatedRiskCount: number;
   /** Records that warrant review (untrusted origin or elevated capabilities). */
   reviewCount: number;
+  /**
+   * Per-integrity-state counts across all records (records with no integrity set
+   * are not counted). Surfaces how many sources passed ('verified') or FAILED a
+   * real content check so /status can flag tampering, not just tier trust.
+   */
+  integrity: Record<ProvenanceIntegrity, number>;
+  /** Records whose content integrity check failed — a tampering signal. */
+  failedIntegrityCount: number;
   /** Human-readable warning copy when untrusted sources exist, else `null`. */
   warning: string | null;
   records: ProvenanceRecord[];
@@ -320,12 +421,21 @@ export function summarizeProvenance(tracker: ProvenanceTracker): ProvenanceSumma
   const untrustedCount = records.filter(r => !isProvenanceTrusted(r.tier)).length;
   const elevatedRiskCount = records.filter(hasElevatedCapabilities).length;
   const reviewCount = records.filter(r => assessProvenanceRisk(r).requiresReview).length;
+  const integrity: Record<ProvenanceIntegrity, number> = {
+    verified: 0,
+    attested: 0,
+    unverified: 0,
+    failed: 0,
+  };
+  for (const r of records) if (r.integrity) integrity[r.integrity]++;
   return {
     tiers,
     total: records.length,
     untrustedCount,
     elevatedRiskCount,
     reviewCount,
+    integrity,
+    failedIntegrityCount: integrity.failed,
     warning: provenanceWarning(untrustedCount),
     records,
   };
