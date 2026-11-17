@@ -713,8 +713,10 @@ export function parseImageToolOutput(output: string): ImageContent[] | null {
   return null;
 }
 
-/** Kind of file whose read carried extracted images (drives the engine's note). */
-export const FILE_IMAGES_KINDS = ['notebook', 'pdf'] as const;
+/** Kind of tool output that carried extracted images (drives the engine's note).
+ *  `notebook`/`pdf` are file reads; `mcp` is an MCP tool result whose image content
+ *  blocks are forwarded as first-class multimodal content (see mcp-tool.ts). */
+export const FILE_IMAGES_KINDS = ['notebook', 'pdf', 'mcp'] as const;
 export type FileImagesKind = (typeof FILE_IMAGES_KINDS)[number];
 
 /**
@@ -738,7 +740,7 @@ export function parseFileImagesOutput(output: string): { kind: FileImagesKind; t
   if (!t.startsWith('{') || !t.includes('"type":"file_images"')) return null;
   try {
     const parsed = JSON.parse(output);
-    if (parsed && parsed.type === 'file_images' && (parsed.kind === 'notebook' || parsed.kind === 'pdf')
+    if (parsed && parsed.type === 'file_images' && (FILE_IMAGES_KINDS as readonly string[]).includes(parsed.kind)
         && typeof parsed.text === 'string' && Array.isArray(parsed.images)) {
       const images = (parsed.images as unknown[]).filter((i): i is ImageContent =>
         !!i && typeof i === 'object'

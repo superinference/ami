@@ -13,6 +13,7 @@ import {
   DEFAULT_MCP_TOOL_TIMEOUT_MS,
   MAX_MCP_TOOL_NAME_LEN,
 } from '../src/tools/mcp-tool';
+import { parseFileImagesOutput } from '../src/tools/file-read';
 
 // ---------------------------------------------------------------------------
 // ESM-safe behavioural coverage for core/core/src/tools/mcp-tool.ts
@@ -372,13 +373,21 @@ describe('createMcpTool.execute result shaping', () => {
     assert.match(res.output, /"k": "v"/);
   });
 
-  it('surfaces processed content metadata (images) when not truncated', async () => {
+  it('forwards an image result as a first-class file_images block (no legacy mcpImages metadata)', async () => {
     const mgr = new MockManager(async () => ({ content: [{ type: 'image', data: 'aGk=', mimeType: 'image/png' }] }));
     const tool = createMcpTool('srv', 'tl', 'desc', {});
     const res = await tool.execute({}, makeContext(mgr));
-    assert.match(res.output, /\[Image: image\/png/);
-    assert.ok((res.metadata as any).mcpImages, 'image metadata should be surfaced');
-    assert.equal((res.metadata as any).mcpTruncated, undefined);
+    // FUNCTIONAL CHANGE (U071/w76): MCP image blocks are now compressed to fit and
+    // emitted as first-class multimodal content via the shared file_images protocol
+    // (consumed by the engine) instead of raw base64 in unread `metadata.mcpImages`.
+    const parsed = parseFileImagesOutput(res.output);
+    assert.ok(parsed, 'output must be a file_images envelope');
+    assert.equal(parsed!.kind, 'mcp');
+    assert.equal(parsed!.images.length, 1);
+    assert.equal(parsed!.images[0].source.media_type, 'image/png');
+    // The bounded text retains the placeholder so the result is not silently emptied.
+    assert.match(parsed!.text, /\[Image: image\/png/);
+    assert.equal((res.metadata as any)?.mcpImages, undefined, 'legacy mcpImages metadata is gone');
   });
 
   it('marks truncation metadata when the result exceeds maxResultSizeChars', async () => {
@@ -389,16 +398,19 @@ describe('createMcpTool.execute result shaping', () => {
     assert.ok((res.metadata as any).mcpOriginalBytes > 10);
   });
 
-  it('merges truncation metadata with processed image metadata', async () => {
+  it('emits a bounded-text file_images block when an image result is also over the char budget', async () => {
     const mgr = new MockManager(async () => ({
       _meta: { maxResultSizeChars: 5 },
       content: [{ type: 'image', data: 'aGVsbG8gd29ybGQ=', mimeType: 'image/png' }],
     }));
     const tool = createMcpTool('srv', 'tl', 'desc', {});
     const res = await tool.execute({}, makeContext(mgr));
-    const meta = res.metadata as any;
-    assert.equal(meta.mcpTruncated, true);
-    assert.ok(meta.mcpImages, 'image metadata should survive the merge');
+    // The image overrides the spill/metadata path: the (bounded) text travels inside
+    // the file_images envelope alongside the compressed image block.
+    const parsed = parseFileImagesOutput(res.output);
+    assert.ok(parsed, 'output must be a file_images envelope');
+    assert.equal(parsed!.images.length, 1);
+    assert.ok(parsed!.text.length > 0);
   });
 
   it('spills a large structured result with a JSON format banner + sequential-read protocol', async () => {

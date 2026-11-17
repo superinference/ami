@@ -1,9 +1,14 @@
-import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { ToolDefinition, ToolResult, ToolContext, ImageContent } from '../types';
 import { spillToolText, getFormatDescription, isAlreadySpilled, formatSize } from './spill-output';
-import { boundMcpResponse, getMaxMcpOutputChars } from '../mcp/client';
+import { boundMcpResponse, getMaxMcpOutputChars, getMaxMcpOutputTokens } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
 import { persistBinaryContent, getBinaryBlobSavedMessage } from './mcp-output-storage';
+import {
+  compressImageBuffer,
+  IMAGE_TARGET_RAW_SIZE,
+  buildFileImagesOutput,
+} from './file-read';
 
 /** Default MCP tool call timeout: 5 minutes (300 000 ms). */
 export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000;
@@ -28,6 +33,75 @@ export function getMcpToolTimeout(): number {
 /** Max tool-name length accepted by the OpenAI/Anthropic APIs. A qualified MCP
  *  name longer than this poisons every request, so it must be shortened. */
 export const MAX_MCP_TOOL_NAME_LEN = 128;
+
+/** Per-image token cost charged against the MCP output budget when deciding how
+ *  many image blocks to keep from a tool result. Mirrors Claude Code's
+ *  `IMAGE_TOKEN_ESTIMATE` (utils/mcpValidation.ts:L15 — 1600 tokens per image),
+ *  so a result with many images cannot blow the configured output-token budget. */
+export const IMAGE_TOKEN_ESTIMATE = 1600;
+
+/** Width of the inline MCP progress bar rendered from a server's
+ *  `notifications/progress` percentage. Mirrors Claude Code's 20-wide ProgressBar
+ *  (tools/MCPTool/UI.tsx:L57-90). */
+export const MCP_PROGRESS_BAR_WIDTH = 20;
+
+/** Render a single in-flight MCP progress line from a server-forwarded
+ *  `notifications/progress` update, for streaming through `context.onProgress`
+ *  (→ a `tool_use_progress` EngineEvent the TUI/detached runner both render).
+ *
+ *  Mirrors Claude Code's `renderToolUseProgressMessage` (tools/MCPTool/UI.tsx:L57-90):
+ *  a determinate bar + rounded `N%` when the server reports a total, otherwise a
+ *  `Processing…`/message line when only a count/message is known. The percentage is
+ *  clamped to 0–100 so a misbehaving server can never render an over/underful bar. */
+export function formatMcpProgressLine(p: { percent?: number; message?: string }): string {
+  const msg = typeof p.message === 'string' ? p.message.trim() : '';
+  if (typeof p.percent === 'number' && Number.isFinite(p.percent)) {
+    const pct = Math.max(0, Math.min(100, Math.round(p.percent)));
+    const filled = Math.round((pct / 100) * MCP_PROGRESS_BAR_WIDTH);
+    const bar = '█'.repeat(filled) + '░'.repeat(MCP_PROGRESS_BAR_WIDTH - filled);
+    return `[${bar}] ${pct}%${msg ? ` ${msg}` : ''}`;
+  }
+  return `Processing…${msg ? ` ${msg}` : ''}`;
+}
+
+/** Budget-aware compression of the raw base64 image blocks an MCP tool result
+ *  carries, into first-class {@link ImageContent} blocks for the model turn.
+ *
+ *  Mirrors Claude Code's `truncateContentBlocks` image handling
+ *  (utils/mcpValidation.ts:L113-L149): each kept image is charged
+ *  {@link IMAGE_TOKEN_ESTIMATE} against the output-token budget (so a result with
+ *  many images cannot overflow it — the overflowing tail is dropped), and every
+ *  retained image is run through {@link compressImageBuffer} to fit the provider's
+ *  size/dimension limits ({@link IMAGE_TARGET_RAW_SIZE}). An image that cannot be
+ *  compressed (sharp failure on an oversized/over-dimension payload →
+ *  `ImageResizeError`) is SKIPPED rather than emitted as an oversized block, so
+ *  untrusted MCP image payloads are bounded before they reach the model. */
+export async function budgetMcpImages(
+  images: Array<{ mimeType: string; data: string }>,
+  maxTokens: number = getMaxMcpOutputTokens(),
+): Promise<ImageContent[]> {
+  const blocks: ImageContent[] = [];
+  let remainingTokens = maxTokens;
+  for (const img of images) {
+    // Budget exhausted — the remaining images would push the output past the
+    // token cap, so drop them (parity: truncateContentBlocks stops at the budget).
+    if (remainingTokens < IMAGE_TOKEN_ESTIMATE) break;
+    const buf = Buffer.from(img.data, 'base64');
+    if (buf.length === 0) continue;
+    try {
+      const compressed = await compressImageBuffer(buf, IMAGE_TARGET_RAW_SIZE, img.mimeType);
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: compressed.mediaType, data: compressed.base64 },
+      });
+      remainingTokens -= IMAGE_TOKEN_ESTIMATE;
+    } catch {
+      // Compression failed (ImageResizeError on an un-shrinkable oversized image):
+      // skip it rather than emit a block the provider would reject.
+    }
+  }
+  return blocks;
+}
 
 /** Deterministic, dependency-free FNV-1a hash → base36 (collision-resistant
  *  enough to disambiguate truncated tool names within a session). */
@@ -198,6 +272,23 @@ export function createMcpTool(
       };
       mcpManager.on?.('notification', elicitListener);
 
+      // Forward the server's in-flight `notifications/progress` for THIS call as a
+      // live progress hint (started → N% bar / message) through context.onProgress,
+      // which the tool executor surfaces as a `tool_use_progress` EngineEvent the
+      // TUI and detached runner both render — so a long MCP call shows advancing
+      // progress instead of a silent spinner (parity: services/mcp/client.ts:1846-1892,
+      // tools/MCPTool/UI.tsx:L57-90). The mcp client emits `tool-progress` keyed by
+      // the `<server>:<tool>` call name.
+      const callName = serverName + ':' + toolName;
+      const progressListener = (ev: { name?: string; percent?: number; message?: string }) => {
+        if (ev && ev.name === callName) {
+          context.onProgress?.(formatMcpProgressLine({ percent: ev.percent, message: ev.message }));
+        }
+      };
+      mcpManager.on?.('tool-progress', progressListener);
+      context.onProgress?.(`Running ${toolName}…`);
+      const removeProgressListener = () => mcpManager.removeListener?.('tool-progress', progressListener);
+
       const timeoutMs = getMcpToolTimeout();
       let timer: ReturnType<typeof setTimeout>;
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -226,6 +317,7 @@ export function createMcpTool(
         clearTimeout(timer!);
         if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
         mcpManager.removeListener?.('notification', elicitListener);
+        removeProgressListener();
 
         // A result flagged isError:true is a tool-level failure — surface it as
         // an error (with the server's own message) rather than a success (H33).
@@ -246,8 +338,26 @@ export function createMcpTool(
         const maxResultChars = extractMaxResultSizeChars(result) ?? getMaxMcpOutputChars();
         const bounded = boundMcpResponse(raw, maxResultChars);
         const spillCap = Math.min(maxResultChars, 500_000);
+        // Image blocks from the result are now first-class multimodal content:
+        // compressed to fit the provider's size/dimension limits and charged against
+        // the output-token budget, then emitted via the shared file_images protocol so
+        // the engine queues them for the next model turn (parity with Claude Code's
+        // truncateContentBlocks + image resource forwarding). This REPLACES the old
+        // behavior of stuffing raw, unbounded base64 into unread `metadata.mcpImages`.
+        const rawImages = processed?.metadata?.mcpImages as Array<{ mimeType: string; data: string }> | undefined;
+        if (rawImages && rawImages.length > 0) {
+          const imageBlocks = await budgetMcpImages(rawImages, getMaxMcpOutputTokens());
+          if (imageBlocks.length > 0) {
+            return { output: buildFileImagesOutput('mcp', bounded.content, imageBlocks) };
+          }
+          // Every image was dropped (budget exhausted) or un-compressible: fall
+          // through to the text-only path (the `[Image: …]` placeholders remain in
+          // the bounded text so the result is not silently emptied).
+        }
         const baseMeta = bounded.truncated ? { mcpTruncated: true, mcpOriginalBytes: bounded.originalBytes } : undefined;
-        const mergedMeta = processed?.metadata ? { ...baseMeta, ...processed.metadata } : baseMeta;
+        // `processed.metadata` only ever carried `mcpImages`, which is now consumed
+        // above, so the result metadata is just the truncation marker.
+        const mergedMeta = baseMeta;
         // Already a persisted-output banner (e.g. a replayed result) — don't
         // re-spill and re-wrap it.
         if (isAlreadySpilled(bounded.content)) {
@@ -262,6 +372,7 @@ export function createMcpTool(
         clearTimeout(timer!);
         if (onAbort && abortSignal) abortSignal.removeEventListener('abort', onAbort);
         mcpManager.removeListener?.('notification', elicitListener);
+        removeProgressListener();
         if (gotElicitation && context.detachedMode) {
           return { output: 'MCP tool call timed out because the server requested user input (elicitation), but no user was available to answer in non-interactive mode. Do not retry this tool call.', isError: true };
         }
