@@ -3,6 +3,8 @@ import * as assert from 'node:assert/strict';
 import {
   getToolCategory,
   TOOL_CATEGORY_LABELS,
+  isToolConcurrencySafe,
+  isToolReadOnlyForInput,
   bashTool,
   fileEditTool,
   notebookEditTool,
@@ -11,6 +13,7 @@ import {
   globTool,
   toolSearchTool,
   type ToolCategory,
+  type CategorizableTool,
 } from '../src/tools/index';
 
 describe('tool-categories — getToolCategory', () => {
@@ -58,5 +61,43 @@ describe('tool-categories — getToolCategory', () => {
     }
     assert.equal(TOOL_CATEGORY_LABELS['read-only'], 'Read-only tools');
     assert.equal(TOOL_CATEGORY_LABELS.execution, 'Execution tools');
+  });
+});
+
+describe('tool-categories — isToolConcurrencySafe (input-aware predicate)', () => {
+  it('returns a static boolean flag verbatim (true)', () => {
+    const tool: CategorizableTool = { name: 't', isReadOnly: false, isConcurrencySafe: true };
+    assert.equal(isToolConcurrencySafe(tool, {}), true);
+  });
+
+  it('returns a static boolean flag verbatim (false) even for a read-only tool', () => {
+    const tool: CategorizableTool = { name: 't', isReadOnly: true, isConcurrencySafe: false };
+    assert.equal(isToolConcurrencySafe(tool, {}), false);
+  });
+
+  it('evaluates a per-invocation predicate against the call input', () => {
+    const tool: CategorizableTool = {
+      name: 't',
+      isReadOnly: true,
+      isConcurrencySafe: (input) => input.parallel === true,
+    };
+    assert.equal(isToolConcurrencySafe(tool, { parallel: true }), true);
+    assert.equal(isToolConcurrencySafe(tool, { parallel: false }), false);
+  });
+
+  it('defaults to the per-invocation read-only verdict when the field is absent', () => {
+    const readOnly: CategorizableTool = { name: 'r', isReadOnly: true };
+    const writable: CategorizableTool = { name: 'w', isReadOnly: false };
+    assert.equal(isToolConcurrencySafe(readOnly, {}), true);
+    assert.equal(isToolConcurrencySafe(writable, {}), false);
+    // Default tracks isReadOnlyForInput exactly.
+    const dynamic: CategorizableTool = {
+      name: 'd',
+      isReadOnly: false,
+      isReadOnlyForInput: (input) => input.op === 'get',
+    };
+    assert.equal(isToolConcurrencySafe(dynamic, { op: 'get' }), true);
+    assert.equal(isToolConcurrencySafe(dynamic, { op: 'set' }), false);
+    assert.equal(isToolConcurrencySafe(dynamic, { op: 'get' }), isToolReadOnlyForInput(dynamic, { op: 'get' }));
   });
 });

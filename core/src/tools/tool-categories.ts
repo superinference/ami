@@ -30,6 +30,9 @@ export interface CategorizableTool {
   isMcp?: boolean;
   /** Per-invocation read-only predicate (see {@link isToolReadOnlyForInput}). */
   isReadOnlyForInput?: (input: Record<string, unknown>) => boolean;
+  /** Static flag OR per-invocation predicate declaring concurrency safety
+   *  (see {@link isToolConcurrencySafe}). */
+  isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
 }
 
 /**
@@ -48,6 +51,27 @@ export function isToolReadOnlyForInput(
 ): boolean {
   if (tool.isReadOnlyForInput) return tool.isReadOnlyForInput(input);
   return !!tool.isReadOnly;
+}
+
+/**
+ * Per-invocation concurrency-safety verdict for a single tool call. Most tools are
+ * either always parallel-safe or always serial; a few are safe for some inputs and
+ * must serialize for others (e.g. a read whose target another batched call writes).
+ * When a tool declares `isConcurrencySafe` as a FUNCTION, that dynamic verdict wins
+ * for THIS call (parity: Claude's `Tool.isConcurrencySafe(input)`); a BOOLEAN is used
+ * verbatim; and when the field is ABSENT the verdict defaults to the per-invocation
+ * read-only classification (a read-only call is concurrency-safe). The executor uses
+ * this as an ADDITIONAL gate on top of read-only when forming the concurrent batch, so
+ * a call that is read-only yet explicitly concurrency-UNSAFE becomes a serial barrier.
+ */
+export function isToolConcurrencySafe(
+  tool: CategorizableTool,
+  input: Record<string, unknown>,
+): boolean {
+  const flag = tool.isConcurrencySafe;
+  if (typeof flag === 'function') return flag(input);
+  if (typeof flag === 'boolean') return flag;
+  return isToolReadOnlyForInput(tool, input);
 }
 
 /**

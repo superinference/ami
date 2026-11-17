@@ -694,7 +694,15 @@ export interface ToolDefinition {
    *  auto-allows without a prompt while a write stays on the permission-asking path.
    *  Parity: Claude's `Tool.isReadOnly(input)`. */
   isReadOnlyForInput?: (input: Record<string, unknown>) => boolean;
-  isConcurrencySafe?: boolean;
+  /** Whether this tool may run CONCURRENTLY with other calls in the same turn's
+   *  batch. Either a static flag OR — like {@link isReadOnlyForInput} — an
+   *  input-aware predicate, so a tool that is parallel-safe for some inputs and
+   *  must serialize for others (e.g. a read that targets a file another call in the
+   *  batch writes) can decide per call. When absent, the executor falls back to the
+   *  per-invocation read-only verdict (read-only ⇒ concurrency-safe). Resolve a tool
+   *  call's verdict with {@link isToolConcurrencySafe}. Parity: Claude's
+   *  `Tool.isConcurrencySafe(input)` (toolOrchestration / StreamingToolExecutor). */
+  isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
   isMcp?: boolean;
   /** True when the tool's effects reach OUTSIDE the local environment / are

@@ -357,6 +357,7 @@ export {
   getToolCategory,
   isMcpTool,
   isToolReadOnlyForInput,
+  isToolConcurrencySafe,
   TOOL_CATEGORY_LABELS,
 } from './tool-categories';
 export type { ToolCategory, CategorizableTool } from './tool-categories';
