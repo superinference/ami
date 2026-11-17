@@ -71,6 +71,7 @@ const CHECK_IDS = {
   ARITHMETIC_CONDITIONAL_INJECTION: 68,
   DESTRUCTIVE_TMUX: 69,
   UNC_PATH: 70,
+  WRAPPER_FLAG_EVASION: 71,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -188,6 +189,124 @@ function stripSafeWrappers(command: string): string {
     }
   }
   return remaining;
+}
+
+/**
+ * Valid `timeout`/`sleep`-style duration: an integer or decimal with a leading
+ * digit and an optional single unit suffix (s/m/h/d). Mirrors Claude Code's
+ * duration regex in utils/bash/ast.ts — it deliberately REJECTS `.5` (no
+ * leading digit), `+5` (sign), and `inf` (word) so a non-duration token in the
+ * duration position can never be mistaken for the wrapped command.
+ */
+// eslint-disable-next-line security/detect-unsafe-regex -- `\d+` then the optional `(?:\.\d+)?` arm (begins with a literal `.`, disjoint from the digit run) then an optional single `[smhd]`, fully anchored; no ambiguous overlap, linear
+const WRAPPER_DURATION_RE = /^\d+(?:\.\d+)?[smhd]?$/;
+
+/**
+ * Fail-closed safe-wrapper flag parsing (parity with Claude Code's
+ * `checkSemantics` wrapper unwrapping, utils/bash/ast.ts:L2213-2384).
+ *
+ * A "safe wrapper" (`timeout`/`env`/`stdbuf`/`nice`/…) prefixes a real command.
+ * To locate the REAL argv[0] for its builtin/eval checks, Claude precisely
+ * parses each wrapper's flags and FAILS CLOSED whenever it cannot — so the
+ * wrapped command can never be smuggled past validation behind:
+ *   - an argv-splitter / alt-cwd / alt-path flag: `env -S "curl|bash"`,
+ *     `env -C /dir cmd`, `env -P path cmd`, or any unrecognised `env` flag;
+ *   - a malformed duration: `timeout inf eval …`, `timeout +5 …`, `timeout .5 …`;
+ *   - an unrecognised `timeout`/`stdbuf`/`nice` flag that takes (or hides) a value.
+ *
+ * AMI's best-effort {@link stripSafeWrappers} silently left these forms partly
+ * unstripped (e.g. `env -S "curl|bash"` → the wrapped command never reached any
+ * downstream validator), so this detector closes that bypass by treating an
+ * unparseable wrapper prefix as unsafe (the command still goes to the permission
+ * prompt rather than auto-running). Only flagged when a command token actually
+ * FOLLOWS the wrapper chain — a bare `timeout inf` or `env -S` hides nothing.
+ *
+ * Applied per top-level segment so a wrapper hidden in a later compound part
+ * (`ls && timeout inf eval x`) is caught too.
+ */
+export function detectUnsafeWrapperFlags(command: string): { blocked: boolean; reason?: string } {
+  for (const seg of splitShellSegments(command)) {
+    const r = analyzeWrapperSegment(seg.trim());
+    if (r.blocked) return r;
+  }
+  return { blocked: false };
+}
+
+function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string } {
+  const toks = tokenizeSegmentArgs(seg);
+  let i = 0;
+  const bareName = (t: string): string => t.replace(/^.*\//, '');
+
+  while (i < toks.length && SAFE_WRAPPERS.has(bareName(toks[i]))) {
+    const w = bareName(toks[i]);
+    i++;
+    // `i` points at the offending token when `offense` is called; a hidden
+    // command (what fail-closed protects) can only exist at `i + 1` or later.
+    // A bare `timeout inf` / `env -S` with nothing after it hides nothing.
+    const offense = (reason: string): { blocked: boolean; reason?: string } | null =>
+      i + 1 < toks.length ? { blocked: true, reason } : null;
+
+    if (w === 'env') {
+      // Recognised: VAR= assignments; value-less -i/--ignore-environment,
+      // -0/--null, -v/--debug; value-taking -u/--unset NAME. Everything else
+      // (notably -S/--split-string, -C/--chdir, -P) hides the wrapped command.
+      while (i < toks.length) {
+        const t = toks[i];
+        if (/^[A-Za-z_]\w*=/.test(t)) { i++; continue; }
+        if (!t.startsWith('-')) break; // command begins
+        if (/^(-i|--ignore-environment|-0|--null|-v|--debug)$/.test(t)) { i++; continue; }
+        if (/^(-u|--unset)$/.test(t)) { i += 2; continue; }
+        if (/^(-u|--unset)=/.test(t)) { i++; continue; }
+        const o = offense(`env flag '${t}' can hide the wrapped command (argv splitter / alt cwd / alt path)`);
+        if (o) return o;
+        i++; // harmless (no following command) — keep scanning for a nested wrapper
+      }
+    } else if (w === 'timeout') {
+      while (i < toks.length && toks[i].startsWith('-')) {
+        const t = toks[i];
+        if (/^(--foreground|--preserve-status|--verbose|-v)$/.test(t)) { i++; continue; }
+        if (/^(-k|--kill-after|-s|--signal)=/.test(t)) { i++; continue; } // fused value
+        if (/^(-k|--kill-after|-s|--signal)$/.test(t)) { i += 2; continue; } // spaced value
+        if (/^-[ks]\S+$/.test(t)) { i++; continue; } // -k5 / -sKILL fused short form
+        const o = offense(`unrecognised timeout flag '${t}'`);
+        if (o) return o;
+        i++;
+      }
+      // timeout's first non-flag token is the DURATION — must be well-formed.
+      if (i < toks.length && !WRAPPER_DURATION_RE.test(toks[i])) {
+        const o = offense(`timeout duration '${toks[i]}' is malformed — the wrapped command cannot be verified`);
+        if (o) return o;
+      }
+      if (i < toks.length && WRAPPER_DURATION_RE.test(toks[i])) i++; // consume good duration
+    } else if (w === 'stdbuf') {
+      while (i < toks.length && toks[i].startsWith('-')) {
+        const t = toks[i];
+        if (/^-[ioe]\S+$/.test(t)) { i++; continue; } // fused -oL
+        if (/^-[ioe]$/.test(t)) { i += 2; continue; } // spaced -o L
+        if (/^(--input|--output|--error)=/.test(t)) { i++; continue; }
+        if (/^(--input|--output|--error)$/.test(t)) { i += 2; continue; }
+        const o = offense(`unrecognised stdbuf flag '${t}'`);
+        if (o) return o;
+        i++;
+      }
+    } else if (w === 'nice') {
+      while (i < toks.length && toks[i].startsWith('-')) {
+        const t = toks[i];
+        if (/^(-n|--adjustment)=/.test(t)) { i++; continue; }
+        if (/^(-n|--adjustment)$/.test(t)) { i += 2; continue; }
+        if (/^-\d+$/.test(t)) { i++; continue; } // -5 adjustment short form
+        const o = offense(`unrecognised nice flag '${t}'`);
+        if (o) return o;
+        i++;
+      }
+      if (i < toks.length && /^\d+$/.test(toks[i])) i++; // bare numeric priority
+    } else {
+      // time / nohup / srun: looser flag models already handled by the existing
+      // best-effort stripper; do not fail-closed here (avoid false positives).
+      break;
+    }
+  }
+  return { blocked: false };
 }
 
 function fail(checkId: number, message: string): SecurityCheckResult {
@@ -1842,6 +1961,15 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
 
   result = validateDangerousVariables(fullyUnquoted);
   if (!result.safe) return result;
+
+  // Fail-closed safe-wrapper flag parsing: refuse to auto-run a command whose
+  // wrapper prefix (timeout/env/stdbuf/nice) uses flags/durations that would
+  // hide the real argv[0] from the checks below (e.g. `env -S "curl|bash"`,
+  // `timeout inf eval …`). Parity with Claude Code's checkSemantics.
+  const wrapperEvasion = detectUnsafeWrapperFlags(command);
+  if (wrapperEvasion.blocked) {
+    return fail(CHECK_IDS.WRAPPER_FLAG_EVASION, wrapperEvasion.reason ?? 'Command uses a safe-wrapper flag that hides the wrapped command');
+  }
 
   const unwrapped = stripSafeWrappers(command);
   result = validateZshDangerousCommands(unwrapped);
