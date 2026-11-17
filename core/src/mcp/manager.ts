@@ -514,6 +514,20 @@ export interface McpServerStatus {
   error?: string;
 }
 
+/**
+ * A partition of the live MCP servers into the two actionable connectivity buckets
+ * Claude surfaces as proactive notifications (useMcpConnectivityStatus.tsx:L24-75):
+ * `failed` servers are in a hard `error` state, `needsAuth` servers are in the
+ * recoverable `needs-auth` state (the user can re-authenticate). Each bucket is a
+ * de-duplicated, display-ordered (alphabetical, inherited from
+ * {@link McpManager.listAllServers}) list of server names. The single source of truth
+ * a `/mcp` view / startup banner renders via {@link formatMcpConnectivitySummary}.
+ */
+export interface McpConnectivitySummary {
+  failed: string[];
+  needsAuth: string[];
+}
+
 export interface PendingServerInfo {
   name: string;
   config: McpServerConfig;
@@ -718,6 +732,16 @@ export class McpManager extends EventEmitter {
    * one decision. Seeded via {@link setEnableAllProjectServers}.
    */
   private _enableAllProjectServers = false;
+  /**
+   * Names of INTERNAL / managed MCP servers that are protected from the user-facing
+   * enable/disable toggle (Claude-parity `c.name !== 'ide'` toggle guard,
+   * commands/mcp/mcp.tsx:L31-32). A built-in server the host wires itself (e.g. an
+   * IDE bridge) must not be clobbered by a `/mcp disable` (bulk `all` or targeted),
+   * so {@link stopServer} refuses to DISABLE a protected server. Seeded by the
+   * integrator via {@link setProtectedServers}. Name matching is
+   * normalization-insensitive (same as the approval sets).
+   */
+  private _protectedServers = new Set<string>();
   /**
    * When true, every spawned stdio MCP server is told — via an env var in its
    * child process ({@link MCP_BYPASS_PERMISSION_ENV}={@link MCP_BYPASS_PERMISSION_VALUE})
@@ -1056,6 +1080,24 @@ export class McpManager extends EventEmitter {
     return [...fatal, ...warnings];
   }
 
+  /**
+   * Partition the live MCP servers into the `failed` (hard `error` state) and
+   * `needsAuth` (recoverable `needs-auth` state) buckets Claude surfaces as proactive
+   * connectivity notifications (useMcpConnectivityStatus.tsx): an auth boundary the
+   * user can fix by authenticating is kept distinct from a hard failure. Each bucket
+   * is alphabetical (inherited from {@link listAllServers}). Feeds
+   * {@link formatMcpConnectivitySummary} for the `/mcp` connectivity banner.
+   */
+  getConnectivitySummary(): McpConnectivitySummary {
+    const failed: string[] = [];
+    const needsAuth: string[] = [];
+    for (const s of this.listAllServers()) {
+      if (s.state === 'needs-auth') needsAuth.push(s.name);
+      else if (s.state === 'error') failed.push(s.name);
+    }
+    return { failed, needsAuth };
+  }
+
   /** True when a server should be blocked by the denylist (by name, URL, URL
    *  wildcard, or stdio command array). */
   isServerDenied(name: string, config?: McpPolicyTarget): boolean {
@@ -1118,13 +1160,8 @@ export class McpManager extends EventEmitter {
       // does not reuse a stale grant that no longer applies — parity with Claude's
       // getServerKey. (Labeled functional change: the token filename now embeds the
       // config hash; an old name-only token file is simply re-authed, not reused.)
-      const credentialKey = mcpCredentialKey(name, {
-        type: config.transport,
-        url: config.url,
-        headers: config.headers,
-      });
       const tokenStore = new FileOAuthTokenStore(
-        path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey)),
+        this.mcpTokenFilePath(name, config),
         // Proactive refresh-ahead window: refresh this many ms before real expiry
         // so a long-running session never presents an expired token mid-request.
         { skewMs: config.oauth.refreshBufferMs },
@@ -1204,7 +1241,7 @@ export class McpManager extends EventEmitter {
       // health-check ping (which skips non-ready clients). Guarded so an intentional
       // teardown (stop/remove/disable) or a replaced client never reconnects.
       const cfg = this.configs.get(name);
-      const t = cfg?.transport;
+      const t = this.effectiveTransport(cfg);
       // A server pinned autoReconnect:false owns its own recovery — never auto-drive
       // a reconnect for it (parity with Claude's autoReconnect=false → go to closed).
       if (isRemoteMcpTransport(t)
@@ -1370,6 +1407,32 @@ export class McpManager extends EventEmitter {
   /** M14 (U018) — current blanket project-trust flag (for persistence). */
   getEnableAllProjectServers(): boolean {
     return this._enableAllProjectServers;
+  }
+
+  /**
+   * Seed the set of INTERNAL / managed MCP server names that are protected from the
+   * user-facing enable/disable toggle (Claude-parity `ide`-client toggle guard). A
+   * protected server stays under host control: {@link stopServer} refuses to DISABLE
+   * it. The integrator calls this once with its built-in server names. Replaces any
+   * previously-set protected names.
+   */
+  setProtectedServers(names: string[]): void {
+    this._protectedServers = new Set(names);
+  }
+
+  /** Current protected (internal/managed) MCP server names. */
+  getProtectedServers(): string[] {
+    return [...this._protectedServers];
+  }
+
+  /**
+   * True when `name` is an internal/managed server protected from the enable/disable
+   * toggle. Matching is normalization-insensitive. A UI `/mcp disable`/`enable all`
+   * path filters these out (parity with Claude's `c.name !== 'ide'`); the core
+   * {@link stopServer} enforces it as the single source of truth.
+   */
+  isServerProtected(name: string): boolean {
+    return this.nameInSet(this._protectedServers, name);
   }
 
   /**
@@ -1681,6 +1744,14 @@ export class McpManager extends EventEmitter {
   }
 
   async stopServer(name: string, disable?: boolean): Promise<void> {
+    // An internal/managed server (e.g. a built-in IDE bridge) is protected from the
+    // user-facing DISABLE toggle so it cannot be clobbered via `/mcp disable`
+    // (targeted or bulk `all`) — Claude-parity `c.name !== 'ide'` toggle guard. A
+    // plain stop (no `disable`) is still allowed (it is transient, not a persisted
+    // user decision).
+    if (disable && this.isServerProtected(name)) {
+      throw new Error(`MCP server "${name}" is internal/managed and cannot be disabled.`);
+    }
     // Cancel any in-flight OAuth flow for this server before teardown.
     this._oauthAbort.get(name)?.abort();
     this._oauthAbort.delete(name);
@@ -1950,6 +2021,16 @@ export class McpManager extends EventEmitter {
       client.disconnect();
       this.clients.delete(name);
     }
+    // Credential lifecycle hygiene (Claude-parity `cleanupSecureStorage`,
+    // cli/handlers/mcp.tsx:L79-84): forgetting a server purges its PERSISTED OAuth
+    // token file so no credential is orphaned on disk — even when the server has no
+    // live client (a stopped/pending/never-connected remote), where the server-side
+    // `revokeAuth()` above cannot run. Read the config BEFORE it is dropped below.
+    const removedConfig = this.configs.get(name);
+    if (removedConfig?.oauth && removedConfig.url
+      && (removedConfig.transport === 'http' || removedConfig.transport === 'sse')) {
+      try { fs.rmSync(this.mcpTokenFilePath(name, removedConfig), { force: true }); } catch { /* best-effort purge */ }
+    }
     this.pendingServers.delete(name);
     this.serverErrors.delete(name);
     this.configs.delete(name);
@@ -1992,11 +2073,16 @@ export class McpManager extends EventEmitter {
             }
           }
         }
-        if (config?.transport === 'http' && config.url) {
+        // Resolve the effective transport (explicit, else inferred from the URL
+        // scheme) so a `{ url: "wss://…" }` / `{ url: "https://…" }` entry with no
+        // `transport` connects over the right remote transport instead of falling
+        // through to the stdio `connect()` path.
+        const transport = this.effectiveTransport(config);
+        if (transport === 'http' && config?.url) {
           await client.connectHTTP(config.url);
-        } else if (config?.transport === 'sse' && config.url) {
+        } else if (transport === 'sse' && config?.url) {
           await client.connectSSE(config.url);
-        } else if ((config?.transport === 'ws' || config?.transport === 'wss') && config.url) {
+        } else if ((transport === 'ws' || transport === 'wss') && config?.url) {
           await client.connectWebSocket(config.url);
         } else {
           await client.connect();
@@ -2039,7 +2125,7 @@ export class McpManager extends EventEmitter {
     const local: string[] = [];
     const remote: string[] = [];
     for (const name of this.clients.keys()) {
-      const t = this.configs.get(name)?.transport;
+      const t = this.effectiveTransport(this.configs.get(name));
       (isRemoteMcpTransport(t) ? remote : local).push(name);
     }
     const connectOne = async (name: string) => {
@@ -2289,6 +2375,33 @@ export class McpManager extends EventEmitter {
   /** The stored config for a server (transport/url/oauth), or undefined if none. */
   getServerConfig(name: string): McpServerConfig | undefined {
     return this.configs.get(name);
+  }
+
+  /**
+   * The effective transport for a config: its explicit `transport` when set, else
+   * one inferred from the `url` scheme ({@link inferMcpTransportFromUrl}). Single
+   * source of truth so the connect dispatch, the local-vs-remote connection pool,
+   * and the close-handler reconnect decision all agree on how a transport-less
+   * remote URL is treated (never as stdio).
+   */
+  private effectiveTransport(config: McpServerConfig | undefined): McpServerConfig['transport'] {
+    return config?.transport ?? inferMcpTransportFromUrl(config?.url);
+  }
+
+  /**
+   * The on-disk path of a server's persisted OAuth token file (keyed on the server
+   * NAME *and* a hash of its connection config, matching Claude's `getServerKey`).
+   * Single source of truth so {@link addServer} (which writes/reads it) and
+   * {@link removeServer} (which purges it) cannot drift on how the credential file
+   * is located.
+   */
+  private mcpTokenFilePath(name: string, config: McpServerConfig): string {
+    const credentialKey = mcpCredentialKey(name, {
+      type: config.transport,
+      url: config.url,
+      headers: config.headers,
+    });
+    return path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey));
   }
 
   /** The config-source scope a server was loaded from, or undefined if unknown. */
@@ -2922,6 +3035,38 @@ export const MAX_MCP_RECONNECT_ATTEMPTS = 5;
 export const MCP_RECONNECT_BASE_DELAY_MS = 1000;
 export const MAX_MCP_RECONNECT_DELAY_MS = 30_000;
 
+/**
+ * A proactive MCP connectivity notification (Claude-parity useMcpConnectivityStatus
+ * `addNotification`): a dedupe `key`, a `severity` (error for failed, warning for
+ * needs-auth), and a pluralized `message` ending in the ` · /mcp` pointer. The
+ * frontend renders these as transient status notifications.
+ */
+export interface McpConnectivityNotification {
+  key: 'mcp-failed' | 'mcp-needs-auth';
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+/**
+ * Format a {@link McpConnectivitySummary} into the proactive notifications Claude
+ * pushes (useMcpConnectivityStatus.tsx:L36-56): `N MCP server(s) failed · /mcp`
+ * (error) and `N MCP server(s) need auth · /mcp` (warning), each pluralized and
+ * dedupe-keyed. Returns `[]` when nothing is failed/needs-auth (the early-return
+ * "nothing to notify" case), so a caller can render zero banners.
+ */
+export function formatMcpConnectivitySummary(summary: McpConnectivitySummary): McpConnectivityNotification[] {
+  const out: McpConnectivityNotification[] = [];
+  if (summary.failed.length > 0) {
+    const n = summary.failed.length;
+    out.push({ key: 'mcp-failed', severity: 'error', message: `${n} MCP ${n === 1 ? 'server' : 'servers'} failed · /mcp` });
+  }
+  if (summary.needsAuth.length > 0) {
+    const n = summary.needsAuth.length;
+    out.push({ key: 'mcp-needs-auth', severity: 'warning', message: `${n} MCP ${n === 1 ? 'server needs' : 'servers need'} auth · /mcp` });
+  }
+  return out;
+}
+
 /** Transport values AMI understands (for config validation / `type` mapping). */
 const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss']);
 
@@ -2934,6 +3079,47 @@ const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss']);
  */
 export function isRemoteMcpTransport(transport: string | undefined): boolean {
   return transport === 'http' || transport === 'sse' || transport === 'ws' || transport === 'wss';
+}
+
+/** URL schemes a remote MCP endpoint may use (well-formedness validation). */
+const MCP_URL_SCHEMES = new Set(['http:', 'https:', 'ws:', 'wss:']);
+
+/**
+ * Infer a REMOTE transport from an endpoint URL's scheme when a config supplies a
+ * `url` but no explicit `transport` (Claude-parity scheme inference, ide.tsx:L585-593
+ * `url.startsWith('ws:') ? 'ws-ide' : 'sse-ide'`): a `ws:`/`wss:` URL is a WebSocket
+ * transport, an `http:`/`https:` URL is the Streamable-HTTP transport. Returns
+ * `undefined` for a non-URL / unknown scheme so the caller falls back to its default
+ * (stdio) dispatch. This stops a `{ "url": "wss://…" }` entry with no `transport`
+ * from being wrongly dispatched down the stdio `connect()` path.
+ */
+export function inferMcpTransportFromUrl(url: string | undefined): 'ws' | 'wss' | 'http' | undefined {
+  if (!url) return undefined;
+  try {
+    const proto = new URL(url.trim()).protocol;
+    if (proto === 'ws:') return 'ws';
+    if (proto === 'wss:') return 'wss';
+    if (proto === 'http:' || proto === 'https:') return 'http';
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * True when `raw` is a well-formed remote MCP endpoint URL — it parses as a URL AND
+ * its scheme is one of http/https/ws/wss (Claude-parity add-time URL validation,
+ * xaaIdpCommand.ts:L44-58: a user-supplied URL is validated as a real URL BEFORE it
+ * is persisted, so one malformed value cannot poison the settings file on next load).
+ * Enforced at `/mcp add` time (not config load) so a hand-edited config stays lenient,
+ * exactly like {@link validateMcpServerName}.
+ */
+export function isValidMcpUrl(raw: string): boolean {
+  try {
+    return MCP_URL_SCHEMES.has(new URL(raw.trim()).protocol);
+  } catch {
+    return false;
+  }
 }
 
 /**
