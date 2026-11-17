@@ -54,6 +54,7 @@ function ctx(
       getAgent: () => agentDef,
       listAgents: () => [agentDef],
       getSkill: (n: string) => skills[n] ?? null,
+      listSkills: () => Object.values(skills),
     },
     _engineFactory: (config: any) => {
       captured.config = config;
@@ -93,6 +94,27 @@ describe('taskTool — per-agent skills preload', () => {
     assert.ok(/unknown or disabled skill/.test(res.output), res.output);
     // Nothing loaded ⇒ no preload block appended.
     assert.ok(!cap.config.systemPrompt.includes('# Preloaded Skills'), cap.config.systemPrompt);
+  });
+
+  it('resolves a plugin-namespaced skill referenced by its bare name (resolveSkillName fallback)', async () => {
+    const cap: { config?: any } = {};
+    // The skill is registered ONLY under its plugin-namespaced name; the bare
+    // "deploy" is unavailable via getSkill. The multi-strategy fallback must still
+    // inline it so a plugin-shipped agent's `skills: [deploy]` preload works.
+    const namespaced = skill('pkg:deploy', 'Run the deploy checklist.');
+    const res = await taskTool.execute(
+      { prompt: 'do the work', subagent_type: 'preloader' },
+      ctx(
+        { name: 'preloader', systemPrompt: 'be a preloader agent', skills: ['deploy'], tools: ['file_read'] },
+        { 'pkg:deploy': namespaced },
+        cap,
+      ),
+    );
+    assert.equal(res.isError, undefined);
+    assert.ok(cap.config.systemPrompt.includes('# Preloaded Skills'), cap.config.systemPrompt);
+    assert.ok(cap.config.systemPrompt.includes('Run the deploy checklist.'), cap.config.systemPrompt);
+    // No "unknown or disabled skill" note — it resolved via the fallback.
+    assert.ok(!/unknown or disabled skill/.test(res.output), res.output);
   });
 
   it('does not append a preload block when the agent declares no skills', async () => {

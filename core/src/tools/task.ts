@@ -20,7 +20,7 @@ import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions'
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent } from '../skills';
+import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent } from '../skills';
 import { buildAgentMemoryPrompt } from '../memory';
 
 /**
@@ -2081,9 +2081,15 @@ export const taskTool: ToolDefinition = {
       // unresolved. Unknown/invalid names are surfaced as a spawn note rather than a
       // hard failure (a missing optional skill should not strand the whole agent).
       if (agentDef.skills && agentDef.skills.length > 0) {
+        // Resolution uses the SkillManager's exact name/alias lookup FIRST (covers
+        // all registered skills incl. non-invocable), then falls back to Claude's
+        // multi-strategy resolveSkillName over the invocable set so a
+        // plugin-namespaced skill (`plugin:name`) still resolves when the agent
+        // references it by its bare name and the bare form is unavailable.
+        const preloadCandidates = context._skillManager!.listSkills();
         const preload = buildPreloadedSkillsBlock(
           agentDef.skills,
-          (n) => context._skillManager!.getSkill(n),
+          (n) => context._skillManager!.getSkill(n) ?? resolveSkillName(n, preloadCandidates),
         );
         if (preload.block) {
           agentSystemPrompt = `${agentSystemPrompt}\n\n${preload.block}`;

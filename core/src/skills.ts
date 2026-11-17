@@ -1237,6 +1237,70 @@ export function buildPreloadedSkillsBlock(
   return { block, loaded, missing };
 }
 
+/**
+ * Resolve a requested skill name against a candidate set using the SAME ordered,
+ * multi-strategy lookup Claude Code's runAgent `resolveSkillName` uses for agent
+ * `skills:` frontmatter preloading — so a plugin-namespaced skill still resolves
+ * when its bare name is unavailable (e.g. taken by another plugin's skill of the
+ * same name, so only the `plugin:name` form is registered):
+ *
+ *   1. EXACT match on a candidate's canonical `name`, its {@link
+ *      SkillDefinition.userFacingName}, or one of its {@link SkillDefinition.aliases}.
+ *   2. PLUGIN-QUALIFIED match: when `opts.pluginPrefix` is given, try the
+ *      fully-qualified `${pluginPrefix}:${requested}` form against name/aliases
+ *      (an agent preferring skills from its own plugin).
+ *   3. SUFFIX match on `:${requested}` against a candidate's name or an alias — a
+ *      plugin-namespaced skill (`someplugin:requested`) whose bare name is not
+ *      registered.
+ *
+ * Earlier strategies win; within a strategy the first matching candidate (in the
+ * provided order) wins. Matching is exact/case-sensitive, mirroring how skill
+ * names are registered. A blank/non-string request, or no match, yields `null`.
+ * This is the WHICH-skill resolver; {@link buildPreloadedSkillsBlock} then decides
+ * whether the resolved skill is enabled and non-empty before inlining it.
+ */
+export function resolveSkillName(
+  requested: string,
+  candidates: readonly SkillDefinition[],
+  opts?: { pluginPrefix?: string },
+): SkillDefinition | null {
+  if (typeof requested !== 'string') return null;
+  const want = requested.trim();
+  if (want.length === 0) return null;
+
+  // Strategy 1 — exact name / userFacingName / alias.
+  for (const c of candidates) {
+    if (
+      c.name === want ||
+      c.userFacingName === want ||
+      (c.aliases?.includes(want) ?? false)
+    ) {
+      return c;
+    }
+  }
+
+  // Strategy 2 — fully-qualified with the agent's plugin prefix.
+  const prefix = opts?.pluginPrefix?.trim();
+  if (prefix) {
+    const qualified = `${prefix}:${want}`;
+    for (const c of candidates) {
+      if (c.name === qualified || (c.aliases?.includes(qualified) ?? false)) {
+        return c;
+      }
+    }
+  }
+
+  // Strategy 3 — suffix match on ":requested" (plugin-namespaced skill).
+  const suffix = `:${want}`;
+  for (const c of candidates) {
+    if (c.name.endsWith(suffix) || (c.aliases?.some((a) => a.endsWith(suffix)) ?? false)) {
+      return c;
+    }
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Skill-improvement suggestions — a structured descriptor for applying concrete,
 // section-scoped edits to a named skill (parity with Claude's
