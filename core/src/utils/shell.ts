@@ -1780,6 +1780,16 @@ export const PS_TABLE_CMD = 'ps -A -o pid=,ppid=';
 export const ANCESTOR_WALK_TIMEOUT_MS = 3000;
 
 /**
+ * Default hard timeout (ms) for the single process-table read backing the
+ * DESCENDANT walk ({@link collectProcessTree}) used by {@link killTree} (parity
+ * with Claude Code's getChildPids 1000ms cap), so a hung `ps` during a
+ * kill/cleanup/shutdown can never stall the kill path. On timeout the read
+ * throws and collectProcessTree degrades to `[rootPid]` — the same empty-result
+ * fallback Claude's getChildPids applies.
+ */
+export const DESCENDANT_WALK_TIMEOUT_MS = 1000;
+
+/**
  * Read the system process table once as a child-pid → parent-pid (ppid) map,
  * bounded by a hard `timeoutMs` on the underlying `ps`/`wmic` invocation. Returns
  * an EMPTY map (never throws) when the table can't be read — a non-zero exit, a
@@ -1859,13 +1869,20 @@ export function collectAncestorPids(
  * Only the subtree rooted at `rootPid` is returned, never an unrelated pid, so
  * the kill is safe by construction. Falls back to `[rootPid]` if the process
  * table can't be read.
+ *
+ * The underlying `ps` read is bounded by a hard `timeoutMs`
+ * ({@link DESCENDANT_WALK_TIMEOUT_MS}) — matching the bounded ancestor walk
+ * ({@link readParentPidMap}) and Claude Code's 1000ms getChildPids cap — so a
+ * hung `ps` can never stall the kill path; on timeout the throw degrades to the
+ * `[rootPid]` fallback.
  */
-export function collectProcessTree(rootPid: number): number[] {
+export function collectProcessTree(rootPid: number, timeoutMs = DESCENDANT_WALK_TIMEOUT_MS): number[] {
   let table: string;
   try {
     table = shellHooks.execSync(PS_TABLE_CMD, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs,
     }).toString();
   } catch {
     return [rootPid];
