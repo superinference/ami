@@ -2178,6 +2178,13 @@ export interface HookConfigEntry {
    *  for filesystem (.ami/.claude/config) hooks. Retained so a hook can be
    *  attributed to — and audited per — the plugin that installed it. */
   pluginName?: string;
+  /** Absolute base directory of the plugin bundle that contributed this hook, when
+   *  it came from a plugin. Unlike {@link CommandHookConfig.pluginRoot} (set only on
+   *  command hooks for `${CLAUDE_PLUGIN_ROOT}` substitution), this is carried for
+   *  EVERY plugin hook type so a disabled/uninstalled plugin's hooks can be pruned by
+   *  root at runtime ({@link HookManager.pruneRemovedPluginHooks}, gh-36995). Absent
+   *  for filesystem/config hooks. */
+  pluginRoot?: string;
 }
 
 export interface HookConfigFile {
@@ -2815,6 +2822,12 @@ export class HookManager extends EventEmitter {
 
   // Gap 1: Tier-aware verdict hold-over
   private _hookTiers = new WeakMap<Function, string>();
+  /** Provenance of every config/frontmatter-registered hook fn (source tier +, for
+   *  plugin-contributed hooks, the plugin bundle name/root). Captured in
+   *  {@link processHookEntry} so a plugin's hooks can be attributed and surgically
+   *  pruned/reloaded ({@link pruneRemovedPluginHooks}/{@link reloadPluginHooks},
+   *  gh-36995). A WeakMap so a removed hook's entry is GC'd with the fn. */
+  private _hookProvenance = new WeakMap<Function, { source: string; pluginName?: string; pluginRoot?: string }>();
   private _denyRulesHold = false;
   private _concurrency = new EventConcurrencyLimiter();
   private _effortLevel: string = 'high';
@@ -3493,31 +3506,8 @@ export class HookManager extends EventEmitter {
 
     // Plugin bundles contribute hooks.json (project-scoped ones gated by trust).
     // Skipped entirely under allowManagedHooksOnly (only managed hooks run).
-    if (canRunHookUnderManagedOnly('plugin', this._allowManagedHooksOnly)) try {
-      const { discoverPlugins } = require('./plugins');
-      const pluginDirs: Array<[string, 'user' | 'project']> = [
-        [path.join(resolveConfigDir(), 'plugins'), 'user'],
-        [path.join(cwd, '.ami', 'plugins'), 'project'],
-      ];
-      for (const [dir, src] of pluginDirs) {
-        for (const bundle of discoverPlugins(dir)) {
-          // A disabled plugin must NOT contribute executable hooks: skip bundles
-          // whose root carries a `.disabled` marker (mirrors skill-manager gating).
-          if (fs.existsSync(path.join(bundle.root, '.disabled'))) {
-            coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
-            continue;
-          }
-          if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name, pluginRoot: bundle.root });
-        }
-      }
-    } catch (err) {
-      // Plugin discovery failed (optional subsystem) — don't crash the load, but
-      // surface a CATEGORIZED remediation hint (network / permissions / config)
-      // instead of swallowing it silently, so the user can tell WHY plugin hooks
-      // did not load and HOW to fix it. Mirrors Claude Code's sessionStart
-      // plugin-hook-load guidance.
-      const { category, guidance } = categorizeLoadFailure(err);
-      coreLog('hooks', `Failed to load plugin hooks (${category}): ${err instanceof Error ? err.message : String(err)}. ${guidance}`);
+    if (canRunHookUnderManagedOnly('plugin', this._allowManagedHooksOnly)) {
+      for (const s of this.discoverPluginHookSources(cwd)) sources.push(s);
     }
 
     // Org policy: when allowManagedHooksOnly is set, drop every non-managed source
@@ -3562,6 +3552,10 @@ export class HookManager extends EventEmitter {
           // Carry the plugin bundle's name onto each entry it contributed so the
           // retained descriptor can attribute the hook to its plugin.
           if (pluginName) entry.pluginName = pluginName;
+          // Carry the plugin bundle ROOT onto EVERY plugin hook (not just command
+          // hooks) so a disabled/uninstalled plugin's hooks can be pruned by root at
+          // runtime (gh-36995 — pruneRemovedPluginHooks / reloadPluginHooks).
+          if (pluginRoot) entry.pluginRoot = pluginRoot;
           // Carry the plugin bundle's base directory onto a command hook so its
           // `${CLAUDE_PLUGIN_ROOT}` placeholders / CLAUDE_PLUGIN_ROOT env resolve to
           // the bundle root at execution time (Claude Code plugin-hook substitution).
@@ -3604,6 +3598,217 @@ export class HookManager extends EventEmitter {
     // just loaded and compare it against the startup baseline. See
     // {@link updateHookConfigSnapshot}.
     this.updateHookConfigSnapshot(cwd);
+  }
+
+  /**
+   * Discover the hooks.json sources contributed by currently-ENABLED plugin bundles
+   * under the user (`~/.ami/plugins`) and project (`<cwd>/.ami/plugins`) plugin
+   * trees. A bundle whose root carries a `.disabled` marker (or has no hooks file)
+   * contributes nothing — so a disabled plugin's hooks are never re-registered on a
+   * reload. Each returned source carries the bundle's name + root so a loaded hook
+   * can be attributed to, and later pruned by, its plugin (gh-36995). Shared by
+   * {@link loadFromFile} and {@link reloadPluginHooks} so the discovery rule has one
+   * home. Never throws: a failed discovery (optional subsystem) logs a categorized
+   * remediation hint and yields no plugin sources. Parity: Claude Code's
+   * loadPluginHooks plugin enumeration.
+   */
+  private discoverPluginHookSources(
+    cwd: string,
+  ): Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName: string; pluginRoot: string }> {
+    const out: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName: string; pluginRoot: string }> = [];
+    try {
+      const { discoverPlugins } = require('./plugins');
+      const pluginDirs: Array<[string, 'user' | 'project']> = [
+        [path.join(resolveConfigDir(), 'plugins'), 'user'],
+        [path.join(cwd, '.ami', 'plugins'), 'project'],
+      ];
+      for (const [dir, src] of pluginDirs) {
+        for (const bundle of discoverPlugins(dir)) {
+          // A disabled plugin must NOT contribute executable hooks: skip bundles
+          // whose root carries a `.disabled` marker (mirrors skill-manager gating).
+          if (fs.existsSync(path.join(bundle.root, '.disabled'))) {
+            coreLog('hooks', `Skipping hooks from disabled plugin: ${bundle.root}`);
+            continue;
+          }
+          if (bundle.hooksFile) out.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name, pluginRoot: bundle.root });
+        }
+      }
+    } catch (err) {
+      // Plugin discovery failed (optional subsystem) — don't crash the load, but
+      // surface a CATEGORIZED remediation hint (network / permissions / config)
+      // instead of swallowing it silently, so the user can tell WHY plugin hooks
+      // did not load and HOW to fix it. Mirrors Claude Code's sessionStart
+      // plugin-hook-load guidance.
+      const { category, guidance } = categorizeLoadFailure(err);
+      coreLog('hooks', `Failed to load plugin hooks (${category}): ${err instanceof Error ? err.message : String(err)}. ${guidance}`);
+    }
+    return out;
+  }
+
+  /**
+   * Resolve the private per-event hook array that {@link processHookEntry}'s switch
+   * registers a config/frontmatter hook into. Every lifecycle event maps 1:1 to one
+   * array, so this is the inverse of that switch — used to (a) attribute a
+   * just-registered hook fn to its originating source ({@link processHookEntry}) and
+   * (b) surgically remove a plugin-contributed hook on prune/reload
+   * ({@link removeConfigHook}). Returns `undefined` for an unknown event.
+   */
+  private configHookArray(event: string): Function[] | undefined {
+    // Object map (not a `switch`) so this inverse never introduces duplicate
+    // `case '<event>':` labels that a brittle source-scan test might slice on.
+    const map: Record<string, Function[]> = {
+      preToolUse: this.preToolUseHooks as unknown as Function[],
+      postToolUse: this.postToolUseHooks as unknown as Function[],
+      preSampling: this.preSamplingHooks as unknown as Function[],
+      postSampling: this.postSamplingHooks as unknown as Function[],
+      stop: this.stopHooks as unknown as Function[],
+      error: this.errorHooks as unknown as Function[],
+      sessionStart: this.sessionStartHooks as unknown as Function[],
+      sessionEnd: this.sessionEndHooks as unknown as Function[],
+      subagentStart: this.subagentStartHooks as unknown as Function[],
+      subagentStop: this.subagentStopHooks as unknown as Function[],
+      preCompact: this.preCompactHooks as unknown as Function[],
+      postCompact: this.postCompactHooks as unknown as Function[],
+      permissionRequest: this.permissionRequestHooks as unknown as Function[],
+      permissionDenied: this.permissionDeniedHooks as unknown as Function[],
+      userPromptSubmit: this.userPromptSubmitHooks as unknown as Function[],
+      taskCreated: this.taskCreatedHooks as unknown as Function[],
+      taskCompleted: this.taskCompletedHooks as unknown as Function[],
+      postToolUseFailure: this.postToolUseFailureHooks as unknown as Function[],
+      teammateIdle: this.teammateIdleHooks as unknown as Function[],
+      notification: this.notificationHooks as unknown as Function[],
+      setup: this.setupHooks as unknown as Function[],
+      configChange: this.configChangeHooks as unknown as Function[],
+      instructionsLoaded: this.instructionsLoadedHooks as unknown as Function[],
+      worktreeCreate: this.worktreeCreateHooks as unknown as Function[],
+      worktreeRemove: this.worktreeRemoveHooks as unknown as Function[],
+      cwdChanged: this.cwdChangedHooks as unknown as Function[],
+      fileChanged: this.fileChangedHooks as unknown as Function[],
+      elicitation: this.elicitationHooks as unknown as Function[],
+      elicitationResult: this.elicitationResultHooks as unknown as Function[],
+      stopFailure: this.stopFailureHooks as unknown as Function[],
+    };
+    return Object.prototype.hasOwnProperty.call(map, event) ? map[event] : undefined;
+  }
+
+  /**
+   * Remove one config-registered hook fn from its event array and drop its retained
+   * introspection {@link HookDescriptor} + provenance. Returns true when the fn was
+   * found and removed. The matching descriptor is removed by identity on
+   * (event, type, matcher, content, pluginName) so {@link describeHooks} stays in
+   * sync with the live hook set after a prune/reload.
+   */
+  private removeConfigHook(event: string, fn: Function): boolean {
+    const arr = this.configHookArray(event);
+    if (!arr) return false;
+    const idx = arr.indexOf(fn);
+    if (idx < 0) return false;
+    arr.splice(idx, 1);
+    const prov = this._hookProvenance.get(fn);
+    this._hookProvenance.delete(fn);
+    this._hookTiers.delete(fn);
+    // Drop the first descriptor that matches this hook's (event, plugin) identity so
+    // the introspection view reflects the removal (best-effort — descriptors carry no
+    // fn handle, so match on provenance-derived fields).
+    const di = this._descriptors.findIndex(d =>
+      d.event === event && (prov?.pluginName ? d.pluginName === prov.pluginName : true));
+    if (di >= 0) this._descriptors.splice(di, 1);
+    return true;
+  }
+
+  /**
+   * Remove every config-registered PLUGIN hook (atomic clear — the first half of
+   * Claude Code's clear-then-register swap in loadPluginHooks). A hook qualifies when
+   * its captured provenance carries a `pluginName`/`pluginRoot`; filesystem
+   * (project/user/config) and runtime/frontmatter hooks are untouched. Returns the
+   * number of hooks removed. Safe to call repeatedly (idempotent: a second call
+   * removes nothing).
+   */
+  clearPluginHooks(): number {
+    let removed = 0;
+    for (const event of HOOK_EVENTS) {
+      const arr = this.configHookArray(event);
+      if (!arr) continue;
+      for (const fn of [...arr]) {
+        const prov = this._hookProvenance.get(fn);
+        if (prov && (prov.pluginName !== undefined || prov.pluginRoot !== undefined)) {
+          if (this.removeConfigHook(event, fn)) removed++;
+        }
+      }
+    }
+    if (removed > 0) coreLog('hooks', `Cleared ${removed} plugin hook(s)`);
+    return removed;
+  }
+
+  /**
+   * Immediately revoke the hooks of plugins that are no longer enabled (gh-36995):
+   * drop every registered PLUGIN hook whose originating bundle root is NOT in
+   * `enabledRoots`. Additions are deliberately NOT performed here — a newly enabled
+   * plugin's hooks are picked up by the explicit {@link reloadPluginHooks}/`/reload-
+   * plugins` pass — so a disable/uninstall takes effect at once while a trust-
+   * sensitive add stays gated behind an explicit reload (Claude Code's prune-only
+   * invalidation). A plugin hook with no recorded root is left in place (it cannot be
+   * attributed to a root, so pruning it would be unsound). Returns the count removed.
+   */
+  pruneRemovedPluginHooks(enabledRoots: readonly string[]): number {
+    const enabled = new Set(enabledRoots.map(r => path.resolve(r)));
+    let removed = 0;
+    for (const event of HOOK_EVENTS) {
+      const arr = this.configHookArray(event);
+      if (!arr) continue;
+      for (const fn of [...arr]) {
+        const prov = this._hookProvenance.get(fn);
+        if (!prov?.pluginRoot) continue;
+        if (!enabled.has(path.resolve(prov.pluginRoot))) {
+          if (this.removeConfigHook(event, fn)) removed++;
+        }
+      }
+    }
+    if (removed > 0) coreLog('hooks', `Pruned ${removed} hook(s) from disabled/removed plugins`);
+    return removed;
+  }
+
+  /**
+   * Atomic clear-then-register swap for plugin hooks (Claude Code's loadPluginHooks
+   * re-registration after a plugin management operation): remove ALL currently-
+   * registered plugin hooks, then re-discover and re-register the hooks of every
+   * still-enabled plugin bundle. Idempotent — re-running with no plugin changes
+   * yields the same live set (a disabled plugin stays gone, an unchanged plugin is
+   * registered exactly once). Returns a `{ cleared, registered }` breakdown for the
+   * `/reload-plugins` summary. `cwd` defaults to the manager's session cwd.
+   */
+  reloadPluginHooks(cwd: string = this._cwd): { cleared: number; registered: number } {
+    const cleared = this.clearPluginHooks();
+    let registered = 0;
+    if (!canRunHookUnderManagedOnly('plugin', this._allowManagedHooksOnly)) {
+      coreLog('hooks', 'reloadPluginHooks: plugin hooks disabled by allowManagedHooksOnly policy');
+      return { cleared, registered };
+    }
+    for (const { path: p, source, pluginName, pluginRoot } of this.discoverPluginHookSources(cwd)) {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(p, 'utf-8');
+      } catch {
+        continue;
+      }
+      try {
+        const config: HookConfigFile = JSON.parse(stripBom(raw));
+        const entries = Array.isArray(config.hooks) ? config.hooks : normalizeMapKeyedHooks(config.hooks);
+        for (const entry of entries) {
+          entry._source = source;
+          entry.pluginName = pluginName;
+          entry.pluginRoot = pluginRoot;
+          if (entry.hook && entry.hook.type === 'command') entry.hook.pluginRoot = pluginRoot;
+          if (source === 'project' && !this._workspaceTrusted) continue;
+          this.processHookEntry(entry, cwd);
+          registered++;
+        }
+      } catch (err) {
+        this.recordConfigError(p, err);
+      }
+    }
+    coreLog('hooks', `reloadPluginHooks: cleared ${cleared}, registered ${registered} plugin hook(s)`);
+    return { cleared, registered };
   }
 
   /**
@@ -4248,6 +4453,20 @@ export class HookManager extends EventEmitter {
         }
         default:
           coreLog('hooks', `Unknown hook event: ${entry.event}`);
+      }
+      // Attribute the hook fn just registered by the switch (each event registers
+      // exactly ONE fn, appended to the array {@link configHookArray} resolves) to
+      // its source tier and — for a plugin-contributed hook — its bundle name/root.
+      // This is what lets {@link pruneRemovedPluginHooks}/{@link reloadPluginHooks}
+      // find and remove a specific plugin's hooks later (gh-36995).
+      const registeredArr = this.configHookArray(entry.event);
+      const registeredFn = registeredArr && registeredArr.length ? registeredArr[registeredArr.length - 1] : undefined;
+      if (registeredFn) {
+        this._hookProvenance.set(registeredFn, {
+          source: tier,
+          ...(entry.pluginName ? { pluginName: entry.pluginName } : {}),
+          ...(entry.pluginRoot ? { pluginRoot: entry.pluginRoot } : {}),
+        });
       }
   }
 
