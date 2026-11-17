@@ -875,6 +875,14 @@ log(String(result));
 
     assert.ok(!r.isError, r.output);
     assert.ok(capturedConfig);
-    assert.deepEqual(capturedConfig.tools, ['file_read']);
+    // Per-call `tools: ['file_read']` is now resolved through resolveToolScope
+    // into the actual tool definition set (parity with AgentTool `tools`), not
+    // passed through as raw name strings. The scope must narrow to exactly the
+    // named tool.
+    assert.ok(Array.isArray(capturedConfig.tools));
+    assert.deepEqual(
+      capturedConfig.tools.map((t: any) => t.name),
+      ['file_read'],
+    );
   });
 });
