@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
+import { updateConfigFile, validateConfigJson, validateConfigFileContent, suggestKnownConfigKey, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, isManagedOnlyKey } from '../settings-guard';
 import { listProviders, getAgentModelOptions, resolveModelAlias, validateModel } from '../model-registry';
@@ -182,6 +182,11 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     type: 'number',
     description: 'Cap (chars) on inline background task output before spill.',
     validateOnWrite: positiveNumber('taskOutputMaxChars'),
+  },
+  toolOutputMaxChars: {
+    type: 'number',
+    description: 'Global default cap (chars) on a tool result (web_fetch, PDF, …) before spill; AMI_TOOL_OUTPUT_MAX_CHARS overrides.',
+    validateOnWrite: positiveNumber('toolOutputMaxChars'),
   },
   statusLine: {
     type: 'string',
@@ -370,7 +375,8 @@ function buildDescription(): string {
   });
   return (
     'Read or update AMI configuration. ' +
-    'Use action="get" [key] to read, or action="set" key=<name> value=<value>. ' +
+    'Use action="get" [key] to read, action="set" key=<name> value=<value> to write, ' +
+    'or action="validate" to check the config file against the schema (lists every bad value/unknown key + valid keys). ' +
     'Omit value to read a setting; include value to write it. ' +
     'Set value to "default" to reset a key to its built-in default.\n' +
     '## Storage scope\n' +
@@ -392,7 +398,7 @@ export const configTool: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['get', 'set'], description: 'Get current config or set a value.' },
+      action: { type: 'string', enum: ['get', 'set', 'validate'], description: 'Get current config, set a value, or validate the config file against the schema.' },
       key: { type: 'string', description: 'Config key (see tool description for the supported list).' },
       value: {
         type: ['string', 'boolean', 'number'],
@@ -436,7 +442,8 @@ export const configTool: ToolDefinition = {
 
     if (action === 'get') return handleGet(configPath, input.key as string | undefined, scope);
     if (action === 'set') return handleSet(configPath, input, scope, context);
-    return { output: 'Usage: action="get" [key] or action="set" key=... value=...', isError: true };
+    if (action === 'validate') return handleValidate(configPath, scope);
+    return { output: 'Usage: action="get" [key], action="set" key=... value=..., or action="validate".', isError: true };
   },
 };
 
@@ -494,6 +501,48 @@ function writeConfigMutation(configPath: string, mutate: (cfg: Record<string, un
   } catch (err) {
     return { error: `Error writing config: ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/**
+ * Validate the on-disk config file against the FULL schema and report, structured,
+ * every parse/field/unknown-key problem plus the list of valid keys so the model can
+ * self-correct the file. Parity: Claude Code's schema-aware settings validation that
+ * returns the per-field error list AND the schema. Read-only. Uses the single canonical
+ * {@link validateConfigFileContent} — no parallel validation logic.
+ */
+function handleValidate(configPath: string, scope: 'project' | 'global'): ToolResult {
+  let raw: string;
+  try {
+    if (isSpecialFileStat(fs.statSync(configPath))) {
+      return { output: `Config path ${configPath} is not a regular file; refusing to read it.`, isError: true };
+    }
+  } catch {
+    // Absent / inaccessible — classified by the read below.
+  }
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+  } catch {
+    const where = scope === 'global' ? 'global config (~/.ami/config.json)' : 'project config (.ami/config.json)';
+    return { output: `No ${where} to validate (nothing written yet).`, metadata: { operation: 'validate', scope, valid: true } };
+  }
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+  const result = validateConfigFileContent(raw);
+  if (result.valid) {
+    return { output: `Config at ${configPath} is valid.`, metadata: { operation: 'validate', scope, valid: true } };
+  }
+  const parts: string[] = [`Config at ${configPath} is invalid:`];
+  if (result.parseError) parts.push(`- ${result.parseError}`);
+  for (const issue of result.issues) parts.push(`- ${issue.field}: ${issue.message}`);
+  for (const k of result.unknownKeys) {
+    const suggestion = suggestKnownConfigKey(k);
+    parts.push(`- unknown key "${k}"${suggestion ? ` (did you mean "${suggestion}"?)` : ''}`);
+  }
+  parts.push(`Valid keys: ${Object.keys(result.schema.properties).sort().join(', ')}`);
+  return {
+    output: parts.join('\n'),
+    isError: true,
+    metadata: { operation: 'validate', scope, valid: false, issues: result.issues, unknownKeys: result.unknownKeys },
+  };
 }
 
 function handleGet(configPath: string, key: string | undefined, scope: 'project' | 'global'): ToolResult {

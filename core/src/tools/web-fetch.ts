@@ -9,6 +9,7 @@ import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
 import { parseEnvBool } from '../utils/env';
+import { resolveToolOutputMaxChars, loadProjectConfig } from '../config';
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
@@ -394,6 +395,14 @@ export const webFetchTool: ToolDefinition = {
     let url = input.url as string;
     const prompt = (input.prompt as string) ?? '';
     const textOffset = (input.offset as number) ?? 0;
+    // Effective per-result spill cap: the tool's built-in MAX_RESPONSE_LENGTH clamped
+    // by the GLOBAL tool-output default (project `toolOutputMaxChars` config / the
+    // AMI_TOOL_OUTPUT_MAX_CHARS env override), so one knob tunes every tool's spill
+    // threshold (parity: Claude Code's getPersistenceThreshold global clamp).
+    const outputMaxChars = resolveToolOutputMaxChars(
+      MAX_RESPONSE_LENGTH,
+      loadProjectConfig(context.cwd)?.toolOutputMaxChars,
+    );
     // Test-only dependency seam (defaults to the retrying httpGetWithRetry, which
     // transparently retries transient network/5xx failures with exponential
     // backoff). Lets a test drive the cross-host-redirect branch and other
@@ -591,7 +600,7 @@ export const webFetchTool: ToolDefinition = {
           const pdf = await parsePdfWithTimeout<{ text?: string; total?: number }>(parser, PDF_PARSE_TIMEOUT_MS);
           const pdfText = (pdf.text || '').trim();
           if (pdfText.length > 100) {
-            const truncated = spillToolText(context.cwd, 'pdf', pdfText, MAX_RESPONSE_LENGTH);
+            const truncated = spillToolText(context.cwd, 'pdf', pdfText, outputMaxChars);
             return {
               output: `URL: ${sanitizedUrl}\nType: PDF (${pdf.total} pages)\n\n${truncated}`,
               isError: false,
@@ -615,7 +624,7 @@ export const webFetchTool: ToolDefinition = {
               // heading/list structure, instead of discarding every source URL.
               const htmlContent = htmlToMarkdown(htmlResult.body);
               if (htmlContent.length > 200) {
-                const page = spillToolText(context.cwd, 'web-fetch', htmlContent, MAX_RESPONSE_LENGTH);
+                const page = spillToolText(context.cwd, 'web-fetch', htmlContent, outputMaxChars);
                 return {
                   output: `URL: ${htmlUrl} (HTML version of PDF)\nStatus: ${htmlResult.statusCode}\n\n${page}`,
                   isError: false,
@@ -687,8 +696,8 @@ export const webFetchTool: ToolDefinition = {
         }
         content = content.slice(textOffset);
       }
-      content = spillToolText(context.cwd, 'web-fetch', content, MAX_RESPONSE_LENGTH);
-      const endOffset = textOffset + Math.min(content.length, MAX_RESPONSE_LENGTH);
+      content = spillToolText(context.cwd, 'web-fetch', content, outputMaxChars);
+      const endOffset = textOffset + Math.min(content.length, outputMaxChars);
       const unread = totalLength - endOffset;
       if (unread > 0) {
         content += `\n\n[${unread.toLocaleString()} characters unread. Use offset=${endOffset} to continue reading.]`;

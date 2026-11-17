@@ -63,6 +63,18 @@ export interface ProjectConfig {
   bashOutputMaxChars?: number;
   /** Cap (chars) on inline background task output before it is spilled to a file. */
   taskOutputMaxChars?: number;
+  /**
+   * Global default cap (chars) on a tool result before it is spilled to a file,
+   * shared by tools that have no bespoke cap (web_fetch, PDF extraction, etc.).
+   * Parity: Claude Code's single `DEFAULT_MAX_RESULT_SIZE_CHARS` in
+   * `toolResultStorage.ts` against which each tool's declared cap is clamped — one
+   * tunable knob governs every un-specialised tool's spill threshold instead of the
+   * previously hardcoded per-tool constants. Resolved (with the
+   * `AMI_TOOL_OUTPUT_MAX_CHARS` env override) by {@link resolveToolOutputMaxChars};
+   * {@link bashOutputMaxChars}/{@link taskOutputMaxChars} remain their own per-tool
+   * caps. An unset/invalid value falls back to {@link DEFAULT_TOOL_OUTPUT_MAX_CHARS}.
+   */
+  toolOutputMaxChars?: number;
   /** Anthropic prompt-cache TTL ('5m' default or '1h' extended-cache beta). */
   cacheTtl?: '5m' | '1h';
   /** Safe mode: skip untrusted project-local hooks/MCP/memory/skills. */
@@ -1148,6 +1160,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['language', 'string'],
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
+  ['toolOutputMaxChars', 'number'],
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
   ['cleanupPeriodDays', 'number'],
   ['safeMode', 'boolean'], ['hasTrustDialogAccepted', 'boolean'],
@@ -2416,6 +2429,7 @@ export function mergeConfigs(
     if (layer.language !== undefined) merged.language = layer.language;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
+    if (layer.toolOutputMaxChars !== undefined) merged.toolOutputMaxChars = layer.toolOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
     if (layer.hasTrustDialogAccepted !== undefined) merged.hasTrustDialogAccepted = layer.hasTrustDialogAccepted;
@@ -3196,6 +3210,55 @@ export function validateBoundedIntEnvVar(
 }
 
 // ---------------------------------------------------------------------------
+// Unified tool-output spill threshold (parity: Claude Code toolResultStorage.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Built-in GLOBAL default ceiling (chars) for a tool result before it is spilled to
+ * a file. Parity: Claude Code's `DEFAULT_MAX_RESULT_SIZE_CHARS` — the single default
+ * against which each tool's own declared cap is clamped, so one tunable value governs
+ * every tool that has no bespoke cap (web_fetch, PDF extraction, …). Distinct from the
+ * per-tool {@link ProjectConfig.bashOutputMaxChars}/{@link ProjectConfig.taskOutputMaxChars}
+ * knobs, which stay their own thing.
+ */
+export const DEFAULT_TOOL_OUTPUT_MAX_CHARS = 50_000;
+
+/** Env override for the global tool-output cap (validated + bounded), mirroring the
+ *  per-tool `TASK_MAX_OUTPUT_LENGTH` env knob. */
+export const TOOL_OUTPUT_MAX_CHARS_ENV = 'AMI_TOOL_OUTPUT_MAX_CHARS';
+
+/** Hard upper bound for the resolved global default so a misconfigured/hostile override
+ *  cannot push the spill threshold arbitrarily high (and effectively disable spilling). */
+export const TOOL_OUTPUT_MAX_UPPER_LIMIT = 2_000_000;
+
+/**
+ * Resolve the effective spill threshold (chars) for a tool whose declared cap is
+ * `declaredMaxChars`, clamping it by the GLOBAL default. The global default is an
+ * explicit project `toolOutputMaxChars` config value when valid (`configured`), else
+ * the {@link TOOL_OUTPUT_MAX_CHARS_ENV} env knob, else {@link DEFAULT_TOOL_OUTPUT_MAX_CHARS}
+ * — each clamped into `[1, TOOL_OUTPUT_MAX_UPPER_LIMIT]`. The tool's own declared cap is
+ * then clamped DOWN by that global (`Math.min`), so one knob lowers every tool's spill
+ * threshold while a tool asking for LESS keeps its tighter bound.
+ *
+ * A non-finite `declaredMaxChars` is a deliberate opt-out (parity: Claude's
+ * `getPersistenceThreshold` returns `Infinity` unchanged — never spill).
+ */
+export function resolveToolOutputMaxChars(declaredMaxChars: number, configured?: number): number {
+  if (!Number.isFinite(declaredMaxChars)) return declaredMaxChars;
+  let globalDefault: number;
+  if (configured !== undefined && Number.isFinite(configured) && configured > 0) {
+    globalDefault = Math.min(Math.floor(configured), TOOL_OUTPUT_MAX_UPPER_LIMIT);
+  } else {
+    globalDefault = validateBoundedIntEnvVar(TOOL_OUTPUT_MAX_CHARS_ENV, process.env[TOOL_OUTPUT_MAX_CHARS_ENV], {
+      default: DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+      min: 1,
+      max: TOOL_OUTPUT_MAX_UPPER_LIMIT,
+    }).effective;
+  }
+  return Math.min(declaredMaxChars, globalDefault);
+}
+
+// ---------------------------------------------------------------------------
 // Config file safety — atomic writes, stale .tmp cleanup, JSON validation
 // ---------------------------------------------------------------------------
 
@@ -3254,6 +3317,62 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
     return { valid: false, error: `Expected a JSON object, got ${describeJsonType(parsed)}` };
   }
   return { valid: true };
+}
+
+/** Structured result of a FULL (schema-aware) config-content validation. */
+export interface ConfigFileValidation {
+  /** True only when the content parses AND has no field-value issues or unknown keys. */
+  valid: boolean;
+  /** Set when the content is not a parseable JSON object (parse/shape failure). */
+  parseError?: string;
+  /** Per-field value issues (wrong type / bad enum / out-of-range), empty when none. */
+  issues: ConfigValueIssue[];
+  /** Unrecognized top-level keys (likely typos), empty when none. */
+  unknownKeys: string[];
+  /** The full generated JSON schema, returned so an editor/agent can self-correct. */
+  schema: ConfigJSONSchema;
+}
+
+/**
+ * STRICT, schema-aware validation of raw config-file CONTENT, for the edit/check path.
+ * Unlike {@link validateConfigJson} — the lightweight parse+object gate used by LOADERS,
+ * which deliberately accepts a parseable-but-advisory config so the valid parts still
+ * load — this performs field-level value validation (wrong type / bad enum / out-of-range
+ * via {@link validateProjectConfigValues}) AND unknown-key detection
+ * ({@link findUnknownConfigKeys}), and returns the full {@link getConfigJSONSchema}
+ * output so a caller can show the user/agent exactly what shape is expected and repair
+ * the file. Parity: Claude Code's `validateSettingsFileContent` (strict-mode schema
+ * validation separating the parse failure from the per-field error list, returning the
+ * full schema). Reuses the ONE canonical value validator + schema generator — no parallel
+ * schema logic.
+ */
+export function validateConfigFileContent(content: string): ConfigFileValidation {
+  const schema = getConfigJSONSchema();
+  let parsed: unknown;
+  try {
+    parsed = parseJsonc(content);
+  } catch (err) {
+    return {
+      valid: false,
+      parseError: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`,
+      issues: [],
+      unknownKeys: [],
+      schema,
+    };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      valid: false,
+      parseError: `Expected a JSON object, got ${describeJsonType(parsed)}`,
+      issues: [],
+      unknownKeys: [],
+      schema,
+    };
+  }
+  const config = parsed as ProjectConfig;
+  const issues = validateProjectConfigValues(config);
+  const unknownKeys = findUnknownConfigKeys(config);
+  return { valid: issues.length === 0 && unknownKeys.length === 0, issues, unknownKeys, schema };
 }
 
 // ---------------------------------------------------------------------------
