@@ -438,6 +438,22 @@ export function isStructuredProtocolMessage(content: string): boolean {
 }
 
 /**
+ * True when raw content is a permission-DECISION message routed back to a worker —
+ * either an ordinary tool `permission_response` OR a `sandbox_permission_response`
+ * (per-host network egress). Mirrors Claude Code's inProcessTeammateHelpers
+ * `isPermissionRelatedResponse`, which deliberately special-cases BOTH kinds so a
+ * worker that forwarded a permission/sandbox prompt to the lead can recognize the
+ * reply and unblock. Distinct from {@link isStructuredProtocolMessage} (true for
+ * EVERY control type): this picks out only the two response types a blocked worker
+ * is waiting on, so the drain can prioritize them (see {@link drainMailboxPrioritized}).
+ */
+export function isPermissionRelatedResponse(content: string): boolean {
+  const m = parseStructuredMessage(content);
+  if (!m || 'error' in m) return false;
+  return m.type === 'permission_response' || m.type === 'sandbox_permission_response';
+}
+
+/**
  * A brief, one-line summary of a shutdown message with a distinct format per state
  * (request / approved / rejected), for inbox/queue listings and concise relay into
  * context. Returns null when the content is not a shutdown message. Mirrors Claude
@@ -777,6 +793,30 @@ const mailboxes = new Map<string, AgentMessage[]>();
 // text DM a sender emits is recorded, and the idle path scans that record
 // backward for the most recent PEER DM. A non-destructive, predicate-filtered
 // read (never mutates the record) — the mailbox is untouched.
+/**
+ * Upper bound (chars) on a derived plain-text preview — a short, 5-10 word UI hint,
+ * not the full message. Mirrors Claude Code's `message.slice(0, 80)` preview length.
+ */
+export const MAX_SUMMARY_PREVIEW_CHARS = 80;
+
+/**
+ * Derive a short, whitespace-collapsed UI preview from a plain-text message. Claude
+ * Code REQUIRES a `summary` on every string message (SendMessageTool validateInput)
+ * so the UI always has a 5-10 word preview; AMI keeps the send working (superset —
+ * no hard reject that would break the engine's plain-text teammate relay) and instead
+ * DEFAULTS this preview onto the stored message when the model omits one. Collapses
+ * runs of whitespace, keeps at most ~10 words, and caps the result at
+ * {@link MAX_SUMMARY_PREVIEW_CHARS}. Returns '' for blank content.
+ */
+export function deriveSummary(content: string): string {
+  const collapsed = content.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const words = collapsed.split(' ').slice(0, 10).join(' ');
+  return words.length > MAX_SUMMARY_PREVIEW_CHARS
+    ? words.slice(0, MAX_SUMMARY_PREVIEW_CHARS).trimEnd()
+    : words;
+}
+
 interface OutboundDm {
   /** The recipient's bare name. */
   to: string;
@@ -879,6 +919,17 @@ export const MAX_MAILBOX = 1000;
 export const MAX_MESSAGE_CHARS = 100_000;
 
 /**
+ * Hard upper bound on how long (ms) an undelivered message may sit in a mailbox
+ * before it is self-healed away. Complements MAX_MAILBOX (which bounds the COUNT):
+ * this bounds the AGE, so a recipient that never drains but keeps being written to
+ * cannot accumulate stale traffic indefinitely — the memory-growth vector Claude
+ * Code guards with `cleanupOldResolutions`'s age-based pruning (maxAgeMs). The TTL
+ * is deliberately generous (1h ≫ the sub-second cadence of a real tool round), so
+ * it only engages on a long-dead/evicted recipient, never on live coordination.
+ */
+export const MAILBOX_ENTRY_TTL_MS = 60 * 60 * 1000;
+
+/**
  * Append to an agent's mailbox, capping retention at MAX_MAILBOX by dropping the
  * oldest entries (drop-oldest, newest-wins) so the buffer cannot grow without
  * bound. The single canonical mailbox-append site — every enqueue path routes
@@ -890,6 +941,14 @@ function appendCapped(box: AgentMessage[], msg: AgentMessage): void {
   // queue an un-ackable message. A broadcast reuses one object across mailboxes;
   // the shared id is fine because acks remove entries per-mailbox by id.
   if (!msg.id) { msg.id = nextMessageId(); }
+  // Self-healing age prune: drop any already-queued entry older than the TTL before
+  // appending, so a never-draining recipient that keeps being written to cannot
+  // hoard stale traffic (mirrors Claude Code's cleanupOldResolutions age bound).
+  // In-place splice so the caller's live array reference stays valid.
+  const cutoff = Date.now() - MAILBOX_ENTRY_TTL_MS;
+  for (let i = box.length - 1; i >= 0; i--) {
+    if (box[i].timestamp < cutoff) box.splice(i, 1);
+  }
   box.push(msg);
   if (box.length > MAX_MAILBOX) {
     box.splice(0, box.length - MAX_MAILBOX);
@@ -1102,9 +1161,13 @@ export function pollMailbox(
  * Claude Code's inProcessRunner.waitForNextPromptOrShutdown scan order:
  *  1. `shutdown_request` messages first — a pending cancellation must never be
  *     starved behind a flood of peer-to-peer chatter;
- *  2. then messages FROM the team lead — the lead carries user intent and
+ *  2. then permission-DECISION responses (tool + sandbox) — a worker blocked on a
+ *     forwarded permission/sandbox prompt is waiting on exactly this reply to
+ *     unblock, so it must not sit behind a flood of peer chatter
+ *     ({@link isPermissionRelatedResponse}, mirroring Claude's control-first scan);
+ *  3. then messages FROM the team lead — the lead carries user intent and
  *     coordination, so its messages are not starved behind peer chatter;
- *  3. then everything else (peer messages).
+ *  4. then everything else (peer messages).
  * FIFO order is preserved WITHIN each tier (a stable partition), so same-tier
  * messages keep their arrival order. Equivalent to the unordered drain of
  * `pollMailbox(agentName)` in membership — nothing is dropped — only the order
@@ -1114,19 +1177,22 @@ export function drainMailboxPrioritized(agentName: string): AgentMessage[] {
   const messages = pollMailbox(agentName);
   if (messages.length <= 1) return messages;
   const shutdowns: AgentMessage[] = [];
+  const permissions: AgentMessage[] = [];
   const lead: AgentMessage[] = [];
   const rest: AgentMessage[] = [];
   for (const m of messages) {
     const parsed = parseStructuredMessage(m.content);
     if (parsed && !('error' in parsed) && parsed.type === 'shutdown_request') {
       shutdowns.push(m);
+    } else if (isPermissionRelatedResponse(m.content)) {
+      permissions.push(m);
     } else if (m.from === TEAM_LEAD_NAME) {
       lead.push(m);
     } else {
       rest.push(m);
     }
   }
-  return [...shutdowns, ...lead, ...rest];
+  return [...shutdowns, ...permissions, ...lead, ...rest];
 }
 
 /**
@@ -1732,11 +1798,16 @@ export const sendMessageTool: ToolDefinition = {
 
     // --- Plain text ------------------------------------------------------
     const summary = input.summary as string | undefined;
+    // Every plain-text message must carry a short UI preview (Claude's summary
+    // contract). The model's summary wins; when it omits one we DEFAULT a derived
+    // preview onto the stored message so the UI / idle-summary path always has one
+    // (AMI superset: default, not a hard reject that would break plain-text relay).
+    const effectiveSummary = (summary && summary.trim()) ? summary.trim() : deriveSummary(content);
     const msg: AgentMessage = {
       from,
       to,
       content,
-      summary: summary || undefined,
+      summary: effectiveSummary || undefined,
       timestamp: Date.now(),
     };
 
@@ -1786,10 +1857,10 @@ export const sendMessageTool: ToolDefinition = {
 
     // Record this plain-text DM so a later idle_notification can derive its
     // summary from the sender's last PEER DM (getLastPeerDmSummary). Use the bare
-    // target name (toRaw) the sender addressed, and the model summary when given,
-    // else a truncation of the content — mirrors Claude Code's
+    // target name (toRaw) the sender addressed, and the effective preview (model
+    // summary when given, else the derived one) — mirrors Claude Code's
     // `summary ?? message.slice(0, 80)`.
-    recordOutboundDm(from, toRaw, summary && summary.trim() ? summary : content.slice(0, 80));
+    recordOutboundDm(from, toRaw, effectiveSummary || content.slice(0, 80));
 
     const summaryTag = summary ? ` — "${summary}"` : '';
     const affordance = deliveryAffordance(toRaw, to, context);
