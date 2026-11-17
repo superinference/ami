@@ -337,6 +337,10 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
     ?? (isEnvTruthy(env.OTEL_LOG_USER_PROMPTS) || isEnvTruthy(env.SUPERINFERENCE_LOG_USER_PROMPTS) || beta.enabled);
   const logToolContent = opts.logToolContent ?? (logUserPrompts || isToolContentLoggingEnabled(env) || beta.enabled);
   const logToolDetails = opts.logToolDetails ?? toolDetailsEnabled(env);
+  // Derive the low-cardinality `file_language` dimension for code-editing-tool events
+  // from the RAW path BEFORE the path is hashed below — so segmentation by language is
+  // possible without the path ever leaving the machine (Claude permissionLogging parity).
+  data = deriveCodeEditLanguage(data);
   const out: Record<string, unknown> = {};
   const redactToLength = (key: string, value: unknown): void => {
     const len = typeof value === 'string' ? value.length : JSON.stringify(value ?? '').length;
@@ -372,6 +376,16 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
       continue;
     }
     out[key] = sanitizeAnalyticsValue(value, 0);
+  }
+  // Cardinality-reduction normalization (Claude datadog.ts parity), applied just
+  // before egress: a raw `model` id gets a bounded `model_family` companion dimension
+  // (AMI keeps the raw id for self-hosted fidelity — additive superset), and a `version`
+  // field is dev-truncated to base+date (stripping per-build timestamp/sha noise).
+  if (typeof out.model === 'string' && out.model) {
+    out.model_family = normalizeModelForAnalytics(out.model);
+  }
+  if (typeof out.version === 'string') {
+    out.version = truncateDevVersion(out.version);
   }
   return out as AnalyticsSafeMetadata;
 }
@@ -1043,6 +1057,130 @@ export function deriveHttpStatusFields(data: Record<string, unknown>): Record<st
   if (range === undefined) return data;
   const { status, ...rest } = data;
   return { ...rest, http_status: String(status), http_status_range: range };
+}
+
+// ---------------------------------------------------------------------------
+// Attribute cardinality-reduction normalization (Claude-Code datadog.ts parity):
+// before an event leaves the machine, high-cardinality identifiers are collapsed
+// to a bounded vocabulary so a self-hosted collector's tag/series count stays
+// finite (mirrors datadog.ts L196-217 model→known-or-'other' + dev-version trunc).
+// ---------------------------------------------------------------------------
+
+/**
+ * Low-cardinality model FAMILY vocabulary kept verbatim in analytics; any model id
+ * not matching one of these collapses to 'other' (mirrors Claude's model→known-cost
+ * -set-or-'other' reduction). Provider-neutral — no vendor coupling.
+ */
+export const KNOWN_ANALYTICS_MODEL_FAMILIES = [
+  'opus', 'sonnet', 'haiku', 'gpt', 'o1', 'o3', 'o4',
+  'gemini', 'grok', 'llama', 'mistral', 'deepseek', 'qwen',
+] as const;
+
+/**
+ * Collapse a raw model id to its low-cardinality FAMILY (`opus`, `gpt`, …) or
+ * 'other' when it matches no known family — a bounded telemetry dimension that
+ * can't explode a collector's series count as new model ids ship. A trailing
+ * Anthropic `[1m]` long-context marker is stripped first (Claude parity). Empty
+ * input passes through unchanged. Match is longest-family-first so `gpt-4o` does
+ * not shadow `o4`/`o1`/`o3` when those tokens appear.
+ */
+export function normalizeModelForAnalytics(model: string): string {
+  if (!model) return model;
+  const lc = model.toLowerCase().replace(/\[1m\]$/i, '');
+  // Prefer the longest family token so multi-char families win over 2-char ones.
+  const ordered = [...KNOWN_ANALYTICS_MODEL_FAMILIES].sort((a, b) => b.length - a.length);
+  for (const fam of ordered) {
+    if (lc.includes(fam)) return fam;
+  }
+  return 'other';
+}
+
+/** Matches a `-dev.YYYYMMDD.tHHMMSS.sha<hex>` suffix whose timestamp+sha is cardinality noise. */
+const DEV_VERSION_RE = /^(\d+\.\d+\.\d+-dev\.\d{8})\.t\d+\.sha[a-f0-9]+$/i;
+
+/**
+ * Truncate a dev build version to `base-dev.YYYYMMDD`, dropping the per-build
+ * timestamp + commit sha that would otherwise make every build a unique tag — e.g.
+ * `2.0.53-dev.20251124.t173302.sha526cc6a` → `2.0.53-dev.20251124`. A release
+ * version (or any string not matching the dev pattern) is returned unchanged.
+ * Mirrors Claude's datadog.ts version-truncation cardinality reduction.
+ */
+export function truncateDevVersion(version: string): string {
+  return version.replace(DEV_VERSION_RE, '$1');
+}
+
+// ---------------------------------------------------------------------------
+// Code-editing-tool language segmentation (Claude-Code permissionLogging.ts parity):
+// for code-editing tools (Edit/Write/NotebookEdit → AMI file_edit/notebook_edit) the
+// target file's programming LANGUAGE is derived from its extension and attached as a
+// low-cardinality dimension, so edit telemetry can be segmented by language without
+// ever exporting the raw path. Mirrors buildCodeEditToolAttributes (L41-65).
+// ---------------------------------------------------------------------------
+
+/** Tool names treated as code-editing (AMI canonical + Claude-Code aliases). */
+export const CODE_EDITING_TOOLS: ReadonlySet<string> = new Set([
+  'file_edit', 'notebook_edit',          // AMI canonical
+  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', // Claude-Code names
+]);
+
+/** Whether a tool name is a code-editing tool (edit/write/notebook family). */
+export function isCodeEditingTool(toolName: string): boolean {
+  return CODE_EDITING_TOOLS.has(toolName);
+}
+
+/**
+ * Static file-extension → programming-language map for analytics segmentation.
+ * Bounded + provider-neutral (no highlight.js dependency); an unmapped/absent
+ * extension yields 'unknown' (matching Claude's getLanguageName fallback), keeping
+ * the `file_language` dimension's cardinality finite.
+ */
+const EXTENSION_LANGUAGE: Record<string, string> = {
+  ts: 'TypeScript', tsx: 'TypeScript', mts: 'TypeScript', cts: 'TypeScript',
+  js: 'JavaScript', jsx: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript',
+  py: 'Python', rb: 'Ruby', go: 'Go', rs: 'Rust', java: 'Java',
+  kt: 'Kotlin', kts: 'Kotlin', swift: 'Swift', scala: 'Scala',
+  c: 'C', h: 'C', cc: 'C++', cpp: 'C++', cxx: 'C++', hpp: 'C++', hh: 'C++',
+  cs: 'C#', php: 'PHP', pl: 'Perl', pm: 'Perl', lua: 'Lua', r: 'R',
+  sh: 'Shell', bash: 'Shell', zsh: 'Shell', fish: 'Shell',
+  html: 'HTML', htm: 'HTML', css: 'CSS', scss: 'SCSS', sass: 'Sass', less: 'Less',
+  json: 'JSON', yaml: 'YAML', yml: 'YAML', toml: 'TOML', xml: 'XML',
+  md: 'Markdown', markdown: 'Markdown', sql: 'SQL',
+  dart: 'Dart', ex: 'Elixir', exs: 'Elixir', erl: 'Erlang', clj: 'Clojure',
+  hs: 'Haskell', ml: 'OCaml', fs: 'F#', vue: 'Vue', svelte: 'Svelte',
+  ipynb: 'Jupyter',
+};
+
+/**
+ * Resolve the programming language of a file for analytics from its extension,
+ * returning 'unknown' when there is no (mapped) extension — a bounded dimension that
+ * never leaks the raw path. Reuses {@link getFileExtensionForAnalytics} so the same
+ * extension-parsing rules apply. Mirrors Claude's getLanguageName (telemetry use).
+ */
+export function getLanguageForAnalytics(filePath: string): string {
+  const ext = getFileExtensionForAnalytics(filePath);
+  if (!ext) return 'unknown';
+  return EXTENSION_LANGUAGE[ext] ?? 'unknown';
+}
+
+/**
+ * When an event records a code-editing tool (via a tool-name field) AND a target
+ * file path (via a path field), attach a low-cardinality `file_language` dimension
+ * derived from the path's extension — WITHOUT consuming the raw path (which is still
+ * hashed downstream). Returns the original object when no transform applies (not a
+ * code-edit tool, no path, or `file_language` already present). Mirrors Claude's
+ * buildCodeEditToolAttributes language enrichment.
+ */
+export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<string, unknown> {
+  if ('file_language' in data) return data;
+  let toolName: string | undefined;
+  let pathValue: string | undefined;
+  for (const [key, value] of Object.entries(data)) {
+    const lk = key.toLowerCase();
+    if (toolName === undefined && TOOL_NAME_KEYS.has(lk) && typeof value === 'string') toolName = value;
+    else if (pathValue === undefined && PATH_KEYS.has(lk) && typeof value === 'string' && value !== '') pathValue = value;
+  }
+  if (toolName === undefined || pathValue === undefined || !isCodeEditingTool(toolName)) return data;
+  return { ...data, file_language: getLanguageForAnalytics(pathValue) };
 }
 
 export interface AnalyticsTrackerOpts {
