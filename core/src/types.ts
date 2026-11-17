@@ -1155,6 +1155,13 @@ export interface UserQuestionOption {
   /** When true the option is shown but not selectable (dimmed; Enter/number/space
    *  refuse to act on it). Parity: Claude's `option.disabled`. */
   disabled?: boolean;
+  /** Controls whether this option's DESCRIPTION column renders dimmed. Descriptions
+   *  are dimmed by default (the secondary-context look); set `false` to keep a
+   *  particular option's description at full brightness so a load-bearing note
+   *  (e.g. a warning or the recommended choice's rationale) is not visually
+   *  demoted. Parity: Claude's CustomSelect per-option `dimDescription` override
+   *  (which defaults to dimmed but can be turned off per option). */
+  dimDescription?: boolean;
 }
 
 /** Three-state terminal outcome of a (sub)agent/task, distinguishing a clean finish
