@@ -465,8 +465,8 @@ export type {
 // --- batch #10 additive parity exports ---
 export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay } from './tools/subagent-relay';
 export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion } from './tools/subagent-relay';
-export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv } from './utils/env';
-export type { DotenvParseOptions, LoadDotenvOptions } from './utils/env';
+export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv, validateBoundedEnvInt, collectEnvLimitDiagnostics, AMI_ENV_INT_LIMITS } from './utils/env';
+export type { DotenvParseOptions, LoadDotenvOptions, EnvIntBounds, EnvIntStatus, BoundedEnvIntResult, EnvLimitSpec, EnvLimitDiagnostic } from './utils/env';
 export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';
 
 // --- batch #11 additive parity exports ---

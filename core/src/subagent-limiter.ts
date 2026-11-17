@@ -13,15 +13,17 @@ const MAX_CONCURRENT_BOUNDS = { min: 1, max: 1000 };
 const MAX_DEPTH_BOUNDS = { min: 0, max: 100 };
 const MAX_LIFETIME_BOUNDS = { min: 1, max: 100_000 };
 
-/** parseEnvInt + range validation: out-of-range or invalid values fall back. */
+/**
+ * parseEnvInt + range validation: out-of-range or invalid values fall back.
+ * Thin wrapper over {@link parseEnvInt}'s bounds (single source of the range
+ * logic — §0b.6 no duplication) that fixes both bounds as required.
+ */
 export function parseEnvIntInRange(
   envVar: string | undefined,
   fallback: number,
   bounds: { min: number; max: number },
 ): number {
-  const n = parseEnvInt(envVar, fallback);
-  if (n < bounds.min || n > bounds.max) return fallback;
-  return n;
+  return parseEnvInt(envVar, fallback, bounds);
 }
 
 /** One parked acquire(): both settlers so any drain path can resolve it. */

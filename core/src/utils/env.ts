@@ -24,18 +24,156 @@ export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
+ * Coerce an env-var string to a finite truncated integer, or `null` when it is
+ * undefined/empty/non-finite. The single parse used by {@link parseEnvInt} and
+ * {@link validateBoundedEnvInt} so the accepted numeric grammar (plain integers,
+ * scientific notation, `_` digit separators) can never drift between the two.
+ */
+function coerceEnvInt(envVar: string | undefined): number | null {
+  if (!envVar) return null;
+  const cleaned = envVar.replace(/_/g, '');
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return Math.trunc(n);
+}
+
+/** Inclusive bounds for {@link parseEnvInt}. An out-of-range value falls back. */
+export interface EnvIntBounds {
+  /** Inclusive lower bound; a parsed value below it returns the fallback. */
+  min?: number;
+  /** Inclusive upper bound; a parsed value above it returns the fallback. */
+  max?: number;
+}
+
+/**
  * Parse an environment variable as an integer, accepting:
  * - Plain integers: "42", "1000"
  * - Scientific notation: "1e6", "5e3"
  * - Digit separators: "64_000", "1_000_000"
- * Returns the parsed integer or the fallback value.
+ *
+ * Returns the parsed integer, or the fallback for undefined/empty/non-finite
+ * input. With optional `bounds`, a value outside `[min, max]` (inclusive) is
+ * REJECTED back to the fallback — so a misconfigured negative/zero/absurd
+ * override (e.g. a `0` concurrency that would deadlock, or a huge timeout from a
+ * typo) can never take effect. See {@link validateBoundedEnvInt} for the richer
+ * clamp-and-report variant that distinguishes "invalid" from "capped".
  */
-export function parseEnvInt(envVar: string | undefined, fallback: number): number {
-  if (!envVar) return fallback;
-  const cleaned = envVar.replace(/_/g, '');
-  const n = Number(cleaned);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.trunc(n);
+export function parseEnvInt(envVar: string | undefined, fallback: number, bounds?: EnvIntBounds): number {
+  const n = coerceEnvInt(envVar);
+  if (n === null) return fallback;
+  if (bounds?.min !== undefined && n < bounds.min) return fallback;
+  if (bounds?.max !== undefined && n > bounds.max) return fallback;
+  return n;
+}
+
+/** Outcome classification for {@link validateBoundedEnvInt}. */
+export type EnvIntStatus = 'valid' | 'capped' | 'invalid';
+
+/**
+ * Structured result of validating a bounded integer env var: the value actually
+ * used (`effective`), its `status`, and a human-readable `message` whenever the
+ * raw value was rejected or clamped (so a caller can surface the misconfiguration
+ * instead of silently discarding it).
+ */
+export interface BoundedEnvIntResult {
+  effective: number;
+  status: EnvIntStatus;
+  message?: string;
+}
+
+/**
+ * Validate a numeric env override against a lower bound and an upper cap, telling
+ * the caller WHAT happened so a mistyped or over-limit value is surfaced rather
+ * than silently swallowed:
+ *
+ * - unset/empty            → `{ effective: defaultValue, status: 'valid' }`
+ * - non-numeric or `< min` → `status: 'invalid'`, `effective` is the default
+ * - `> upperLimit`         → `status: 'capped'`,  `effective` is `upperLimit`
+ * - otherwise              → `status: 'valid'`,   `effective` is the parsed value
+ *
+ * `min` defaults to `1` (the common "must be positive" case); pass `min: 0` where
+ * zero is legitimately meaningful (e.g. a depth/concurrency "unlimited" sentinel).
+ * Unlike {@link parseEnvInt} with bounds (which rejects an over-cap value back to
+ * the default), this CLAMPS an over-cap value to `upperLimit` and reports it.
+ */
+export function validateBoundedEnvInt(
+  name: string,
+  value: string | undefined,
+  defaultValue: number,
+  upperLimit: number,
+  options: { min?: number } = {},
+): BoundedEnvIntResult {
+  if (value === undefined || value === '') {
+    return { effective: defaultValue, status: 'valid' };
+  }
+  const min = options.min ?? 1;
+  const n = coerceEnvInt(value);
+  if (n === null || n < min) {
+    return {
+      effective: defaultValue,
+      status: 'invalid',
+      message: `${name}: invalid value "${value}" (using default ${defaultValue})`,
+    };
+  }
+  if (n > upperLimit) {
+    return {
+      effective: upperLimit,
+      status: 'capped',
+      message: `${name}: capped from ${n} to ${upperLimit}`,
+    };
+  }
+  return { effective: n, status: 'valid' };
+}
+
+/** A numeric env var paired with its default + recommended bounds, for diagnostics. */
+export interface EnvLimitSpec {
+  name: string;
+  defaultValue: number;
+  upperLimit: number;
+  /** Inclusive lower bound; defaults to 1 (must be positive). */
+  min?: number;
+}
+
+/** A non-valid env-limit finding produced by {@link collectEnvLimitDiagnostics}. */
+export interface EnvLimitDiagnostic extends BoundedEnvIntResult {
+  name: string;
+  message: string;
+}
+
+/**
+ * Canonical catalog of AMI's numeric env overrides and their recommended bounds.
+ * Consumed by the `/doctor` "env-limits" check so a misconfigured concurrency,
+ * timeout, or subagent limit is reported to the user. Advisory: it flags values
+ * outside the recommended range even where the consuming call site does not hard
+ * enforce the bound.
+ */
+export const AMI_ENV_INT_LIMITS: readonly EnvLimitSpec[] = [
+  { name: 'SUPERINFERENCE_MAX_TOOL_CONCURRENCY', defaultValue: 10, upperLimit: 1000, min: 1 },
+  { name: 'SUPERINFERENCE_PARALLEL_TOOL_TIMEOUT', defaultValue: 120_000, upperLimit: 3_600_000, min: 1 },
+  { name: 'SUPERINFERENCE_SEQUENTIAL_TOOL_TIMEOUT', defaultValue: 600_000, upperLimit: 3_600_000, min: 1 },
+  { name: 'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', defaultValue: 20, upperLimit: 1000, min: 1 },
+  { name: 'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION', defaultValue: 200, upperLimit: 100_000, min: 1 },
+  { name: 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH', defaultValue: 0, upperLimit: 100, min: 0 },
+];
+
+/**
+ * Run {@link validateBoundedEnvInt} over a list of specs and return only the
+ * entries that are `invalid` or `capped` (each with a message). An empty result
+ * means every numeric override is within range. Defaults to the live process env
+ * and the {@link AMI_ENV_INT_LIMITS} catalog.
+ */
+export function collectEnvLimitDiagnostics(
+  specs: readonly EnvLimitSpec[] = AMI_ENV_INT_LIMITS,
+  env: Record<string, string | undefined> = process.env,
+): EnvLimitDiagnostic[] {
+  const out: EnvLimitDiagnostic[] = [];
+  for (const spec of specs) {
+    const r = validateBoundedEnvInt(spec.name, env[spec.name], spec.defaultValue, spec.upperLimit, { min: spec.min });
+    if (r.status !== 'valid' && r.message) {
+      out.push({ name: spec.name, effective: r.effective, status: r.status, message: r.message });
+    }
+  }
+  return out;
 }
 
 /**
