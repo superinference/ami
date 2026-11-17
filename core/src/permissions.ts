@@ -1043,7 +1043,10 @@ export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
 
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
-  'echo', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
+  // `printf`, like `echo`, only writes to stdout (no filesystem mutation), so an
+  // `… | xargs printf` pipeline is read-only — parity with Claude's xargs target
+  // allowlist (echo/printf/wc/grep/head/tail).
+  'echo', 'printf', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
 ]);
 
 export function validateCommandFlags(cmd: string, args: string[]): boolean {
@@ -1595,6 +1598,17 @@ interface DestructivePattern {
 }
 
 /**
+ * `git clean` is only destructive when it actually removes files: it requires an
+ * `-f`/`--force` and must NOT be a `-n`/`--dry-run` preview (which only lists what
+ * WOULD be deleted — read-only). Shared by the informational warning engine AND
+ * {@link PermissionManager.classifyBashCommand} so a dry-run is never escalated to a
+ * destructive-approval prompt in either path (one canonical regex, no duplication).
+ * Mirrors Claude's git-clean negative-lookahead on `-n`/`--dry-run` plus the
+ * required `-f` (destructiveCommandWarning.ts L67-71).
+ */
+const GIT_CLEAN_FORCE_RE = /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/;
+
+/**
  * Ordered bash destructive-command signatures, MOST-SPECIFIC-FIRST so the first
  * match wins (a recursive+force `rm` is reported ahead of a plain recursive one).
  * Purely informational — these drive the human-readable note surfaced in a
@@ -1607,7 +1621,7 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   // Git — data loss / hard to reverse.
   { pattern: /\bgit\s+reset\s+--hard\b/, warning: 'Note: may discard uncommitted changes' },
   { pattern: /\bgit\s+push\b[^;&|\n]*[ \t](--force|--force-with-lease|-f)\b/, warning: 'Note: may overwrite remote history' },
-  { pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/, warning: 'Note: may permanently delete untracked files' },
+  { pattern: GIT_CLEAN_FORCE_RE, warning: 'Note: may permanently delete untracked files' },
   { pattern: /\bgit\s+checkout\s+(?:--[ \t])?\.(?=$|[ \t;&|\n])/, warning: 'Note: may discard all working tree changes' },
   { pattern: /\bgit\s+restore\s+(?:--[ \t])?\.(?=$|[ \t;&|\n])/, warning: 'Note: may discard all working tree changes' },
   { pattern: /\bgit\s+stash[ \t]+(drop|clear)\b/, warning: 'Note: may permanently remove stashed changes' },
@@ -1621,6 +1635,13 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]/, warning: 'Note: may recursively remove files' },
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f/, warning: 'Note: may force-remove files' },
   { pattern: /(^|[;&|\n]\s*)rmdir\b/, warning: 'Note: may remove directories' },
+  // PowerShell deletions (AMI runs PowerShell on Windows). classifyBashCommand
+  // already escalates `Remove-Item -Recurse/-Force` and `Clear-Content` to a
+  // destructive prompt; these carry the SPECIFIC note so the prompt says WHY
+  // instead of the generic "is destructive" line. Parity with Claude's PowerShell
+  // destructiveCommandWarning cmdlet notes (Remove-Item / Clear-Content).
+  { pattern: /\bRemove-Item\b[^;&|\n]*\s-(?:Recurse|Force)\b/i, warning: 'Note: may recursively force-remove files' },
+  { pattern: /\bClear-Content\b/i, warning: 'Note: may erase the contents of the target files' },
   // Secure-deletion / truncation. `shred` is DETERMINISTIC (it always overwrites
   // then removes), so its note uses "will"; `truncate` is conditional ("may",
   // e.g. only shrinks when `-s` reduces the size) — mirrors Claude's will/may
@@ -4665,6 +4686,15 @@ export class PermissionManager {
 
     // Check destructive first (highest severity wins)
     for (const cmd of bases) {
+      // `git clean` is flag-dependent: a `-n`/`--dry-run` preview only LISTS what
+      // would be removed (read-only) and must NOT be escalated; only an actual
+      // clean (`-f`/`--force`) deletes untracked files. Shares GIT_CLEAN_FORCE_RE
+      // with the warning engine so both paths agree (parity: Claude excludes the
+      // dry-run from the destructive boundary).
+      if (cmd === 'git clean') {
+        if (GIT_CLEAN_FORCE_RE.test(trimmed)) return 'destructive';
+        continue;
+      }
       if (DESTRUCTIVE_COMMANDS.has(cmd)) return 'destructive';
     }
 
