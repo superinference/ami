@@ -1,9 +1,9 @@
 import * as child_process from 'child_process';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
-import { execCommand, resolveTmpBase } from '../utils/shell';
+import { execCommand } from '../utils/shell';
+import { generateTempFilePath } from '../utils/tempfile';
 import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
@@ -150,6 +150,68 @@ export function shouldPreserveCommitHooks(env: NodeJS.ProcessEnv = process.env):
   return env.AMI_DETACHED_PRESERVE_HOOKS === '1';
 }
 
+/** Git notes ref the per-commit attribution introspection record is written to. */
+export const ATTRIBUTION_NOTES_REF = 'ami-attribution';
+
+/**
+ * Opt-in gate for the per-commit AI-contribution introspection surface. Parity
+ * with Claude Code's per-commit attribution record (`calculateCommitAttribution`
+ * → structured git-notes JSON), but OFF by default so a commit never silently
+ * mutates a repo's notes refs: set `AMI_COMMIT_ATTRIBUTION_NOTES=1`/`true`/`yes`/
+ * `on` to have `git_commit` record a structured attribution note for each commit
+ * it creates. Uses the shared {@link parseEnvBool} truthiness convention.
+ */
+export function attributionNotesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseEnvBool(env.AMI_COMMIT_ATTRIBUTION_NOTES);
+}
+
+/** Structured per-commit attribution introspection record. */
+export interface CommitAttributionNote {
+  /** Always 'ami' — the sanctioned commit tool only creates agent-authored commits. */
+  authoredBy: 'ami';
+  /** Client surface that drove the commit ({@link resolveClientSurface}). */
+  surface: string;
+  /** Normalized model name ({@link resolveCommitModel}), or null when unknown. */
+  model: string | null;
+  /** Whether a Co-Authored-By attribution trailer was applied to the message. */
+  trailerApplied: boolean;
+  /** The files committed (staged paths), for a per-file contribution view. */
+  files: string[];
+  /** Count of files in the commit. */
+  fileCount: number;
+  /** ISO timestamp the attribution record was produced. */
+  committedAt: string;
+}
+
+/**
+ * Build the structured attribution introspection record for a commit. This is
+ * the data AMI can compute truthfully at commit time (surface / model / authored
+ * files / trailer). It deliberately does NOT fabricate Claude Code's
+ * character-level `claudePercent` — accurate per-character authorship needs a
+ * cross-cutting Edit/Write char tracker and is a separate concern; a made-up
+ * percentage would be worse than none. `now` is injectable for deterministic
+ * tests.
+ */
+export function buildAttributionNote(
+  params: {
+    surface: string;
+    model: string | undefined;
+    trailerApplied: boolean;
+    files: string[];
+  },
+  now: Date = new Date(),
+): CommitAttributionNote {
+  return {
+    authoredBy: 'ami',
+    surface: params.surface,
+    model: params.model ?? null,
+    trailerApplied: params.trailerApplied,
+    files: params.files,
+    fileCount: params.files.length,
+    committedAt: now.toISOString(),
+  };
+}
+
 /**
  * Build the normalized one-line commit affordance from `git log --oneline -1`
  * output ("<shortsha> <subject>") → "Committed <shortsha>: <subject>", so a
@@ -163,6 +225,36 @@ export function formatCommitSummary(onelineOutput: string): string {
   const m = line.match(/^(\S+)\s+(.*)$/);
   if (m && m[2].length > 0) return `Committed ${m[1]}: ${m[2]}`;
   return `Committed ${line}`;
+}
+
+/**
+ * Write the structured attribution introspection record as a git note on the
+ * just-created commit (ref `refs/notes/ami-attribution`). Best-effort by design —
+ * the caller invokes this only when {@link attributionNotesEnabled} and inside a
+ * try/catch, so a notes failure (e.g. a notes.rewriteRef hook, a read-only object
+ * store) can never fail an otherwise-successful commit.
+ *
+ * The note body is staged through a temp file whose path is derived in
+ * content-hash mode ({@link generateTempFilePath}): identical attribution content
+ * resolves to the same stable path, exercising the deterministic temp-path branch
+ * with a real consumer. `-f` overwrites any pre-existing note on the same commit.
+ */
+export async function writeCommitAttributionNote(
+  sha: string,
+  note: CommitAttributionNote,
+  execOpts: Parameters<typeof execCommand>[1],
+): Promise<void> {
+  const json = JSON.stringify(note, null, 2);
+  const noteFile = generateTempFilePath('ami-attr-note', '.json', { contentHash: json });
+  try {
+    _gitCommitFs.writeFileSync(noteFile, json, { encoding: 'utf-8' });
+    await execCommand(
+      `git notes --ref=${ATTRIBUTION_NOTES_REF} add -f -F "${noteFile}" ${sha}`,
+      execOpts,
+    );
+  } finally {
+    try { _gitCommitFs.unlinkSync(noteFile); } catch { /* already cleaned or never written */ }
+  }
 }
 
 export function buildCommitEnv(): NodeJS.ProcessEnv {
@@ -252,7 +344,8 @@ export const gitCommitTool: ToolDefinition = {
     'Use this instead of running git commit via bash. ' +
     'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set or the config `attribution.commit` overrides/suppresses it. ' +
     'Writing the message: look at the recent commits (`git log --oneline -10`) and follow this repository\'s existing style; pick the verb for the nature of the change — "add" for a wholly new feature, "update" for an enhancement to an existing one, "fix" for a bug fix (also refactor/test/docs/chore); keep it concise (1-2 sentences) and focused on the WHY, not a restatement of the what. ' +
-    'Do not stage files that likely contain secrets (.env, credentials.json, *.pem, id_rsa); this tool refuses them and refuses a staged diff containing an embedded credential.',
+    'Do not stage files that likely contain secrets (.env, credentials.json, *.pem, id_rsa); this tool refuses them and refuses a staged diff containing an embedded credential. ' +
+    'When AMI_COMMIT_ATTRIBUTION_NOTES is set, a structured per-commit attribution record (surface, model, committed files) is written as a git note on ref ami-attribution for introspection.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -354,11 +447,11 @@ export const gitCommitTool: ToolDefinition = {
     // stages/commits directly via git, bypassing the bash permission layer, so
     // this is the only place that can stop a credential file reaching a remote.
     const stagedResult = await execCommand('git diff --cached --name-only', execOpts);
-    const secretFiles = stagedResult.stdout
+    const stagedPaths = stagedResult.stdout
       .split('\n')
       .map(p => p.trim())
-      .filter(Boolean)
-      .filter(p => isSecretFile(path.basename(p)));
+      .filter(Boolean);
+    const secretFiles = stagedPaths.filter(p => isSecretFile(path.basename(p)));
     if (secretFiles.length > 0) {
       return {
         output:
@@ -398,15 +491,15 @@ export const gitCommitTool: ToolDefinition = {
     }
 
     // Build the final commit message with trailer (config/env-aware attribution).
-    const finalMessage = buildFinalMessage(message, resolveCommitAttribution(context.cwd));
+    const trailer = resolveCommitAttribution(context.cwd);
+    const finalMessage = buildFinalMessage(message, trailer);
 
-    // Write message to temp file to avoid shell escaping issues. Use an
-    // unpredictable randomUUID name and the 'wx' (O_EXCL) flag so a pre-planted
-    // symlink or a predictable-path attacker can't hijack the write target.
-    // Honor the AMI_TMPDIR / CLAUDE_CODE_TMPDIR override so operators with custom
-    // temp requirements can relocate the commit-message temp file.
-    const tmpDir = resolveTmpBase();
-    const tmpFile = path.join(tmpDir, `ami-commit-${crypto.randomUUID()}.txt`);
+    // Write message to temp file to avoid shell escaping issues. The shared
+    // generateTempFilePath helper derives an unpredictable randomUUID name under
+    // the AMI temp base (honoring AMI_TMPDIR / CLAUDE_CODE_TMPDIR); combined with
+    // the 'wx' (O_EXCL) flag a pre-planted symlink or predictable-path attacker
+    // can't hijack the write target.
+    const tmpFile = generateTempFilePath('ami-commit', '.txt');
 
     try {
       try {
@@ -434,6 +527,26 @@ export const gitCommitTool: ToolDefinition = {
       // Get the commit summary
       const logResult = await execCommand('git log --oneline -1', execOpts);
       const commitLine = logResult.stdout.trim();
+
+      // Per-commit AI-contribution introspection surface (opt-in via
+      // AMI_COMMIT_ATTRIBUTION_NOTES). Records a structured attribution note —
+      // surface / model / authored files / trailer — on the new commit so
+      // downstream tooling can inspect agent authorship via
+      // `git notes --ref=ami-attribution show <sha>`. Best-effort: a notes
+      // failure must never fail a successful commit.
+      if (attributionNotesEnabled(env)) {
+        try {
+          // rev-parse HEAD always resolves right after a successful commit.
+          const sha = (await execCommand('git rev-parse HEAD', execOpts)).stdout.trim();
+          const note = buildAttributionNote({
+            surface: resolveClientSurface(env),
+            model: resolveCommitModel(env),
+            trailerApplied: trailer !== null,
+            files: stagedPaths,
+          });
+          await writeCommitAttributionNote(sha, note, execOpts);
+        } catch { /* best-effort introspection — never fail the commit */ }
+      }
 
       const parts: string[] = [];
       // Normalized affordance line the frontend can render cleanly ("Committed
