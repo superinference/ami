@@ -281,6 +281,32 @@ export interface GitDiffSummary {
   patch: string;
 }
 
+/**
+ * Live, structured progress for a long-running shell/task tool, carried so a
+ * frontend can render a "(elapsed · N lines)" affordance without re-parsing the
+ * streamed text. Consolidates Claude's shell/task progress schemas — the
+ * `onProgress(lastLines, allLines, totalLines, totalBytes, isIncomplete)` callback
+ * (utils/Shell.ts `ExecOptions`, utils/task/TaskOutput.ts `ProgressCallback`) plus
+ * the UI timer fields (tools/PowerShellTool/UI.tsx, components/BashModeProgress.tsx:
+ * `elapsedTimeSeconds` / `timeoutMs`).
+ */
+export interface StreamingToolProgress {
+  /** The tail of the output captured so far (most recent lines). */
+  lastLines: string;
+  /** All output captured so far (may be truncated to a memory cap). */
+  allLines: string;
+  /** Total number of output lines seen (may exceed what `allLines` retains). */
+  totalLines: number;
+  /** Total number of output bytes seen. */
+  totalBytes: number;
+  /** Whether `allLines`/`lastLines` is a truncated view of the full output. */
+  isIncomplete: boolean;
+  /** Wall-clock seconds the command has been running (UI timer field). */
+  elapsedTimeSeconds?: number;
+  /** The command's timeout budget in ms, for a "will abort at" affordance. */
+  timeoutMs?: number;
+}
+
 export interface ToolResult {
   output: string;
   isError?: boolean;
@@ -340,6 +366,10 @@ export interface ToolResult {
    *  absent) is a plain fatal error. Parity: Claude's FileEditTool validation
    *  `behavior: 'ask' | 'error'`. Classified by {@link classifyToolResultState}. */
   behavior?: 'ask' | 'error';
+  /** Final streamed-progress snapshot for a long-running shell/task tool, so a
+   *  transcript can show the "(elapsed · N lines)" affordance on the completed
+   *  call. See {@link StreamingToolProgress}. */
+  progress?: StreamingToolProgress;
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
@@ -1666,6 +1696,11 @@ export interface EngineConfig {
   lspRecommendationNeverPlugins?: string[];
   /** Hard off-switch for LSP-plugin recommendations. Parity: `lspRecommendationDisabled`. */
   lspRecommendationDisabled?: boolean;
+  /** Running count of LSP recommendations the user has ignored. Once it reaches
+   *  {@link MAX_LSP_RECOMMENDATION_IGNORED_COUNT}, recommendations auto-disable
+   *  (see {@link isLspRecommendationDisabled}). Parity: `lspRecommendationIgnoredCount`
+   *  (utils/plugins/lspRecommendation.ts incrementIgnoredCount/isLspRecommendationsDisabled). */
+  lspRecommendationIgnoredCount?: number;
   /** Skip the code-block picker on `/copy` and always copy the full response. Parity:
    *  `copyFullResponse`. */
   copyFullResponse?: boolean;
@@ -1679,6 +1714,60 @@ export interface EngineConfig {
    *  subsequent runs once the user has accepted it. Parity: `skipAutoPermissionPrompt`
    *  (components/AutoModeOptInDialog.tsx). */
   skipAutoPermissionPrompt?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// LSP-plugin recommendation gating (parity: utils/plugins/lspRecommendation.ts)
+// ---------------------------------------------------------------------------
+
+/** After this many ignored LSP recommendations, suggestions auto-disable.
+ *  Parity: lspRecommendation.ts `MAX_IGNORED_COUNT = 5`. */
+export const MAX_LSP_RECOMMENDATION_IGNORED_COUNT = 5;
+
+/**
+ * Whether LSP-plugin recommendations are currently suppressed for a config.
+ * Disabled when the user explicitly turned them off, OR they have ignored at
+ * least {@link MAX_LSP_RECOMMENDATION_IGNORED_COUNT} recommendations. Pure —
+ * mirrors Claude's `isLspRecommendationsDisabled()`.
+ */
+export function isLspRecommendationDisabled(
+  config: Pick<EngineConfig, 'lspRecommendationDisabled' | 'lspRecommendationIgnoredCount'>,
+): boolean {
+  return (
+    config.lspRecommendationDisabled === true ||
+    (config.lspRecommendationIgnoredCount ?? 0) >= MAX_LSP_RECOMMENDATION_IGNORED_COUNT
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline prompt-suggestion default resolution (parity:
+// services/PromptSuggestion/promptSuggestion.ts `shouldEnablePromptSuggestion`)
+// ---------------------------------------------------------------------------
+
+/** Resolved inputs for {@link shouldEnablePromptSuggestion}. The caller resolves
+ *  the env override (via the shared env truthy/falsy helpers) and interactivity
+ *  so this stays a pure, dependency-free decision function. */
+export interface PromptSuggestionResolution {
+  /** Persisted/config toggle ({@link EngineConfig.promptSuggestionEnabled}).
+   *  Defaults to ON when omitted. */
+  configEnabled?: boolean;
+  /** A set env override: `true`/`false` force the outcome; `undefined` defers to
+   *  the config toggle. Parity: `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`. */
+  envOverride?: boolean;
+  /** Print/piped/SDK sessions never get inline suggestions. Parity:
+   *  `getIsNonInteractiveSession()`. */
+  nonInteractive?: boolean;
+}
+
+/**
+ * Decide whether AI-generated inline prompt suggestions are enabled, matching
+ * Claude's precedence: an explicit env override wins; otherwise non-interactive
+ * sessions are always off; otherwise the config toggle decides (default ON).
+ */
+export function shouldEnablePromptSuggestion(resolution: PromptSuggestionResolution = {}): boolean {
+  if (resolution.envOverride !== undefined) return resolution.envOverride;
+  if (resolution.nonInteractive) return false;
+  return resolution.configEnabled ?? true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1914,6 +2003,9 @@ export function validateEngineConfig(config: Partial<EngineConfig>): { valid: bo
   if (config.taskOutputMaxChars !== undefined) {
     if (!validateNumericKnob(config.taskOutputMaxChars, 'taskOutputMaxChars', { min: 1, softMax: 10_000_000, integer: true }, warnings)) valid = false;
   }
+  if (config.lspRecommendationIgnoredCount !== undefined) {
+    if (!validateNumericKnob(config.lspRecommendationIgnoredCount, 'lspRecommendationIgnoredCount', { min: 0, integer: true }, warnings)) valid = false;
+  }
   if (config.sandbox !== undefined) {
     if (!validateSandboxPolicy(config.sandbox, warnings)) valid = false;
   }
@@ -1933,6 +2025,7 @@ export function sanitizeEngineConfig(config: Partial<EngineConfig>): Partial<Eng
   if (out.maxWebSearchesPerSession !== undefined) out.maxWebSearchesPerSession = Math.max(1, Math.round(out.maxWebSearchesPerSession));
   if (out.bashOutputMaxChars !== undefined) out.bashOutputMaxChars = Math.max(1, Math.round(out.bashOutputMaxChars));
   if (out.taskOutputMaxChars !== undefined) out.taskOutputMaxChars = Math.max(1, Math.round(out.taskOutputMaxChars));
+  if (out.lspRecommendationIgnoredCount !== undefined) out.lspRecommendationIgnoredCount = Math.max(0, Math.round(out.lspRecommendationIgnoredCount));
   if (out.sandbox !== undefined) out.sandbox = sanitizeSandboxPolicy(out.sandbox);
   return out;
 }
