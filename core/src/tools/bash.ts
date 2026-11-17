@@ -1498,6 +1498,9 @@ export const bashTool: ToolDefinition = {
         // the configured host egress proxy (previously honored only by the unshare
         // backend), so container-mode network control is no longer all-or-nothing.
         deniedHosts: context.sandbox.network?.deniedHosts,
+        // PARITY (per-domain network allowlist): "network on, but only these
+        // domains" — realized by an in-container iptables allowlist in the backend.
+        allowedHosts: context.sandbox.network?.allowedHosts,
         httpProxyPort: context.sandbox.network?.httpProxyPort,
         socksProxyPort: context.sandbox.network?.socksProxyPort,
         // PARITY (custom seccomp profile): thread the operator-supplied Docker

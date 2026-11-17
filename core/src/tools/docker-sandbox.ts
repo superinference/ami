@@ -19,9 +19,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { SandboxPolicy } from '../types';
 import { shellHooks } from '../utils/shell';
-import { BARE_GIT_REPO_FILES, isValidProxyPort } from './bash-sandbox';
+import {
+  BARE_GIT_REPO_FILES,
+  isValidProxyPort,
+  buildNetworkAllowlist,
+  buildDeniedDomainRules,
+} from './bash-sandbox';
 import { sandboxViolationStore, wrapSandboxViolations } from './sandbox-violations';
-import { isSandboxHostGranted } from './sandbox-permission-registry';
+import { isSandboxHostGranted, getGrantedSandboxHosts } from './sandbox-permission-registry';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -45,6 +50,23 @@ export interface DockerSandboxConfig {
    * network is on (with `--network none` everything is already blocked).
    */
   deniedHosts?: string[];
+  /**
+   * PARITY (per-domain network ALLOWLIST — Claude's
+   * `SandboxNetworkConfig.allowedDomains` / `allowManagedDomainsOnly`): hostnames
+   * the container may reach for outbound network, with EVERYTHING ELSE denied —
+   * the "network on, but only to these domains" knob the binary `--network
+   * bridge|none` switch cannot express. When set (and `allowNetwork` is true) the
+   * container is given `--cap-add NET_ADMIN` and the command is prefixed with an
+   * iptables setup that ACCEPTs loopback + DNS + each resolved allowed host and
+   * DROPs all other outbound traffic — the SAME {@link buildNetworkAllowlist}
+   * rules the host (unshare) backend uses inside its network namespace, so
+   * container and host modes enforce an identical allowlist (no second impl).
+   * `deniedHosts` rules are emitted FIRST so deny wins over allow, and any host
+   * the leader granted this session ({@link getGrantedSandboxHosts}) is folded in
+   * so the per-host escalation flow works under a strict allowlist too. Empty /
+   * unset keeps the broad `bridge` allow (minus any `deniedHosts` blackholes).
+   */
+  allowedHosts?: string[];
   /**
    * PARITY (proxy-routed egress — Claude's `SandboxNetworkConfig.httpProxyPort`):
    * host TCP port of an HTTP(S) egress proxy. When set, the container exports
@@ -703,6 +725,9 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
     const url = `socks5://${DOCKER_HOST_GATEWAY_ALIAS}:${cfg.socksProxyPort}`;
     proxyEnv.push(`ALL_PROXY=${url}`, `all_proxy=${url}`);
   }
+  // The command that will actually be handed to `bash -c` inside the container.
+  // A per-domain allowlist prepends an iptables setup script to it (below).
+  let innerCommand = command;
   if (cfg.allowNetwork) {
     const deniedSeen = new Set<string>();
     for (const h of cfg.deniedHosts ?? []) {
@@ -715,6 +740,26 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
       // mailbox poll). Deny still wins for every host that was not explicitly granted.
       if (isSandboxHostGranted(host)) continue;
       parts.push('--add-host', shSingleQuote(`${host}:0.0.0.0`));
+    }
+    // PARITY (per-domain network ALLOWLIST): "network on, but ONLY these domains".
+    // Realized the SAME way as the host (unshare) backend — an in-container iptables
+    // allowlist (reusing buildNetworkAllowlist/buildDeniedDomainRules, not a second
+    // impl) that ACCEPTs loopback + DNS + each resolved allowed host and DROPs the
+    // rest. It needs CAP_NET_ADMIN to append rules, so --cap-add NET_ADMIN is added
+    // only when an allowlist is actually requested. Deny rules are emitted FIRST
+    // (iptables first-match wins ⇒ deny beats allow), and any leader-granted host is
+    // folded in so the escalation flow also works under a strict allowlist.
+    const allowHosts = Array.from(
+      new Set(
+        [...(cfg.allowedHosts ?? []), ...getGrantedSandboxHosts()]
+          .map((h) => h.trim())
+          .filter((h) => h.length > 0),
+      ),
+    );
+    if (allowHosts.length > 0) {
+      parts.push('--cap-add', 'NET_ADMIN');
+      const setup = buildDeniedDomainRules(cfg.deniedHosts) + buildNetworkAllowlist(allowHosts);
+      innerCommand = `${setup}${command}`;
     }
     // A host-gateway alias lets the container reach a proxy listening on the host.
     if (proxyEnv.length > 0) {
@@ -734,7 +779,8 @@ export function wrapWithDocker(command: string, cwd: string, cfg: DockerSandboxC
   // jail (the /tmp tmpfs), and the sandbox temp location cannot be repointed out
   // of it by image-baked env.
   parts.push('-e', shSingleQuote(`TMPDIR=${DOCKER_SANDBOX_TMPDIR}`));
-  // Command runs as the entrypoint (bash) args: `… IMAGE -c '<command>'`.
-  parts.push(shSingleQuote(cfg.image), '-c', shSingleQuote(command));
+  // Command runs as the entrypoint (bash) args: `… IMAGE -c '<command>'`. When a
+  // per-domain allowlist is active, `innerCommand` is the iptables setup + command.
+  parts.push(shSingleQuote(cfg.image), '-c', shSingleQuote(innerCommand));
   return parts.join(' ');
 }
