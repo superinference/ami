@@ -64,6 +64,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // factory, now declared/validated/merged so a config-file value takes effect.
       architectEnabled: false, architectModel: 'arch', embeddedSearchTools: true,
       teammateExecutionMode: 'in-process', unattendedRetry: true, fileCheckpointingEnabled: false,
+      heapDumpOnMemoryWarning: true,
       features: { task_tracker: true }, max529RetriesBeforeFallback: 2, openrouterZdr: true,
       strictMcpConfig: true, mcpRequireApproval: true, maxUsageLimitWaitMs: 1000,
       sessionMemoryInterval: 5, alwaysLoadMcpServers: ['srv'], continueOnInvalidConfig: true,

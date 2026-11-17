@@ -294,6 +294,9 @@ export interface ProjectConfig {
   unattendedRetry?: boolean;
   /** Toggle file checkpointing/mutation snapshots (parity: Claude's fileCheckpointingEnabled). */
   fileCheckpointingEnabled?: boolean;
+  /** Capture a V8 heap snapshot the first time process RSS crosses the memory-warning
+   *  high-water mark, instead of only logging (parity: Claude's heapDumpService auto-1.5GB). */
+  heapDumpOnMemoryWarning?: boolean;
   /**
    * Named capability feature-flags keyed by feature name (parity: Claude Code's
    * `features` map / `feature()`): a `false` value disables a named feature, `true`
@@ -1033,6 +1036,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['architectEnabled', 'boolean'], ['architectModel', 'string'],
   ['embeddedSearchTools', 'boolean'], ['teammateExecutionMode', 'string'],
   ['unattendedRetry', 'boolean'], ['fileCheckpointingEnabled', 'boolean'],
+  ['heapDumpOnMemoryWarning', 'boolean'],
   ['features', 'object'], ['max529RetriesBeforeFallback', 'number'],
   ['openrouterZdr', 'boolean'], ['strictMcpConfig', 'boolean'],
   ['mcpRequireApproval', 'boolean'], ['maxUsageLimitWaitMs', 'number'],
@@ -2170,6 +2174,7 @@ export function mergeConfigs(
     if (layer.teammateExecutionMode !== undefined) merged.teammateExecutionMode = layer.teammateExecutionMode;
     if (layer.unattendedRetry !== undefined) merged.unattendedRetry = layer.unattendedRetry;
     if (layer.fileCheckpointingEnabled !== undefined) merged.fileCheckpointingEnabled = layer.fileCheckpointingEnabled;
+    if (layer.heapDumpOnMemoryWarning !== undefined) merged.heapDumpOnMemoryWarning = layer.heapDumpOnMemoryWarning;
     if (layer.features !== undefined) merged.features = deepMergeConfigObjects(merged.features as Record<string, unknown> | undefined, layer.features as Record<string, unknown>) as ProjectConfig['features'];
     if (layer.max529RetriesBeforeFallback !== undefined) merged.max529RetriesBeforeFallback = layer.max529RetriesBeforeFallback;
     if (layer.openrouterZdr !== undefined) merged.openrouterZdr = layer.openrouterZdr;

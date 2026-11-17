@@ -126,6 +126,8 @@ export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelpe
   FileOperationKind, FileOperationTool, FileOperationParams,
   GitOperationName, GitOperationClassification, IncrementalContextDelta } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
+export { HeapDumpGuard, HEAP_DUMP_RSS_THRESHOLD_BYTES } from './heap-dump';
+export type { HeapDumpDeps } from './heap-dump';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';
 export { seedFileCacheFromTranscript, collectReadFileStatesFromTranscript, stripLineNumberPrefix } from './file-cache-seed';

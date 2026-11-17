@@ -1532,7 +1532,8 @@ export interface EngineConfig {
    *  `plansDirectory`. */
   plansDirectory?: string;
   /** Capture a heap dump when the RSS memory-warning threshold is crossed (not just a
-   *  warning). Parity: heapDumpService `auto-1.5GB`. */
+   *  warning). Reuses {@link memoryWarningRssBytes} as the trigger level. Parity:
+   *  heapDumpService `auto-1.5GB`. */
   heapDumpOnMemoryWarning?: boolean;
   /** Apply /model, /thinking, /fast immediately to an in-flight turn rather than
    *  deferring to turn end. Parity: `shouldInferenceConfigCommandBeImmediate`. */
