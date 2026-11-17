@@ -53,6 +53,16 @@ export interface CriticDecision {
    *  stand; only the rationale was withheld. Parity: Claude's redacted-review completion
    *  state (a redacted advisor output is still a finished review). */
   redacted?: boolean;
+  /** Token usage for THIS auxiliary reviewer call, tagged with the resolved reviewer
+   *  {@link model}, so a usage view can attribute reviewer-model spend distinctly from
+   *  the main loop. Absent when the provider reported no usage (e.g. an unavailable
+   *  review). Parity: Claude's getAdvisorUsage (per-auxiliary-model usage breakdown). */
+  usage?: {
+    model: string;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 export interface BeliefState {

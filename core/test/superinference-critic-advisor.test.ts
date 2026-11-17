@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 
 import { Critic, isCriticDisabledByEnv } from '../src/superinference/critic';
 import { SuperInferenceEngine } from '../src/superinference';
+import { REDACTED_THINKING_PLACEHOLDER } from '../src/provider';
 import type { StreamChunk, ProviderConfig } from '../src/types';
 
 const PROVIDER: ProviderConfig = {
@@ -69,6 +70,109 @@ describe('Critic — dedicated reviewer model', () => {
   it('SuperInferenceEngine threads config.criticModel into its Critic', () => {
     const si = new SuperInferenceEngine({ criticModel: 'cheap-reviewer' });
     assert.equal(si.critic.criticModelId, 'cheap-reviewer');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: per-auxiliary-model usage breakdown (reviewer/advisor spend surfaced
+// separately — parity: Claude's getAdvisorUsage, usage tagged with model)
+// ---------------------------------------------------------------------------
+describe('Critic — auxiliary-model usage attribution', () => {
+  function usageDone(usage: { promptTokens: number; completionTokens: number; totalTokens: number }): StreamChunk {
+    return { type: 'done', finishReason: 'stop', usage: { ...usage, reasoningTokens: 0 } };
+  }
+
+  it('captures the critic call usage tagged with the resolved reviewer model', async () => {
+    const seen = { configs: [] as ProviderConfig[] };
+    const stream = makeStream(
+      [[
+        jsonChunk({ approved: true, score: 0.9, reason: 'ok' }),
+        usageDone({ promptTokens: 120, completionTokens: 30, totalTokens: 150 }),
+      ]],
+      seen,
+    );
+    const critic = new Critic(0.05, 0.1, stream, 'reviewer-model', { baseDelayMs: 0 });
+
+    const result = await critic.evaluate('q', 'r', PROVIDER, new AbortController().signal);
+
+    assert.ok(result.usage, 'critic must surface its auxiliary token usage');
+    assert.equal(result.usage?.model, 'reviewer-model', 'usage is attributed to the reviewer model');
+    assert.equal(result.usage?.promptTokens, 120);
+    assert.equal(result.usage?.completionTokens, 30);
+    assert.equal(result.usage?.totalTokens, 150);
+  });
+
+  it('attributes usage to the inherited main-loop model when no critic model is set', async () => {
+    const seen = { configs: [] as ProviderConfig[] };
+    const stream = makeStream(
+      [[
+        jsonChunk({ approved: false, score: 0.2, reason: 'no' }),
+        usageDone({ promptTokens: 10, completionTokens: 5, totalTokens: 15 }),
+      ]],
+      seen,
+    );
+    const critic = new Critic(0.05, 0.1, stream, '', { baseDelayMs: 0 });
+
+    const result = await critic.evaluate('q', 'r', PROVIDER, new AbortController().signal);
+    assert.equal(result.usage?.model, 'main-loop-model');
+    assert.equal(result.usage?.totalTokens, 15);
+  });
+
+  it('omits usage when the provider reports none (no done/usage chunk)', async () => {
+    const seen = { configs: [] as ProviderConfig[] };
+    const stream = makeStream(
+      [[jsonChunk({ approved: true, score: 0.7, reason: 'ok' })]],
+      seen,
+    );
+    const critic = new Critic(0.05, 0.1, stream, '', { baseDelayMs: 0 });
+    const result = await critic.evaluate('q', 'r', PROVIDER, new AbortController().signal);
+    assert.equal(result.usage, undefined);
+    assert.equal(result.approved, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gap: redacted-but-complete review (the reviewer's reasoning came back
+// encrypted/redacted yet a verdict still rendered — parity: Claude's
+// redacted-review completion state; the score/approval stand)
+// ---------------------------------------------------------------------------
+describe('Critic — redacted-but-complete review', () => {
+  function redactedThinking(): StreamChunk {
+    return { type: 'thinking_delta', text: `${REDACTED_THINKING_PLACEHOLDER}\n` };
+  }
+
+  it('flags redacted when a redacted-thinking chunk precedes a valid verdict', async () => {
+    const seen = { configs: [] as ProviderConfig[] };
+    const stream = makeStream(
+      [[
+        redactedThinking(),
+        jsonChunk({ approved: true, score: 0.85, reason: 'ok' }),
+      ]],
+      seen,
+    );
+    const critic = new Critic(0.05, 0.1, stream, '', { baseDelayMs: 0 });
+
+    const result = await critic.evaluate('q', 'r', PROVIDER, new AbortController().signal);
+    // A redacted review is a COMPLETE review: verdict stands, only rationale withheld.
+    assert.equal(result.redacted, true);
+    assert.equal(result.approved, true);
+    assert.equal(result.score, 0.85);
+    assert.notEqual(result.unavailable, true);
+  });
+
+  it('does NOT flag redacted on a normal (non-redacted) review', async () => {
+    const seen = { configs: [] as ProviderConfig[] };
+    const stream = makeStream(
+      [[
+        { type: 'thinking_delta', text: 'ordinary reasoning\n' },
+        jsonChunk({ approved: true, score: 0.9, reason: 'ok' }),
+      ]],
+      seen,
+    );
+    const critic = new Critic(0.05, 0.1, stream, '', { baseDelayMs: 0 });
+
+    const result = await critic.evaluate('q', 'r', PROVIDER, new AbortController().signal);
+    assert.notEqual(result.redacted, true);
   });
 });
 

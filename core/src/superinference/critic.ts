@@ -1,5 +1,5 @@
-import { streamChatCompletion, streamChatCompletionWithRetry } from '../provider';
-import type { ProviderConfig, Message } from '../types';
+import { streamChatCompletion, streamChatCompletionWithRetry, REDACTED_THINKING_PLACEHOLDER } from '../provider';
+import type { ProviderConfig, Message, StreamChunk } from '../types';
 import type { CriticDecision } from './types';
 
 /** Retry tuning for the critic's auxiliary LLM call. `undefined` fields defer to the
@@ -76,6 +76,15 @@ Respond with ONLY a JSON object:
     try {
       let response = '';
       let streamError: string | undefined;
+      // Per-call token usage for this auxiliary reviewer request, captured from the
+      // provider's terminal 'done' chunk so a usage view can attribute reviewer-model
+      // spend distinctly from the main loop. Parity: Claude's getAdvisorUsage.
+      let lastUsage: StreamChunk['usage'] | undefined;
+      // Whether the reviewer's reasoning came back encrypted/redacted. The provider maps
+      // a `redacted_thinking` block to a thinking_delta carrying REDACTED_THINKING_PLACEHOLDER;
+      // if a genuine verdict still parses, the review is COMPLETE but its rationale was
+      // withheld. Parity: Claude's redacted-review completion state.
+      let redactedReasoning = false;
       // Route the auxiliary call through the SHARED retry wrapper (querySource 'critic')
       // so transient capacity/connection errors (429/5xx, ECONNRESET/EPIPE) are retried
       // with backoff exactly like every other model call, instead of failing closed on
@@ -97,9 +106,12 @@ Respond with ONLY a JSON object:
       )) {
         if (chunk.type === 'content_delta' && chunk.text) {
           response += chunk.text;
+        } else if (chunk.type === 'thinking_delta' && chunk.text?.includes(REDACTED_THINKING_PLACEHOLDER)) {
+          redactedReasoning = true;
         } else if (chunk.type === 'error' && chunk.error) {
           streamError = chunk.error;
         }
+        if (chunk.usage) lastUsage = chunk.usage;
       }
 
       const parsed = this.extractJSON(response);
@@ -120,6 +132,19 @@ Respond with ONLY a JSON object:
           // model, which may differ from the main-loop model). Parity: Claude's
           // advisor-message model attribution.
           model: reviewerModel,
+          // A redacted-but-complete review: the verdict stands, only the rationale was
+          // withheld (encrypted reasoning). Parity: Claude's redacted-review state.
+          ...(redactedReasoning ? { redacted: true } : {}),
+          // Per-auxiliary-model token usage, tagged with the reviewer model so a usage
+          // view can attribute reviewer spend separately. Parity: getAdvisorUsage.
+          ...(lastUsage ? {
+            usage: {
+              model: reviewerModel,
+              promptTokens: lastUsage.promptTokens,
+              completionTokens: lastUsage.completionTokens,
+              totalTokens: lastUsage.totalTokens,
+            },
+          } : {}),
         };
       }
 
