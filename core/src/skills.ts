@@ -2410,3 +2410,70 @@ export function agentMemoryScopeOptions(
   }
   return options;
 }
+
+/**
+ * Agent-creation methods (parity with Claude Code's new-agent wizard MethodStep):
+ * how a new agent definition is authored. `'generate'` has the model author the
+ * agent from a natural-language description (the recommended default, listed
+ * FIRST); `'manual'` hand-configures every field. Mirrors the
+ * {@link AGENT_MEMORY_SCOPES} building-block pattern.
+ */
+export const AGENT_CREATION_METHODS = ['generate', 'manual'] as const;
+export type AgentCreationMethod = (typeof AGENT_CREATION_METHODS)[number];
+
+/**
+ * Validate + normalize a raw creation-method value against the allowlist.
+ * Case-insensitive; returns `undefined` for an unknown/non-string value so an
+ * arbitrary method can never silently propagate. Mirrors {@link parseMemoryScope}.
+ */
+export function parseAgentCreationMethod(value: unknown): AgentCreationMethod | undefined {
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim().toLowerCase();
+  return (AGENT_CREATION_METHODS as readonly string[]).includes(t)
+    ? (t as AgentCreationMethod)
+    : undefined;
+}
+
+/**
+ * A single selectable creation-method option for the new-agent flow (parity with
+ * Claude's MethodStep `methodOptions`). `recommended` marks the default; `next`
+ * names the step the flow branches to after this method is chosen (generate → the
+ * generation step; manual → the manual-configuration step — mirroring Claude's
+ * `goNext()` vs `goToStep(3)` branch), and `wasGenerated` is the provenance flag
+ * stamped onto the resulting {@link AgentDefinition.wasGenerated}.
+ */
+export interface AgentCreationMethodOption {
+  value: AgentCreationMethod;
+  label: string;
+  description: string;
+  recommended: boolean;
+  next: 'generate' | 'configure';
+  wasGenerated: boolean;
+}
+
+/**
+ * The ordered creation-method options for the new-agent flow — `generate`
+ * (recommended, FIRST) then `manual` (parity with Claude's MethodStep ordering and
+ * default). The caller (the `/agents create` slash command) renders these; the
+ * `next`/`wasGenerated` metadata drives the post-selection branch.
+ */
+export function agentCreationMethodOptions(): AgentCreationMethodOption[] {
+  return [
+    {
+      value: 'generate',
+      label: 'Generate with AMI (Recommended)',
+      description: 'Describe the agent in natural language and have the model author its definition.',
+      recommended: true,
+      next: 'generate',
+      wasGenerated: true,
+    },
+    {
+      value: 'manual',
+      label: 'Manual configuration',
+      description: 'Hand-configure the agent name, prompt, model, and tools yourself.',
+      recommended: false,
+      next: 'configure',
+      wasGenerated: false,
+    },
+  ];
+}
