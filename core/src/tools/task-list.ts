@@ -310,6 +310,17 @@ export const taskListTool: ToolDefinition = {
         else if (t.attentionState === 'plan_ready') parts.push('[plan ready]');
       }
 
+      // Lifecycle badges for an in-process agent (parity: Claude Code's
+      // InProcessTeammateTask isIdle / shutdownRequested): a graceful shutdown in
+      // flight is shown so the reader knows the agent will stop after its current
+      // turn, and an explicit idle flag (set when the agent finished its turn and is
+      // awaiting the next message) distinguishes a quiescent agent from a busy one.
+      // Orthogonal to the lifecycle status, so they render alongside `running`.
+      if (t.status === 'running') {
+        if (t.shutdownRequested) parts.push('[shutting down]');
+        else if (t.idle) parts.push('[idle]');
+      }
+
       // Dedicated failure-reason channel (parity: AsyncAgentDetailDialog error
       // field): show WHY a failed task failed without the reader scraping output.
       if (t.status === 'failed' && t.error) {

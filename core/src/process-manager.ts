@@ -104,6 +104,39 @@ export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry:
 };
 
 /**
+ * The lifecycle transition a background task/agent can emit a diagnostic trace for
+ * (parity with Claude Code's InProcessBackend gated per-transition trace — it logs
+ * `spawn`/`send`/`terminate`/`kill`/`isActive` under a debug gate). AMI surfaces the
+ * same transition set through {@link pmTraceHooks} so a frontend can wire a single
+ * lifecycle-debug sink instead of listening on the individual `killed`/`stalled`/
+ * `interrupted` events piecemeal.
+ *   - `spawn`     → a background shell was forked (kind 'bash'/'monitor').
+ *   - `register`  → an in-process agent was registered (registerAgent).
+ *   - `start`     → a pending task transitioned to running (markRunning).
+ *   - `kill`      → a task was stopped (kill).
+ *   - `interrupt` → a running agent's current turn was soft-interrupted.
+ *   - `shutdown`  → a cooperative graceful shutdown was requested (requestShutdown).
+ *   - `idle`      → an agent toggled its idle flag (markIdle).
+ */
+export type PmLifecyclePhase = 'spawn' | 'register' | 'start' | 'kill' | 'interrupt' | 'shutdown' | 'idle';
+
+/**
+ * GATED diagnostic trace seam for task lifecycle transitions (parity with Claude
+ * Code's InProcessBackend per-transition debug trace). Default no-op — like
+ * {@link pmLogHooks}, a run produces NO trace output until a frontend/test attaches
+ * a real sink, so this is the "gate": wire a non-no-op `onLifecycle` to turn tracing
+ * on. Each of {@link ProcessManager}'s lifecycle transitions ({@link PmLifecyclePhase})
+ * routes through here with the task id plus a small bag of extra context (kind,
+ * status, reason) so a developer can trace WHY/WHEN a background task changed state
+ * without instrumenting every call site. Shared one sink (No-Duplication rule).
+ */
+export const pmTraceHooks: {
+  onLifecycle: (phase: PmLifecyclePhase, taskId: string, info?: Record<string, unknown>) => void;
+} = {
+  onLifecycle: () => { /* default: no-op — frontends/tests may attach a trace sink */ },
+};
+
+/**
  * DI seam for the child-process spawn syscall. The synchronous spawn-failure path
  * (an EMFILE/EAGAIN-class fork failure, or bad spawn options, that makes
  * child_process.spawn THROW before any child exists — parity with Claude Code's
@@ -737,6 +770,28 @@ export interface BackgroundProcess {
    * Set via {@link ProcessManager.updateEntry}. Undefined until the first AI summary.
    */
   agentSummary?: string;
+  /**
+   * COOPERATIVE graceful-shutdown flag for a running in-process AGENT (parity with
+   * Claude Code's InProcessTeammateTask `shutdownRequested`). Distinct from a hard
+   * {@link ProcessManager.kill} (which aborts the in-flight turn immediately): the
+   * agent's drain loop checks this flag BETWEEN turns via
+   * {@link ProcessManager.isShutdownRequested} and stops AFTER the current turn
+   * finishes, so a graceful stop never truncates mid-thought. Set by
+   * {@link ProcessManager.requestShutdown}; undefined/false ⇒ keep running. Only
+   * meaningful for `agent` tasks.
+   */
+  shutdownRequested?: boolean;
+  /**
+   * IDLE lifecycle flag for a running in-process AGENT (parity with Claude Code's
+   * InProcessTeammateTask `isIdle`): true when the agent has finished its current
+   * turn and is quiescent, waiting for the next message rather than actively
+   * working. Distinct from the lifecycle {@link status} (a persistent/mailbox agent
+   * stays `running` while idle). Toggled by {@link ProcessManager.markIdle}; a
+   * leader can await an idle transition WITHOUT polling via
+   * {@link ProcessManager.waitForIdle} (event-driven onIdleCallbacks). Undefined ⇒
+   * never-yet-idle. Only meaningful for `agent` tasks.
+   */
+  idle?: boolean;
 }
 
 /**
@@ -869,6 +924,11 @@ interface InternalProcess extends BackgroundProcess {
    *  Distinct from {@link _intervalHandle} (an MCP monitor's own timer) so kill()
    *  still routes an adopted BASH task through killTree, not the monitor branch. */
   _adoptPoll?: ReturnType<typeof setInterval>;
+  /** Pending resolvers registered by {@link ProcessManager.waitForIdle} — fired and
+   *  cleared the next time the agent transitions to idle ({@link ProcessManager.markIdle}
+   *  true) or reaches a terminal state, so a leader can wait event-driven (no poll)
+   *  for a teammate to go idle (parity with Claude Code's `onIdleCallbacks`). */
+  _onIdleCallbacks?: Array<() => void>;
 }
 
 /** Cap on the retained per-task stderr tail ({@link InternalProcess._stderrTail}). */
@@ -1104,6 +1164,7 @@ export class ProcessManager extends EventEmitter {
     };
 
     this.processes.set(taskId, entry);
+    this.traceLifecycle('spawn', taskId, { kind: entry.kind, pid: entry.pid });
 
     const writeChunk = (data: Buffer) => {
       const cap = entry._maxOutputBytes ?? this.maxOutputBytes;
@@ -1465,7 +1526,12 @@ export class ProcessManager extends EventEmitter {
       suppressed: !!entry.notified,
       ...(opts.reason ? { reason: opts.reason } : {}),
     };
+    this.traceLifecycle('kill', taskId, { kind: entry.kind, suppressed: !!entry.notified, ...(opts.reason ? { reason: opts.reason } : {}) });
     this.emit('killed', killed);
+
+    // A killed agent is idle forever — wake any leader waiting on {@link waitForIdle}
+    // so an event-driven wait doesn't hang past the task's destruction.
+    this.flushIdleWaiters(entry);
 
     // The task left the running set — refresh the crash-safe registry. For a normal
     // bash task the later 'close' → finalize → emitComplete also syncs; for an
@@ -1953,13 +2019,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, ...rest } = entry;
     return rest;
   }
 
@@ -2011,8 +2077,102 @@ export class ProcessManager extends EventEmitter {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running' || entry.kind !== 'agent') return false;
     try { entry.proc.kill(); } catch { /* abort already fired */ }
+    this.traceLifecycle('interrupt', taskId, { kind: entry.kind });
     this.emit('interrupted', { taskId, description: entry.description });
     return true;
+  }
+
+  /**
+   * GATED diagnostic trace for a lifecycle transition (see {@link pmTraceHooks} /
+   * {@link PmLifecyclePhase}). Thin wrapper so every call site reads intent, not the
+   * hook plumbing, and a thrown sink never breaks a lifecycle transition. Shared one
+   * site (No-Duplication rule). Default sink is a no-op, so a normal run traces
+   * nothing until a frontend attaches a real `onLifecycle`.
+   */
+  private traceLifecycle(phase: PmLifecyclePhase, taskId: string, info?: Record<string, unknown>): void {
+    try { pmTraceHooks.onLifecycle(phase, taskId, info); } catch { /* a diagnostic sink must never break a transition */ }
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's requestTeammateShutdown / InProcessTeammateTask
+   * `shutdownRequested`): request a COOPERATIVE graceful shutdown of a running
+   * in-process AGENT. Unlike {@link kill} (a hard abort of the in-flight turn) this
+   * only SETS a flag; the agent's drain loop checks it between turns via
+   * {@link isShutdownRequested} and stops AFTER the current turn finishes, so a graceful
+   * stop never truncates mid-thought. Idempotent: a second request before the agent
+   * acts is a no-op (returns false). Only valid for a RUNNING `agent` task — a bash
+   * shell / monitor has no turn concept (returns false). Emits an 'idle'-adjacent
+   * 'shutdown' trace. Returns true when the flag newly transitioned to set.
+   */
+  requestShutdown(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || entry.kind !== 'agent') return false;
+    if (entry.shutdownRequested) return false; // already requested
+    entry.shutdownRequested = true;
+    this.traceLifecycle('shutdown', taskId, { kind: entry.kind });
+    this.emit('shutdown-requested', { taskId, description: entry.description });
+    return true;
+  }
+
+  /**
+   * Whether a cooperative graceful shutdown has been requested for a task (see
+   * {@link requestShutdown}). The agent drain loop polls this between turns to decide
+   * whether to stop gracefully. False for an unknown task or one with no request.
+   */
+  isShutdownRequested(taskId: string): boolean {
+    return this.processes.get(taskId)?.shutdownRequested === true;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's InProcessTeammateTask `isIdle` +
+   * `onIdleCallbacks`): toggle a running AGENT's IDLE flag. An agent that has finished
+   * its current turn and is awaiting the next message marks itself idle (`true`); when
+   * it resumes work it marks itself busy (`false`). Transitioning TO idle fires and
+   * clears every resolver registered via {@link waitForIdle} so a leader waiting on it
+   * is woken event-driven (no polling). Only valid for a RUNNING `agent` task (a bash
+   * shell / monitor has no turn concept — returns false). No-op (returns false) when
+   * the flag already holds the requested value. Returns true when the flag changed.
+   */
+  markIdle(taskId: string, idle: boolean): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || entry.kind !== 'agent') return false;
+    if ((entry.idle ?? false) === idle) return false;
+    entry.idle = idle;
+    this.traceLifecycle('idle', taskId, { idle });
+    if (idle) this.flushIdleWaiters(entry);
+    return true;
+  }
+
+  /** Whether a tracked agent is currently idle (see {@link markIdle}). False for an
+   *  unknown task or one not marked idle. */
+  isIdle(taskId: string): boolean {
+    return this.processes.get(taskId)?.idle === true;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's `onIdleCallbacks` leader-wait): resolve
+   * when a tracked AGENT is idle, WITHOUT polling. Resolves immediately when the task
+   * is unknown, already {@link isTerminalTaskStatus terminal} (a finished agent is
+   * idle forever), or currently {@link isIdle idle}; otherwise registers a one-shot
+   * resolver fired by the next {@link markIdle}(true) or terminal transition
+   * ({@link kill} / terminal {@link updateEntry}). The returned promise never rejects.
+   */
+  waitForIdle(taskId: string): Promise<void> {
+    const entry = this.processes.get(taskId);
+    if (!entry || isTerminalTaskStatus(entry.status) || entry.idle === true) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      (entry._onIdleCallbacks ??= []).push(resolve);
+    });
+  }
+
+  /** Fire and clear every pending {@link waitForIdle} resolver for an entry (on an
+   *  idle transition or a terminal transition). The callbacks are Promise resolvers
+   *  (they never throw), so no guard is needed. Shared one site (No-Duplication rule). */
+  private flushIdleWaiters(entry: InternalProcess): void {
+    const cbs = entry._onIdleCallbacks;
+    if (!cbs || cbs.length === 0) return;
+    entry._onIdleCallbacks = [];
+    for (const cb of cbs) cb();
   }
 
   /**
@@ -2211,6 +2371,7 @@ export class ProcessManager extends EventEmitter {
       tokenCount: 0,
       _registered: true,
     });
+    this.traceLifecycle('register', taskId, { pending: !!opts.pending, ...(opts.agentId ? { agentId: opts.agentId } : {}) });
   }
 
   /**
@@ -2226,6 +2387,7 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'pending') return false;
     entry.status = 'running';
     entry.startTime = Date.now();
+    this.traceLifecycle('start', taskId, { kind: entry.kind });
     return true;
   }
 
@@ -2240,6 +2402,9 @@ export class ProcessManager extends EventEmitter {
       if (isTerminalTaskStatus(updates.status) && entry.endTime === undefined) {
         entry.endTime = Date.now();
         this.setEvictDeadline(entry);
+        // A finished agent is idle forever — wake any {@link waitForIdle} waiter so a
+        // leader awaiting its idle transition (e.g. a graceful shutdown) resolves.
+        this.flushIdleWaiters(entry);
       }
     }
     if (updates.exitCode !== undefined) entry.exitCode = updates.exitCode;

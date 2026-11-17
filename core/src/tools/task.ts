@@ -1045,6 +1045,11 @@ export function markTeammateIdle(
   terminalStatus?: 'completed' | 'failed' | 'killed',
 ): void {
   setTeamMemberActive(taskId, false);
+  // Mark the teammate idle on the process manager (parity: Claude Code's
+  // InProcessTeammateTask isIdle) so a leader awaiting its idle transition via
+  // waitForIdle (e.g. a graceful task_kill) is woken event-driven. No-op when the
+  // task is already terminal / not a running agent.
+  context.processManager?.markIdle?.(taskId, true);
   const team = getCurrentTeam();
   if (!team) return;
   const member = team.members.find(m => m.name === taskId || m.agentId === taskId);
@@ -1714,6 +1719,15 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       // holds only the deliverable, not the whole streamed transcript.
       if (event.type === 'turn_complete' && typeof event.content === 'string' && event.content.trim().length > 0) {
         bgLastTurnText = event.content;
+      }
+      // COOPERATIVE GRACEFUL SHUTDOWN (parity: Claude Code's InProcessTeammateTask
+      // shutdownRequested check between turns): a graceful task_kill set the flag;
+      // honour it at a TURN BOUNDARY so the in-flight turn finishes cleanly instead of
+      // being truncated mid-thought (a hard kill does the truncating). Breaking here
+      // drives the normal terminal bookkeeping in the finally below.
+      if (event.type === 'turn_complete' && context.processManager?.isShutdownRequested?.(taskId)) {
+        w('\n[graceful shutdown requested — stopping after this turn]\n');
+        break;
       }
     }
     if (bgStalled) {

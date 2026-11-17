@@ -2,7 +2,16 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
-const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt']);
+const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful']);
+
+/**
+ * Bounded window (ms) a `graceful` stop waits event-driven for the agent to finish
+ * its current turn and go idle/terminal before reporting. Parity with Claude Code's
+ * leader-wait on `onIdleCallbacks`: we wake the instant the agent goes idle (no
+ * polling), but cap the wait so the tool can never hang if the turn runs long — on
+ * timeout we report the shutdown was requested and the agent is still finishing.
+ */
+export const GRACEFUL_SHUTDOWN_WAIT_MS = 10_000;
 
 /**
  * PARITY (additive): machine-readable discriminator for a stop/kill outcome,
@@ -19,7 +28,9 @@ export type TaskKillReason =
   | 'killed'
   | 'kill_failed'
   | 'interrupted'
-  | 'interrupt_unsupported';
+  | 'interrupt_unsupported'
+  | 'shutdown_requested'
+  | 'shutdown_unsupported';
 
 /** Structured result surface (ToolResult.metadata) for task_kill. */
 export interface TaskKillMetadata {
@@ -105,6 +116,15 @@ export const taskKillTool: ToolDefinition = {
           'losing its context. Only valid for a running agent (a plain shell/monitor has ' +
           'no turn to interrupt). Defaults to false (a full kill).',
       },
+      graceful: {
+        type: 'boolean',
+        description:
+          'When true, request a COOPERATIVE graceful shutdown of a running background ' +
+          'AGENT instead of a hard kill: the agent finishes its CURRENT turn and then ' +
+          'stops, so its in-flight work is never truncated mid-thought. The tool waits ' +
+          '(event-driven, bounded) for the agent to go idle before reporting. Only valid ' +
+          'for a running agent; mutually exclusive with interrupt. Defaults to false.',
+      },
     },
     required: ['task_id'],
   },
@@ -122,7 +142,7 @@ export const taskKillTool: ToolDefinition = {
         description:
           'Stable outcome discriminator present on every result: invalid_input | ' +
           'manager_unavailable | not_found | already_terminal | killed | kill_failed | ' +
-          'interrupted | interrupt_unsupported.',
+          'interrupted | interrupt_unsupported | shutdown_requested | shutdown_unsupported.',
       },
       taskId: { type: 'string', description: 'The task ID the stop targeted, when known.' },
       taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: Claude's task_type)." },
@@ -146,7 +166,7 @@ export const taskKillTool: ToolDefinition = {
     // Strict schema: reject unexpected/injected parameters.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
     if (unknown.length > 0) {
-      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
 
     if (!context.processManager) {
@@ -173,11 +193,57 @@ export const taskKillTool: ToolDefinition = {
     }
     const interrupt = input.interrupt === true;
 
+    if (input.graceful !== undefined && typeof input.graceful !== 'boolean') {
+      return { output: 'Error: "graceful" must be a boolean. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    }
+    const graceful = input.graceful === true;
+
+    if (graceful && interrupt) {
+      return { output: 'Error: "graceful" and "interrupt" are mutually exclusive — pick one (graceful = finish the turn then stop; interrupt = abort the turn but keep the agent alive). [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    }
+
     const pm = context.processManager;
     const task = pm.get(taskId);
 
     if (!task) {
       return { output: `Error: No background task found with ID "${taskId}". Use task_list to see all tasks. [code: not_found]`, isError: true, metadata: meta({ reason: 'not_found', taskId }) };
+    }
+
+    // GRACEFUL COOPERATIVE SHUTDOWN (parity: Claude Code's requestTeammateShutdown +
+    // leader-wait on onIdleCallbacks). Request the agent stop AFTER its current turn
+    // (never truncating mid-thought), then wait — event-driven, bounded — for it to go
+    // idle/terminal before reporting. Only a running in-process AGENT has turns; a
+    // shell/monitor (or a terminal task) has none, so we refuse with a clear code.
+    if (graceful) {
+      const kind = typeof pm.taskKind === 'function' ? pm.taskKind(taskId) : undefined;
+      if (task.status !== 'running' || kind !== 'agent') {
+        return {
+          output: `Error: task "${taskId}" cannot be gracefully shut down (only a running agent can — this is ${kind ?? 'unknown'}/${task.status}). Use task_kill without graceful to stop it. [code: shutdown_unsupported]`,
+          isError: true,
+          metadata: meta({ reason: 'shutdown_unsupported', taskId, kind, status: task.status }),
+        };
+      }
+      const requested = typeof pm.requestShutdown === 'function' && pm.requestShutdown(taskId);
+      if (!requested) {
+        return { output: `Error: Failed to request graceful shutdown of task "${taskId}". [code: kill_failed]`, isError: true, metadata: meta({ reason: 'kill_failed', taskId, kind }) };
+      }
+      // Wait event-driven for the agent to finish its current turn and go idle, but
+      // cap the wait so the tool can never hang on a long-running turn.
+      if (typeof pm.waitForIdle === 'function') {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, GRACEFUL_SHUTDOWN_WAIT_MS); timer.unref?.(); });
+        await Promise.race([pm.waitForIdle(taskId), timeout]);
+        if (timer) clearTimeout(timer);
+      }
+      const settled = typeof pm.getStatus === 'function' ? pm.getStatus(taskId) : undefined;
+      const stoppedNote = settled && settled !== 'running'
+        ? `Agent "${taskId}" gracefully shut down (${settled}).`
+        : `Graceful shutdown requested for agent "${taskId}"; it will stop after its current turn.`;
+      return {
+        output: stoppedNote,
+        isError: false,
+        metadata: meta({ reason: 'shutdown_requested', taskId, taskType: 'agent', kind, command: (task.command || task.description) || undefined, status: settled }),
+      };
     }
 
     // SOFT-INTERRUPT (parity: Claude Code's two-tier teammate abort — stop the
