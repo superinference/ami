@@ -561,13 +561,17 @@ export function registerCommandAliases(
  * the root via `..` or a symlink (realpath containment check). Returns the path
  * only if it exists and stays inside the plugin — otherwise null.
  */
-function hardenedResolve(root: string, rel: string): string | undefined {
+function hardenedResolve(root: string, rel: string, onViolation?: (rel: string) => void): string | undefined {
   const target = path.join(root, rel);
   try {
     const realTarget = fs.realpathSync(target);
     const realRoot = fs.realpathSync(root);
     if (realTarget === realRoot || realTarget.startsWith(realRoot + path.sep)) return target;
-    return undefined; // escapes the plugin root — reject
+    // Escapes the plugin root — reject AND, when a reporter is supplied, surface
+    // it as a security warning instead of a silent drop (Claude parity:
+    // lspPluginIntegration's path-traversal warning).
+    onViolation?.(rel);
+    return undefined;
   } catch {
     return undefined; // does not exist / unreadable
   }
@@ -606,8 +610,9 @@ function resolveComponentDir(
   manifest: Record<string, unknown>,
   field: string,
   defaultRel: string,
+  onViolation?: (rel: string) => void,
 ): string | undefined {
-  return hardenedResolve(root, manifestPathOverride(manifest, field) ?? defaultRel);
+  return hardenedResolve(root, manifestPathOverride(manifest, field) ?? defaultRel, onViolation);
 }
 
 /**
@@ -928,7 +933,29 @@ function reportScanError(dir: string, error: unknown, diag: CommandScanDiagnosti
  * contained to the plugin's own tree — consistent with the realpath hardening
  * used everywhere else in this module.
  */
-function walkCommandDir(dir: string, subPath: string[], pluginName: string | undefined, out: CommandDefinition[], diag?: CommandScanDiagnostics): void {
+/**
+ * Canonical-path dedup for a command/skill file already collected during a load
+ * (Claude parity: fsOperations `isDuplicatePath`/`safeResolvePath` used by
+ * loadPluginCommands). Resolves `filePath` to its realpath (falling back to the
+ * raw path when it can't be resolved — ENOENT/broken symlink) and records it;
+ * returns true when that canonical path was ALREADY loaded, so a file reachable
+ * through two sources (e.g. the primary `commands/` dir and a manifest
+ * `commandsPaths` entry, or a symlink pointing back into the tree) is loaded
+ * exactly once instead of producing duplicate command definitions.
+ */
+function isDuplicateComponentPath(filePath: string, loaded: Set<string>): boolean {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(filePath);
+  } catch {
+    resolved = filePath;
+  }
+  if (loaded.has(resolved)) return true;
+  loaded.add(resolved);
+  return false;
+}
+
+function walkCommandDir(dir: string, subPath: string[], pluginName: string | undefined, out: CommandDefinition[], loaded: Set<string>, diag?: CommandScanDiagnostics): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -942,12 +969,15 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkCommandDir(full, [...subPath, entry.name], pluginName, out, diag);
+      walkCommandDir(full, [...subPath, entry.name], pluginName, out, loaded, diag);
       continue;
     }
     if (!entry.isFile()) continue;
     const base = commandBaseName(entry.name);
     if (base === null) continue;
+    // Realpath dedup: skip a file already loaded via another source/symlink
+    // (Claude parity: isDuplicatePath) so it never yields a duplicate command.
+    if (isDuplicateComponentPath(full, loaded)) continue;
     // The looked-up `name` keeps its original composition: optional plugin-name
     // segment, then the sub-path, then the base. The `namespace` field tracks ONLY
     // the on-disk sub-path (Claude parity: walkPluginMarkdown), so the plugin-name
@@ -989,7 +1019,11 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
 export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[], metadata?: PluginCommandsMetadataContext, diagnostics?: CommandScanDiagnostics): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
   const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
-  walkCommandDir(dir, [], plugin, commands, diagnostics);
+  // Tracks the canonical realpath of every file loaded across ALL sources (the
+  // primary dir + every extra path) so a file reachable through more than one
+  // source is loaded exactly once (Claude parity: loadPluginCommands' loadedPaths).
+  const loaded = new Set<string>();
+  walkCommandDir(dir, [], plugin, commands, loaded, diagnostics);
   for (const extra of extraPaths ?? []) {
     let stat: fs.Stats;
     try {
@@ -999,8 +1033,8 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
       continue;
     }
     if (stat.isDirectory()) {
-      walkCommandDir(extra, [], plugin, commands, diagnostics);
-    } else if (stat.isFile() && commandBaseName(path.basename(extra)) !== null) {
+      walkCommandDir(extra, [], plugin, commands, loaded, diagnostics);
+    } else if (stat.isFile() && commandBaseName(path.basename(extra)) !== null && !isDuplicateComponentPath(extra, loaded)) {
       const base = commandBaseName(path.basename(extra))!;
       const name = [...(plugin ? [plugin] : []), base].join(':');
       const cmd = parseCommandFile(extra, name);
@@ -1105,6 +1139,59 @@ export type InstallScope = (typeof VALID_INSTALL_SCOPES)[number];
 /** Whether `scope` is a valid install scope (for arg validation at the CLI edge). */
 export function isInstallScope(scope: string): scope is InstallScope {
   return (VALID_INSTALL_SCOPES as readonly string[]).includes(scope);
+}
+
+/**
+ * The settings sources that can OWN an enabled plugin, lowest precedence first
+ * (Claude parity: pluginStartupCheck's `scopeSources`). `managed` (policy) is
+ * not user-editable; `flag` is an `--add-dir`/session-only enablement with no
+ * write-back. A later source overrides an earlier one for the same plugin, so
+ * the resolved owner is the HIGHEST-precedence source that enables it.
+ */
+export const PLUGIN_EDITABLE_SCOPES = ['managed', 'user', 'project', 'local', 'flag'] as const;
+export type ExtendedPluginScope = (typeof PLUGIN_EDITABLE_SCOPES)[number];
+/** A scope whose enablement is persisted (everything except the session-only
+ *  `flag` scope) — Claude parity: PersistablePluginScope. */
+export type PersistablePluginScope = Exclude<ExtendedPluginScope, 'flag'>;
+
+/**
+ * Whether an owning scope's enablement should be written back to disk (Claude
+ * parity: pluginStartupCheck `isPersistableScope`). The `flag` scope is
+ * session-only (`--add-dir`), so it is NOT persistable; every other scope is.
+ */
+export function isPersistablePluginScope(scope: ExtendedPluginScope): scope is PersistablePluginScope {
+  return scope !== 'flag';
+}
+
+/** One settings source's `enabledPlugins` map, in precedence order lowest→highest
+ *  (Claude parity: the policy>local>project>user>flag resolution, expressed here
+ *  as the write-back-ownership order managed<user<project<local<flag). A value of
+ *  `true` enables the plugin at that scope, `false` disables it. */
+export interface PluginScopeSource {
+  scope: ExtendedPluginScope;
+  enabledPlugins: Record<string, boolean>;
+}
+
+/**
+ * Resolve the user-editable scope that OWNS each enabled plugin — i.e. where a
+ * toggle should be written back (Claude parity: pluginStartupCheck
+ * `getPluginEditableScopes`). Sources are applied in `PluginScopeSource` order
+ * (lowest precedence first); for each plugin, a `true` sets the owning scope to
+ * that source and a `false` removes it, so the final owner is the highest
+ * source that enables it with no higher source disabling it. Only well-formed
+ * plugin ids (containing `@`, i.e. `name@marketplace`) are considered. Returns a
+ * Map of plugin id → owning scope.
+ */
+export function resolvePluginEditableScopes(sources: PluginScopeSource[]): Map<string, ExtendedPluginScope> {
+  const result = new Map<string, ExtendedPluginScope>();
+  for (const { scope, enabledPlugins } of sources) {
+    for (const [pluginId, value] of Object.entries(enabledPlugins)) {
+      if (!pluginId.includes('@')) continue; // skip invalid id format
+      if (value === true) result.set(pluginId, scope);
+      else if (value === false) result.delete(pluginId);
+    }
+  }
+  return result;
 }
 
 export interface PluginValidationIssue {
@@ -1488,6 +1575,203 @@ function isValidUserConfigDefault(val: unknown): boolean {
   return Array.isArray(val) && val.every(v => typeof v === 'string');
 }
 
+// ---------------------------------------------------------------------------
+// Plugin option VALUES — the runtime side of `userConfig` (Claude parity:
+// utils/plugins/pluginOptionsStorage.ts + commands/plugin/PluginOptionsDialog
+// /PluginOptionsFlow). The validators above gate the manifest SHAPE; the
+// functions below coerce/validate/prefill the user-entered VALUES against a
+// declared schema so the config dialog and option storage behave identically
+// across modes (TUI/detached) and never silently corrupt a value.
+// ---------------------------------------------------------------------------
+
+/**
+ * A single plugin `userConfig` option declaration, as the config dialog and
+ * option storage consume it (Claude parity: PluginUserConfigOptionSchema). `type`
+ * is one of {@link USER_CONFIG_OPTION_TYPES}; `title`/`description` are shown in
+ * the prompt; the knobs mirror the manifest schema validated by
+ * {@link validatePluginContents}.
+ */
+export interface PluginUserConfigOption {
+  type: UserConfigOptionType;
+  title: string;
+  description: string;
+  required?: boolean;
+  default?: string | number | boolean | string[];
+  multiple?: boolean;
+  sensitive?: boolean;
+  min?: number;
+  max?: number;
+}
+
+/** A declared option schema: option key → its declaration (Claude parity:
+ *  PluginOptionSchema / UserConfigSchema). */
+export type PluginOptionSchema = Record<string, PluginUserConfigOption>;
+/** A resolved option value (Claude parity: a `directory`/`file`/`string`
+ *  scalar, a coerced `number`/`boolean`, or a `multiple` string array). */
+export type PluginOptionValue = string | number | boolean | string[];
+/** Saved/collected option values keyed by option key (Claude parity:
+ *  PluginOptionValues / UserConfigValues). */
+export type PluginOptionValues = Record<string, PluginOptionValue>;
+
+/** Tokens a plugin `boolean` option value coerces to `true` (Claude parity:
+ *  isEnvTruthy's allow-list). NOTE: this is a DIFFERENT contract from core's
+ *  env-flag {@link isEnvTruthy} (a deny-list) — a plugin boolean option is
+ *  truthy ONLY for an explicit affirmative token, so an unrecognized value is
+ *  `false`, not `true`. */
+const PLUGIN_OPTION_TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+
+/**
+ * Coerce a plugin `boolean` option's string input to a boolean (Claude parity:
+ * isEnvTruthy applied in buildFinalValues). Truthy only for an explicit
+ * affirmative token ({@link PLUGIN_OPTION_TRUTHY}); every other value — including
+ * blank and unrecognized text — is `false`.
+ */
+export function coercePluginOptionBool(value: string): boolean {
+  return PLUGIN_OPTION_TRUTHY.has(value.trim().toLowerCase());
+}
+
+/**
+ * Build the save payload from the raw string inputs the config dialog collected,
+ * coercing each by its declared type (Claude parity: PluginOptionsDialog
+ * `buildFinalValues`). The behavior-defining edge cases, matched exactly:
+ *
+ *   - A `sensitive` field left blank on RECONFIGURE (a value already exists in
+ *     `initialValues`) is OMITTED — storage only writes keys it receives, so an
+ *     omitted key keeps the existing secret instead of wiping it.
+ *   - A `number` field left blank is OMITTED (`Number('')` is `0`, not `NaN`, so
+ *     keeping it would smuggle a `0` past the required-field check).
+ *   - A `number` field whose input is non-numeric falls back to the raw STRING
+ *     (so {@link validatePluginOptionValues} can report a meaningful type error
+ *     rather than storing `NaN`).
+ *   - A `boolean` field is coerced via {@link coercePluginOptionBool}.
+ *   - Everything else is stored as the entered string.
+ */
+export function coercePluginOptionValues(
+  fields: string[],
+  collected: Record<string, string>,
+  schema: PluginOptionSchema,
+  initialValues?: PluginOptionValues,
+): PluginOptionValues {
+  const finalValues: PluginOptionValues = {};
+  for (const fieldKey of fields) {
+    const opt = schema[fieldKey];
+    const value = collected[fieldKey] ?? '';
+    if (opt?.sensitive === true && value === '' && initialValues?.[fieldKey] !== undefined) {
+      continue;
+    }
+    if (opt?.type === 'number') {
+      if (value.trim() === '') continue;
+      const num = Number(value);
+      finalValues[fieldKey] = Number.isNaN(num) ? value : num;
+    } else if (opt?.type === 'boolean') {
+      finalValues[fieldKey] = coercePluginOptionBool(value);
+    } else {
+      finalValues[fieldKey] = value;
+    }
+  }
+  return finalValues;
+}
+
+/**
+ * Compute the per-field initial string the config dialog should pre-fill when
+ * RECONFIGURING (Claude parity: PluginOptionsDialog's `initialFor`). A
+ * `sensitive` field is NEVER pre-filled (the stored secret is not echoed into
+ * the input buffer); any other field is pre-filled with the stringified saved
+ * value, or `''` when nothing is saved. The returned map is keyed by every
+ * option in `schema`.
+ */
+export function buildPluginOptionPrefill(
+  schema: PluginOptionSchema,
+  initialValues?: PluginOptionValues,
+): Record<string, string> {
+  const prefill: Record<string, string> = {};
+  for (const key of Object.keys(schema)) {
+    if (schema[key]?.sensitive === true) {
+      prefill[key] = '';
+      continue;
+    }
+    const v = initialValues?.[key];
+    prefill[key] = v === undefined ? '' : String(v);
+  }
+  return prefill;
+}
+
+/**
+ * Validate resolved option VALUES against a declared schema (Claude parity: the
+ * required/type checks `validateUserConfig` applies to saved values). Reports a
+ * human-readable error per offending field:
+ *   - a `required` option that is absent / blank / an empty array;
+ *   - a `number` option whose value is not a finite number (or is out of a
+ *     declared `min`/`max` range);
+ *   - a `multiple` string option whose value is not a string array;
+ *   - a non-`multiple` scalar option given an array.
+ * An absent OPTIONAL option is fine. Returns `{ valid, errors }`.
+ */
+export function validatePluginOptionValues(
+  values: PluginOptionValues,
+  schema: PluginOptionSchema,
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  for (const [key, opt] of Object.entries(schema)) {
+    const value = values[key];
+    const label = opt.title && opt.title.trim() !== '' ? opt.title : key;
+    const absent =
+      value === undefined ||
+      (typeof value === 'string' && value.trim() === '') ||
+      (Array.isArray(value) && value.length === 0);
+    if (absent) {
+      if (opt.required === true) errors.push(`Missing required value for "${label}".`);
+      continue;
+    }
+    if (opt.multiple === true) {
+      if (!Array.isArray(value) || !value.every(v => typeof v === 'string')) {
+        errors.push(`"${label}" must be a list of strings.`);
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      errors.push(`"${label}" must be a single value, not a list.`);
+      continue;
+    }
+    if (opt.type === 'number') {
+      const num = typeof value === 'number' ? value : Number(value);
+      if (!Number.isFinite(num)) {
+        errors.push(`"${label}" must be a number.`);
+      } else if (opt.min !== undefined && num < opt.min) {
+        errors.push(`"${label}" must be at least ${opt.min}.`);
+      } else if (opt.max !== undefined && num > opt.max) {
+        errors.push(`"${label}" must be at most ${opt.max}.`);
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Return the subset of a plugin's option schema whose SAVED values are still
+ * missing/invalid (Claude parity: pluginOptionsStorage `getUnconfiguredOptions`).
+ * Used to decide, after enabling a plugin, whether the user must be prompted —
+ * already-configured fields are skipped so a reconfigure never re-asks for a
+ * value that already validates. Returns an empty schema when everything is
+ * configured.
+ */
+export function getUnconfiguredPluginOptions(
+  schema: PluginOptionSchema,
+  saved: PluginOptionValues,
+): PluginOptionSchema {
+  if (Object.keys(schema).length === 0) return {};
+  if (validatePluginOptionValues(saved, schema).valid) return {};
+  const unconfigured: PluginOptionSchema = {};
+  for (const [key, opt] of Object.entries(schema)) {
+    const single = validatePluginOptionValues(
+      key in saved ? { [key]: saved[key] } : {},
+      { [key]: opt },
+    );
+    if (!single.valid) unconfigured[key] = opt;
+  }
+  return unconfigured;
+}
+
 /**
  * Validate a parsed plugin manifest object. Checks required `name`/`version`
  * strings (with a kebab-case name refinement), validates the optional metadata
@@ -1828,6 +2112,7 @@ export type PluginError =
   | { type: 'mcp-config-invalid'; source: string; plugin: string; serverName: string; validationError: string }
   | { type: 'mcp-server-suppressed-duplicate'; source: string; plugin: string; serverName: string; duplicateOf: string }
   | { type: 'hook-load-failed'; source: string; plugin: string; hookPath: string; reason: string }
+  | { type: 'path-traversal-blocked'; source: string; plugin?: string; declaredPath: string; component: PluginComponent }
   | { type: 'generic-error'; source: string; plugin?: string; error: string };
 
 /**
@@ -1859,9 +2144,58 @@ export function getPluginErrorMessage(error: PluginError): string {
     }
     case 'hook-load-failed':
       return `Hook load failed: ${error.reason}`;
+    case 'path-traversal-blocked':
+      return formatPluginPathTraversalWarning(error.plugin ?? error.source, error.declaredPath, error.component);
     case 'generic-error':
       return error.error;
   }
+}
+
+/**
+ * The user-facing warning for a plugin-contributed path that escapes its own
+ * root (Claude parity: lspPluginIntegration's "Security: Path traversal attempt
+ * blocked in plugin …" message). Emitted whenever {@link hardenedResolve} rejects
+ * a declared component path because its realpath leaves the plugin dir (a `..`
+ * segment that survived manifest validation, or a symlink pointing outside) —
+ * surfaced instead of being silently dropped so an author/operator can see the
+ * containment violation.
+ */
+export function formatPluginPathTraversalWarning(plugin: string, declaredPath: string, component?: PluginComponent): string {
+  const where = component ? ` (${component})` : '';
+  return `Security: path traversal blocked in plugin "${plugin}": "${declaredPath}"${where} escapes the plugin directory and was not loaded.`;
+}
+
+/**
+ * Stable dedup key for a {@link PluginError} (Claude parity: refresh.ts
+ * `errorKey`). A `generic-error` is keyed by its source AND message (two generic
+ * errors from the same source but different messages are distinct); every typed
+ * variant is keyed by `type:source` (the same kind from the same source is one
+ * error regardless of incidental detail).
+ */
+export function pluginErrorKey(e: PluginError): string {
+  return e.type === 'generic-error'
+    ? `generic-error:${e.source}:${e.error}`
+    : `${e.type}:${e.source}`;
+}
+
+/**
+ * Merge a freshly-recomputed plugin-error set into the existing one on reload,
+ * preserving errors that a plain reload would otherwise strand (Claude parity:
+ * refresh.ts `mergePluginErrors`). Errors sourced from the LSP manager
+ * (`lsp-manager`) or from an individual plugin (`plugin:<name>`) are PRESERVED
+ * across the reload — they are recomputed asynchronously/elsewhere, not by the
+ * reload that produced `fresh`, so dropping them would lose live diagnostics.
+ * A preserved error is dropped only when `fresh` already carries one with the
+ * same {@link pluginErrorKey} (the fresh copy wins). All other existing errors
+ * are replaced by `fresh`.
+ */
+export function mergePluginErrors(existing: PluginError[], fresh: PluginError[]): PluginError[] {
+  const preserved = existing.filter(
+    e => e.source === 'lsp-manager' || e.source.startsWith('plugin:'),
+  );
+  const freshKeys = new Set(fresh.map(pluginErrorKey));
+  const deduped = preserved.filter(e => !freshKeys.has(pluginErrorKey(e)));
+  return [...deduped, ...fresh];
 }
 
 /**
@@ -2367,6 +2701,14 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     const requires = parsePluginRequirements(manifest);
     if (!isPluginAvailable(requires)) continue;
     const lsp = parseManifestLspServers(root, manifest);
+    // Surface a plugin-contributed component path that escapes the plugin root
+    // (a symlink/`..` that survived manifest validation) as a security warning
+    // instead of silently dropping it (Claude parity: lspPluginIntegration's
+    // path-traversal warning). The bundle still loads without that component.
+    const reportViolation = (component: PluginComponent) => (rel: string) => {
+      const err: PluginError = { type: 'path-traversal-blocked', source: root, plugin: name, declaredPath: rel, component };
+      failures.push({ root, reason: getPluginErrorMessage(err), error: err });
+    };
     bundles.push({
       name,
       version: (manifest.version as string | undefined) ?? '0.0.0',
@@ -2382,9 +2724,9 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // and fall back to the fixed default directory when none is declared. The
       // override was already vetted against `..`/absolute by the hardErrors gate
       // above; resolveComponentDir additionally hardens it against symlink escape.
-      skillsDir: resolveComponentDir(root, manifest, 'skills', 'skills'),
-      agentsDir: resolveComponentDir(root, manifest, 'agents', 'agents'),
-      commandsDir: resolveComponentDir(root, manifest, 'commands', 'commands'),
+      skillsDir: resolveComponentDir(root, manifest, 'skills', 'skills', reportViolation('skills')),
+      agentsDir: resolveComponentDir(root, manifest, 'agents', 'agents', reportViolation('agents')),
+      commandsDir: resolveComponentDir(root, manifest, 'commands', 'commands', reportViolation('commands')),
       // Hooks: a manifest-declared `hooks` file path overrides the convention of
       // <root>/hooks.json OR <root>/hooks/hooks.json (the Claude Code layout).
       hooksFile: resolvePluginHooksFromManifest(root, manifest),
@@ -2414,7 +2756,7 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       lspServers: lsp.servers,
       // Output styles a plugin contributes (Claude parity: loadPluginOutputStyles):
       // the output-styles dir (+ manifest override) and extra outputStylesPaths.
-      outputStylesDir: resolveComponentDir(root, manifest, 'outputStyles', 'output-styles'),
+      outputStylesDir: resolveComponentDir(root, manifest, 'outputStyles', 'output-styles', reportViolation('output-styles')),
       outputStylesPaths: resolveManifestPathList(root, manifest, 'outputStylesPaths'),
       // Allowlisted plugin-contributed settings (Claude parity: loadPluginSettings):
       // settings.json over manifest.settings, only the `agent` key survives.
