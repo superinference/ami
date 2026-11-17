@@ -941,6 +941,16 @@ interface InternalProcess extends BackgroundProcess {
    * registerAgent()-backed tasks that supplied a signal; undefined otherwise.
    */
   _abortSignal?: AbortSignal;
+  /**
+   * FUNCTIONAL (parity): targeted per-agent RECOVERY callbacks for a workflow
+   * agent, so a SINGLE wedged agent inside a still-running workflow can be retried
+   * or skipped without aborting the whole run (parity with the reference workflow
+   * detail actions `onRetryAgent`/`onSkipAgent`). Set by {@link ProcessManager.registerAgent}
+   * when the spawner (the workflow tool) supplies them; invoked by
+   * {@link ProcessManager.retryAgentTask}/{@link ProcessManager.skipAgentTask}.
+   */
+  _retryFn?: () => void;
+  _skipFn?: () => void;
   /** Wall-clock ms at which the current (open) pause began, or undefined when the
    *  clock is running. resumeTask() folds (now - _pausedAt) into totalPausedMs. */
   _pausedAt?: number;
@@ -2099,13 +2109,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
     return rest;
   }
 
@@ -2159,6 +2169,39 @@ export class ProcessManager extends EventEmitter {
     try { entry.proc.kill(); } catch { /* abort already fired */ }
     this.traceLifecycle('interrupt', taskId, { kind: entry.kind });
     this.emit('interrupted', { taskId, description: entry.description });
+    return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity with the reference `retryWorkflowAgent(workflowId, agentId)` /
+   * `onRetryAgent`): RETRY a single wedged workflow agent — abandon its stuck
+   * attempt and re-run it — without aborting the whole workflow. Delegates to the
+   * per-agent recovery callback the workflow tool registered at
+   * {@link registerAgent} time ({@link InternalProcess._retryFn}). Only valid for a
+   * RUNNING `agent` task that supplied a retry callback (a bash shell / monitor, a
+   * terminal task, or an agent with no callback returns false).
+   */
+  retryAgentTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || entry.kind !== 'agent' || typeof entry._retryFn !== 'function') return false;
+    try { entry._retryFn(); } catch { /* best-effort recovery */ }
+    this.emit('agent-retry-requested', { taskId, description: entry.description });
+    return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity with the reference `skipWorkflowAgent(workflowId, agentId)` /
+   * `onSkipAgent`): SKIP a single wedged workflow agent — settle it immediately
+   * (as a skip) — without aborting the whole workflow. Delegates to the per-agent
+   * recovery callback the workflow tool registered at {@link registerAgent} time
+   * ({@link InternalProcess._skipFn}). Only valid for a RUNNING `agent` task that
+   * supplied a skip callback (returns false otherwise).
+   */
+  skipAgentTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || entry.kind !== 'agent' || typeof entry._skipFn !== 'function') return false;
+    try { entry._skipFn(); } catch { /* best-effort recovery */ }
+    this.emit('agent-skip-requested', { taskId, description: entry.description });
     return true;
   }
 
@@ -2495,6 +2538,12 @@ export class ProcessManager extends EventEmitter {
     description: string;
     outputPath: string;
     abortFn: () => void;
+    /** Targeted per-agent recovery callbacks for a workflow agent (parity:
+     *  `onRetryAgent`/`onSkipAgent`). When supplied, {@link retryAgentTask} /
+     *  {@link skipAgentTask} invoke them to retry or skip this ONE agent in a
+     *  still-running workflow without killing the whole run. */
+    retryFn?: () => void;
+    skipFn?: () => void;
     /** Id of the PARENT agent that spawned this sub-agent, so a parent's
      *  killTasksForAgent() can reap it if the parent exits first. Undefined for a
      *  top-level agent spawned from the main thread. */
@@ -2532,6 +2581,8 @@ export class ProcessManager extends EventEmitter {
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
       ...(opts.abortSignal ? { _abortSignal: opts.abortSignal } : {}),
+      ...(opts.retryFn ? { _retryFn: opts.retryFn } : {}),
+      ...(opts.skipFn ? { _skipFn: opts.skipFn } : {}),
       ...(opts.resumed ? { resumed: true } : {}),
       ...(opts.teamName ? { teamName: opts.teamName } : {}),
       proc: { pid: process.pid, kill: opts.abortFn } as any,

@@ -187,3 +187,110 @@ describe('U134 Gap C — WorkflowRuntime suppresses MaxListenersExceededWarning'
     assert.deepEqual(warnings, []);
   });
 });
+
+describe('U134 Gap D — interactive per-agent retry/skip of a live workflow agent', () => {
+  it('skipAgent settles ONE wedged agent as null and lets the workflow continue', async () => {
+    // A workflow with two agents run in parallel; the FIRST hangs forever. Without
+    // per-agent recovery the only options are "abort everything" or wait forever.
+    // skipAgent() must settle just that agent (as null) so the workflow completes.
+    let captured: WorkflowRuntime | undefined;
+    const skipped: Array<{ agentNumber: number }> = [];
+    const handler = async (prompt: string, _opts?: AgentOptions, agentId?: number): Promise<unknown> => {
+      if (prompt === 'hang') {
+        // The control is registered before produce() is awaited, so we can skip
+        // ourselves synchronously to simulate a user skipping a wedged agent.
+        captured!.skipAgent(agentId!);
+        return new Promise(() => { /* never resolves */ });
+      }
+      return `done:${prompt}`;
+    };
+    const script = `
+      export const meta = { name: 'w', description: 'd' }
+      const [a, b] = await parallel([() => agent('hang'), () => agent('ok')]);
+      return { a, b };
+    `;
+    const res = await executeWorkflow(script, handler, {
+      onRuntime: (rt) => {
+        captured = rt;
+        rt.on('agent-skipped', (e: { agentNumber: number }) => skipped.push(e));
+      },
+    });
+    assert.deepEqual(res.result, { a: null, b: 'done:ok' });
+    assert.equal(skipped.length, 1);
+    // Both agents were accounted for; skip did not abort the whole run.
+    assert.equal(res.agentCount, 2);
+  });
+
+  it('retryAgent abandons the stuck attempt and re-invokes the handler for the same agent', async () => {
+    let captured: WorkflowRuntime | undefined;
+    const retries: Array<{ agentNumber: number }> = [];
+    let calls = 0;
+    const handler = async (_prompt: string, _opts?: AgentOptions, agentId?: number): Promise<unknown> => {
+      calls++;
+      if (calls === 1) {
+        // First attempt wedges; ask the runtime to retry THIS agent.
+        captured!.retryAgent(agentId!);
+        return new Promise(() => { /* never resolves */ });
+      }
+      return 'recovered';
+    };
+    const script = `
+      export const meta = { name: 'w', description: 'd' }
+      return await agent('go');
+    `;
+    const res = await executeWorkflow(script, handler, {
+      onRuntime: (rt) => {
+        captured = rt;
+        rt.on('agent-retry', (e: { agentNumber: number }) => retries.push(e));
+      },
+    });
+    assert.equal(res.result, 'recovered');
+    assert.equal(calls, 2); // the handler was re-invoked exactly once
+    assert.equal(retries.length, 1);
+    assert.equal(res.agentCount, 1); // a retry is the SAME agent, not a new one
+  });
+
+  it('liveAgentIds lists in-flight agents; skip/retry of an unknown id return false', async () => {
+    let captured: WorkflowRuntime | undefined;
+    let liveDuring: number[] = [];
+    const handler = async (_prompt: string, _opts?: AgentOptions, agentId?: number): Promise<unknown> => {
+      liveDuring = captured!.liveAgentIds();
+      // Unknown ids have no live control.
+      assert.equal(captured!.skipAgent(9999), false);
+      assert.equal(captured!.retryAgent(9999), false);
+      // The current agent IS live and skippable.
+      captured!.skipAgent(agentId!);
+      return new Promise(() => { /* never resolves */ });
+    };
+    const script = `
+      export const meta = { name: 'w', description: 'd' }
+      return await agent('x');
+    `;
+    await executeWorkflow(script, handler, { onRuntime: (rt) => { captured = rt; } });
+    assert.deepEqual(liveDuring, [1]);
+    // After the run nothing is in-flight.
+    assert.deepEqual(captured!.liveAgentIds(), []);
+  });
+
+  it('skipAgent/retryAgent return false when no agent is in-flight', () => {
+    const rt = new WorkflowRuntime({ agentHandler: async () => null });
+    assert.equal(rt.skipAgent(1), false);
+    assert.equal(rt.retryAgent(1), false);
+    assert.deepEqual(rt.liveAgentIds(), []);
+  });
+
+  it('the stable agent id is passed to the handler as its third argument', async () => {
+    const seen: Array<number | undefined> = [];
+    const handler = async (_p: string, _o: AgentOptions | undefined, agentId?: number) => {
+      seen.push(agentId);
+      return 'ok';
+    };
+    const script = `
+      export const meta = { name: 'w', description: 'd' }
+      await agent('one');
+      await agent('two');
+    `;
+    await executeWorkflow(script, handler);
+    assert.deepEqual(seen, [1, 2]);
+  });
+});

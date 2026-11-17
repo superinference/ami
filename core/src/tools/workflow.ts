@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { projectStateDir } from '../reference-journal';
-import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache } from './workflow-runtime';
+import { executeWorkflow, parseWorkflowMeta, WorkflowResolver, DiskWorkflowCache, type WorkflowRuntime } from './workflow-runtime';
 import {
   SUBAGENT_RETURN_DIRECTIVE,
   generateTaskId,
@@ -270,6 +270,11 @@ export const workflowTool: ToolDefinition = {
     const fm = pm?.flowManager;
     const workflowFlowId = fm ? fm.createFlow(meta.name) : undefined;
 
+    // The live runtime for THIS workflow run, captured via executeWorkflow's
+    // onRuntime hook, so a per-agent task_kill retry/skip can recover one wedged
+    // agent (parity: onRetryAgent / onSkipAgent) without aborting the whole run.
+    let wfRuntime: WorkflowRuntime | undefined;
+
     // Aggregate usage across every agent this workflow spawns, plus the run's
     // wall-clock duration — reported on the completion output (parity: the
     // reference agent result surfaces tool uses, tokens, and duration).
@@ -277,7 +282,7 @@ export const workflowTool: ToolDefinition = {
     let totalToolUses = 0;
     const workflowStartedAt = Date.now();
 
-    const agentHandler = async (prompt: string, opts?: any): Promise<string> => {
+    const agentHandler = async (prompt: string, opts?: any, agentId?: number): Promise<string> => {
       if (!context._engineFactory) return `[Agent not available: no engine factory]`;
 
       // Per-agent specialized agent-type (parity: AgentTool `subagent_type`).
@@ -360,6 +365,15 @@ export const workflowTool: ToolDefinition = {
           abortFn: forwardAbort,
           // Store the agent's abort signal for composite liveness (isActive).
           abortSignal: ac.signal,
+          // Per-agent recovery (parity: onRetryAgent / onSkipAgent). task_kill
+          // retry/skip of THIS agent drives the live runtime to re-run or settle
+          // just this agent, then tears down its (stuck) sub-engine — the rest of
+          // the workflow keeps running. Only wired when the runtime surfaced a
+          // stable agent id for this call.
+          ...(agentId !== undefined ? {
+            retryFn: () => { wfRuntime?.retryAgent(agentId); ac.abort(); },
+            skipFn: () => { wfRuntime?.skipAgent(agentId); ac.abort(); },
+          } : {}),
         });
         if (fm && workflowFlowId) fm.addAgent(workflowFlowId, taskId);
       }
@@ -524,6 +538,9 @@ export const workflowTool: ToolDefinition = {
         workflowResolver,
         maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
         cache,
+        // Capture the live runtime so a per-agent task_kill retry/skip can recover
+        // one wedged agent mid-run (parity: onRetryAgent / onSkipAgent).
+        onRuntime: (rt) => { wfRuntime = rt; },
       });
 
       const durationS = ((Date.now() - workflowStartedAt) / 1000).toFixed(1);

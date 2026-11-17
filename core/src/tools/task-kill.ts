@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
-const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful']);
+const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip']);
 
 /**
  * Bounded window (ms) a `graceful` stop waits event-driven for the agent to finish
@@ -30,7 +30,12 @@ export type TaskKillReason =
   | 'interrupted'
   | 'interrupt_unsupported'
   | 'shutdown_requested'
-  | 'shutdown_unsupported';
+  | 'shutdown_unsupported'
+  // Per-agent workflow recovery (parity: onRetryAgent / onSkipAgent).
+  | 'retried'
+  | 'retry_unsupported'
+  | 'skipped'
+  | 'skip_unsupported';
 
 /** Structured result surface (ToolResult.metadata) for task_kill. */
 export interface TaskKillMetadata {
@@ -125,6 +130,23 @@ export const taskKillTool: ToolDefinition = {
           '(event-driven, bounded) for the agent to go idle before reporting. Only valid ' +
           'for a running agent; mutually exclusive with interrupt. Defaults to false.',
       },
+      retry: {
+        type: 'boolean',
+        description:
+          'When true, RETRY a single wedged WORKFLOW AGENT instead of killing it: ' +
+          'abandon its stuck attempt and re-run just that agent, WITHOUT aborting the ' +
+          'whole workflow. Use this to recover one hung agent in a still-running ' +
+          'workflow rather than tearing down every agent. Only valid for a running ' +
+          'workflow agent; mutually exclusive with interrupt/graceful/skip. Defaults to false.',
+      },
+      skip: {
+        type: 'boolean',
+        description:
+          'When true, SKIP a single wedged WORKFLOW AGENT instead of killing it: ' +
+          'settle just that agent immediately (as skipped) so the workflow continues ' +
+          'with the remaining agents, WITHOUT aborting the whole run. Only valid for a ' +
+          'running workflow agent; mutually exclusive with interrupt/graceful/retry. Defaults to false.',
+      },
     },
     required: ['task_id'],
   },
@@ -142,7 +164,8 @@ export const taskKillTool: ToolDefinition = {
         description:
           'Stable outcome discriminator present on every result: invalid_input | ' +
           'manager_unavailable | not_found | already_terminal | killed | kill_failed | ' +
-          'interrupted | interrupt_unsupported | shutdown_requested | shutdown_unsupported.',
+          'interrupted | interrupt_unsupported | shutdown_requested | shutdown_unsupported | ' +
+          'retried | retry_unsupported | skipped | skip_unsupported.',
       },
       taskId: { type: 'string', description: 'The task ID the stop targeted, when known.' },
       taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: Claude's task_type)." },
@@ -166,7 +189,7 @@ export const taskKillTool: ToolDefinition = {
     // Strict schema: reject unexpected/injected parameters.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
     if (unknown.length > 0) {
-      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful, retry, skip. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
 
     if (!context.processManager) {
@@ -198,8 +221,20 @@ export const taskKillTool: ToolDefinition = {
     }
     const graceful = input.graceful === true;
 
-    if (graceful && interrupt) {
-      return { output: 'Error: "graceful" and "interrupt" are mutually exclusive — pick one (graceful = finish the turn then stop; interrupt = abort the turn but keep the agent alive). [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    if (input.retry !== undefined && typeof input.retry !== 'boolean') {
+      return { output: 'Error: "retry" must be a boolean. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    }
+    const retry = input.retry === true;
+
+    if (input.skip !== undefined && typeof input.skip !== 'boolean') {
+      return { output: 'Error: "skip" must be a boolean. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    }
+    const skip = input.skip === true;
+
+    // The per-agent recovery modes (interrupt / graceful / retry / skip) are
+    // mutually exclusive — each is a distinct single action on one agent.
+    if ([interrupt, graceful, retry, skip].filter(Boolean).length > 1) {
+      return { output: 'Error: "interrupt", "graceful", "retry" and "skip" are mutually exclusive — pick one per-agent action. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
     }
 
     const pm = context.processManager;
@@ -268,6 +303,64 @@ export const taskKillTool: ToolDefinition = {
         };
       }
       return { output: `Error: Failed to interrupt task "${taskId}". [code: kill_failed]`, isError: true, metadata: meta({ reason: 'kill_failed', taskId, kind }) };
+    }
+
+    // PER-AGENT RETRY (parity: the reference workflow detail `onRetryAgent` →
+    // retryWorkflowAgent(workflowId, agentId)). Abandon this ONE wedged workflow
+    // agent's stuck attempt and re-run just it, leaving the rest of the workflow
+    // untouched. Only a running workflow agent that registered a retry callback
+    // supports it; anything else is refused with a clear code instead of a kill.
+    if (retry) {
+      const kind = typeof pm.taskKind === 'function' ? pm.taskKind(taskId) : undefined;
+      if (task.status !== 'running' || kind !== 'agent' || typeof pm.retryAgentTask !== 'function') {
+        return {
+          output: `Error: task "${taskId}" cannot be retried (only a running workflow agent that supports per-agent retry can be; this is ${kind ?? 'unknown'}/${task.status}). Use task_kill without retry to stop it. [code: retry_unsupported]`,
+          isError: true,
+          metadata: meta({ reason: 'retry_unsupported', taskId, kind, status: task.status }),
+        };
+      }
+      if (pm.retryAgentTask(taskId)) {
+        return {
+          output: `Workflow agent "${taskId}" is being retried — its stuck attempt was abandoned and the agent re-run; the rest of the workflow keeps running.`,
+          isError: false,
+          metadata: meta({ reason: 'retried', taskId, taskType: 'agent', kind, command: (task.command || task.description) || undefined }),
+        };
+      }
+      // A running agent that refused retry registered no per-agent retry callback
+      // (e.g. a non-workflow sub-agent) — report that rather than a kill failure.
+      return {
+        output: `Error: task "${taskId}" does not support per-agent retry (no recovery callback registered). Use task_kill without retry to stop it. [code: retry_unsupported]`,
+        isError: true,
+        metadata: meta({ reason: 'retry_unsupported', taskId, kind, status: task.status }),
+      };
+    }
+
+    // PER-AGENT SKIP (parity: the reference workflow detail `onSkipAgent` →
+    // skipWorkflowAgent(workflowId, agentId)). Settle this ONE wedged workflow
+    // agent immediately (as skipped) so the workflow continues with the remaining
+    // agents, without aborting the whole run.
+    if (skip) {
+      const kind = typeof pm.taskKind === 'function' ? pm.taskKind(taskId) : undefined;
+      if (task.status !== 'running' || kind !== 'agent' || typeof pm.skipAgentTask !== 'function') {
+        return {
+          output: `Error: task "${taskId}" cannot be skipped (only a running workflow agent that supports per-agent skip can be; this is ${kind ?? 'unknown'}/${task.status}). Use task_kill without skip to stop it. [code: skip_unsupported]`,
+          isError: true,
+          metadata: meta({ reason: 'skip_unsupported', taskId, kind, status: task.status }),
+        };
+      }
+      if (pm.skipAgentTask(taskId)) {
+        return {
+          output: `Workflow agent "${taskId}" skipped — it was settled as skipped and the rest of the workflow keeps running.`,
+          isError: false,
+          metadata: meta({ reason: 'skipped', taskId, taskType: 'agent', kind, command: (task.command || task.description) || undefined }),
+        };
+      }
+      // A running agent that refused skip registered no per-agent skip callback.
+      return {
+        output: `Error: task "${taskId}" does not support per-agent skip (no recovery callback registered). Use task_kill without skip to stop it. [code: skip_unsupported]`,
+        isError: true,
+        metadata: meta({ reason: 'skip_unsupported', taskId, kind, status: task.status }),
+      };
     }
 
     // PARITY (additive): the task-type discriminator (agent/bash) surfaced in the

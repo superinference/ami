@@ -61,7 +61,14 @@ export interface AgentResult {
   tokenCount: number;
 }
 
-export type AgentHandler = (prompt: string, opts?: AgentOptions) => Promise<unknown>;
+/**
+ * The injected per-agent worker. Receives the stable {@link WorkflowRuntime}
+ * agent id (the same number surfaced on `agent-start`/`agent-complete` as
+ * `agentNumber`) as a third argument so the consumer can correlate the spawned
+ * work (e.g. a process-manager task) back to the live agent and drive per-agent
+ * {@link WorkflowRuntime.retryAgent}/{@link WorkflowRuntime.skipAgent} recovery.
+ */
+export type AgentHandler = (prompt: string, opts?: AgentOptions, agentId?: number) => Promise<unknown>;
 
 export interface AgentOptions {
   label?: string;
@@ -183,6 +190,17 @@ export class WorkflowRuntime extends EventEmitter {
   private readonly _workflowResolver: WorkflowResolver | null;
   private readonly _nestingDepth: number;
   private readonly _cache: WorkflowAgentCache | null;
+  /**
+   * [FUNCTIONAL PARITY] Live controls for in-flight agents, keyed by the stable
+   * per-agent id. Each entry lets a consumer recover a SINGLE wedged/failed agent
+   * inside a still-running workflow without aborting the whole run — parity with
+   * the reference workflow detail actions `onSkipAgent`/`onRetryAgent`, which call
+   * `skipWorkflowAgent(workflowId, agentId)` / `retryWorkflowAgent(workflowId, agentId)`.
+   * An agent is present here only while its handler call is in-flight (between
+   * slot acquisition and completion), so {@link liveAgentIds} is the set of agents
+   * eligible for retry/skip right now.
+   */
+  private readonly _agentControls = new Map<number, { agentId: number; label?: string; phase: string; skip: () => void; retry: () => void }>();
 
   constructor(options: {
     agentHandler: AgentHandler;
@@ -214,6 +232,47 @@ export class WorkflowRuntime extends EventEmitter {
   abort(): void {
     this._aborted = true;
     this.emit('abort');
+  }
+
+  /**
+   * [FUNCTIONAL PARITY] Ids of the agents that are in-flight right now and thus
+   * eligible for a targeted {@link retryAgent}/{@link skipAgent}. Mirrors the
+   * reference workflow detail view, which lists the live agents a user may retry
+   * or skip. An id is the same number reported as `agentNumber` on the
+   * `agent-start` event.
+   */
+  liveAgentIds(): number[] {
+    return [...this._agentControls.keys()];
+  }
+
+  /**
+   * [FUNCTIONAL PARITY] Skip ONE wedged/failed agent in a still-running workflow
+   * (parity with the reference `skipWorkflowAgent(workflowId, agentId)` /
+   * `onSkipAgent`). The in-flight `agent()` call settles immediately as a skip
+   * (resolving to `null`, the same value a failed agent yields) so the workflow
+   * continues instead of being aborted wholesale. Emits `agent-skipped`. Returns
+   * `false` when no agent with that id is currently in-flight.
+   */
+  skipAgent(agentId: number): boolean {
+    const ctrl = this._agentControls.get(agentId);
+    if (!ctrl) return false;
+    ctrl.skip();
+    return true;
+  }
+
+  /**
+   * [FUNCTIONAL PARITY] Retry ONE wedged agent in a still-running workflow
+   * (parity with the reference `retryWorkflowAgent(workflowId, agentId)` /
+   * `onRetryAgent`). The current (stuck) attempt is abandoned and the agent
+   * handler is re-invoked for the same agent, holding the same concurrency slot
+   * and agent id. Emits `agent-retry`. Returns `false` when no agent with that id
+   * is currently in-flight.
+   */
+  retryAgent(agentId: number): boolean {
+    const ctrl = this._agentControls.get(agentId);
+    if (!ctrl) return false;
+    ctrl.retry();
+    return true;
   }
 
   saveCheckpoint(key: string, data: unknown): void {
@@ -305,6 +364,11 @@ export class WorkflowRuntime extends EventEmitter {
       }
 
       this._agentCount++;
+      // Capture a STABLE per-agent id at spawn time. `this._agentCount` keeps
+      // incrementing as concurrent agents spawn, so reading it later would
+      // misattribute events/controls under parallelism — the captured id is the
+      // single identifier used for this agent's events, cache, and live controls.
+      const agentId = this._agentCount;
       const phase = opts?.phase ?? this._currentPhase;
       this._phaseAgents.set(phase, (this._phaseAgents.get(phase) ?? 0) + 1);
 
@@ -315,8 +379,8 @@ export class WorkflowRuntime extends EventEmitter {
       if (cacheKey && this._cache) {
         const cached = this._cache.get(cacheKey);
         if (cached !== undefined) {
-          this.emit('agent-start', { prompt: prompt.slice(0, 100), label: opts?.label, phase, agentNumber: this._agentCount, cached: true });
-          this.emit('agent-complete', { label: opts?.label, phase, agentNumber: this._agentCount, cached: true });
+          this.emit('agent-start', { prompt: prompt.slice(0, 100), label: opts?.label, phase, agentNumber: agentId, cached: true });
+          this.emit('agent-complete', { label: opts?.label, phase, agentNumber: agentId, cached: true });
           return cached;
         }
       }
@@ -327,44 +391,53 @@ export class WorkflowRuntime extends EventEmitter {
           prompt: prompt.slice(0, 100),
           label: opts?.label,
           phase,
-          agentNumber: this._agentCount,
+          agentNumber: agentId,
         });
 
-        let result: unknown;
-        if (opts?.schema) {
-          // [FUNCTIONAL PARITY] Schema-forced StructuredOutput: validate the
-          // handler's output against opts.schema and retry on mismatch (parity
-          // with the reference runtime, which re-asks the agent until it returns conforming
-          // output or attempts are exhausted). A single agent() call still counts
-          // as one agent — retries are internal and hold the same slot.
-          const maxAttempts = schemaMaxAttempts();
-          let validated: unknown | undefined;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const raw = await this._agentHandler(prompt, opts);
-            validated = validateStructuredOutput(raw, opts.schema);
-            if (validated !== undefined) break;
-            if (attempt < maxAttempts) {
-              this.emit('agent-schema-retry', {
-                label: opts?.label,
-                phase,
-                attempt,
-                maxAttempts,
-                agentNumber: this._agentCount,
-              });
+        // Produce the agent's result once. Factored out so the live-control race
+        // ({@link runWithAgentControl}) can re-invoke it on a retry.
+        const produce = async (): Promise<unknown> => {
+          if (opts?.schema) {
+            // [FUNCTIONAL PARITY] Schema-forced StructuredOutput: validate the
+            // handler's output against opts.schema and retry on mismatch (parity
+            // with the reference runtime, which re-asks the agent until it returns conforming
+            // output or attempts are exhausted). A single agent() call still counts
+            // as one agent — retries are internal and hold the same slot.
+            const maxAttempts = schemaMaxAttempts();
+            let validated: unknown | undefined;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const raw = await this._agentHandler(prompt, opts, agentId);
+              validated = validateStructuredOutput(raw, opts.schema);
+              if (validated !== undefined) break;
+              if (attempt < maxAttempts) {
+                this.emit('agent-schema-retry', {
+                  label: opts?.label,
+                  phase,
+                  attempt,
+                  maxAttempts,
+                  agentNumber: agentId,
+                });
+              }
             }
+            if (validated === undefined) {
+              throw new Error(`Workflow agent output failed schema validation after ${maxAttempts} attempt(s)`);
+            }
+            return validated;
           }
-          if (validated === undefined) {
-            throw new Error(`Workflow agent output failed schema validation after ${maxAttempts} attempt(s)`);
-          }
-          result = validated;
-        } else {
-          result = await this._agentHandler(prompt, opts);
+          return await this._agentHandler(prompt, opts, agentId);
+        };
+
+        const outcome = await this.runWithAgentControl(agentId, opts?.label, phase, produce);
+        if (outcome.skipped) {
+          this.emit('agent-skipped', { label: opts?.label, phase, agentNumber: agentId });
+          return null;
         }
+        const result = outcome.value;
 
         this.emit('agent-complete', {
           label: opts?.label,
           phase,
-          agentNumber: this._agentCount,
+          agentNumber: agentId,
         });
 
         if (cacheKey && this._cache && result !== null && result !== undefined) {
@@ -383,6 +456,56 @@ export class WorkflowRuntime extends EventEmitter {
         this.releaseSlot();
       }
     };
+  }
+
+  /**
+   * [FUNCTIONAL PARITY] Run the agent's `produce()` while a live control for it is
+   * registered, racing the work against targeted skip/retry signals:
+   *  - resolves `produce()` → the agent's result;
+   *  - {@link skipAgent} → settle as skipped (`{ skipped: true }`);
+   *  - {@link retryAgent} → abandon the current attempt and re-invoke `produce()`.
+   * The abandoned attempt's eventual settle is swallowed (never an unhandled
+   * rejection); the consumer wiring is responsible for tearing down the real work
+   * (e.g. aborting a sub-engine) on retry/skip.
+   */
+  private async runWithAgentControl(
+    agentId: number,
+    label: string | undefined,
+    phase: string,
+    produce: () => Promise<unknown>,
+  ): Promise<{ skipped: boolean; value?: unknown }> {
+    for (;;) {
+      let fired = false;
+      let fire!: (signal: 'skip' | 'retry') => void;
+      const control = new Promise<'skip' | 'retry'>((resolve) => {
+        fire = (signal) => { if (!fired) { fired = true; resolve(signal); } };
+      });
+      this._agentControls.set(agentId, {
+        agentId,
+        label,
+        phase,
+        skip: () => fire('skip'),
+        retry: () => fire('retry'),
+      });
+      let outcome:
+        | { kind: 'done'; value: unknown }
+        | { kind: 'error'; error: unknown }
+        | { kind: 'skip' | 'retry' };
+      try {
+        const produced = produce().then(
+          (value) => ({ kind: 'done' as const, value }),
+          (error) => ({ kind: 'error' as const, error }),
+        );
+        outcome = await Promise.race([produced, control.then((signal) => ({ kind: signal }))]);
+      } finally {
+        this._agentControls.delete(agentId);
+      }
+      if (outcome.kind === 'done') return { skipped: false, value: outcome.value };
+      if (outcome.kind === 'error') throw outcome.error;
+      if (outcome.kind === 'skip') return { skipped: true };
+      // retry: abandon the stuck attempt and re-invoke produce() on the next loop.
+      this.emit('agent-retry', { label, phase, agentNumber: agentId });
+    }
   }
 
   private createParallel(): <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>> {
@@ -753,6 +876,14 @@ export async function executeWorkflow(
     workflowResolver?: WorkflowResolver | null;
     maxConcurrent?: number;
     cache?: WorkflowAgentCache | null;
+    /**
+     * [FUNCTIONAL PARITY] Surface the live {@link WorkflowRuntime} to the caller
+     * the instant it is created (before the script runs) so a consumer can drive
+     * per-agent recovery — {@link WorkflowRuntime.retryAgent} /
+     * {@link WorkflowRuntime.skipAgent} — on a wedged agent mid-run, parity with
+     * the reference workflow detail `onRetryAgent`/`onSkipAgent` actions.
+     */
+    onRuntime?: (runtime: WorkflowRuntime) => void;
   } = {},
 ): Promise<{ result: unknown; logs: string[]; agentCount: number }> {
   const scriptBody = stripMeta(script);
@@ -765,6 +896,7 @@ export async function executeWorkflow(
     maxConcurrent: options.maxConcurrent,
     cache: options.cache,
   });
+  options.onRuntime?.(runtime);
 
   if (options.abortSignal) {
     options.abortSignal.addEventListener('abort', () => runtime.abort(), { once: true });
