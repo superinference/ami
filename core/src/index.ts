@@ -56,6 +56,12 @@ export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURREN
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy, HookEventMetadata, HookEventMetadataOpts, HookDescriptor, HookEventMatcherGroup, HookEventDescription, HookAuditRow, SessionStartSource, SessionEndReason, SetupTrigger, HookConfigEntry, HookConfigFile } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
+export { describeRule } from './permissions';
+export {
+  AUTO_MODE_DEFAULT_RULES, getDefaultExternalAutoModeRules, resolveAutoModeRules,
+  buildAutoModeClassifierPrompt, buildAutoModeClassifierPromptFromConfig,
+} from './auto-mode';
+export type { AutoModeRules } from './auto-mode';
 export { detectPathExpansionHazard, pathExpansionHazardReason } from './permissions';
 export type { PathExpansionHazard } from './permissions';
 export {
@@ -154,7 +160,7 @@ export type {
   ContextFile,
   UsageStats,
 } from './types';
-export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType } from './types';
+export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType, AutoModeConfig } from './types';
 export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS, mergeSkillUsageStat } from './types';
 export type { SkillUsageStat } from './types';
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, modelSupportsMaxEffort, modelSupportsAdvisor, modelAlwaysOnThinking, resolveMaxEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, normalizeModelStringForAPI, getSmallFastModel, SMALL_FAST_MODEL_ENV_VARS, THINKING_LEVELS, REVIEW_EFFORT_LEVELS, getModelDeprecationWarning, toApiProviderClass, hasUltrathinkKeyword, findThinkingTriggerPositions, get3PModelFallbackSuggestion, getAvailableContextUpgrade } from './model-capabilities';

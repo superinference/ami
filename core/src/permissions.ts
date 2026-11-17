@@ -197,6 +197,31 @@ export interface PermissionRule {
 }
 
 /**
+ * Plain-language, one-line preview of what a {@link PermissionRule} does, for
+ * showing the user — under a pattern input while they type, and in the "Rule
+ * added" confirmation — what they are about to grant/deny BEFORE it takes effect.
+ * Parity: Claude's `PermissionRuleDescription`. Reads behavior + tool + scope +
+ * (optionally) origin tier, e.g.:
+ *   `Allow bash commands matching "git status"`
+ *   `Deny edits to files matching "/etc/**" (from enterprise managed settings)`
+ *   `Ask before any web_fetch call`
+ */
+export function describeRule(rule: PermissionRule): string {
+  const verb = rule.action === 'allow' ? 'Allow' : rule.action === 'deny' ? 'Deny' : 'Ask before';
+  const tool = rule.tool === '*' ? 'any tool' : rule.tool;
+  let scope: string;
+  if (rule.pattern && rule.pattern !== '*') {
+    scope = ` matching "${rule.pattern}"`;
+  } else if (rule.paramPattern && Object.keys(rule.paramPattern).length > 0) {
+    scope = ` with ${Object.entries(rule.paramPattern).map(([k, v]) => `${k}="${v}"`).join(', ')}`;
+  } else {
+    scope = ' calls';
+  }
+  const origin = rule.source ? ` (from ${permissionRuleSourceDisplayString(rule.source)})` : '';
+  return `${verb} ${tool}${scope}${origin}`;
+}
+
+/**
  * How a higher-priority rule makes a lower one unreachable:
  *  - `deny` — the allow is COMPLETELY blocked (a tool-wide deny always wins); the
  *    more severe case.
@@ -4597,10 +4622,18 @@ export class PermissionManager {
    * Remove every rule matching the predicate. Returns the number removed.
    * Used to drop scoped rule sets (e.g. a persona's auto-allow rules) when
    * that scope ends, so they do not accumulate or leak across switches.
+   *
+   * Managed (`policySettings`) rules are IMMUTABLE: they are admin/enterprise-owned
+   * and can never be removed by the agent, a persona-scope cleanup, or a
+   * `/permissions remove` — even when the predicate matches them. This mirrors
+   * Claude's managed-settings tier, where policy rules are read-only to the user
+   * ({@link isManagedPermissionSource}). The lockdown in {@link addRule} stops new
+   * non-managed rules from being added; this stops existing managed rules from
+   * being deleted, so the enterprise policy floor cannot be edited away at runtime.
    */
   removeRule(predicate: (rule: PermissionRule) => boolean): number {
     const before = this.rules.length;
-    this.rules = this.rules.filter(r => !predicate(r));
+    this.rules = this.rules.filter(r => isManagedPermissionSource(r.source) || !predicate(r));
     return before - this.rules.length;
   }
 
