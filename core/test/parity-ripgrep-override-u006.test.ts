@@ -106,3 +106,83 @@ describe('glob honors sandbox.ripgrep config override', () => {
     assert.ok(spawned!.args.includes('--files'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// sandbox.ripgrep.argv0 — explicit argv[0] for a multi-call / busybox-style
+// ripgrep binary (dispatches on argv[0]==='rg' while `command` is the wrapper
+// path). Threaded end-to-end into the spawn/execFile `argv0` option by grep and
+// glob; omitted → the OS default (argv[0] === the spawned path).
+// ---------------------------------------------------------------------------
+describe('sandbox.ripgrep.argv0 is threaded into the child spawn', () => {
+  it('grep passes argv0 through to spawn options when set', async () => {
+    let opts: { argv0?: string } | undefined;
+    mock.method(grepHooks, 'spawn', ((_cmd: string, _args: string[], o: { argv0?: string }) => {
+      opts = o;
+      return makeChild() as never;
+    }) as never);
+    await grepTool.execute(
+      { pattern: 'needle' },
+      ctx({ mode: 'off', ripgrep: { command: '/busybox/rg-wrapper', argv0: 'rg' } }),
+    );
+    assert.ok(opts, 'grep must spawn a search process');
+    assert.equal(opts!.argv0, 'rg');
+  });
+
+  it('grep omits argv0 from spawn options when the override does not set it', async () => {
+    let opts: { argv0?: string } | undefined;
+    mock.method(grepHooks, 'spawn', ((_cmd: string, _args: string[], o: { argv0?: string }) => {
+      opts = o;
+      return makeChild() as never;
+    }) as never);
+    await grepTool.execute(
+      { pattern: 'needle' },
+      ctx({ mode: 'off', ripgrep: { command: '/custom/rg' } }),
+    );
+    assert.ok(opts, 'grep must spawn a search process');
+    assert.ok(!('argv0' in opts!), 'argv0 must be absent when not configured');
+  });
+
+  it('glob passes argv0 through to the execFile options when set', async () => {
+    const prev = process.env[GLOB_RIPGREP_ENV];
+    process.env[GLOB_RIPGREP_ENV] = 'true';
+    let opts: { argv0?: string } | undefined;
+    mock.method(globHooks, 'execFileImpl', ((_command: string, _args: string[], o: { argv0?: string }, cb: (e: unknown, out: string, err: string) => void) => {
+      opts = o;
+      setImmediate(() => cb(null, 'a.ts\n', ''));
+      return { kill: () => true } as never;
+    }) as never);
+    try {
+      await globTool.execute(
+        { pattern: '**/*.ts' },
+        ctx({ mode: 'off', ripgrep: { command: '/busybox/rg-wrapper', argv0: 'rg' } }),
+      );
+    } finally {
+      if (prev === undefined) delete process.env[GLOB_RIPGREP_ENV];
+      else process.env[GLOB_RIPGREP_ENV] = prev;
+    }
+    assert.ok(opts, 'glob must spawn ripgrep when the G5 route is enabled');
+    assert.equal(opts!.argv0, 'rg');
+  });
+
+  it('glob omits argv0 from the execFile options when the override does not set it', async () => {
+    const prev = process.env[GLOB_RIPGREP_ENV];
+    process.env[GLOB_RIPGREP_ENV] = 'true';
+    let opts: { argv0?: string } | undefined;
+    mock.method(globHooks, 'execFileImpl', ((_command: string, _args: string[], o: { argv0?: string }, cb: (e: unknown, out: string, err: string) => void) => {
+      opts = o;
+      setImmediate(() => cb(null, 'a.ts\n', ''));
+      return { kill: () => true } as never;
+    }) as never);
+    try {
+      await globTool.execute(
+        { pattern: '**/*.ts' },
+        ctx({ mode: 'off', ripgrep: { command: '/custom/rg' } }),
+      );
+    } finally {
+      if (prev === undefined) delete process.env[GLOB_RIPGREP_ENV];
+      else process.env[GLOB_RIPGREP_ENV] = prev;
+    }
+    assert.ok(opts, 'glob must spawn ripgrep when the G5 route is enabled');
+    assert.ok(!('argv0' in opts!), 'argv0 must be absent when not configured');
+  });
+});

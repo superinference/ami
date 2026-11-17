@@ -602,10 +602,12 @@ export interface SandboxPolicy {
   /** Config-level override for the ripgrep binary used by the search tools (grep/glob),
    *  taking precedence over the `USE_BUILTIN_RIPGREP`/`AMI_RIPGREP_PATH` env waterfall.
    *  `command` is the binary to spawn (an absolute path or a bare name resolved via PATH);
-   *  `args` are extra flags prepended to every ripgrep invocation. Consumed by
+   *  `args` are extra flags prepended to every ripgrep invocation; `argv0` is the explicit
+   *  argv[0] handed to the child (for a multi-call / busybox-style binary that dispatches on
+   *  argv[0]==='rg' while `command` is the wrapper path). Consumed by
    *  {@link import('./tools/ripgrep-config').resolveRipgrepConfig}. Parity: Claude Code's
-   *  sandbox `ripgrep: { command, args }` setting. */
-  ripgrep?: { command: string; args?: string[] };
+   *  sandbox `ripgrep: { command, args, argv0 }` setting. */
+  ripgrep?: { command: string; args?: string[]; argv0?: string };
 }
 
 export interface ToolContext {

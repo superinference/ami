@@ -114,6 +114,12 @@ export const exitWorktreeTool: ToolDefinition = {
   // prompt in `ask` mode so an irreversible discard is never silently auto-approved.
   isDestructive: (input) => input.action === 'remove',
 
+  // Compact projection fed to the auto-mode security classifier (parity: Claude's
+  // ExitWorktreeTool `toAutoClassifierInput(input) => input.action`). The
+  // auto-approval decision keys on the keep/merge/remove/stash action rather than
+  // the full argument blob; a non-string/omitted action projects to '' (skip).
+  toAutoClassifierInput: (input) => (typeof input.action === 'string' ? input.action : ''),
+
   async execute(input, context): Promise<ToolResult> {
     // Strict input: reject unknown keys.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));

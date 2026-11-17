@@ -149,7 +149,9 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal, over
     const child = globHooks.execFileImpl(
       rgConfig.command,
       rgConfig.args?.length ? [...rgConfig.args, ...args] : args,
-      { cwd, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM', signal },
+      // Explicit argv[0] for a multi-call ripgrep binary (sandbox.ripgrep.argv0);
+      // omitted → the OS default (argv[0] === the spawned path).
+      { cwd, maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGTERM', signal, ...(rgConfig.argv0 ? { argv0: rgConfig.argv0 } : {}) },
       (err, stdout, stderr) => {
         if (err) {
           // rg exits 1 when it matched no files (valid empty result); any other error

@@ -59,6 +59,29 @@ describe('resolveRipgrepConfig – sandbox.ripgrep config override', () => {
     assert.equal(c.mode, 'config');
     assert.equal(c.command, '/usr/local/bin/rg');
     assert.equal(c.args, undefined);
+    assert.equal(c.argv0, undefined);
+  });
+
+  it('carries an explicit argv0 for a multi-call ripgrep binary (trimmed)', () => {
+    const c = resolveRipgrepConfig(
+      {},
+      { command: '/busybox/rg-wrapper', argv0: '  rg  ' },
+    );
+    assert.equal(c.mode, 'config');
+    assert.equal(c.command, '/busybox/rg-wrapper');
+    assert.equal(c.argv0, 'rg');
+  });
+
+  it('omits argv0 when the override supplies none or only blanks', () => {
+    const c = resolveRipgrepConfig({}, { command: 'rg', argv0: '   ' });
+    assert.equal(c.mode, 'config');
+    assert.equal(c.argv0, undefined);
+  });
+
+  it('carries both sanitized args and argv0 together', () => {
+    const c = resolveRipgrepConfig({}, { command: 'rg', args: [' --mmap '], argv0: 'rg' });
+    assert.deepEqual(c.args, ['--mmap']);
+    assert.equal(c.argv0, 'rg');
   });
 
   it('carries sanitized extra args, dropping empty/whitespace entries', () => {

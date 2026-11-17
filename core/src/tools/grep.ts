@@ -345,11 +345,11 @@ Usage:
     const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings, readIgnore);
     // Prepend any config-supplied extra ripgrep flags (sandbox.ripgrep.args).
     if (rgConfig.args?.length) rgArgs.unshift(...rgConfig.args);
-    let rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
+    let rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs, rgConfig.argv0);
 
     if (rgOutcome.eagain) {
       rgArgs.push('-j', '1');
-      rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs);
+      rgOutcome = await runSearch(rgArgs, rgCommand, context, grepHooks.timeoutMs, rgConfig.argv0);
     }
 
     if (rgOutcome.timedOut) {
@@ -740,6 +740,7 @@ export function runSearch(
   command: string,
   context: ToolContext,
   timeout?: number,
+  argv0?: string,
 ): Promise<SearchOutcome> {
   return new Promise<SearchOutcome>((resolve) => {
     let stdout = '';
@@ -770,6 +771,9 @@ export function runSearch(
         cwd: context.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: childEnv,
+        // Explicit argv[0] for a multi-call ripgrep binary (sandbox.ripgrep.argv0);
+        // omitted → the OS default (argv[0] === the spawned path).
+        ...(argv0 ? { argv0 } : {}),
       });
     } catch {
       resolve({ output: null });

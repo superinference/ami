@@ -20,6 +20,12 @@ export type RipgrepMode = 'system' | 'builtin' | 'config';
 export interface RipgrepOverride {
   command: string;
   args?: string[];
+  /** The argv[0] the child should see, independent of the spawned binary path.
+   *  Mirrors Claude Code's `sandbox.ripgrep.argv0`: a multi-call / busybox-style
+   *  binary (one executable dispatching on argv[0]) needs argv[0]==='rg' to behave
+   *  as ripgrep even when `command` is the wrapper path. Omitted → the OS default
+   *  (argv[0] === the spawned path). */
+  argv0?: string;
 }
 
 export interface RipgrepConfig {
@@ -28,6 +34,10 @@ export interface RipgrepConfig {
   command: string;
   /** Extra flags prepended to every invocation (from a config-level override). */
   args?: string[];
+  /** Explicit argv[0] for the spawned child (from `sandbox.ripgrep.argv0`), passed
+   *  through to the spawn/execFile `argv0` option so a multi-call ripgrep binary is
+   *  dispatched correctly. Only ever set alongside a `config`-mode `command`. */
+  argv0?: string;
 }
 
 /**
@@ -45,7 +55,8 @@ function useBuiltinDefaultTrue(raw: string | undefined): boolean {
  * Resolve which ripgrep binary the search tools should spawn.
  *
  * - A config-level `override` (from `sandbox.ripgrep`) with a non-empty `command`
- *   WINS over everything → mode `config`, carrying its optional extra `args`.
+ *   WINS over everything → mode `config`, carrying its optional extra `args` and
+ *   optional explicit `argv0` (for multi-call ripgrep binaries).
  * - `USE_BUILTIN_RIPGREP` truthy (default) AND `AMI_RIPGREP_PATH` set → the
  *   configured path, mode `builtin`.
  * - Otherwise → the bare name `rg`, mode `system`.
@@ -61,9 +72,11 @@ export function resolveRipgrepConfig(
   const overrideCommand = (override?.command ?? '').trim();
   if (overrideCommand) {
     const args = (override?.args ?? []).map((a) => a.trim()).filter((a) => a !== '');
-    return args.length
-      ? { mode: 'config', command: overrideCommand, args }
-      : { mode: 'config', command: overrideCommand };
+    const argv0 = (override?.argv0 ?? '').trim();
+    const config: RipgrepConfig = { mode: 'config', command: overrideCommand };
+    if (args.length) config.args = args;
+    if (argv0) config.argv0 = argv0;
+    return config;
   }
   const useBuiltin = useBuiltinDefaultTrue(env[USE_BUILTIN_RIPGREP_ENV]);
   const configured = (env[RIPGREP_PATH_ENV] ?? '').trim();

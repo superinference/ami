@@ -382,6 +382,13 @@ export const enterWorktreeTool: ToolDefinition = {
   },
   isReadOnly: false,
 
+  // Compact projection fed to the auto-mode security classifier (parity: Claude's
+  // EnterWorktreeTool `toAutoClassifierInput(input) => input.name ?? ''`). The
+  // auto-approval decision keys on the actual worktree name the model requested
+  // rather than the full argument blob; a non-string/omitted name projects to ''
+  // (the classifier skips it).
+  toAutoClassifierInput: (input) => (typeof input.name === 'string' ? input.name : ''),
+
   async execute(input, context): Promise<ToolResult> {
     // Strict input: reject unknown keys up front (parity with exit_worktree) so
     // a mistyped parameter can never be silently discarded.
