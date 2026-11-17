@@ -32,6 +32,8 @@ export const shellHooks = {
     process.stderr.write(`[slow-exec] ${Math.round(info.durationMs)}ms (threshold ${info.thresholdMs}ms): ${info.command.slice(0, 200)}\n`);
   }),
   mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  readFileSync: fs.readFileSync as typeof fs.readFileSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   /**
    * Shell-command-assembly debug sink (see {@link SHELL_DEBUG_ENV}). Default
    * writes a single `[shell-debug]` line to stderr, but ONLY when
@@ -206,6 +208,52 @@ function createOutputBuffer(): { push: (chunk: string) => void; value: () => str
       return head + `\n[kept first ${head.length} + last ${tail.length} of ${total} chars; ${dropped} truncated]\n` + tail;
     },
   };
+}
+
+/**
+ * Default cadence (ms) of the {@link ExecCommandOptions.onProgress} heartbeat.
+ * Only armed when a caller supplies `onProgress`; a caller may override it with
+ * {@link ExecCommandOptions.progressIntervalMs}. Mirrors Claude Code's
+ * progress-poll loop that fires even on a silent command so the loop can wake
+ * and decide to background a long runner (TaskOutput.ts:L119-125).
+ */
+const DEFAULT_PROGRESS_INTERVAL_MS = 5_000;
+
+/**
+ * How many trailing characters of combined stdout+stderr are retained to shape
+ * the {@link ExecCommandOptions.onProgress} tail slices. Bounds progress memory
+ * on a huge-output command; the exact total byte count is tracked separately so
+ * the line count is extrapolated from this sample when the output exceeds it
+ * (parity with Claude Code's `PROGRESS_TAIL_BYTES`, TaskOutput.ts).
+ */
+const PROGRESS_TAIL_CHARS = 65_536;
+
+/**
+ * Compute the last-5-lines and last-100-lines tail slices plus the total line
+ * count of `text`, by walking backwards over newline characters. This is the
+ * shaping that feeds {@link ExecCommandOptions.onProgress}'s structured args
+ * (parity with Claude Code's TaskOutput poller, TaskOutput.ts:L126-149). The
+ * line count is EXACT here (AMI buffers the full command output in memory),
+ * which is a superset of Claude's tail-sample extrapolation — no estimation
+ * error — while the caller still applies a monotone `Math.max` so the counter
+ * never moves backwards between ticks.
+ *
+ * The backward walk counts a final "no more newline" step as the first line, so
+ * `"a\nb\nc"` yields `totalLines === 3` (3 lines, 2 newlines), matching Claude's
+ * loop exactly. An empty string yields `totalLines === 0` and empty slices.
+ */
+export function computeProgressSlices(text: string): { last5: string; last100: string; totalLines: number } {
+  let pos = text.length;
+  let n5 = 0;
+  let n100 = 0;
+  let totalLines = 0;
+  while (pos > 0) {
+    pos = text.lastIndexOf('\n', pos - 1);
+    totalLines++;
+    if (totalLines === 5) n5 = pos <= 0 ? 0 : pos + 1;
+    if (totalLines === 100) n100 = pos <= 0 ? 0 : pos + 1;
+  }
+  return { last5: text.slice(n5), last100: text.slice(n100), totalLines };
 }
 
 const PROMPT_PATTERNS = [
@@ -851,6 +899,37 @@ export interface ExecCommandOptions {
    * skipSnapshot })` (bashProvider.ts). No effect when snapshots are disabled.
    */
   skipSnapshot?: boolean;
+  /**
+   * Structured progress callback, distinct from {@link onData}'s raw-chunk pipe.
+   * Fires on a cadence ({@link progressIntervalMs}) with, positionally:
+   *   `(lastLines, allLines, totalLines, totalBytes, isIncomplete)`
+   * — the last 5 lines, the last 100 lines, the running (monotone) total line
+   * count, total bytes seen, and whether the delivered sample omits earlier
+   * output (`totalLines > 100`). It fires EVEN when no new output arrived since
+   * the last tick (empty `lastLines`/`allLines`) so a caller's progress loop
+   * wakes on a silent long-running command and can decide to background it.
+   * Parity with Claude Code's `ExecOptions.onProgress` (Shell.ts:L161-169) +
+   * the always-tick poller (TaskOutput.ts:L119-149). `onData` still streams raw
+   * chunks for callers that only want the bytes.
+   */
+  onProgress?: (lastLines: string, allLines: string, totalLines: number, totalBytes: number, isIncomplete: boolean) => void;
+  /**
+   * Heartbeat cadence (ms) for {@link onProgress}. Only used when `onProgress`
+   * is set; defaults to {@link DEFAULT_PROGRESS_INTERVAL_MS}. A value `<= 0`
+   * disables the heartbeat entirely (no progress ticks).
+   */
+  progressIntervalMs?: number;
+  /**
+   * When `false`, the command's final working directory (captured via `pwd -P`
+   * on the bash path) is written into {@link ExecCommandResult.cwd} so a caller
+   * can persist a `cd` across invocations (parity with Claude Code's
+   * `ExecOptions.preventCwdChanges` / `nativeCwdFilePath`, Shell.ts:L170,
+   * L385-414). Defaults to NOT tracking (undefined/`true`) so AMI's existing
+   * per-call `cwd` contract and all current callers are unchanged — a caller
+   * opts in by passing `preventCwdChanges: false`. No-op for the PowerShell
+   * shell family.
+   */
+  preventCwdChanges?: boolean;
 }
 
 export interface ExecCommandResult {
@@ -864,6 +943,23 @@ export interface ExecCommandResult {
    * `exitCode: null`.
    */
   signal: NodeJS.Signals | null;
+  /**
+   * `true` when a SOFT `'interrupt'` abort (the caller submitted a new message
+   * mid-command, i.e. `abortSignal.reason === 'interrupt'`) resolved this call
+   * WITHOUT killing the process — it is left running so the caller can background
+   * it and keep its in-flight/partial work. A hard abort (any other reason)
+   * still kills the process tree and leaves this unset. Parity with Claude
+   * Code's `#abortHandler` interrupt branch (ShellCommand.ts:L186-193).
+   */
+  backgrounded?: boolean;
+  /**
+   * The command's final working directory, captured via `pwd -P` on the bash
+   * path, present ONLY when the caller opted in with
+   * {@link ExecCommandOptions.preventCwdChanges} `=== false`. Lets a caller
+   * persist a `cd` across invocations. Absent when tracking is off, on the
+   * PowerShell path, or when the command exited before `pwd -P` ran.
+   */
+  cwd?: string;
 }
 
 /**
@@ -907,7 +1003,12 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath, skipSnapshot } = options;
+  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath, skipSnapshot, onProgress, progressIntervalMs, preventCwdChanges } = options;
+
+  // Opt-in cwd tracking: only when the caller explicitly allows cwd changes to
+  // persist (`preventCwdChanges === false`). Default (undefined/true) leaves
+  // AMI's per-call cwd contract and all existing callers unchanged.
+  const trackCwd = preventCwdChanges === false;
 
   // Wall-clock start for slow-command diagnostics (see SLOW_EXEC_THRESHOLD_ENV).
   const startedAt = Date.now();
@@ -924,6 +1025,19 @@ export function execCommand(
 
     const stdoutBuf = createOutputBuffer();
     const stderrBuf = createOutputBuffer();
+
+    // Temp file the bash shell writes its final `pwd -P` to when cwd tracking is
+    // opted in (preventCwdChanges === false). Read back + unlinked in finish().
+    let cwdFile: string | null = null;
+
+    // --- Structured progress (onProgress) accumulators ---
+    // Combined stdout+stderr seen so far (the "command output"), total bytes,
+    // the monotone total-line counter, and whether new output has arrived since
+    // the last heartbeat tick.
+    let progressText = '';
+    let progressBytes = 0;
+    let progressTotalLines = 0;
+    let progressDirty = false;
 
     // --- Working-directory recovery ---
     // A command (or a prior one) may delete its own CWD. Rather than failing to
@@ -1042,7 +1156,18 @@ export function execCommand(
       const useLogin = !!process.env.AMI_LOGIN_SHELL || snapshotFallbackLogin;
       if (snapshotFallbackLogin) shellHooks.onShellDebug('Shell snapshot unavailable; spawning login shell (-l) as fallback');
       const loginArgs = useLogin ? ['-l'] : [];
-      shellArgs = [...loginArgs, '-c', finalCommand];
+
+      // Opt-in cwd tracking (preventCwdChanges === false): after the user command
+      // runs, write the shell's final working directory to a temp file WITHOUT
+      // disturbing the command's own exit code, so a `cd` can be persisted across
+      // invocations (parity with Claude Code's nativeCwdFilePath / `pwd -P`,
+      // Shell.ts:L385-414). Read back + unlinked in finish().
+      let trackedCommand = finalCommand;
+      if (trackCwd) {
+        cwdFile = path.join(resolveTmpBase(), `ami-cwd-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        trackedCommand = `${finalCommand}\n__ami_ec=$?\ncommand pwd -P > ${shQuote(cwdFile)} 2>/dev/null\nexit $__ami_ec`;
+      }
+      shellArgs = [...loginArgs, '-c', trackedCommand];
     }
 
     const proc = shellHooks.spawn(shell, shellArgs, {
@@ -1076,7 +1201,7 @@ export function execCommand(
     let settled = false;
     let exitDrainTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const finish = (exitCode: number | null, signal: NodeJS.Signals | null = null): void => {
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null = null, backgrounded = false): void => {
       if (settled) return;
       settled = true;
       cleanUp();
@@ -1085,11 +1210,26 @@ export function execCommand(
       // commands). A timeout/abort/launch failure (exitCode === null) always
       // keeps its output so the caller can tell WHY it failed.
       const suppress = preserveOutputOnError === false && exitCode != null && exitCode !== 0;
+      // Read back the tracked final cwd, if the command wrote one (opt-in). A
+      // soft-interrupt background leaves the command running, so `pwd -P` has not
+      // run yet — skip the read in that case.
+      let finalCwd: string | undefined;
+      if (cwdFile && !backgrounded && shellHooks.existsSync(cwdFile)) {
+        try {
+          const captured = String(shellHooks.readFileSync(cwdFile, 'utf8')).trim();
+          if (captured) finalCwd = captured;
+        } catch { /* unreadable — leave cwd unset */ }
+      }
+      if (cwdFile) {
+        try { shellHooks.unlinkSync(cwdFile); } catch { /* may not exist if the command died first */ }
+      }
       resolve({
         stdout: suppress ? '' : stdoutBuf.value(),
         stderr: suppress ? '' : stderrBuf.value(),
         exitCode,
         signal,
+        ...(backgrounded ? { backgrounded: true } : {}),
+        ...(finalCwd !== undefined ? { cwd: finalCwd } : {}),
       });
     };
 
@@ -1115,6 +1255,16 @@ export function execCommand(
 
     // --- Abort signal handling ---
     const onAbort = (): void => {
+      // Soft interrupt: the caller submitted a new message while the command was
+      // still running (abortSignal.reason === 'interrupt'). Do NOT kill — resolve
+      // and leave the process running so the caller can background it and keep
+      // its in-flight/partial work. Any other abort reason is a hard abort that
+      // kills the whole process tree. Parity: Claude Code's #abortHandler
+      // interrupt branch (ShellCommand.ts:L186-193).
+      if (abortSignal?.reason === 'interrupt') {
+        finish(null, null, true);
+        return;
+      }
       destroyStreams(proc);
       killTree(proc);
       finish(null);
@@ -1137,11 +1287,53 @@ export function execCommand(
       }
     }, 5000) : null;
 
+    // --- Structured progress heartbeat (onProgress) ---
+    // Emits the last-5/last-100 line tail + a monotone total-line count + total
+    // bytes on a cadence, firing EVEN on a silent tick (empty slices) so a
+    // caller's progress loop wakes on a quiet long-runner. Armed only when a
+    // caller supplies onProgress and the cadence is > 0.
+    const emitProgress = (): void => {
+      if (settled || !onProgress) return;
+      if (!progressDirty) {
+        // No new output since the last tick — still fire so the loop wakes.
+        onProgress('', '', progressTotalLines, progressBytes, false);
+        return;
+      }
+      progressDirty = false;
+      const { last5, last100, totalLines: sampleLines } = computeProgressSlices(progressText);
+      const bytesRead = Buffer.byteLength(progressText);
+      // Exact when the whole output fits in the retained tail; otherwise
+      // extrapolate from the tail sample, with a monotone max so a tick with
+      // longer lines never walks the counter backwards (parity: TaskOutput.ts
+      // L143-149).
+      const totalLines = bytesRead >= progressBytes
+        ? sampleLines
+        : Math.max(progressTotalLines, Math.round((progressBytes / bytesRead) * sampleLines));
+      progressTotalLines = totalLines;
+      onProgress(last5, last100, totalLines, progressBytes, bytesRead < progressBytes);
+    };
+    const effProgressInterval = progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS;
+    const progressTimer = (onProgress && effProgressInterval > 0)
+      ? setInterval(emitProgress, effProgressInterval)
+      : null;
+
     const cleanUp = (): void => {
       clearTimeout(timer);
       if (stallCheck) clearInterval(stallCheck);
+      if (progressTimer) clearInterval(progressTimer);
       if (exitDrainTimer) clearTimeout(exitDrainTimer);
       abortSignal?.removeEventListener('abort', onAbort);
+    };
+
+    // Accumulate combined stdout+stderr for the structured progress tail/bytes.
+    // Only the last PROGRESS_TAIL_CHARS are retained (bounded memory); the exact
+    // total byte count is tracked separately so the line count can be
+    // extrapolated from the tail sample (parity: TaskOutput.ts PROGRESS_TAIL_BYTES).
+    const accumulateProgress = (chunk: string): void => {
+      if (!onProgress) return;
+      progressText = (progressText + chunk).slice(-PROGRESS_TAIL_CHARS);
+      progressBytes += Buffer.byteLength(chunk);
+      progressDirty = true;
     };
 
     // --- Stream stdout ---
@@ -1149,6 +1341,7 @@ export function execCommand(
       const chunk = data.toString();
       stdoutBuf.push(chunk);
       lastDataTime = Date.now();
+      accumulateProgress(chunk);
       onData?.(chunk);
     });
 
@@ -1157,6 +1350,7 @@ export function execCommand(
       const chunk = data.toString();
       stderrBuf.push(chunk);
       lastDataTime = Date.now();
+      accumulateProgress(chunk);
       onData?.(chunk);
     });
 
