@@ -1138,9 +1138,38 @@ export function getSkillFile(
   return typeof content === 'string' ? content : null;
 }
 
-/** The affordance shown while a skill runs when it declares no custom message
+/** The affordance shown while a COMMAND runs when it declares no custom message
  *  (parity with Claude's default command `progressMessage` of `'running'`). */
 export const DEFAULT_SKILL_PROGRESS_MESSAGE = 'running';
+
+/** The affordance shown while a SKILL loads when it declares no custom message
+ *  (parity with Claude Code's loadPluginCommands, which defaults a skill-sourced
+ *  entry's `progressMessage` to `'loading'` rather than a command's `'running'`). */
+export const SKILL_LOADING_PROGRESS_MESSAGE = 'loading';
+
+/** The entry's own trimmed {@link SkillDefinition.progressMessage} when it is a
+ *  non-empty string, otherwise `undefined` — the shared declared-value lookup both
+ *  {@link skillProgressMessage} and {@link progressMessageForKind} default from, so
+ *  the two never diverge on what counts as an author-declared message. */
+function declaredProgressMessage(
+  entry: Pick<SkillDefinition, 'progressMessage'>,
+): string | undefined {
+  return typeof entry.progressMessage === 'string' && entry.progressMessage.trim().length > 0
+    ? entry.progressMessage.trim()
+    : undefined;
+}
+
+/**
+ * The kind-aware DEFAULT progress affordance (parity with Claude Code's
+ * loadPluginCommands `progressMessage: isSkill ? 'loading' : 'running'`): a
+ * skill-sourced entry defaults to {@link SKILL_LOADING_PROGRESS_MESSAGE}
+ * (`'loading'`), a command-sourced entry to {@link DEFAULT_SKILL_PROGRESS_MESSAGE}
+ * (`'running'`) — so a listing/affordance distinguishes a skill loading from a
+ * command running even when neither declares a custom message.
+ */
+export function defaultProgressMessage(isSkill: boolean): string {
+  return isSkill ? SKILL_LOADING_PROGRESS_MESSAGE : DEFAULT_SKILL_PROGRESS_MESSAGE;
+}
 
 /**
  * The progress/affordance message to show while a skill executes (parity with
@@ -1151,10 +1180,23 @@ export const DEFAULT_SKILL_PROGRESS_MESSAGE = 'running';
 export function skillProgressMessage(
   skill: Pick<SkillDefinition, 'progressMessage'>,
 ): string {
-  if (typeof skill.progressMessage === 'string' && skill.progressMessage.trim().length > 0) {
-    return skill.progressMessage.trim();
-  }
-  return DEFAULT_SKILL_PROGRESS_MESSAGE;
+  return declaredProgressMessage(skill) ?? DEFAULT_SKILL_PROGRESS_MESSAGE;
+}
+
+/**
+ * The progress/affordance message for a skill OR command entry, defaulting by its
+ * KIND when no custom message is declared (parity with Claude Code's
+ * loadPluginCommands `progressMessage: isSkill ? 'loading' : 'running'`). An
+ * author-declared {@link SkillDefinition.progressMessage} always wins; otherwise a
+ * skill-sourced entry (`isSkill = true`) falls back to `'loading'` and a
+ * command-sourced entry to `'running'` — the single resolver the loader uses so the
+ * two kinds advertise distinct default affordances.
+ */
+export function progressMessageForKind(
+  entry: Pick<SkillDefinition, 'progressMessage'>,
+  isSkill: boolean,
+): string {
+  return declaredProgressMessage(entry) ?? defaultProgressMessage(isSkill);
 }
 
 // ---------------------------------------------------------------------------
@@ -2042,4 +2084,111 @@ export function substituteNamedArgPlaceholders(
     out = out.replace(new RegExp(`\\$${esc}(?![\\[\\w])`, 'g'), () => value);
   });
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Agent source-based editability + composite identity, and location-aware
+// agent-memory-scope recommendation — additive core building blocks mirroring
+// Claude Code capabilities the skills library still lacked:
+//   - source-based editability special-casing (AgentsMenu `isEditable`: a built-in,
+//     plugin, or CLI-flag-injected agent is read-only; a user/project/local/managed
+//     agent is editable).
+//   - composite (agentType, source) agent identity (AgentsMenu dedup + selection
+//     key, so two same-named agents from different sources stay distinct).
+//   - the wizard's location-aware recommended memory scope + ordered scope options
+//     (MemoryStep: a user-scoped agent recommends user memory, otherwise project).
+// Pure predicates/formatters; the `/agents` listing/editor + agent-creation flow
+// wire them into the real paths. They reuse {@link AGENT_MEMORY_SCOPES} /
+// {@link agentMemoryScopeDisplay} so there is no second scope/label source.
+// ---------------------------------------------------------------------------
+
+/**
+ * Agent provenance tokens whose definitions are READ-ONLY (not user-editable) in
+ * the `/agents` editor (parity with Claude Code's AgentsMenu `isEditable`, which
+ * excludes `built-in`, `plugin`, and the CLI-flag-injected source). Kept as a
+ * STRING set — not {@link AgentSource}-typed — so the `flag` (CLI-arg) tier is
+ * forward-compatibly non-editable even before it is added to {@link AGENT_SOURCES};
+ * a user/project/local/managed (policy) agent is editable.
+ */
+export const AGENT_NONEDITABLE_SOURCES: ReadonlySet<string> = new Set([
+  'built-in', 'plugin', 'flag',
+]);
+
+/**
+ * True when an agent definition may be EDITED through the `/agents` editor (parity
+ * with Claude Code's AgentsMenu `isEditable = source !== 'built-in' && source !==
+ * 'plugin' && source !== 'flagSettings'`). An agent with no (or an unknown-blank)
+ * source is treated as non-editable so an unprovenanced definition is never offered
+ * for in-place editing; every known source outside {@link AGENT_NONEDITABLE_SOURCES}
+ * is editable.
+ */
+export function isAgentEditable(agent: Pick<AgentDefinition, 'source'>): boolean {
+  const src = agent.source;
+  if (typeof src !== 'string' || src.length === 0) return false;
+  return !AGENT_NONEDITABLE_SOURCES.has(src);
+}
+
+/**
+ * The COMPOSITE identity of an agent — its canonical {@link AgentDefinition.name}
+ * AND its {@link AgentDefinition.source} (parity with Claude Code's AgentsMenu,
+ * which keys dedup + selection by `(agentType, source)` rather than name alone, so
+ * two same-named agents from different sources stay distinct instead of one
+ * silently shadowing the other in a selection/dedup set). An absent source
+ * defaults to `'built-in'`. The two parts are joined with a NUL so no name/source
+ * value can forge a collision.
+ */
+export function agentIdentityKey(
+  agent: Pick<AgentDefinition, 'name' | 'source'>,
+): string {
+  const source = typeof agent.source === 'string' && agent.source.length > 0
+    ? agent.source
+    : 'built-in';
+  return `${agent.name}\u0000${source}`;
+}
+
+/**
+ * The recommended persistent-memory {@link AgentMemoryScope} for an agent given
+ * WHERE it lives (parity with Claude Code's MemoryStep, which recommends the scope
+ * matching the agent's location — a user-scoped agent → user memory, otherwise →
+ * project memory). A `'user'`-sourced agent recommends `'user'`; every other source
+ * (project/local/managed/plugin/built-in/absent) recommends `'project'`.
+ */
+export function recommendedAgentMemoryScope(
+  source: AgentSource | undefined,
+): AgentMemoryScope {
+  return source === 'user' ? 'user' : 'project';
+}
+
+/** One selectable agent-memory-scope option for the creation wizard: the scope
+ *  value (or the `'none'` opt-out), its descriptive label, and whether it is the
+ *  recommended default. */
+export interface AgentMemoryScopeOption {
+  value: AgentMemoryScope | 'none';
+  label: string;
+  recommended: boolean;
+}
+
+/**
+ * The ordered agent-memory-scope options for the creation wizard, given the agent's
+ * source/location (parity with Claude Code's MemoryStep option list): the
+ * location-matched {@link recommendedAgentMemoryScope} FIRST — flagged recommended
+ * and labelled `… (Recommended)` — then the `'none'` (no persistent memory)
+ * opt-out, then every remaining {@link AGENT_MEMORY_SCOPES} entry in declaration
+ * order. Each scope's descriptive label is sourced from the single
+ * {@link agentMemoryScopeDisplay} map so wording never diverges.
+ */
+export function agentMemoryScopeOptions(
+  source: AgentSource | undefined,
+): AgentMemoryScopeOption[] {
+  const recommended = recommendedAgentMemoryScope(source);
+  const label = (scope: AgentMemoryScope): string => agentMemoryScopeDisplay(scope) ?? scope;
+  const options: AgentMemoryScopeOption[] = [
+    { value: recommended, label: `${label(recommended)} (Recommended)`, recommended: true },
+    { value: 'none', label: 'None (no persistent memory)', recommended: false },
+  ];
+  for (const scope of AGENT_MEMORY_SCOPES) {
+    if (scope === recommended) continue;
+    options.push({ value: scope, label: label(scope), recommended: false });
+  }
+  return options;
 }
