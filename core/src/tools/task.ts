@@ -101,6 +101,44 @@ export function parsePositiveIntInput(raw: unknown): number | undefined {
 export const DEFAULT_FORK_MAX_TURNS = 200;
 
 /**
+ * Env knob that enables IMPLICIT FORK (parity: Claude Code's `FORK_SUBAGENT`
+ * feature gate + the schema mutation that makes `subagent_type` optional and
+ * defaults an omitted type to a fork, forkSubagent.ts:L22-39). When truthy, a
+ * `task` call that supplies NEITHER an explicit `mode` NOR a `subagent_type`
+ * resolves to `mode: 'fork'` — a context-inheriting clone of the parent — instead
+ * of the bounded `general` default. Disabled by default: the advertised default
+ * stays `general`, so this never changes AMI behavior unless an operator opts in.
+ * (`fork` remains always available as an explicit `mode` value regardless — this
+ * gate only governs the IMPLICIT default, so it is purely additive and never
+ * removes AMI's unconditional explicit-fork capability.)
+ */
+export const FORK_SUBAGENT_ENV = 'AMI_FORK_SUBAGENT';
+
+/** Whether implicit-fork is enabled via {@link FORK_SUBAGENT_ENV}. */
+export function isForkSubagentEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[FORK_SUBAGENT_ENV]);
+}
+
+/**
+ * Resolve the effective spawn mode for a `task` call. An explicit, non-blank
+ * `mode` always wins. Otherwise, when implicit-fork is enabled
+ * ({@link isForkSubagentEnabled}) AND the call names no `subagent_type` (so there
+ * is no authoritative agent identity to honor), an omitted mode resolves to
+ * `fork` — the context-inheriting clone (parity: Claude's omit-subagent_type →
+ * fork). With implicit-fork off, or when a `subagent_type` is present, an omitted
+ * mode stays `general`, preserving AMI's existing default.
+ */
+export function resolveSpawnMode(
+  rawMode: string | undefined,
+  subagentType: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (typeof rawMode === 'string' && rawMode.trim() !== '') return rawMode.trim();
+  if (!subagentType && isForkSubagentEnabled(env)) return 'fork';
+  return 'general';
+}
+
+/**
  * Recursion guard directive stapled into a `fork` child's first user turn
  * (mirrors Claude Code's fork boilerplate rule #1 in `buildChildMessage`,
  * forkSubagent.ts:L178). A fork child inherits the parent's full coding stance —
@@ -659,6 +697,47 @@ export const COORDINATOR_SUBAGENT_SYSTEM_PROMPT =
 export const INTERNAL_WORKER_TOOLS = new Set([
   'team_create', 'team_delete', 'send_message', 'structured_output',
 ]);
+
+/**
+ * Team-essential coordination tools that a named teammate must ALWAYS retain so it
+ * stays reachable and can coordinate — even when its agent definition narrows the
+ * toolset with an explicit `tools` allowlist (mirrors Claude Code's
+ * inProcessRunner force-union of SEND_MESSAGE + TEAM_CREATE/DELETE +
+ * TASK_CREATE/GET/LIST/UPDATE onto a restricted agent's declared allowlist,
+ * inProcessRunner.ts:L979-995). Without this a lead could spawn a teammate scoped
+ * to e.g. `['file_read']` that can never answer a shutdown request, send a result,
+ * or update the shared task list — stranding it from the team. AMI's analogs:
+ * `send_message` (talk to teammates), `task_list` + `task_tracker` (the shared
+ * task system). The lead-only `task_output`/`task_kill` are deliberately NOT here
+ * (they are in {@link ALL_AGENT_DISALLOWED_TOOLS} — a teammate calling them would
+ * read/terminate the PARENT's tasks).
+ */
+export const TEAMMATE_ESSENTIAL_TOOLS = new Set([
+  'send_message', 'task_list', 'task_tracker',
+]);
+
+/**
+ * Union the {@link TEAMMATE_ESSENTIAL_TOOLS} into an already-resolved tool set,
+ * pulling the concrete tool definitions from `allTools`. Only tools that (a) exist
+ * in the registry, (b) are not already present, and (c) are not baseline-denied
+ * ({@link ALL_AGENT_DISALLOWED_TOOLS}) are added, so the floor can never
+ * reintroduce a denied tool. Returns the original array unchanged when there is
+ * nothing to add (stable identity for the common no-op case). Applied only to a
+ * NAMED teammate spawned into an active team whose agent def declared an explicit
+ * `tools` allowlist — an unrestricted teammate already has these.
+ */
+export function ensureTeammateCoordinationTools(
+  tools: ToolDefinition[],
+  allTools: ToolDefinition[],
+): ToolDefinition[] {
+  const present = new Set(tools.map(t => t.name));
+  const additions = allTools.filter(
+    t => TEAMMATE_ESSENTIAL_TOOLS.has(t.name)
+      && !present.has(t.name)
+      && !ALL_AGENT_DISALLOWED_TOOLS.has(t.name),
+  );
+  return additions.length > 0 ? [...tools, ...additions] : tools;
+}
 
 /**
  * Build the runtime worker-capability affordance injected into a `coordinator`-mode
@@ -1897,7 +1976,15 @@ export const taskTool: ToolDefinition = {
     context: ToolContext,
   ): Promise<ToolResult> {
     const prompt = input.prompt as string;
-    const mode = (input.mode as string) || 'general';
+    // Effective spawn mode: an explicit `mode` wins; otherwise, when implicit-fork
+    // is enabled AND no `subagent_type` is named, an omitted mode resolves to
+    // `fork` (parity: Claude's FORK_SUBAGENT schema mutation). Default stays
+    // `general`. Uses the RAW `subagent_type` arg — a resume target carries its
+    // own identity and never triggers an implicit fork.
+    const mode = resolveSpawnMode(
+      input.mode as string | undefined,
+      input.subagent_type as string | undefined,
+    );
     const resumeTarget = input.resume as string | undefined;
     // Durable cross-process resume (parity: Claude's readAgentMetadata /
     // getAgentTranscript): the taskId/name→session index is persisted to the project
@@ -2121,6 +2208,11 @@ export const taskTool: ToolDefinition = {
     // (stripped at load), so this is always author-trusted.
     let agentFrontmatterHooks: import('../hooks').HookConfigEntry[] | undefined;
     let effectiveMode = mode;
+    // Whether a named agent definition narrowed the toolset with an explicit,
+    // non-wildcard `tools` allowlist. Drives the teammate-coordination-tools floor
+    // ({@link ensureTeammateCoordinationTools}) so a restricted teammate still keeps
+    // send_message / task coordination when spawned into a team.
+    let agentHadExplicitTools = false;
 
     if (subagentType && context._skillManager) {
       const agentDef = context._skillManager.getAgent(subagentType);
@@ -2238,6 +2330,10 @@ export const taskTool: ToolDefinition = {
           }
           const allowed = new Set(canonicalAgentToolNames(agentDef.tools));
           tools = everything.filter(t => allowed.has(t.name));
+          // The def narrowed the toolset with a concrete (non-wildcard) allowlist —
+          // a named teammate spawned into a team then re-gains the essential
+          // coordination tools below so it never becomes unreachable.
+          agentHadExplicitTools = true;
         }
         // Deny wins even when an allowlist is set: an agent may declare BOTH
         // `tools` and `disallowedTools` (e.g. Claude's planAgent allows the
@@ -2503,16 +2599,35 @@ export const taskTool: ToolDefinition = {
 
     // Permission mode priority:
     // 1. Explicit `permission_mode` input (caller sets the spawned agent's mode,
-    //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above)
+    //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above) —
+    //    CLAMPED to the parent's active mode so a model-chosen permission_mode can
+    //    never ESCALATE a subagent above the parent's safety stance (parity:
+    //    Claude's spawn-boundary de-escalation, spawnUtils.ts:L45-56 — a spawned
+    //    agent is never more permissive than its parent). The clamp is a no-op when
+    //    the parent mode is not threaded (bare/test contexts), so it is purely
+    //    additive. The agent-def mode (agentPermissionMode) is already clamped above.
     // 2. Per-spawn `allow_permission_prompts` gate (deny-all when false, ask when true)
     // 3. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
     // 4. explore mode → always auto-allow (read-only tool set)
-    // 5. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
+    // 5. A BACKGROUND agent with NO permission-prompt handler cannot surface a
+    //    prompt to anyone, so its unlisted-tool calls auto-DENY ('deny-all') rather
+    //    than defaulting to 'ask' and blocking a detached run on a prompt no one can
+    //    answer (parity: Claude forces shouldAvoidPermissionPrompts on a
+    //    non-interactive subagent, forkedAgent.ts:L356-374). When a handler IS
+    //    present (detached-YOLO / auto-allow propagation) the 'ask' default is kept
+    //    so the handler still decides — no regression to background YOLO workers.
+    // 6. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
     const resolvedPermissionMode =
-      requestedPermissionMode ||
+      (requestedPermissionMode
+        ? clampPermissionMode(requestedPermissionMode, context._parentPermissionMode)
+        : undefined) ||
       promptGatePermissionMode ||
       agentPermissionMode ||
-      (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
+      (effectiveMode === 'explore'
+        ? 'auto-allow'
+        : runInBackground && !context._permissionPromptHandler
+          ? 'deny-all'
+          : 'ask');
 
     // ui#13: a mode-only sub-agent (no named subagent_type) runs on a dedicated LEAN
     // system prompt that REPLACES the full coding stance, so it returns its result and
@@ -2705,6 +2820,21 @@ export const taskTool: ToolDefinition = {
         ? `\n\nShared team scratchpad (durable cross-teammate knowledge, no permission prompt needed): ${scratchpadDir}`
         : '';
       effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}${scratchpadNote}\n\n---\n\n${effectivePrompt}`;
+
+      // PARITY (additive): a named teammate whose agent definition narrowed its
+      // toolset with an explicit allowlist re-gains the essential coordination
+      // tools (send_message + the shared task system) so it can always answer a
+      // shutdown request, send its result, and update the team task list — even if
+      // the lead scoped it to e.g. `['file_read']` (mirrors Claude's force-union of
+      // team-essential tools onto a restricted agent, inProcessRunner.ts:L979-995).
+      // Unrestricted teammates already have these, so this only fires for a
+      // deliberately-narrowed def.
+      if (agentHadExplicitTools) {
+        subConfig.tools = ensureTeammateCoordinationTools(
+          subConfig.tools as ToolDefinition[],
+          allTools.getAll(),
+        );
+      }
     }
 
     // PARITY (additive): a named teammate spawned into a team (the active team, or a
