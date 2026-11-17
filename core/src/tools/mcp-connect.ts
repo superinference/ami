@@ -59,7 +59,25 @@ export function createMcpConnectTool(serverName: string, description: string): T
         };
       } catch (err) {
         // A cancelled connect is reported as such, not as a connection failure.
-        if (err === MCP_CONNECT_ABORTED) return aborted();
+        if (err === MCP_CONNECT_ABORTED) {
+          // Actively tear down the connection the manager may still be
+          // establishing in the background, mirroring Claude's
+          // transport.close()/inProcessServer.close() on an aborted connect.
+          // Without this, abandoning the ensureConnected() promise leaves the
+          // half-open transport (and any spawned child process / container /
+          // network socket) open until the manager's internal timeout (120s for
+          // container servers) fires. stopServer() disconnects the client and
+          // marks the disconnect intentional so it is not auto-reconnected.
+          // Best-effort: teardown must never mask the cancellation result.
+          if (typeof mcpManager.stopServer === 'function') {
+            try {
+              await mcpManager.stopServer(serverName);
+            } catch {
+              /* teardown is best-effort — the connect is already cancelled */
+            }
+          }
+          return aborted();
+        }
         const message = err instanceof Error ? err.message : String(err);
         // Discriminate a needs-authentication outcome from a hard failure so the
         // model is steered to the authenticate tool instead of blindly retrying.
