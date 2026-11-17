@@ -8,7 +8,7 @@ import { execCommand, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, type SandboxExemptionOptions } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, sandboxBashDisplayName, type SandboxExemptionOptions } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
@@ -1480,6 +1480,11 @@ export const bashTool: ToolDefinition = {
     // describeSandboxFallbackWarning) — appended to the command output below so the
     // lost protection is not silent.
     let sandboxFallbackAdvisory: string | null = null;
+    // PARITY (CLAUDE_CODE_BASH_SANDBOX_SHOW_INDICATOR → SandboxedBash): when the
+    // indicator knob is on and the command is actually sandboxed, the user-facing
+    // name becomes `SandboxedBash` and a visible `[SandboxedBash]` marker is
+    // prefixed to the output. Default OFF → stays `Bash` and output is unchanged.
+    let sandboxDisplayName = 'Bash';
     // PARITY (sandbox.enabledPlatforms): when the current platform is excluded,
     // the sandbox (container OR host) is disabled entirely and the command runs
     // on the host — undefined=all, []=none, else a membership test. Gates both
@@ -1587,6 +1592,9 @@ export const bashTool: ToolDefinition = {
       // unenforced (null when the full namespace sandbox is in use or no carve-out
       // was requested).
       if (useSandbox) sandboxFallbackAdvisory = _bashHooks.describeSandboxFallbackWarning(hostCfg);
+      // PARITY (sandbox indicator): resolve the user-facing name for this run —
+      // `SandboxedBash` only when the knob is on AND the command is sandboxed.
+      sandboxDisplayName = sandboxBashDisplayName(useSandbox);
     }
 
     if (runInBackground && context.processManager) {
@@ -1760,6 +1768,9 @@ export const bashTool: ToolDefinition = {
     if (compoundCdGitAdvisory) output += `\n\n[Warning: ${compoundCdGitAdvisory}]`;
     if (cwdResetNote) output += `\n\n[Warning: ${cwdResetNote}]`;
     if (sandboxFallbackAdvisory) output += `\n\n[Warning: ${sandboxFallbackAdvisory}]`;
+    // PARITY (sandbox indicator): prefix the visible marker when the resolved
+    // user-facing name is `SandboxedBash` (Claude's indicator-knob name switch).
+    if (sandboxDisplayName !== 'Bash') output = `[${sandboxDisplayName}]\n${output}`;
 
     let exitCodeInfo: ExitCodeInfo | null = null;
     if (result.exitCode !== 0) {

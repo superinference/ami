@@ -118,6 +118,72 @@ export interface SandboxConfig {
   // proxy's validator) stays reachable. Security-weakening escape hatch.
   // Additive: undefined/false keeps the default socket denial.
   enableWeakerNetworkIsolation?: boolean;
+  // PARITY (encoded-command seam — Claude's PowerShell `-EncodedCommand`): when
+  // true, the user command is handed to the inner shell base64-encoded and decoded
+  // at exec time, so NO additional shell-quoting layer (a nested `sh -c`, the outer
+  // `bash -c '...'` body being re-wrapped, a sandbox runtime re-applying
+  // shellquote) can corrupt quoting-sensitive metacharacters (`!$?`, backslashes)
+  // the way `!$?`→`\!$?` happens inside re-quoted double quotes. A base64 payload
+  // is [A-Za-z0-9+/=] only, so it survives ANY quoting layer. Driven by the
+  // {@link isSandboxEncodeCommandEnabled} env gate (`AMI_SANDBOX_ENCODE_COMMAND`).
+  // Additive: undefined/false wraps the raw single-quote-escaped command exactly
+  // as before (no behavior change). Honored on the Linux `unshare` backend only,
+  // where coreutils `base64` is guaranteed; the ulimits fallback keeps raw wrapping.
+  encodeCommand?: boolean;
+}
+
+/**
+ * PARITY (encoded-command seam — Claude's PowerShell `-EncodedCommand`): the env
+ * gate `AMI_SANDBOX_ENCODE_COMMAND` that opts the host `unshare` sandbox into
+ * passing the user command base64-encoded (decoded at exec time) so a nested
+ * shell-quoting layer cannot corrupt quoting-sensitive metacharacters. Default OFF
+ * → the raw single-quote-escaped command is wrapped exactly as before. Reads an
+ * injectable env for testability, mirroring the other sandbox env gates. Truthy =
+ * `1`/`true`/`yes`/`on`.
+ */
+export const SANDBOX_ENCODE_COMMAND_ENV = 'AMI_SANDBOX_ENCODE_COMMAND';
+export function isSandboxEncodeCommandEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[SANDBOX_ENCODE_COMMAND_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * PARITY (sandbox-indicator knob — Claude's `CLAUDE_CODE_BASH_SANDBOX_SHOW_INDICATOR`
+ * → `SandboxedBash` userFacingName): the env gate `AMI_BASH_SANDBOX_SHOW_INDICATOR`
+ * that, when truthy AND a command is actually sandboxed, surfaces a visible
+ * `[sandboxed]` indicator to the user so they can tell a sandboxed run from an
+ * unsandboxed one. Default OFF → no indicator (output unchanged). Reads an
+ * injectable env for testability. Truthy = `1`/`true`/`yes`/`on`.
+ */
+export const BASH_SANDBOX_SHOW_INDICATOR_ENV = 'AMI_BASH_SANDBOX_SHOW_INDICATOR';
+export function isSandboxIndicatorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[BASH_SANDBOX_SHOW_INDICATOR_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * The user-facing indicator for a bash call, parity with Claude's `SandboxedBash`
+ * vs `Bash` userFacingName switch: returns `'SandboxedBash'` only when the command
+ * IS sandboxed AND the indicator knob is enabled; otherwise `'Bash'`. Pure; env
+ * injectable. Consumed by the bash tool to annotate a sandboxed command's output.
+ */
+export function sandboxBashDisplayName(sandboxed: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  return sandboxed && isSandboxIndicatorEnabled(env) ? 'SandboxedBash' : 'Bash';
+}
+
+/**
+ * PARITY (encoded-command seam): build the exec expression for the user command
+ * inside the sandbox. When `encode` is set, the RAW command is base64-encoded and
+ * decoded + run by an inner `bash` at exec time — immune to any outer re-quoting
+ * layer. Otherwise the pre-escaped `escapedCmd` (single-quote-escaped for the
+ * outer `bash -c '...'`) is returned unchanged. The base64 alphabet is
+ * [A-Za-z0-9+/=], so the emitted `printf %s '<b64>'` is injection-free. Pure +
+ * exported for direct unit testing of both arms.
+ */
+export function buildSandboxRunExpr(rawCommand: string, escapedCmd: string, encode: boolean): string {
+  if (!encode) return escapedCmd;
+  const b64 = Buffer.from(rawCommand, 'utf8').toString('base64');
+  return `printf %s '${b64}' | base64 -d | bash`;
 }
 
 export function getDefaultMemoryMB(): number {
@@ -849,6 +915,12 @@ export function wrapWithSandbox(
   config: Partial<SandboxConfig> = {},
 ): string {
   const cfg = { ...DEFAULT_SANDBOX_CONFIG, ...config };
+  // PARITY (encoded-command seam): let the env gate opt the host sandbox into
+  // base64 command passing when the caller did not already set it explicitly, so
+  // the escape hatch is reachable from a single flag (self-wired, no bash.ts edit).
+  if (cfg.encodeCommand === undefined && isSandboxEncodeCommandEnabled()) {
+    cfg.encodeCommand = true;
+  }
   if (resolveSandboxMethod() === 'unshare') {
     return wrapWithUnshare(command, cwd, cfg);
   }
@@ -936,7 +1008,10 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
     !cfg.allowNetwork && hasAllowedDomains
       ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
       : '';
-  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${loopbackSetup}${networkRules}${tmpDirEnv}${proxyEnv}cd ${escapedCwd} && ${escapedCmd}'`;
+  // PARITY (encoded-command seam): emit either the raw single-quote-escaped command
+  // or a base64-decode-and-run expression immune to any nested re-quoting layer.
+  const runExpr = buildSandboxRunExpr(command, escapedCmd, !!cfg.encodeCommand);
+  return `unshare ${flags.join(' ')} -- bash -c '${ulimits}${mounts}${writeDenials}${configGuard}${gitGuard}${readDenials}${credentialScrub}${socketDenial}${loopbackSetup}${networkRules}${tmpDirEnv}${proxyEnv}cd ${escapedCwd} && ${runExpr}'`;
 }
 
 /**
@@ -1367,6 +1442,32 @@ export function describeSandboxSecurityTradeoffs(policy?: SandboxPolicy): Sandbo
   return out;
 }
 
+/**
+ * PARITY (dependency-aware socket-warning suppression — Claude's
+ * `showSocketWarning = hasWarnings && !allowAllUnixSockets`): the host's ability to
+ * block privileged Unix-domain sockets (bind /dev/null over the Docker/containerd
+ * socket) depends on a working MOUNT namespace. When that capability is degraded
+ * (`socketBlockingAvailable === false`, i.e. the sandbox fell back to
+ * resource-limits-only) a sandboxed command could still reach those sockets — a
+ * capability-degradation the user should be told about. But an operator who opted
+ * into `allowAllUnixSockets` (every socket reachable by choice) has already
+ * acknowledged that posture, so the notice is SUPPRESSED for them. Pure; both
+ * inputs injectable for testing. Returns true only when the caveat should be shown.
+ */
+export const SOCKET_BLOCK_UNAVAILABLE_WARNING =
+  'Unix domain socket denial cannot be enforced on this host: privileged daemon ' +
+  'sockets (e.g. the Docker socket `/var/run/docker.sock`) may be reachable from ' +
+  'inside the sandbox because the mount namespace is unavailable (resource-limits-' +
+  'only fallback). Install util-linux and enable unprivileged user namespaces, or ' +
+  'set network.allowAllUnixSockets to acknowledge and suppress this notice.';
+
+export function shouldWarnSocketBlocking(
+  socketBlockingAvailable: boolean,
+  allowAllUnixSockets: boolean | undefined,
+): boolean {
+  return !socketBlockingAvailable && !allowAllUnixSockets;
+}
+
 export function getSandboxStatus(
   cfg?: Partial<SandboxConfig>,
   policy?: SandboxPolicy,
@@ -1377,6 +1478,14 @@ export function getSandboxStatus(
   // On the ulimits fallback the namespace "errors" are a user-facing degradation
   // notice (AMI still runs, just with weaker isolation), so fold them in.
   const baseWarnings = nsAvailable ? dep.warnings : [...dep.errors, ...dep.warnings];
+  // PARITY (socket-warning suppression): the bind-mount socket denial needs the
+  // mount namespace, so it is unavailable on the ulimits fallback. Surface the
+  // caveat unless the operator already opted into all-sockets-reachable (via the
+  // policy's allowAllUnixSockets or the equivalent cfg.allowUnixSockets boolean).
+  const allowAllUnixSockets = policy?.network?.allowAllUnixSockets ?? cfg?.allowUnixSockets;
+  if (shouldWarnSocketBlocking(nsAvailable, allowAllUnixSockets)) {
+    baseWarnings.push(SOCKET_BLOCK_UNAVAILABLE_WARNING);
+  }
   // Fold in the blunt security-tradeoff wording for any enabled weakening knob so
   // `/sandbox` surfaces the relaxation instead of hiding it (parity).
   const tradeoffs = describeSandboxSecurityTradeoffs(policy).map((t) => `${t.option}: ${t.warning}`);
