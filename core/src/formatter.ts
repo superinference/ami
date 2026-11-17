@@ -1,5 +1,10 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
+
+/** Default timeout (ms) for the availability (`check`) probe. */
+const DEFAULT_CHECK_TIMEOUT_MS = 5000;
+/** Default timeout (ms) for the actual format run. */
+const DEFAULT_FORMAT_TIMEOUT_MS = 15000;
 
 /** @public Formatter configuration for library consumers to define custom formatters. */
 export interface FormatterConfig {
@@ -7,6 +12,19 @@ export interface FormatterConfig {
   command: string;
   args: string[];
   check?: string;
+  /**
+   * Optional timeout (ms) for the actual format run in {@link formatFile}.
+   * Defaults to {@link DEFAULT_FORMAT_TIMEOUT_MS} (15000). Lets slow formatters
+   * (or large files) be given more time per project instead of silently failing
+   * as a non-error "not formatted".
+   */
+  timeout?: number;
+  /**
+   * Optional timeout (ms) for the availability (`check`) probe in
+   * {@link isFormatterAvailable}. Defaults to {@link DEFAULT_CHECK_TIMEOUT_MS}
+   * (5000).
+   */
+  checkTimeout?: number;
 }
 
 const BUILT_IN_FORMATTERS: FormatterConfig[] = [
@@ -42,11 +60,20 @@ const formatterCache = new Map<string, boolean>();
 const customFormatters: FormatterConfig[] = [];
 
 /**
- * Mockable exec seam (ESM-safe). Tests replace `execHooks.execSync` via
- * `mock.method` to simulate formatter availability/success/failure
- * deterministically. Defaults to the real child_process.execSync.
+ * Mockable exec seam (ESM-safe). Tests replace `execHooks.execSync` /
+ * `execHooks.execFileSync` via `mock.method` to simulate formatter
+ * availability/success/failure deterministically.
+ *
+ * - `execSync` runs the `<tool> --version`/`--help` presence probe (a benign
+ *   shell string) in {@link isFormatterAvailable}.
+ * - `execFileSync` runs the real format invocation in {@link formatFile}
+ *   **without a shell**: the executable and each argument (including the file
+ *   path) are passed as a `(file, args[])` pair, so arguments are never
+ *   re-parsed by a shell. This eliminates the shell-injection / manual
+ *   quote-escaping surface and is correct cross-platform (including Windows,
+ *   where cmd.exe does not treat single quotes as quoting).
  */
-export const execHooks = { execSync };
+export const execHooks = { execSync, execFileSync };
 
 /** Clear the formatter-availability memo (test seam; harmless in production). */
 export function __clearFormatterCache(): void {
@@ -142,6 +169,18 @@ export function registerFormatter(config: FormatterConfig): void {
   if (typeof config.check === 'string' && config.check.trim() !== '') {
     normalized.check = config.check;
   }
+  if (config.timeout !== undefined) {
+    if (typeof config.timeout !== 'number' || !Number.isFinite(config.timeout) || config.timeout <= 0) {
+      throw new TypeError('registerFormatter: timeout must be a positive finite number of milliseconds');
+    }
+    normalized.timeout = config.timeout;
+  }
+  if (config.checkTimeout !== undefined) {
+    if (typeof config.checkTimeout !== 'number' || !Number.isFinite(config.checkTimeout) || config.checkTimeout <= 0) {
+      throw new TypeError('registerFormatter: checkTimeout must be a positive finite number of milliseconds');
+    }
+    normalized.checkTimeout = config.checkTimeout;
+  }
   customFormatters.unshift(normalized);
 }
 
@@ -185,7 +224,10 @@ export function isFormatterAvailable(config: FormatterConfig): boolean {
   const key = config.check;
   if (formatterCache.has(key)) return formatterCache.get(key)!;
   try {
-    execHooks.execSync(config.check, { timeout: 5000, stdio: 'pipe' });
+    execHooks.execSync(config.check, {
+      timeout: config.checkTimeout ?? DEFAULT_CHECK_TIMEOUT_MS,
+      stdio: 'pipe',
+    });
     formatterCache.set(key, true);
     return true;
   } catch {
@@ -201,8 +243,11 @@ export function formatFile(filePath: string, cwd: string): { formatted: boolean;
   if (!config) return { formatted: false };
   if (!isFormatterAvailable(config)) return { formatted: false };
   try {
-    execHooks.execSync(`${config.command} ${config.args.join(' ')} '${filePath.replace(/'/g, "'\\''")}'`, {
-      cwd, timeout: 15000, stdio: 'pipe',
+    // Shell-free: pass the executable + args array (incl. the file path) so no
+    // shell re-parses arguments — eliminates the injection/quoting surface and
+    // works cross-platform (no manual single-quote escaping needed).
+    execHooks.execFileSync(config.command, [...config.args, filePath], {
+      cwd, timeout: config.timeout ?? DEFAULT_FORMAT_TIMEOUT_MS, stdio: 'pipe',
     });
     return { formatted: true };
   } catch (err) {

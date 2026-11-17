@@ -118,18 +118,21 @@ describe('formatter hardening/parity', () => {
 
   it('registered custom formatter wins over the built-in for formatFile', () => {
     // RED (pre-wiring): formatFile only consults BUILT_IN_FORMATTERS, so the
-    // captured format command starts with the built-in `npx prettier --write`.
+    // captured format command is the built-in `npx prettier --write`.
     registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: ['--fix'], check: 'myfmt --version' });
-    const calls: string[] = [];
-    mock.method(execHooks, 'execSync', (cmd: string) => { calls.push(cmd); return Buffer.from(''); });
+    const execCalls: Array<{ file: string; args: string[] }> = [];
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', (file: string, args: string[]) => {
+      execCalls.push({ file, args: [...args] }); return Buffer.from('');
+    });
 
     const res = formatFile('/tmp/a.ts', '/tmp');
     assert.equal(res.formatted, true);
 
-    const fmtCall = calls.find(c => c.includes('/tmp/a.ts'));
-    assert.ok(fmtCall, 'expected a format invocation for the file');
-    assert.ok(fmtCall!.startsWith('myfmt --fix '), `expected custom command, got: ${fmtCall}`);
-    assert.ok(!fmtCall!.includes('prettier'), 'must not fall back to the built-in prettier');
+    assert.equal(execCalls.length, 1, 'exactly one shell-free format invocation');
+    assert.equal(execCalls[0].file, 'myfmt', 'expected the custom executable, not prettier');
+    assert.deepEqual(execCalls[0].args, ['--fix', '/tmp/a.ts'], 'args array incl. raw file path');
+    assert.ok(!execCalls[0].file.includes('prettier'), 'must not fall back to the built-in prettier');
   });
 
   it('registering a new extension makes it formattable and listed in getAvailableFormatters', () => {
@@ -138,12 +141,15 @@ describe('formatter hardening/parity', () => {
     registerFormatter({ extensions: ['.foo'], command: 'foofmt', args: ['-w'], check: 'foofmt --version' });
     assert.equal(isFormattableFile('/x/y.foo'), true);
 
-    const calls: string[] = [];
-    mock.method(execHooks, 'execSync', (cmd: string) => { calls.push(cmd); return Buffer.from(''); });
+    const execCalls: Array<{ file: string; args: string[] }> = [];
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', (file: string, args: string[]) => {
+      execCalls.push({ file, args: [...args] }); return Buffer.from('');
+    });
 
     const res = formatFile('/x/y.foo', '/x');
     assert.equal(res.formatted, true);
-    assert.ok(calls.some(c => c.startsWith('foofmt -w ') && c.includes('/x/y.foo')));
+    assert.ok(execCalls.some(c => c.file === 'foofmt' && c.args[0] === '-w' && c.args.includes('/x/y.foo')));
 
     const avail = getAvailableFormatters('/x');
     assert.ok(avail.some(line => line.includes('.foo') && line.includes('foofmt -w')));
@@ -174,12 +180,17 @@ describe('formatter hardening/parity', () => {
   // stays correct (and a deep operation probe is unnecessary).
   it('formatFile degrades gracefully when the format op fails after the check passed', () => {
     registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: [], check: 'myfmt --version' });
-    let call = 0;
+    let checkCall = 0;
+    let formatCall = 0;
     mock.method(execHooks, 'execSync', (cmd: string) => {
-      call += 1;
-      // 1st call = the `check` (version probe) → passes, proving "available".
-      if (cmd.includes('--version')) return Buffer.from('myfmt 1.0.0');
-      // 2nd call = the real format operation → fails at use time.
+      checkCall += 1;
+      // the `check` (version probe) → passes, proving "available".
+      assert.ok(cmd.includes('--version'));
+      return Buffer.from('myfmt 1.0.0');
+    });
+    mock.method(execHooks, 'execFileSync', () => {
+      formatCall += 1;
+      // the real format operation → fails at use time.
       throw new Error('format op exploded');
     });
 
@@ -188,17 +199,99 @@ describe('formatter hardening/parity', () => {
     // No throw: the operation-time failure is captured as a fallback result.
     assert.equal(res.formatted, false);
     assert.ok(typeof res.error === 'string' && res.error.includes('format op exploded'));
-    assert.ok(call >= 2, 'both the check and the real operation were attempted');
+    assert.ok(checkCall >= 1 && formatCall >= 1, 'both the check and the real operation were attempted');
   });
 
-  it('filePath with single quotes is safely escaped in the custom command', () => {
-    registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: [], check: 'myfmt --version' });
-    const calls: string[] = [];
-    mock.method(execHooks, 'execSync', (cmd: string) => { calls.push(cmd); return Buffer.from(''); });
-    const weird = path.join('/tmp', "o'brien.ts");
+  // --- Gap U314.1: shell-free execution (no injection/quoting surface) -----
+  it('formatFile passes a path with shell metacharacters as a single raw arg (no shell, no escaping)', () => {
+    // RED (pre-fix): formatFile built a shell string and hand-escaped single
+    // quotes, so a path with spaces/quotes/metachars went through a shell.
+    registerFormatter({ extensions: ['.ts'], command: 'myfmt', args: ['-w'], check: 'myfmt --version' });
+    const execCalls: Array<{ file: string; args: string[] }> = [];
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', (file: string, args: string[]) => {
+      execCalls.push({ file, args: [...args] }); return Buffer.from('');
+    });
+    const weird = path.join('/tmp', "o'brien & co; rm -rf.ts");
     formatFile(weird, '/tmp');
-    const fmtCall = calls.find(c => c.includes('.ts') && c.startsWith('myfmt'));
-    assert.ok(fmtCall);
-    assert.ok(fmtCall!.includes("'\\''"), 'single quote must be POSIX-escaped');
+    assert.equal(execCalls.length, 1);
+    assert.equal(execCalls[0].file, 'myfmt');
+    // The raw, un-escaped path is a single argv element; no `'\''` shell escape.
+    assert.deepEqual(execCalls[0].args, ['-w', weird]);
+    assert.ok(!execCalls[0].args.some(a => a.includes("'\\''")), 'no POSIX quote escaping is applied');
+  });
+
+  it("isFormatterAvailable still uses the shell execSync for the version check string", () => {
+    const seen: string[] = [];
+    mock.method(execHooks, 'execSync', (cmd: string) => { seen.push(cmd); return Buffer.from(''); });
+    // execFileSync must NOT be touched by the availability probe.
+    const execFileSpy = mock.method(execHooks, 'execFileSync', () => Buffer.from(''));
+    assert.equal(isFormatterAvailable({ extensions: ['.ts'], command: 'x', args: [], check: 'x --version' }), true);
+    assert.deepEqual(seen, ['x --version']);
+    assert.equal(execFileSpy.mock.callCount(), 0);
+  });
+
+  // --- Gap U314.2: configurable formatter timeouts ------------------------
+  it('formatFile honors a custom per-formatter timeout, defaulting to 15000ms', () => {
+    const seenOpts: Array<Record<string, unknown>> = [];
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', (_f: string, _a: string[], opts: Record<string, unknown>) => {
+      seenOpts.push(opts); return Buffer.from('');
+    });
+
+    registerFormatter({ extensions: ['.ts'], command: 'slowfmt', args: [], check: 'slowfmt --version', timeout: 90000 });
+    assert.equal(formatFile('/tmp/a.ts', '/tmp').formatted, true);
+    assert.equal(seenOpts.at(-1)!.timeout, 90000, 'custom format timeout is used');
+
+    clearCustomFormatters();
+    __clearFormatterCache();
+    registerFormatter({ extensions: ['.ts'], command: 'deffmt', args: [], check: 'deffmt --version' });
+    assert.equal(formatFile('/tmp/b.ts', '/tmp').formatted, true);
+    assert.equal(seenOpts.at(-1)!.timeout, 15000, 'default format timeout is 15000ms');
+  });
+
+  it('isFormatterAvailable honors a custom checkTimeout, defaulting to 5000ms', () => {
+    const seenOpts: Array<Record<string, unknown>> = [];
+    mock.method(execHooks, 'execSync', (_cmd: string, opts: Record<string, unknown>) => {
+      seenOpts.push(opts); return Buffer.from('');
+    });
+
+    assert.equal(
+      isFormatterAvailable({ extensions: ['.ts'], command: 'x', args: [], check: 'x1 --version', checkTimeout: 20000 }),
+      true,
+    );
+    assert.equal(seenOpts.at(-1)!.timeout, 20000, 'custom check timeout is used');
+
+    assert.equal(
+      isFormatterAvailable({ extensions: ['.ts'], command: 'x', args: [], check: 'x2 --version' }),
+      true,
+    );
+    assert.equal(seenOpts.at(-1)!.timeout, 5000, 'default check timeout is 5000ms');
+  });
+
+  it('registerFormatter validates timeout/checkTimeout and preserves them in the snapshot', () => {
+    assert.throws(
+      () => registerFormatter({ extensions: ['.ts'], command: 'x', args: [], timeout: 0 }),
+      TypeError,
+    );
+    assert.throws(
+      () => registerFormatter({ extensions: ['.ts'], command: 'x', args: [], timeout: -5 }),
+      TypeError,
+    );
+    assert.throws(
+      () => registerFormatter({ extensions: ['.ts'], command: 'x', args: [], checkTimeout: Number.NaN }),
+      TypeError,
+    );
+    assert.throws(
+      () => registerFormatter({ extensions: ['.ts'], command: 'x', args: [], checkTimeout: 'soon' as unknown as number }),
+      TypeError,
+    );
+    assert.equal(listRegisteredFormatters().length, 0, 'no invalid config was registered');
+
+    registerFormatter({ extensions: ['.ts'], command: 'x', args: [], check: 'x -v', timeout: 42000, checkTimeout: 1000 });
+    const snap = listRegisteredFormatters();
+    assert.equal(snap.length, 1);
+    assert.equal(snap[0].timeout, 42000);
+    assert.equal(snap[0].checkTimeout, 1000);
   });
 });
