@@ -1115,7 +1115,10 @@ export type EngineEvent =
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }
-  | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number }
+  // `statusCode` is `null` for a connection-level failure that produced NO HTTP
+  // response (timeout / network drop), distinct from a real HTTP status such as 429
+  // or 503 (parity: Claude's SDKAPIRetryMessage `error_status: number | null`).
+  | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number | null }
   | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string }
   | { type: 'provider_changed'; provider: string; model: string; reason: string }
   | { type: 'checkpoint_created'; checkpointId: string; files: string[] }
