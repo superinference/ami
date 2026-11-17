@@ -342,7 +342,7 @@ export type { HookSourceKind, HookEventInfo, BlockedHookRegistration, HookVerdic
 export type { HookTier, HookRegistration } from './hook-protection';
 export { isModAllowed, isModBlockedByPolicy, getManagedPluginNames, parseModId, normalizeModName, modNamesMatch, validateModId, ManagedModsEnforcer } from './managed-mods';
 export type { ModInfo, ManagedModsPolicy } from './managed-mods';
-export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS, PROVENANCE_TIER_INFO, PROVENANCE_INTEGRITY_INFO, RISK_CAPABILITIES, describeTier, describeIntegrity, provenanceWarning, elevatedCapabilities, hasElevatedCapabilities, assessProvenanceRisk } from './provenance';
+export { resolveProvenance, isProvenanceTrusted, ProvenanceTracker, summarizeProvenance, PROVENANCE_TIERS, PROVENANCE_TIER_INFO, PROVENANCE_INTEGRITY_INFO, PROVENANCE_INTEGRITY_ORDER, RISK_CAPABILITIES, describeTier, describeIntegrity, provenanceWarning, elevatedCapabilities, hasElevatedCapabilities, assessProvenanceRisk } from './provenance';
 export type { ProvenanceTier, ProvenanceRecord, ProvenanceSummary, ProvenanceIntegrity, ProvenanceSeverity, ProvenanceTierInfo, ProvenanceIntegrityInfo, RiskCapabilityName, RiskCapabilities, SourceCapabilities, ProvenanceRiskAssessment } from './provenance';
 export { parseRateLimitHeaders, parseRetryAfterHeader, shouldBackoff, isHardRateLimited, suggestedWaitMs, formatResetTime, formatRateLimitReset } from './rate-limit-parser';
 export type { RateLimitInfo } from './rate-limit-parser';

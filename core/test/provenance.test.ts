@@ -72,10 +72,14 @@ describe('ProvenanceTracker', () => {
     assert.equal(rec.source, 'core');
   });
 
-  it('register marks trusted as verified', () => {
+  it('register marks a trusted-origin source as attested, not verified', () => {
+    // A trusted origin tier means tier-only trust — NO content hash/signature was
+    // checked at registration, so the honest integrity is 'attested'. Claiming
+    // 'verified' here would be a false integrity signal (the fixed defect).
     const tracker = new ProvenanceTracker(new Set(['org']), new Set());
     const rec = tracker.register('policy-tool', 'org');
-    assert.equal(rec.integrity, 'verified');
+    assert.equal(rec.integrity, 'attested');
+    assert.notEqual(rec.integrity, 'verified');
   });
 
   it('register marks untrusted as unverified', () => {

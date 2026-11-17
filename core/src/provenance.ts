@@ -1,8 +1,19 @@
 export const PROVENANCE_TIERS = ['builtin', 'managed', 'user', 'unknown'] as const;
 export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
 
-/** Integrity states an attested source can be in. */
-export type ProvenanceIntegrity = 'verified' | 'unverified' | 'failed';
+/**
+ * Integrity states a source can be in.
+ *
+ * - `verified` — content integrity was CRYPTOGRAPHICALLY checked (a hash/signature
+ *   matched). Only claimed after a real check; never from origin tier alone.
+ * - `attested` — the source is trusted by its origin {@link ProvenanceTier} (builtin/
+ *   managed), but its content integrity was NOT independently verified. This is the
+ *   honest label for tier-only trust — it avoids the false-assurance of claiming
+ *   `verified` when no content check happened.
+ * - `unverified` — an untrusted-origin source with no content check.
+ * - `failed` — a content/signature check was attempted and did NOT match.
+ */
+export type ProvenanceIntegrity = 'verified' | 'attested' | 'unverified' | 'failed';
 
 /**
  * Concrete risky capabilities a source can introduce. These are origin-independent
@@ -103,8 +114,14 @@ export const PROVENANCE_TIER_INFO: Record<ProvenanceTier, ProvenanceTierInfo> = 
 export const PROVENANCE_INTEGRITY_INFO: Record<ProvenanceIntegrity, ProvenanceIntegrityInfo> = {
   verified: {
     label: 'Verified',
-    description: 'Integrity confirmed from a trusted origin.',
+    description: 'Content integrity cryptographically verified against an expected hash.',
     severity: 'ok',
+  },
+  attested: {
+    label: 'Attested',
+    description:
+      'Trusted by origin tier; content integrity not independently verified.',
+    severity: 'caution',
   },
   unverified: {
     label: 'Unverified',
@@ -117,6 +134,18 @@ export const PROVENANCE_INTEGRITY_INFO: Record<ProvenanceIntegrity, ProvenanceIn
     severity: 'warning',
   },
 };
+
+/**
+ * Deterministic display order for integrity states (best → worst), used by the
+ * `/provenance` legend so the user sees the full integrity vocabulary in a stable
+ * order rather than relying on object-key enumeration.
+ */
+export const PROVENANCE_INTEGRITY_ORDER = [
+  'verified',
+  'attested',
+  'unverified',
+  'failed',
+] as const satisfies ReadonlyArray<ProvenanceIntegrity>;
 
 /** Descriptor for {@link describeTier}/display: the tier info for a tier. */
 export function describeTier(tier: ProvenanceTier): ProvenanceTierInfo {
@@ -217,7 +246,11 @@ export class ProvenanceTracker {
       tier,
       source,
       verifiedAt: Date.now(),
-      integrity: isProvenanceTrusted(tier) ? 'verified' : 'unverified',
+      // Honest integrity: a trusted origin tier yields 'attested' (tier-only trust),
+      // NOT 'verified' — no content hash/signature check is performed at registration,
+      // so claiming 'verified' here would be a false integrity signal. 'verified' is
+      // reserved for an actual cryptographic check; untrusted origins are 'unverified'.
+      integrity: isProvenanceTrusted(tier) ? 'attested' : 'unverified',
       capabilities: normalizeCapabilities(capabilities),
     };
     this._records.set(name, record);
