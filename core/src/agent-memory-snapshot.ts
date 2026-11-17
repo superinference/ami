@@ -181,6 +181,107 @@ export function writeAgentSnapshotMeta(agentType: string, cwd: string, updatedAt
 }
 
 /**
+ * Mirror the committed snapshot's CONTENT files into this clone's local
+ * agent-memory dir. Parity with Claude Code's `copySnapshotToLocal`:
+ *
+ *  - skips {@link SNAPSHOT_META_FILENAME} (metadata, not memory content);
+ *  - skips any non-regular-file dirent, so a symlink planted in the snapshot
+ *    dir is never dereferenced/copied (defensive containment);
+ *  - best-effort: a read/write/readdir failure is logged and swallowed so a
+ *    single unreadable/unwritable file (or a missing snapshot dir) never crashes
+ *    the sync — it simply degrades to copying what it can.
+ *
+ * The local dir is created first (recursive, tolerant of a pre-existing dir).
+ */
+export function copySnapshotToLocal(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const snapshotMemDir = getSnapshotDirForAgent(agentType, cwd);
+  const localMemDir = getAgentMemoryDir(agentType, scope, cwd, env);
+  fs.mkdirSync(localMemDir, { recursive: true });
+  try {
+    for (const dirent of fs.readdirSync(snapshotMemDir, { withFileTypes: true })) {
+      // Content files only: skip the metadata file and anything that isn't a
+      // regular file (directories, symlinks — never follow a planted symlink).
+      if (!dirent.isFile() || dirent.name === SNAPSHOT_META_FILENAME) continue;
+      const content = fs.readFileSync(path.join(snapshotMemDir, dirent.name), 'utf-8');
+      fs.writeFileSync(path.join(localMemDir, dirent.name), content);
+    }
+  } catch (e) {
+    coreLog(
+      SNAPSHOT_LOG_COMPONENT,
+      `Failed to copy project snapshot into local agent memory for ${agentType}`,
+      { scope, error: String(e) },
+    );
+  }
+}
+
+/**
+ * First-time seed of local agent memory from a committed snapshot: copy the
+ * snapshot's content files in, then record the sync marker so a subsequent
+ * {@link checkAgentMemorySnapshot} returns `none`. Parity with Claude Code's
+ * `initializeFromSnapshot`. Use this for the `initialize` action.
+ */
+export function initializeFromSnapshot(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  snapshotTimestamp: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  coreLog(
+    SNAPSHOT_LOG_COMPONENT,
+    `Initializing agent memory for ${agentType} from project snapshot`,
+    { scope, snapshotTimestamp },
+  );
+  logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'initialize-sync', scope });
+  copySnapshotToLocal(agentType, scope, cwd, env);
+  saveAgentSyncedMeta(agentType, scope, cwd, snapshotTimestamp, env);
+}
+
+/**
+ * Full replace of local agent memory with a committed snapshot: FIRST delete the
+ * clone's existing `*.md` memory files (so entries removed from the snapshot do
+ * not linger as orphans), THEN copy the snapshot in and record the sync marker.
+ * Parity with Claude Code's `replaceFromSnapshot`. Use this for the
+ * `prompt-update` action once the user accepts the update.
+ *
+ * Destructive deletion is scoped strictly to `*.md` files (any other local file
+ * is left untouched), and the orphan-cleanup readdir is wrapped so a
+ * not-yet-existing local dir is tolerated.
+ */
+export function replaceFromSnapshot(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  snapshotTimestamp: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  coreLog(
+    SNAPSHOT_LOG_COMPONENT,
+    `Replacing agent memory for ${agentType} with project snapshot`,
+    { scope, snapshotTimestamp },
+  );
+  logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'replace-sync', scope });
+  const localMemDir = getAgentMemoryDir(agentType, scope, cwd, env);
+  try {
+    for (const dirent of fs.readdirSync(localMemDir, { withFileTypes: true })) {
+      // Orphan cleanup, scoped strictly to `.md` content files.
+      if (dirent.isFile() && dirent.name.endsWith('.md')) {
+        fs.unlinkSync(path.join(localMemDir, dirent.name));
+      }
+    }
+  } catch {
+    // Local memory directory doesn't exist yet — nothing to clean up.
+  }
+  copySnapshotToLocal(agentType, scope, cwd, env);
+  saveAgentSyncedMeta(agentType, scope, cwd, snapshotTimestamp, env);
+}
+
+/**
  * Record (in the LOCAL agent-memory dir) that this clone has synced from the
  * snapshot taken at `syncedFrom`, so a later {@link checkAgentMemorySnapshot}
  * returns `none` until the snapshot advances again.
