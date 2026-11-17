@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ProcessManager } from '../src/process-manager';
+import { ProcessManager, cwdHooks } from '../src/process-manager';
 
 // ---------------------------------------------------------------------------
 // ESM-safe branch coverage for process-manager.ts.
@@ -72,8 +72,21 @@ describe('ProcessManager – spawn error path', () => {
   it('marks task failed and records the error when the child cannot spawn', async () => {
     tmpDir = makeTmpDir();
     pm = new ProcessManager(tmpDir);
+    // FUNCTIONAL CHANGE (U031 CWD recovery): a merely-missing cwd no longer reaches
+    // the async proc.on('error') path — it is now recovered to the known-good root
+    // BEFORE spawn (parity: Claude Code Shell.ts realpath recovery). To still cover
+    // the genuine proc.on('error') branch (a cwd that passes validation but the OS
+    // rejects at fork time), make the pre-spawn realpath check PASS for a path the
+    // kernel will then reject with ENOENT at spawn.
     const badCwd = path.join(tmpDir, 'does', 'not', 'exist');
-    const id = pm.spawn('echo never-runs', { cwd: badCwd });
+    const origRealpath = cwdHooks.realpathSync;
+    cwdHooks.realpathSync = (p: string) => p; // pretend every cwd exists
+    let id: string;
+    try {
+      id = pm.spawn('echo never-runs', { cwd: badCwd });
+    } finally {
+      cwdHooks.realpathSync = origRealpath;
+    }
     const event = await waitForComplete(pm, id);
     // error handler emits complete with a null exit code.
     assert.equal(event.exitCode, null);
@@ -81,6 +94,18 @@ describe('ProcessManager – spawn error path', () => {
     assert.equal(task!.status, 'failed');
     const result = pm.getOutput(id);
     assert.ok(result!.output.includes('process error'), 'error message must be written to output');
+  });
+
+  it('recovers a deleted cwd to the known-good root instead of failing (U031 parity)', async () => {
+    tmpDir = makeTmpDir();
+    pm = new ProcessManager(tmpDir);
+    // A missing requested cwd is recovered to the manager's root (which exists), so
+    // the command runs there and completes normally rather than erroring out.
+    const id = pm.spawn('echo recovered', { cwd: path.join(tmpDir, 'gone') });
+    const event = await waitForComplete(pm, id);
+    assert.equal(event.status, 'completed');
+    assert.equal(event.exitCode, 0);
+    assert.match(pm.getOutput(id)!.output, /recovered/);
   });
 });
 

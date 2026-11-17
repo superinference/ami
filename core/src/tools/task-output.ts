@@ -313,6 +313,19 @@ export const taskOutputTool: ToolDefinition = {
       lines.push('', filterRe ? '(no output matching filter yet)' : '(no output yet)');
     }
 
+    // FUNCTIONAL (parity with Claude Code's UserLocalCommandOutputMessage keeping
+    // stderr a DISTINCT, separately-labelled block): surface the task's stderr in its
+    // own section so a command whose only output is a diagnostic on stderr is still
+    // visible and distinguishable from stdout (AMI's merged output file alone cannot
+    // tell them apart). Only when non-empty, and only for the whole-buffer read.
+    // Defensive typeof guard so a minimal manager stub (tests) is a no-op.
+    if (typeof context.processManager.getStderr === 'function') {
+      const stderr = context.processManager.getStderr(taskId, tail > 0 ? tail : 0).trim();
+      if (stderr) {
+        lines.push('', '--- stderr ---', capBody(stderr));
+      }
+    }
+
     return { output: lines.join('\n'), isError: false };
   },
 };

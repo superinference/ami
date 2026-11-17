@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
-const ALLOWED_KEYS = new Set(['task_id', 'cleanup']);
+const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt']);
 
 /**
  * PARITY (additive): machine-readable discriminator for a stop/kill outcome,
@@ -17,7 +17,9 @@ export type TaskKillReason =
   | 'not_found'
   | 'already_terminal'
   | 'killed'
-  | 'kill_failed';
+  | 'kill_failed'
+  | 'interrupted'
+  | 'interrupt_unsupported';
 
 /** Structured result surface (ToolResult.metadata) for task_kill. */
 export interface TaskKillMetadata {
@@ -94,6 +96,15 @@ export const taskKillTool: ToolDefinition = {
           'When true, reap the task after stopping it: remove it from the task list and ' +
           'delete its output file. Defaults to false (the stopped task stays listed as "killed").',
       },
+      interrupt: {
+        type: 'boolean',
+        description:
+          'When true, SOFT-interrupt a running background AGENT instead of killing it: ' +
+          'stop its current turn (abort the in-flight work) but keep the agent ALIVE so ' +
+          "you can steer it with a follow-up send_message, rather than destroying it and " +
+          'losing its context. Only valid for a running agent (a plain shell/monitor has ' +
+          'no turn to interrupt). Defaults to false (a full kill).',
+      },
     },
     required: ['task_id'],
   },
@@ -110,7 +121,8 @@ export const taskKillTool: ToolDefinition = {
         type: 'string',
         description:
           'Stable outcome discriminator present on every result: invalid_input | ' +
-          'manager_unavailable | not_found | already_terminal | killed | kill_failed.',
+          'manager_unavailable | not_found | already_terminal | killed | kill_failed | ' +
+          'interrupted | interrupt_unsupported.',
       },
       taskId: { type: 'string', description: 'The task ID the stop targeted, when known.' },
       taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: Claude's task_type)." },
@@ -134,7 +146,7 @@ export const taskKillTool: ToolDefinition = {
     // Strict schema: reject unexpected/injected parameters.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
     if (unknown.length > 0) {
-      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
 
     if (!context.processManager) {
@@ -156,11 +168,40 @@ export const taskKillTool: ToolDefinition = {
     }
     const cleanup = input.cleanup === true;
 
+    if (input.interrupt !== undefined && typeof input.interrupt !== 'boolean') {
+      return { output: 'Error: "interrupt" must be a boolean. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input', taskId }) };
+    }
+    const interrupt = input.interrupt === true;
+
     const pm = context.processManager;
     const task = pm.get(taskId);
 
     if (!task) {
       return { output: `Error: No background task found with ID "${taskId}". Use task_list to see all tasks. [code: not_found]`, isError: true, metadata: meta({ reason: 'not_found', taskId }) };
+    }
+
+    // SOFT-INTERRUPT (parity: Claude Code's two-tier teammate abort — stop the
+    // current turn but keep the agent alive). Only a running in-process AGENT has a
+    // turn to interrupt; a shell/monitor (or a terminal task) has none, so we refuse
+    // with a clear code instead of silently falling through to a hard kill.
+    if (interrupt) {
+      const kind = typeof pm.taskKind === 'function' ? pm.taskKind(taskId) : undefined;
+      if (task.status !== 'running' || kind !== 'agent') {
+        return {
+          output: `Error: task "${taskId}" cannot be interrupted (only a running agent can be soft-interrupted; this is ${kind ?? 'unknown'}/${task.status}). Use task_kill without interrupt to stop it. [code: interrupt_unsupported]`,
+          isError: true,
+          metadata: meta({ reason: 'interrupt_unsupported', taskId, kind, status: task.status }),
+        };
+      }
+      const didInterrupt = typeof pm.interruptAgentTurn === 'function' && pm.interruptAgentTurn(taskId);
+      if (didInterrupt) {
+        return {
+          output: `Agent "${taskId}" current turn interrupted. The agent is still alive — send it a follow-up message (send_message) to steer it.`,
+          isError: false,
+          metadata: meta({ reason: 'interrupted', taskId, taskType: 'agent', kind, command: (task.command || task.description) || undefined }),
+        };
+      }
+      return { output: `Error: Failed to interrupt task "${taskId}". [code: kill_failed]`, isError: true, metadata: meta({ reason: 'kill_failed', taskId, kind }) };
     }
 
     // PARITY (additive): the task-type discriminator (agent/bash) surfaced in the

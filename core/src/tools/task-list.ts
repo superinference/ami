@@ -265,7 +265,12 @@ export const taskListTool: ToolDefinition = {
         // arrived for PROGRESS_IDLE_MS, so a reader can tell a working agent from a
         // quiet one. Both are omitted for a terminal agent / when unset.
         if (t.status === 'running') {
-          if (t.progressSummary) parts.push(`— ${t.progressSummary}`);
+          // Prefer the authoritative AI summary over the raw tool-tick progress
+          // summary (parity: Claude Code's LocalAgentTask summary precedence — a raw
+          // progress tick never clobbers the LLM summary). effectiveSummary() encodes
+          // agentSummary ?? progressSummary; optional-chained for a minimal stub.
+          const summary = context.processManager!.effectiveSummary?.(t.taskId) ?? t.progressSummary;
+          if (summary) parts.push(`— ${summary}`);
           if (typeof t.lastActivity === 'number') {
             const idleMs = Date.now() - t.lastActivity;
             if (idleMs >= PROGRESS_IDLE_MS) {
@@ -293,6 +298,16 @@ export const taskListTool: ToolDefinition = {
         }
       } else {
         parts.push(t.description);
+      }
+
+      // Attention badge (parity: Claude Code's ultraplanPhase / waiting-for-input
+      // pill): a still-running task signalling it needs the user's attention — the
+      // stall watchdog sets `needs_input` when a task blocks on an interactive
+      // prompt; an orchestrator can set `plan_ready` when a plan awaits review.
+      // Orthogonal to the lifecycle status, so it renders alongside `running`.
+      if (t.status === 'running') {
+        if (t.attentionState === 'needs_input') parts.push('[needs input]');
+        else if (t.attentionState === 'plan_ready') parts.push('[plan ready]');
       }
 
       // Dedicated failure-reason channel (parity: AsyncAgentDetailDialog error

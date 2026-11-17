@@ -165,6 +165,55 @@ export type TaskStatus = (typeof TASK_STATUS)[number];
 export const TASK_KINDS = ['bash', 'monitor', 'agent'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
+/**
+ * Per-task ATTENTION state (parity with Claude Code's pillLabel ultraplanPhase /
+ * RemoteAgentTask progress stages): an optional sub-state ORTHOGONAL to the
+ * lifecycle {@link TaskStatus}, describing whether a still-running task needs the
+ * user's attention.
+ *   - `working`     → actively progressing, no attention needed (the default).
+ *   - `plan_ready`  → produced a plan/result awaiting review (Claude's filled ◆
+ *                     "ultraplan ready").
+ *   - `needs_input` → blocked waiting for the user to answer (Claude's open ◇
+ *                     "ultraplan needs your input" / a stalled interactive prompt).
+ * Surfaced by task_list so a long-running agent can signal "come look at me" without
+ * leaving the `running` lifecycle state.
+ */
+export const TASK_ATTENTION_STATES = ['working', 'plan_ready', 'needs_input'] as const;
+export type TaskAttentionState = (typeof TASK_ATTENTION_STATES)[number];
+
+/**
+ * DI seam + pure helper for pre-spawn working-directory validation (parity with
+ * Claude Code's Shell.ts realpath(cwd) recovery, L220-238). A command can delete
+ * its own cwd (temp-dir cleanup) before a follow-up background spawn; passing the
+ * now-missing path straight to child_process.spawn surfaces only an async ENOENT
+ * 'error' event. This resolves the spawn cwd UP FRONT: the requested dir if it
+ * exists, else the manager's known-good `fallback` root, else an `error` so the
+ * caller short-circuits the task to 'failed' with a clear message WITHOUT forking.
+ * `realpathSync` is injectable so tests can drive the deleted-cwd branch
+ * deterministically without racing a real rmdir.
+ */
+export const cwdHooks: { realpathSync: (p: string) => string } = {
+  realpathSync: (p) => fs.realpathSync(p),
+};
+
+export function resolveSpawnCwd(requested: string, fallback: string): { cwd: string; recovered: boolean; error?: string } {
+  try {
+    cwdHooks.realpathSync(requested);
+    return { cwd: requested, recovered: false };
+  } catch {
+    try {
+      cwdHooks.realpathSync(fallback);
+      return { cwd: fallback, recovered: true };
+    } catch {
+      return {
+        cwd: requested,
+        recovered: false,
+        error: `working directory "${requested}" no longer exists — start from an existing directory`,
+      };
+    }
+  }
+}
+
 /** Terminal states — a task in one of these will never run again. */
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);
 
@@ -640,6 +689,28 @@ export interface BackgroundProcess {
    * Consumed by task_list's distinct-team tally.
    */
   teamName?: string;
+  /**
+   * Per-task ATTENTION sub-state (see {@link TaskAttentionState}) — orthogonal to
+   * the lifecycle {@link status}. Lets a still-`running` task signal that it is
+   * awaiting review (`plan_ready`) or blocked on the user (`needs_input`) so
+   * task_list can flag it for attention. Parity with Claude Code's ultraplanPhase /
+   * RemoteAgentTask waiting-for-input badge. Undefined ⇒ `working` (no attention).
+   * The stall watchdog sets `needs_input` automatically when a task blocks on an
+   * interactive prompt (see {@link ProcessManager.notifyStall}); an orchestrator can
+   * set `plan_ready` via {@link ProcessManager.updateEntry}.
+   */
+  attentionState?: TaskAttentionState;
+  /**
+   * Natural-language AI SUMMARY of what a background agent has accomplished so far
+   * (parity with Claude Code's LocalAgentTask periodic `updateAgentSummary`, a 1-2
+   * sentence LLM-written summary). Distinct from {@link progressSummary} (a raw
+   * tool-derived "current activity" tick): the AI summary is authoritative and
+   * takes PRECEDENCE — a raw progress tick NEVER clobbers it (Claude's
+   * `existingSummary ? {...progress, summary: existingSummary} : progress` merge).
+   * Read via {@link ProcessManager.effectiveSummary} (agentSummary ?? progressSummary).
+   * Set via {@link ProcessManager.updateEntry}. Undefined until the first AI summary.
+   */
+  agentSummary?: string;
 }
 
 /**
@@ -756,7 +827,16 @@ interface InternalProcess extends BackgroundProcess {
    *  baseline for this task, so the FIRST report returns zero deltas (nothing to
    *  compare against yet) instead of reporting the whole current count as "new". */
   _progressBaselined?: boolean;
+  /** Bounded in-memory tail of bytes seen on the child's STDERR stream, so a
+   *  consumer can surface stderr DISTINCTLY from the merged output file (parity with
+   *  Claude Code keeping stderr separate in the command-output renderer). Capped at
+   *  {@link STDERR_TAIL_CAP} bytes — stderr still ALSO flows into the merged output
+   *  file unchanged (back-compat), this is the separable copy. See {@link ProcessManager.getStderr}. */
+  _stderrTail?: string;
 }
+
+/** Cap on the retained per-task stderr tail ({@link InternalProcess._stderrTail}). */
+export const STDERR_TAIL_CAP = 64 * 1024; // 64 KB
 
 /**
  * Incremental progress delta for a background agent, returned by
@@ -815,8 +895,17 @@ export class ProcessManager extends EventEmitter {
    */
   maxOutputBytes: number = MAX_OUTPUT_BYTES;
 
+  /**
+   * The manager's known-good working directory (the session cwd at construction).
+   * Used as the recovery fallback when a background spawn's requested cwd has been
+   * deleted mid-session (see {@link resolveSpawnCwd}), mirroring Claude Code's
+   * getOriginalCwd() recovery target.
+   */
+  private readonly rootCwd: string;
+
   constructor(cwd: string) {
     super();
+    this.rootCwd = cwd;
     this.tasksDir = projectStateDir(cwd, 'tasks');
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
@@ -831,7 +920,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'> }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -843,6 +932,31 @@ export class ProcessManager extends EventEmitter {
       );
     }
     const taskId = generateTaskId('bg');
+    const description = opts.description || command.slice(0, 80);
+
+    // ABORT-BEFORE-SPAWN short-circuit (parity with Claude Code's Shell.ts
+    // `if (abortSignal.aborted) return createAbortedCommand()`, L241-243): a caller
+    // that cancels the spawn request before we fork should pay NO fork/openSync
+    // cost. Record a terminal 'killed' task (no child, no output file) so the id is
+    // still trackable/reportable, then return without spawning.
+    if (opts.signal?.aborted) {
+      return this.createTerminalStub(taskId, { command, description, status: 'killed', exitCode: null, kind: opts.kind, agentId: opts.agentId, toolUseId: opts.toolUseId });
+    }
+
+    // CWD existence validation + recovery (parity with Claude Code's Shell.ts
+    // realpath(cwd) recovery, L220-238). If the requested cwd was deleted mid-session
+    // (a prior command removed its own temp dir), fall back to the manager's
+    // known-good root; if THAT is also gone, short-circuit to 'failed' with a clear
+    // message instead of letting child_process.spawn surface a bare async ENOENT.
+    const resolvedCwd = resolveSpawnCwd(opts.cwd, this.rootCwd);
+    if (resolvedCwd.error) {
+      const outputPath = path.join(this.tasksDir, `${taskId}.output`);
+      try {
+        const fd0 = fs.openSync(outputPath, secureWriteFlags());
+        try { fs.writeSync(fd0, Buffer.from(`[${resolvedCwd.error}]\n`)); } finally { fs.closeSync(fd0); }
+      } catch { /* best-effort diagnostic */ }
+      return this.createTerminalStub(taskId, { command, description, status: 'failed', exitCode: null, kind: opts.kind, agentId: opts.agentId, toolUseId: opts.toolUseId, outputPath, error: resolvedCwd.error });
+    }
     const outputPath = path.join(this.tasksDir, `${taskId}.output`);
 
     const isWindows = osHooks.platform() === 'win32';
@@ -857,7 +971,7 @@ export class ProcessManager extends EventEmitter {
     let proc: child_process.ChildProcess;
     try {
       proc = child_process.spawn(shell, shellArgs, {
-        cwd: opts.cwd,
+        cwd: resolvedCwd.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: !isWindows,
         ...(opts.env ? { env: opts.env } : {}),
@@ -871,7 +985,7 @@ export class ProcessManager extends EventEmitter {
       taskId,
       pid: proc.pid!,
       command,
-      description: opts.description || command.slice(0, 80),
+      description,
       status: 'running',
       // A caller may spawn a long-lived STREAMING/monitor shell (`tail -f`, a dev
       // server, a log follower) as kind 'monitor' so the stall watchdog is
@@ -913,7 +1027,17 @@ export class ProcessManager extends EventEmitter {
     };
 
     proc.stdout?.on('data', writeChunk);
-    proc.stderr?.on('data', writeChunk);
+    // STDERR is captured TWICE: into the merged output file (via writeChunk — the
+    // existing behavior task_output reads) AND into a bounded, separable in-memory
+    // tail so a consumer can surface stderr DISTINCTLY from stdout (parity with
+    // Claude Code's command-output renderer keeping stderr its own block). See
+    // {@link ProcessManager.getStderr} + the task_output stderr section.
+    proc.stderr?.on('data', (data: Buffer) => {
+      const prev = entry._stderrTail ?? '';
+      const next = prev + data.toString('utf-8');
+      entry._stderrTail = next.length > STDERR_TAIL_CAP ? next.slice(next.length - STDERR_TAIL_CAP) : next;
+      writeChunk(data);
+    });
     // Swallow EBADF errors on pipe streams. When a process is killed, the OS
     // may close the pipe fds before Node.js finishes reading, emitting an
     // EBADF error event. Without this handler, the error becomes uncaught.
@@ -1003,6 +1127,55 @@ export class ProcessManager extends EventEmitter {
       this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: 'failed' });
     });
 
+    // Cooperative cancellation via an AbortSignal (parity with Claude Code's
+    // ShellCommand abort-listener, ShellCommand.ts:186-193/264-267): a REAL abort
+    // kills the process tree; an abort whose reason is 'interrupt' is a SOFT
+    // interrupt — the caller intends to BACKGROUND the in-flight work so its partial
+    // output survives, so we deliberately do NOT kill. Registered once (the task's
+    // own 'close'/'error' finalize cleans everything up on normal exit).
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', () => {
+        if ((opts.signal as AbortSignal & { reason?: unknown }).reason === 'interrupt') return;
+        this.kill(taskId);
+      }, { once: true });
+    }
+
+    return taskId;
+  }
+
+  /**
+   * Record a synthetic TERMINAL task that never ran a real child — the abort-before-
+   * spawn and deleted-cwd short-circuits (see {@link spawn}). The entry is trackable
+   * (task_list/task_output/get) and its completion is routed through the durable
+   * buffer exactly like a real task's, so the model learns the spawn was refused and
+   * why. `proc` is a no-op stub; there is no fd to close.
+   */
+  private createTerminalStub(
+    taskId: string,
+    info: { command: string; description: string; status: Extract<TaskStatus, 'killed' | 'failed'>; exitCode: number | null; kind?: Extract<TaskKind, 'bash' | 'monitor'>; agentId?: string; toolUseId?: string; outputPath?: string; error?: string },
+  ): string {
+    const now = Date.now();
+    const entry: InternalProcess = {
+      taskId,
+      pid: 0,
+      command: info.command,
+      description: info.description,
+      status: info.status,
+      kind: info.kind ?? 'bash',
+      exitCode: info.exitCode,
+      outputPath: info.outputPath ?? '',
+      startTime: now,
+      endTime: now,
+      ...(info.agentId ? { agentId: info.agentId } : {}),
+      ...(info.toolUseId ? { toolUseId: info.toolUseId } : {}),
+      ...(info.error ? { error: info.error } : {}),
+      proc: { pid: 0, kill: () => { /* no child */ } } as unknown as child_process.ChildProcess,
+      outputFd: null,
+      bytesWritten: 0,
+    };
+    this.setEvictDeadline(entry);
+    this.processes.set(taskId, entry);
+    this.emitComplete({ taskId, exitCode: info.exitCode, command: info.command, description: info.description, outputPath: entry.outputPath, status: info.status });
     return taskId;
   }
 
@@ -1315,6 +1488,11 @@ export class ProcessManager extends EventEmitter {
    *  'stalled' event (mirrors Claude Code's task-notification: tell the model the
    *  command is likely blocked on an interactive prompt and how to recover). */
   private notifyStall(entry: InternalProcess, tail: string): void {
+    // A task blocked on an interactive prompt NEEDS the user's attention — flag it
+    // so task_list can surface a "needs input" badge (parity with Claude Code's
+    // waiting-for-input task state). Orthogonal to the lifecycle status (still
+    // 'running'); cleared only when the task terminates.
+    entry.attentionState = 'needs_input';
     const hint =
       `\n[background task "${entry.description}" appears to be waiting for interactive input. ` +
       `The command is likely blocked on an interactive prompt. Kill this task and re-run ` +
@@ -1622,14 +1800,66 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, ...rest } = entry;
     return rest;
+  }
+
+  /**
+   * FUNCTIONAL (parity): the bounded, SEPARABLE stderr tail captured for a task —
+   * the bytes the child wrote to STDERR, distinct from the merged stdout+stderr
+   * output file (parity with Claude Code surfacing stderr as its own block). Returns
+   * '' when the task produced no stderr or isn't tracked. `tailLines > 0` trims to
+   * the last N lines; otherwise the whole retained tail (capped at
+   * {@link STDERR_TAIL_CAP}) is returned. Lets task_output label a stderr-only
+   * command's diagnostics distinctly instead of losing them in the merged stream.
+   */
+  getStderr(taskId: string, tailLines = 0): string {
+    const entry = this.processes.get(taskId);
+    const tail = entry?._stderrTail;
+    if (!tail) return '';
+    if (tailLines > 0) return tail.split('\n').slice(-tailLines).join('\n');
+    return tail;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's LocalAgentTask summary precedence): the
+   * EFFECTIVE progress summary for a tracked agent — the authoritative AI summary
+   * ({@link BackgroundProcess.agentSummary}) when set, falling back to the raw
+   * tool-derived {@link BackgroundProcess.progressSummary}. A raw progress tick never
+   * clobbers the AI summary (they are separate fields), so this getter encodes the
+   * "existing LLM summary wins" merge. Returns undefined when neither is set / the
+   * task isn't tracked.
+   */
+  effectiveSummary(taskId: string): string | undefined {
+    const entry = this.processes.get(taskId);
+    if (!entry) return undefined;
+    return entry.agentSummary ?? entry.progressSummary;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's two-tier teammate abort,
+   * useBackgroundTaskNavigation L147-165): SOFT-interrupt a running in-process
+   * AGENT's current turn WITHOUT killing it. Invokes the agent's abort callback (the
+   * same per-turn AbortController `kill()` uses) to stop the in-flight work, but —
+   * unlike {@link kill} — does NOT flip the task to 'killed', close its fd, or remove
+   * it: the agent entry stays alive so a persistent/mailbox agent
+   * (send-message-addressable) can receive and act on a follow-up message instead of
+   * being destroyed and re-spawned. Only valid for a RUNNING `agent` task (a bash
+   * shell / monitor has no turn concept — returns false). Emits an 'interrupted'
+   * introspection event. Returns true when the interrupt was delivered.
+   */
+  interruptAgentTurn(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'running' || entry.kind !== 'agent') return false;
+    try { entry.proc.kill(); } catch { /* abort already fired */ }
+    this.emit('interrupted', { taskId, description: entry.description });
+    return true;
   }
 
   /**
@@ -1846,7 +2076,7 @@ export class ProcessManager extends EventEmitter {
     return true;
   }
 
-  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'toolCount' | 'error' | 'resultTokenCount' | 'resultToolCount' | 'progressSummary'>>): void {
+  updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'toolCount' | 'error' | 'resultTokenCount' | 'resultToolCount' | 'progressSummary' | 'attentionState' | 'agentSummary'>>): void {
     const entry = this.processes.get(taskId);
     if (!entry) return;
     if (updates.status !== undefined) {
@@ -1872,17 +2102,32 @@ export class ProcessManager extends EventEmitter {
     // totals recorded at the terminal transition.
     if (updates.resultTokenCount !== undefined) entry.resultTokenCount = updates.resultTokenCount;
     if (updates.resultToolCount !== undefined) entry.resultToolCount = updates.resultToolCount;
-    // Live AI progress summary (see BackgroundProcess.progressSummary) — current
-    // activity, takes precedence over the static description in task_list.
+    // Live RAW progress summary (see BackgroundProcess.progressSummary) — current
+    // tool activity. It is a SEPARATE field from the authoritative AI summary
+    // (agentSummary) and never overwrites it, so a raw progress tick can never
+    // clobber an LLM-written summary (parity: Claude Code's `existingSummary ?
+    // {...progress, summary: existingSummary} : progress`). effectiveSummary()
+    // reads agentSummary ?? progressSummary.
     if (updates.progressSummary !== undefined) entry.progressSummary = updates.progressSummary;
-    // Stamp last-activity on any LIVE progress signal (token/tool/summary) so a
-    // consumer can tell a still-working agent from one that has gone quiet (see
+    // Authoritative AI summary (see BackgroundProcess.agentSummary) — takes
+    // precedence over the raw progressSummary in effectiveSummary().
+    if (updates.agentSummary !== undefined) entry.agentSummary = updates.agentSummary;
+    // Attention sub-state (see BackgroundProcess.attentionState) — a running task
+    // signalling it needs review / is blocked. Ignore an unrecognized value rather
+    // than storing garbage that a renderer can't branch on.
+    if (updates.attentionState !== undefined && TASK_ATTENTION_STATES.includes(updates.attentionState)) {
+      entry.attentionState = updates.attentionState;
+    }
+    // Stamp last-activity on any LIVE progress signal (token/tool/summary/attention)
+    // so a consumer can tell a still-working agent from one that has gone quiet (see
     // BackgroundProcess.lastActivity). A status/exitCode/error-only update is a
     // lifecycle transition, not progress, so it does not refresh the clock.
     if (
       updates.tokenCount !== undefined ||
       updates.toolCount !== undefined ||
-      updates.progressSummary !== undefined
+      updates.progressSummary !== undefined ||
+      updates.agentSummary !== undefined ||
+      updates.attentionState !== undefined
     ) {
       entry.lastActivity = Date.now();
     }

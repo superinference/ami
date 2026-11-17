@@ -1616,6 +1616,10 @@ export const bashTool: ToolDefinition = {
         // Record the owning agent so the shell is reaped if that agent exits first
         // (zombie prevention — see ProcessManager.killTasksForAgent).
         agentId: context.agentId,
+        // Cooperative cancellation (parity: Claude Code Shell.ts abortSignal): a
+        // turn abort kills the background shell; an abort whose reason is 'interrupt'
+        // is a soft interrupt that leaves the shell running to be backgrounded.
+        ...(context.abortSignal ? { signal: context.abortSignal } : {}),
       });
       const task = context.processManager.get(taskId);
       return {
