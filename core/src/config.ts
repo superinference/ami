@@ -331,6 +331,64 @@ export interface ProjectConfig {
    * flow withholds the prompt. Toggled via `/plugin hints on|off`.
    */
   pluginHintsDisabled?: boolean;
+  /**
+   * Path to an additional CA-certificate bundle (PEM) applied to
+   * `NODE_EXTRA_CA_CERTS` at startup — BEFORE any TLS connection — so Node picks up
+   * a corporate-proxy / TLS-inspecting CA without the user having to export the env
+   * var before every launch (parity: Claude Code's
+   * `caCertsConfig.applyExtraCACertsFromConfig`). An explicit `NODE_EXTRA_CA_CERTS`
+   * already in the environment WINS (one-shot override); otherwise this value seeds
+   * it. The referenced bundle must be an existing, readable regular file — a
+   * missing/unreadable path is ignored (fail-safe: never point Node at a bad CA
+   * bundle). Applied by {@link applyConfigCaCerts}.
+   */
+  extraCaCerts?: string;
+  /**
+   * Extra filesystem directories granted to the tool-access workspace from the
+   * first turn (parity: Claude Code's `permissions.additionalDirectories`). Unioned
+   * with the remembered `/add-dir` store into the PermissionManager allowed read
+   * roots at engine setup. Relative entries resolve against the project root.
+   * Patterns ACCUMULATE across config layers (a higher layer adds more dirs, never
+   * removes a lower layer's). Resolved by {@link resolveAdditionalDirectories}.
+   */
+  additionalDirectories?: string[];
+  /**
+   * When `true`, file globbing honors the project's `.gitignore` (nested +
+   * `.git/info/exclude`); when `false` it ignores it (parity: Claude Code's
+   * `respectGitignore` file-picker toggle). Bridged to the existing
+   * `AMI_GLOB_NO_IGNORE` env knob by {@link applyConfigGitignore}; an explicit env
+   * value WINS. Unset keeps AMI's default (glob does NOT filter through gitignore).
+   */
+  respectGitignore?: boolean;
+  /**
+   * When `false`, automatic context compaction is disabled (parity: Claude Code's
+   * persisted `autoCompactEnabled` toggle). Bridged to the existing
+   * `SUPERINFERENCE_DISABLE_AUTO_COMPACT` env knob by {@link applyConfigAutoCompact};
+   * an explicit env value WINS. Unset/`true` keeps auto-compaction on (the default).
+   */
+  autoCompactEnabled?: boolean;
+  /**
+   * Custom directory for plan-mode `.md` files (parity: Claude Code's
+   * `plansDirectory`). Resolved RELATIVE to the project root and validated to stay
+   * within it by the plan-mode tool. Bridged to the existing `AMI_PLANS_DIR` env
+   * knob by {@link applyConfigPlansDirectory}; an explicit env value WINS.
+   */
+  plansDirectory?: string;
+  /**
+   * Opt into the Anthropic `fast-mode` beta (parity: Claude Code's `fast-mode`
+   * beta knob, token `fast-mode-2026-02-01`). When `true` the token is appended to
+   * the `anthropic-beta` header via the `ANTHROPIC_BETAS` escape hatch (consumed by
+   * `getExtraAnthropicBetas`). Applied by {@link applyConfigAnthropicBetas}.
+   */
+  fastMode?: boolean;
+  /**
+   * Opt into the Anthropic `redact-thinking` beta (parity: Claude Code's
+   * `redact-thinking` request beta / `showThinkingSummaries`, token
+   * `redact-thinking-2026-02-12`). When `true` the token is appended to the
+   * `anthropic-beta` header via the `ANTHROPIC_BETAS` escape hatch. Applied by
+   * {@link applyConfigAnthropicBetas}.
+   */
+  redactThinking?: boolean;
 }
 
 /**
@@ -912,6 +970,12 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['continueOnInvalidConfig', 'boolean'], ['outputStyle', 'string'],
   ['includeGitInstructions', 'boolean'],
   ['pluginHintsDisabled', 'boolean'],
+  // Startup runtime-knob bridges (see ProjectConfig) — merged by {@link mergeConfigs}
+  // and applied to the runtime (process.env / allowed read roots) at engine setup.
+  ['extraCaCerts', 'string'], ['plansDirectory', 'string'],
+  ['respectGitignore', 'boolean'], ['autoCompactEnabled', 'boolean'],
+  ['fastMode', 'boolean'], ['redactThinking', 'boolean'],
+  ['additionalDirectories', 'string[]'],
 ];
 
 /**
@@ -2041,6 +2105,18 @@ export function mergeConfigs(
     if (layer.continueOnInvalidConfig !== undefined) merged.continueOnInvalidConfig = layer.continueOnInvalidConfig;
     if (layer.outputStyle !== undefined) merged.outputStyle = layer.outputStyle;
     if (layer.includeGitInstructions !== undefined) merged.includeGitInstructions = layer.includeGitInstructions;
+    // Startup runtime-knob bridges: last-layer-wins for the scalars, array-accumulate
+    // for additionalDirectories (a higher layer adds more dirs, never removes a lower
+    // layer's — parity with the other accumulating list settings). Before this, each
+    // was declared + value-validated but never COPIED here, so a file-tier value was
+    // silently dropped.
+    if (layer.extraCaCerts !== undefined) merged.extraCaCerts = layer.extraCaCerts;
+    if (layer.plansDirectory !== undefined) merged.plansDirectory = layer.plansDirectory;
+    if (layer.respectGitignore !== undefined) merged.respectGitignore = layer.respectGitignore;
+    if (layer.autoCompactEnabled !== undefined) merged.autoCompactEnabled = layer.autoCompactEnabled;
+    if (layer.fastMode !== undefined) merged.fastMode = layer.fastMode;
+    if (layer.redactThinking !== undefined) merged.redactThinking = layer.redactThinking;
+    if (layer.additionalDirectories !== undefined) merged.additionalDirectories = mergeConfigArray(merged.additionalDirectories, layer.additionalDirectories);
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -2267,6 +2343,174 @@ export function applyConfigLanguage(
     return trimmed;
   }
   return undefined;
+}
+
+/** Anthropic beta token for the `fast-mode` opt-in (parity: Claude Code's betas). */
+export const FAST_MODE_BETA = 'fast-mode-2026-02-01';
+/** Anthropic beta token for the `redact-thinking` request opt-in (parity: Claude Code). */
+export const REDACT_THINKING_BETA = 'redact-thinking-2026-02-12';
+
+/**
+ * Bridge the persisted {@link ProjectConfig.extraCaCerts} knob into
+ * `NODE_EXTRA_CA_CERTS` so Node picks up a corporate-proxy / TLS-inspecting CA at
+ * startup, without the user having to export the env var before every launch
+ * (parity: Claude Code's `caCertsConfig.applyExtraCACertsFromConfig`). An explicit
+ * `NODE_EXTRA_CA_CERTS` already in `target` WINS (one-shot override) and is returned
+ * unchanged; otherwise a non-blank `config.extraCaCerts` that resolves to an
+ * existing, readable REGULAR file seeds it (trimmed). A missing/unreadable/
+ * non-regular path is ignored and logged (fail-safe: never point Node at a bad CA
+ * bundle). Returns the effective path, or `undefined` when none applies. Applied
+ * once at engine setup, mirroring {@link applyConfigLanguage}.
+ */
+export function applyConfigCaCerts(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const existing = target.NODE_EXTRA_CA_CERTS;
+  if (existing && existing.trim()) return existing.trim();
+  const configured = config?.extraCaCerts;
+  if (typeof configured === 'string' && configured.trim()) {
+    const trimmed = configured.trim();
+    try {
+      if (fsHooks.statSync(trimmed).isFile()) {
+        target.NODE_EXTRA_CA_CERTS = trimmed;
+        return trimmed;
+      }
+      coreLog('config', `extraCaCerts path is not a regular file, ignoring: ${trimmed}`);
+    } catch {
+      coreLog('config', `extraCaCerts path is unreadable, ignoring: ${trimmed}`);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.respectGitignore} knob into the existing
+ * `AMI_GLOB_NO_IGNORE` env knob that {@link import('./tools/glob').globRespectsGitignore}
+ * already reads — so a user can persist the file-picker gitignore preference in
+ * project/user config instead of exporting the env var (parity: Claude Code's
+ * `respectGitignore` setting). An explicit `AMI_GLOB_NO_IGNORE` already in `target`
+ * WINS (one-shot override); otherwise `respectGitignore === true` honors `.gitignore`
+ * (sets the knob falsey) and `=== false` ignores it (sets it truthy). An unset config
+ * value is a no-op (AMI's default: glob does not filter through gitignore).
+ */
+export function applyConfigGitignore(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target.AMI_GLOB_NO_IGNORE !== undefined) return;
+  const respect = config?.respectGitignore;
+  if (typeof respect === 'boolean') {
+    // AMI_GLOB_NO_IGNORE is "do NOT respect gitignore"; it is the inverse of the knob.
+    target.AMI_GLOB_NO_IGNORE = respect ? 'false' : 'true';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.autoCompactEnabled} knob into the existing
+ * `SUPERINFERENCE_DISABLE_AUTO_COMPACT` env knob that
+ * {@link import('../../common/src/context-manager').isAutoCompactDisabled} reads — so a
+ * user can persist "turn auto-compaction off" in project/user config (parity: Claude
+ * Code's `autoCompactEnabled` toggle). An explicit disable env var (either the
+ * `SUPERINFERENCE_` or the Claude-compatible `DISABLE_AUTO_COMPACT` alias) already in
+ * `target` WINS; otherwise `autoCompactEnabled === false` arms the disable. Unset/
+ * `true` is a no-op (auto-compaction stays on, the default).
+ */
+export function applyConfigAutoCompact(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target.SUPERINFERENCE_DISABLE_AUTO_COMPACT !== undefined || target.DISABLE_AUTO_COMPACT !== undefined) return;
+  if (config?.autoCompactEnabled === false) {
+    target.SUPERINFERENCE_DISABLE_AUTO_COMPACT = '1';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.plansDirectory} knob into the existing
+ * `AMI_PLANS_DIR` env knob that {@link import('./tools/plan-mode').getPlansDirectory}
+ * reads (and validates for path-traversal, resolving relative to the project root) —
+ * so a user can persist a custom plans directory in project/user config (parity:
+ * Claude Code's `plansDirectory`). An explicit `AMI_PLANS_DIR` already in `target`
+ * WINS; otherwise a non-blank `config.plansDirectory` seeds it (trimmed).
+ */
+export function applyConfigPlansDirectory(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target.AMI_PLANS_DIR !== undefined) return;
+  const dir = config?.plansDirectory;
+  if (typeof dir === 'string' && dir.trim()) {
+    target.AMI_PLANS_DIR = dir.trim();
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.fastMode} / {@link ProjectConfig.redactThinking}
+ * beta opt-ins into the existing `ANTHROPIC_BETAS` env escape hatch that
+ * {@link import('./provider').getExtraAnthropicBetas} appends to the `anthropic-beta`
+ * header — so a user can persist an API-beta opt-in in project/user config (parity:
+ * Claude Code's `fast-mode` / `redact-thinking` beta knobs). Each enabled knob's token
+ * is appended to the comma-separated list WITHOUT duplicating one already present; any
+ * tokens a user set directly in `ANTHROPIC_BETAS` are preserved. A no-op when neither
+ * knob is enabled.
+ */
+export function applyConfigAnthropicBetas(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  const tokens: string[] = [];
+  if (config?.fastMode === true) tokens.push(FAST_MODE_BETA);
+  if (config?.redactThinking === true) tokens.push(REDACT_THINKING_BETA);
+  if (tokens.length === 0) return;
+  const merged = (target.ANTHROPIC_BETAS ?? '').split(',').map(t => t.trim()).filter(Boolean);
+  for (const token of tokens) {
+    if (!merged.includes(token)) merged.push(token);
+  }
+  target.ANTHROPIC_BETAS = merged.join(',');
+}
+
+/**
+ * Apply every startup config→runtime knob bridge in one call (the env-targeting
+ * ones): CA certs, glob-gitignore, auto-compaction, plans directory, and Anthropic
+ * betas. Called once at engine setup with the MERGED config so a value from any file
+ * tier takes effect, mirroring {@link applyConfigLanguage}. `{@link resolveAdditionalDirectories}`
+ * is applied separately (it returns a value threaded into the PermissionManager's
+ * allowed read roots rather than mutating `target`).
+ */
+export function applyConfigStartupKnobs(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  applyConfigCaCerts(config, target);
+  applyConfigGitignore(config, target);
+  applyConfigAutoCompact(config, target);
+  applyConfigPlansDirectory(config, target);
+  applyConfigAnthropicBetas(config, target);
+}
+
+/**
+ * Resolve the persisted {@link ProjectConfig.additionalDirectories} to a de-duped list
+ * of absolute directory paths to add to the tool-access workspace (parity: Claude
+ * Code's `permissions.additionalDirectories`). Relative entries resolve against the
+ * project root `cwd`; blank/non-string entries are dropped. Unioned with the
+ * remembered `/add-dir` store into the PermissionManager allowed read roots at engine
+ * setup. Takes the already-MERGED config (the accumulated cross-layer list) so there
+ * is ONE place that normalizes the paths.
+ */
+export function resolveAdditionalDirectories(
+  config: ProjectConfig | null | undefined,
+  cwd: string,
+): string[] {
+  const dirs = config?.additionalDirectories;
+  if (!Array.isArray(dirs)) return [];
+  const out: string[] = [];
+  for (const dir of dirs) {
+    if (typeof dir !== 'string' || !dir.trim()) continue;
+    const resolved = path.isAbsolute(dir) ? path.normalize(dir) : path.resolve(cwd, dir.trim());
+    if (!out.includes(resolved)) out.push(resolved);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
