@@ -23,6 +23,39 @@ const DEFAULT_TAIL_LINES = 50;
  */
 const TASK_OUTPUT_READ_BYTES = 512 * 1024;
 
+/** Max length of a recognizable task id in an agent-output file path. */
+const AGENT_OUTPUT_TASK_ID_MAX = 20;
+/** Charset a task id must match to be recognized in a path (mirrors Claude Code). */
+const AGENT_OUTPUT_TASK_ID_RE = /^[a-zA-Z0-9_-]+$/;
+const AGENT_OUTPUT_SUFFIX = '.output';
+
+/**
+ * PARITY (additive): recognize an agent/background-task output FILE path and extract
+ * its task id. Mirrors Claude Code's `getAgentOutputTaskId` (FileReadTool/UI.tsx):
+ * an agent output file follows the layout `…/tasks/<taskId>.output`, and the id is
+ * validated as non-empty, at most 20 chars, and `[a-zA-Z0-9_-]` only. AMI writes
+ * these as `projectStateDir(cwd,'tasks')/<taskId>.output` (task.ts), so we match a
+ * `.output` file living directly under a `tasks/` directory and validate the stem.
+ *
+ * Returns the task id when the path is a recognized agent-output file, else null —
+ * letting a display/summary layer show the compact task id instead of the raw
+ * (long, state-dir) path when the model reads a task's transcript via file_read.
+ */
+export function getAgentOutputTaskId(filePath: unknown): string | null {
+  if (typeof filePath !== 'string' || !filePath.endsWith(AGENT_OUTPUT_SUFFIX)) return null;
+  const norm = filePath.replace(/\\/g, '/');
+  const slash = norm.lastIndexOf('/');
+  if (slash < 0) return null;
+  const dir = norm.slice(0, slash);
+  // The file must sit directly inside a `tasks/` directory.
+  if (dir !== 'tasks' && !dir.endsWith('/tasks')) return null;
+  const taskId = norm.slice(slash + 1, -AGENT_OUTPUT_SUFFIX.length);
+  if (taskId.length > 0 && taskId.length <= AGENT_OUTPUT_TASK_ID_MAX && AGENT_OUTPUT_TASK_ID_RE.test(taskId)) {
+    return taskId;
+  }
+  return null;
+}
+
 /**
  * Byte/char cap: truncate from the FRONT (keep the latest tail) and mark it, so a
  * chatty task can't flood the model's context. Shared by the whole-buffer read and

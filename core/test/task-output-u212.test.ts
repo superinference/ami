@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import { taskOutputTool } from '../src/tools/task-output';
+import { taskOutputTool, getAgentOutputTaskId } from '../src/tools/task-output';
 import { formatSize } from '../src/tools/spill-output';
 import type { ToolContext } from '../src/types';
 
@@ -102,5 +102,33 @@ describe('task_output U212: truncation / total-size indicator', () => {
     });
     const res = await taskOutputTool.execute!({ task_id: 't' }, c);
     assert.ok(!res.output.includes('earlier output omitted'), 'no size introspection -> no indicator');
+  });
+});
+
+describe('getAgentOutputTaskId (parity: Claude Code FileReadTool/UI getAgentOutputTaskId)', () => {
+  it('extracts the task id from a …/tasks/<id>.output path', () => {
+    assert.equal(getAgentOutputTaskId('/home/u/.ami/projects/p/tasks/bg-123.output'), 'bg-123');
+    assert.equal(getAgentOutputTaskId('tasks/abc.output'), 'abc');
+    // Windows-style separators normalize to the same recognition.
+    assert.equal(getAgentOutputTaskId('C:\\state\\tasks\\agent_7.output'), 'agent_7');
+  });
+
+  it('rejects paths not shaped like an agent output file', () => {
+    assert.equal(getAgentOutputTaskId('/var/log/tasks/x.txt'), null, 'wrong suffix');
+    assert.equal(getAgentOutputTaskId('/var/other/x.output'), null, 'not under a tasks/ dir');
+    assert.equal(getAgentOutputTaskId('x.output'), null, 'no directory at all');
+    assert.equal(getAgentOutputTaskId('/t/tasks/.output'), null, 'empty id');
+  });
+
+  it('rejects ids that fail the length/charset validator', () => {
+    assert.equal(getAgentOutputTaskId('/t/tasks/' + 'a'.repeat(21) + '.output'), null, 'id too long (>20)');
+    assert.equal(getAgentOutputTaskId('/t/tasks/bad id.output'), null, 'id has a space');
+    assert.equal(getAgentOutputTaskId('/t/tasks/bad.id.output'), null, 'id has a dot');
+  });
+
+  it('is null-safe for non-string input', () => {
+    assert.equal(getAgentOutputTaskId(undefined), null);
+    assert.equal(getAgentOutputTaskId(42), null);
+    assert.equal(getAgentOutputTaskId(null), null);
   });
 });
