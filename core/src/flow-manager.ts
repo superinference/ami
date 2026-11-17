@@ -40,6 +40,9 @@ export class FlowManager {
   private activeByKey = new Map<string, { flowId: string; lastSpawnTime: number }>();
   // Flows the inspector is currently displaying — retained from eviction (see pinFlow).
   private pinnedFlowIds = new Set<string>();
+  // The single flow the inspector is CURRENTLY drilled into (viewed), or undefined.
+  // Managed via setViewedFlow() so enter/exit transitions pin + linger exactly once.
+  private viewedFlowId?: string;
 
   private static readonly DEFAULT_KEY = '__default__';
   /** Cap on retained terminal (non-active) flows so they don't accumulate across a long session. */
@@ -137,6 +140,38 @@ export class FlowManager {
     this.pinnedFlowIds.delete(flowId);
   }
 
+  /** FUNCTIONAL: Declare which flow the TUI inspector is CURRENTLY drilled into (viewed),
+   *  or `undefined` when no flow view is open. This is the single enter/exit entry point
+   *  the inspector calls on every drill change; it mirrors Claude's
+   *  enterTeammateView/exitTeammateView retain+evictAfter special-casing:
+   *   - Entering a flow PINS it (pruneTerminal/pruneExpired can never delete it out from
+   *     under the view) and CLEARS any pending linger deadline (`evictAfter`) so a flow
+   *     that terminated while being inspected won't be swept.
+   *   - Moving the view away (to another flow or to `undefined`) RELEASES the previously
+   *     viewed flow: it is unpinned and, if terminal, given a fresh grace window via
+   *     scheduleEviction() so the row LINGERS briefly instead of vanishing immediately.
+   *     (scheduleEviction() no-ops on active/unknown flows, so a still-active viewed flow
+   *     is simply unpinned.)
+   *  Idempotent: re-declaring the same viewed flow is a no-op. Returns the id of the flow
+   *  released by this transition (if any), else undefined. */
+  setViewedFlow(flowId: string | undefined): string | undefined {
+    if (flowId === this.viewedFlowId) return undefined;
+    const released = this.viewedFlowId;
+    if (released !== undefined) {
+      this.unpinFlow(released);
+      // Terminal → linger briefly before eviction; active/unknown → no-op.
+      this.scheduleEviction(released);
+    }
+    if (flowId !== undefined) {
+      this.pinFlow(flowId);
+      // Entering a view blocks eviction: drop any linger deadline already scheduled.
+      const flow = this.flows.get(flowId);
+      if (flow) flow.evictAfter = undefined;
+    }
+    this.viewedFlowId = flowId;
+    return released;
+  }
+
   /** Whether a flow is currently pinned (retained from eviction). */
   isPinned(flowId: string): boolean {
     return this.pinnedFlowIds.has(flowId);
@@ -192,6 +227,7 @@ export class FlowManager {
     this.flows.clear();
     this.activeByKey.clear();
     this.pinnedFlowIds.clear();
+    this.viewedFlowId = undefined;
   }
 
   /** Evict terminal (non-active) flows beyond the retention cap, oldest-FINISHED

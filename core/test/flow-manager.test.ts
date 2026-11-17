@@ -522,4 +522,83 @@ describe('FlowManager', () => {
       assert.equal(fm.getFlow(flowId)?.status, 'completed');
     });
   });
+
+  describe('setViewedFlow (inspector view retain + linger)', () => {
+    const terminate = (id: string) => { fm.addAgent(id, 'a-' + id); fm.updateFlowStatus(id, () => 'completed'); };
+
+    it('entering a flow view pins it and clears any pending linger deadline', () => {
+      const id = fm.createFlow('v');
+      terminate(id);
+      assert.ok(fm.getFlow(id)!.evictAfter !== undefined, 'terminalized flow has a grace deadline');
+      const released = fm.setViewedFlow(id);
+      assert.equal(released, undefined, 'nothing was previously viewed');
+      assert.equal(fm.isPinned(id), true, 'viewed flow is pinned');
+      assert.equal(fm.getFlow(id)!.evictAfter, undefined, 'linger deadline cleared while viewed');
+    });
+
+    it('a pinned viewed terminal flow survives pruneExpired even past a deadline', () => {
+      const id = fm.createFlow('v');
+      terminate(id);
+      fm.setViewedFlow(id);
+      // Force a stale deadline; it must still be retained because it is the viewed flow.
+      fm.getFlow(id)!.evictAfter = 1;
+      assert.deepEqual(fm.pruneExpired(Number.MAX_SAFE_INTEGER), [], 'viewed flow not evicted');
+      assert.ok(fm.getFlow(id), 'viewed flow retained');
+    });
+
+    it('moving the view away releases the previous terminal flow and lets it linger', () => {
+      const a = fm.createFlow('a'); terminate(a);
+      fm.setViewedFlow(a);
+      const before = Date.now();
+      const released = fm.setViewedFlow(undefined);
+      assert.equal(released, a, 'returns the released flow id');
+      assert.equal(fm.isPinned(a), false, 'released flow is unpinned');
+      assert.ok(fm.getFlow(a)!.evictAfter! >= before + FlowManager.TERMINAL_GRACE_MS,
+        'released terminal flow gets a fresh grace window (lingers)');
+      // After the grace window it becomes evictable.
+      assert.deepEqual(fm.pruneExpired(fm.getFlow(a)!.evictAfter! + 1), [a], 'evicted once grace elapses');
+    });
+
+    it('switching between two flows releases the first and pins the second', () => {
+      const a = fm.createFlow('a'); terminate(a);
+      const b = fm.createFlow('b'); terminate(b);
+      fm.setViewedFlow(a);
+      const released = fm.setViewedFlow(b);
+      assert.equal(released, a);
+      assert.equal(fm.isPinned(a), false, 'first flow released');
+      assert.equal(fm.isPinned(b), true, 'second flow pinned');
+      assert.equal(fm.getFlow(b)!.evictAfter, undefined, 'second flow linger cleared');
+    });
+
+    it('re-viewing the same flow is an idempotent no-op', () => {
+      const a = fm.createFlow('a'); terminate(a);
+      fm.setViewedFlow(a);
+      fm.getFlow(a)!.evictAfter = 12345; // would normally be cleared on enter
+      assert.equal(fm.setViewedFlow(a), undefined, 'no release on re-view');
+      assert.equal(fm.getFlow(a)!.evictAfter, 12345, 'no-op: deadline untouched');
+      assert.equal(fm.isPinned(a), true);
+    });
+
+    it('releasing an active viewed flow just unpins it (no eviction scheduled)', () => {
+      const a = fm.createFlow('a'); // still active (no agents terminalized)
+      fm.setViewedFlow(a);
+      assert.equal(fm.isPinned(a), true);
+      fm.setViewedFlow(undefined);
+      assert.equal(fm.isPinned(a), false, 'unpinned');
+      assert.equal(fm.getFlow(a)!.evictAfter, undefined, 'active flow gets no grace deadline');
+    });
+
+    it('setViewedFlow(undefined) with nothing viewed is a no-op', () => {
+      assert.equal(fm.setViewedFlow(undefined), undefined);
+    });
+
+    it('reset clears the viewed flow so a later release targets nothing', () => {
+      const a = fm.createFlow('a'); terminate(a);
+      fm.setViewedFlow(a);
+      fm.reset();
+      // After reset there is no viewed flow; declaring one does not try to release 'a'.
+      const b = fm.createFlow('b'); terminate(b);
+      assert.equal(fm.setViewedFlow(b), undefined, 'no stale previous view after reset');
+    });
+  });
 });
