@@ -218,6 +218,8 @@ export {
 export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug } from './title-generator';
 export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult } from './title-generator';
 export { stripDisplayTags } from './utils/display-tags';
+export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
+export type { PythonPackageManager } from './utils/package-manager';
 export { ProcessManager, TASK_STATUS, TASK_KINDS, TASK_ATTENTION_STATES, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
 export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta } from './process-manager';
 

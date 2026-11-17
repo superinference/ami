@@ -84,6 +84,17 @@ export interface LspServerConfig {
    * the `languageId` sent in `didOpen`. Keys include the leading dot (".ts").
    */
   extensionToLanguage?: Record<string, string>;
+  /**
+   * PyPI package name for a Python-installable server (e.g. `python-lsp-server`,
+   * `ruff`). When set and the server's command (+ alternatives) is NOT on PATH,
+   * the "command not found" diagnostic gains an actionable bootstrap hint naming
+   * the exact install command for the best available Python package manager
+   * (`uv tool install` / `pipx install` / `pip install --user`), via
+   * {@link detectPythonPackageManager}. AMI never auto-installs it — the hint is
+   * surfaced for the user to run. Only meaningful for pip/uv-installable servers;
+   * leave unset for npm-based servers (e.g. the built-in pyright/typescript).
+   */
+  pythonPackage?: string;
 }
 
 /**
@@ -249,6 +260,9 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (r.transport !== undefined && r.transport !== 'stdio' && r.transport !== 'socket') {
     throw new Error(`LSP server "${name}": "transport" must be "stdio" or "socket"`);
   }
+  if (r.pythonPackage !== undefined && (typeof r.pythonPackage !== 'string' || r.pythonPackage.length === 0)) {
+    throw new Error(`LSP server "${name}": "pythonPackage" must be a non-empty string`);
+  }
   const config: LspServerConfig = { command: r.command };
   if (r.commandAlternatives) config.commandAlternatives = r.commandAlternatives as string[];
   if (r.args) config.args = r.args as string[];
@@ -259,6 +273,7 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
     config.initializationOptions = r.initializationOptions as Record<string, unknown>;
   }
   if (r.settings !== undefined) config.settings = r.settings;
+  if (typeof r.pythonPackage === 'string' && r.pythonPackage.length > 0) config.pythonPackage = r.pythonPackage;
   if (typeof r.startupTimeout === 'number') config.startupTimeout = r.startupTimeout;
   if (typeof r.shutdownTimeout === 'number') config.shutdownTimeout = r.shutdownTimeout;
   if (typeof r.restartOnCrash === 'boolean') config.restartOnCrash = r.restartOnCrash;

@@ -23,6 +23,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { isBinaryInstalled, firstAvailableBinary } from '../utils/which';
+import { pythonBootstrapHint } from '../utils/package-manager';
 import { retryWithBackoff } from '../mcp/oauth';
 import { log, logError } from '../logger';
 import { AMI_CLIENT_INFO } from '../version';
@@ -459,7 +460,16 @@ export class LSPClient implements DiagnosticSource {
       const candidates = [config.command, ...(config.commandAlternatives ?? [])];
       const resolvedCommand = firstAvailableBinary(candidates, this._isBinaryInstalled);
       if (!resolvedCommand) {
-        this.recordError(language, `LSP server "${language}" command not found: ${candidates.join(', ')}`);
+        // Bootstrap affordance: for a Python-installable server (config declares a
+        // `pythonPackage`) append the exact install command for the best available
+        // Python package manager (uv/pipx/pip, pip3 collapsed to pip). AMI never
+        // auto-installs — the hint is surfaced in lastError (→ /doctor) for the user
+        // to run. Shares the client's `_isBinaryInstalled` seam so the package-manager
+        // probe is deterministic under test.
+        const hint = config.pythonPackage
+          ? ` ${pythonBootstrapHint(config.pythonPackage, this._isBinaryInstalled)}`
+          : '';
+        this.recordError(language, `LSP server "${language}" command not found: ${candidates.join(', ')}${hint}`);
         return false;
       }
 
