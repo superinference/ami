@@ -25,6 +25,13 @@ export const _exitWorktreeHooks = {
   exec: gitExec,
   existsSync: fs.existsSync as typeof fs.existsSync,
   rmSync: fs.rmSync as typeof fs.rmSync,
+  // Lock-release delay (ms) awaited AFTER `git worktree remove` and BEFORE
+  // `git branch -D <worktree-branch>` (parity: Claude sleeps ~100ms so git has
+  // released the worktree's locks, avoiding a "cannot delete branch, locked"
+  // race). Exposed on the hook object so tests can set it to 0 (fast) or assert
+  // it was awaited, without a real 100ms wait in every removal test.
+  branchDeleteDelayMs: 100,
+  sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
 };
 
 const ALLOWED_KEYS = new Set(['action', 'discard_changes']);
@@ -52,7 +59,9 @@ export const exitWorktreeTool: ToolDefinition = {
     'and to merge a worktree that still has uncommitted files (uncommitted work is never part of a merge and would be lost) — ' +
     'otherwise the tool refuses and tells you to confirm with the user or use action:"keep". ' +
     'A merge that would conflict is aborted and the worktree is preserved (never silently discarded). ' +
-    'On exit the session returns to the original working directory.',
+    'Behavior: on exit the session returns to the original working directory and CWD-dependent caches ' +
+    '(system-prompt environment sections, the session-environment cache) are cleared so they reflect the ' +
+    'restored directory; the tool is re-callable — you can start a fresh isolated worktree again afterwards with enter_worktree.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -157,6 +166,11 @@ export const exitWorktreeTool: ToolDefinition = {
           context.cwd = session.originalCwd;
           process.chdir(session.originalCwd);
           returned = `\nReturned to ${session.originalCwd}`;
+          // Mirror enter_worktree: fire executeCwdChanged so CWD-dependent caches
+          // (system-prompt env sections, session-env cache) are invalidated for the
+          // restored directory. Without this the exit path is asymmetric and caches
+          // populated inside the worktree can leak into the restored session.
+          context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: session.originalCwd })?.catch(() => {});
         }
         setWorktreeSession(null);
       }
@@ -294,8 +308,14 @@ export const exitWorktreeTool: ToolDefinition = {
       }
     }
 
-    // Delete the (now-unused) worktree branch as part of teardown.
+    // Delete the (now-unused) worktree branch as part of teardown. Wait a short
+    // lock-release window first (parity with Claude): `git worktree remove` can
+    // leave the worktree's locks briefly held, and `git branch -D` of the branch
+    // that worktree had checked out would then fail with "cannot delete, locked".
     if (branch) {
+      if (_exitWorktreeHooks.branchDeleteDelayMs > 0) {
+        await _exitWorktreeHooks.sleep(_exitWorktreeHooks.branchDeleteDelayMs);
+      }
       try { _exitWorktreeHooks.exec(['branch', '-D', branch], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* branch may be checked out elsewhere / gone */ }
     }
 
@@ -305,6 +325,11 @@ export const exitWorktreeTool: ToolDefinition = {
       if (activeSession.originalCwd) {
         context.cwd = activeSession.originalCwd;
         returned = `\nReturned to ${activeSession.originalCwd}`;
+        // Mirror enter_worktree + the keep branch: invalidate CWD-dependent caches
+        // for the restored directory on exit (system-prompt env sections,
+        // session-env cache) so state populated inside the worktree cannot leak
+        // into the restored session.
+        context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: activeSession.originalCwd })?.catch(() => {});
       }
       setWorktreeSession(null);
     }
