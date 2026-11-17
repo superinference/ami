@@ -5,6 +5,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
 import { isPowerShellNeverSuggest } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
+import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
 import type { SandboxPolicy } from './types';
 
@@ -337,7 +338,7 @@ export type PermissionDecisionReason =
   | { type: 'other'; message?: string };
 
 export const SAFETY_CHECK_KINDS = [
-  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive',
+  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec',
 ] as const;
 export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
 
@@ -2929,6 +2930,17 @@ export class PermissionManager {
       typeof input.command === 'string' &&
       this.classifyBashCommand(input.command) === 'destructive';
 
+    // Code-execution allow-rule downgrade: a matched over-broad interpreter /
+    // package-runner / shell allow rule (e.g. Bash(python:*), Bash(npx:*),
+    // Bash(bash:*)) grants arbitrary code execution, bypassing the command
+    // classifier. Unlike isDestructiveBash (which keys off the COMMAND's
+    // classification and fires only in 'ask'), this keys off the matched RULE's
+    // shape and fires in BOTH rule-evaluated modes ('ask' and 'acceptEdits'), so
+    // such a rule is downgraded to an explicit prompt instead of silently
+    // auto-approving arbitrary code. Mirrors Claude's dangerous-permission strip.
+    const codeExecDowngradeMode = (this.mode === 'ask' || this.mode === 'acceptEdits') &&
+      toolName === 'bash' && typeof input.command === 'string';
+
     // Credential/secret access always confirms in rule-evaluated modes (ask and
     // acceptEdits), even under a wildcard allow — unless there is an explicit
     // deny rule (which must still win below).
@@ -2975,12 +2987,15 @@ export class PermissionManager {
           ? matchBashPattern(rule.pattern, inputStr, rule.action)
           : matchPattern(rule.pattern, inputStr);
         if (matched) {
-          const effective = (rule.action === 'allow' && isDestructiveBash) ? 'ask' : rule.action;
+          const effective = (rule.action === 'allow' &&
+            (isDestructiveBash || (codeExecDowngradeMode && this.isDangerousCodeExecAllow(rule)))) ? 'ask' : rule.action;
           if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
           return effective;
         }
       } else {
-        // No pattern -- rule applies to the whole tool (param match already gated above)
+        // No pattern -- rule applies to the whole tool (param match already gated above).
+        // A content-less (tool-wide) rule is NOT a code-exec prefix, so only the
+        // destructive-command downgrade applies here.
         const effective = (rule.action === 'allow' && isDestructiveBash) ? 'ask' : rule.action;
         if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
         return effective;
@@ -3067,6 +3082,17 @@ export class PermissionManager {
       }
       if (this.classifyBashCommand(command) === 'destructive') {
         return { type: 'safetyCheck', check: 'destructive', message: 'Command is destructive and requires approval' };
+      }
+      // Code-execution allow-rule downgrade: the ask verdict came from a matched
+      // over-broad interpreter / package-runner / shell allow rule, not the mode.
+      if (decision === 'ask' && (this.mode === 'ask' || this.mode === 'acceptEdits')) {
+        const codeExecRule = this.matchingCodeExecAllowRule(input, command);
+        if (codeExecRule) {
+          return {
+            type: 'safetyCheck', check: 'codeExec',
+            message: `Allow rule "${codeExecRule.tool}(${codeExecRule.pattern})" grants arbitrary code execution and requires approval`,
+          };
+        }
       }
     }
     const filePath = (input.file_path || input.path) as string | undefined;
@@ -3703,6 +3729,47 @@ export class PermissionManager {
       out[k] = v;
     }
     return out;
+  }
+
+  /**
+   * True when a bash `allow` rule's content is an over-broad code-execution
+   * prefix (interpreter / package-runner / shell — see dangerous-code-exec.ts).
+   * Such a rule grants arbitrary code execution and is downgraded to a prompt in
+   * the rule-evaluated modes by check(). A narrow/specific rule returns false.
+   */
+  private isDangerousCodeExecAllow(rule: PermissionRule): boolean {
+    return rule.action === 'allow' && normalizeToolName(rule.tool) === 'bash' &&
+      isDangerousCodeExecPrefix(rule.pattern);
+  }
+
+  /**
+   * The code-execution allow rule (if any) that matched this bash command and
+   * caused check()'s allow→ask downgrade — used by deriveDecisionReason to
+   * attribute the 'ask' verdict. `isDangerousCodeExecAllow` already constrains the
+   * rule to `allow` + bash + a non-empty dangerous prefix, so `rule.pattern` is
+   * defined for any candidate.
+   */
+  private matchingCodeExecAllowRule(
+    input: Record<string, unknown>,
+    command: string,
+  ): PermissionRule | undefined {
+    for (const rule of this.rules) {
+      if (rule.action !== 'allow' || !this.isDangerousCodeExecAllow(rule)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
+      if (matchBashPattern(rule.pattern!, command, 'allow')) return rule;
+    }
+    return undefined;
+  }
+
+  /**
+   * Introspection: the active `allow` rules whose content is an over-broad
+   * code-execution prefix and that check() therefore downgrades to a prompt in
+   * `ask` / `acceptEdits` modes. Lets a UI / diagnostic surface explain which
+   * user rules are being treated as code-execution escape hatches rather than
+   * silent auto-approvals. Mirrors Claude's `findDangerousClassifierPermissions`.
+   */
+  getDangerousCodeExecAllowRules(): PermissionRule[] {
+    return this.rules.filter(r => this.isDangerousCodeExecAllow(r));
   }
 
   /** All named-param globs in a rule's paramPattern must match the tool input. */
