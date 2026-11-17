@@ -12,7 +12,7 @@ export function resetCronScheduler(): void {
   resetScheduler();
 }
 
-const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent', 'maxAgeDays']);
+const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent', 'maxAgeDays', 'utc']);
 
 // PARITY (additive): upper bound on a scheduled prompt's length. A prompt far
 // larger than this is almost always an accident (e.g. a whole file pasted in)
@@ -92,6 +92,14 @@ export const cronCreateTool: ToolDefinition = {
           `Custom auto-expiry window (whole days) for a recurring job, overriding the ${MAX_AGE_DAYS}-day default. ` +
           'Use 0 for "never expire" (equivalent to permanent:true). Ignored for one-shot jobs.',
       },
+      utc: {
+        type: 'boolean',
+        description:
+          'true = interpret the cron expression in UTC instead of local time, so the job fires on the same ' +
+          'absolute instant regardless of the host timezone (use for server/remote-defined schedules). ' +
+          'Default false (local time). The list view renders a UTC job in your local time with a TZ label.',
+        default: false,
+      },
     },
     required: ['cron', 'prompt'],
   },
@@ -113,6 +121,7 @@ export const cronCreateTool: ToolDefinition = {
     const recurring = input.recurring === undefined ? true : coerceBool(input.recurring);
     const durable = coerceBool(input.durable);
     const permanent = coerceBool(input.permanent);
+    const utc = coerceBool(input.utc);
     // Optional per-job expiry window. Validate here for a clean tool-level error;
     // create() re-validates as the engine-boundary guarantee. 0 = never expire.
     let maxAgeDays: number | undefined;
@@ -156,7 +165,7 @@ export const cronCreateTool: ToolDefinition = {
     // Satisfiability check: a structurally valid cron that never matches (e.g.
     // Feb 30) is rejected with a distinct, clean message rather than silently
     // scheduling a job that can never fire.
-    if (sched.computeNextRun(cron) === null) {
+    if (sched.computeNextRun(cron, undefined, utc) === null) {
       return { output: `Error: cron "${cron}" never matches a real date (e.g. an impossible calendar date).`, isError: true };
     }
 
@@ -172,12 +181,12 @@ export const cronCreateTool: ToolDefinition = {
 
     let job;
     try {
-      job = sched.create({ cron, prompt, recurring, durable, permanent, maxAgeDays, agentId: context.agentId });
+      job = sched.create({ cron, prompt, recurring, durable, permanent, maxAgeDays, utc, agentId: context.agentId });
     } catch (err) {
       // MAX_JOBS cap and the minimum-interval floor surface as clean validation.
       return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
-    const schedule = sched.formatSchedule(cron);
+    const schedule = sched.formatSchedule(cron, { utc });
     const nextRun = job.nextRun ? new Date(job.nextRun).toLocaleString() : 'unknown';
     // Reflect the EFFECTIVE expiry window: permanent / maxAgeDays:0 never expire;
     // a custom maxAgeDays overrides the MAX_AGE_DAYS default. Interpolated from the
@@ -203,7 +212,7 @@ export const cronCreateTool: ToolDefinition = {
     return {
       output:
         `Scheduled ${recurring ? 'recurring' : 'one-shot'} job ${job.id}\n` +
-        `  Schedule: ${schedule} (local time)\n  Next run: ${nextRun}\n` +
+        `  Schedule: ${schedule} (${utc ? 'defined in UTC, shown in local time' : 'local time'})\n  Next run: ${nextRun}\n` +
         `  Recurring: ${recurring}\n  Durable: ${effectiveDurable}${expiry}${durabilityNote}\n` +
         '  Cancel with cron_delete.',
     };

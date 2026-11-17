@@ -19,6 +19,12 @@ export interface CronJob {
   agentId?: string;
   /** Permanent jobs are exempt from age-based expiry. */
   permanent?: boolean;
+  /** When true, the 5-field cron expression is interpreted in UTC instead of the
+   *  host's local wall clock, so the job fires on the same absolute instant no
+   *  matter which timezone the session runs in (server/remote-trigger parity).
+   *  Undefined/false = local time (the default). Mirrors Claude's `{ utc }` cron
+   *  handling for server/CCR-defined schedules (src/utils/cron.ts). */
+  utc?: boolean;
   /** Optional per-job run budget. A recurring job is retired (stops firing and is
    *  removed) once it has fired `maxRuns` times. Undefined = unlimited. */
   maxRuns?: number;
@@ -242,6 +248,13 @@ export class CronScheduler {
   private watcher: fs.FSWatcher | null = null;
   /** When set and returning true, the tick defers firing (session is mid-turn). */
   private busyCheck: (() => boolean) | null = null;
+  /** Assistant-mode bypass: when active the busy/idle gate is ignored so a due job
+   *  fires immediately (even mid-turn) instead of waiting for the next idle tick —
+   *  a latency nicety for always-on assistant sessions that already have scheduled
+   *  tasks at startup. Settable at runtime (setAssistantMode) or via the
+   *  AMI_CRON_ASSISTANT_MODE env var, polled each tick. Mirrors Claude's
+   *  assistantMode knob on the scheduler (src/hooks/useScheduledTasks.ts). */
+  private assistantMode = false;
   /** Last session id we logged a "lock held by" contention line for. Suppresses
    *  repeat diagnostics while passively polling the same live owner every tick. */
   private lastBlockedBy: string | null = null;
@@ -293,6 +306,23 @@ export class CronScheduler {
     this.busyCheck = fn;
   }
 
+  /** Enable/disable assistant-mode bypass of the busy/idle gate at runtime. */
+  setAssistantMode(on: boolean): void {
+    this.assistantMode = on;
+  }
+
+  /** True when assistant-mode bypass is in effect — either set via setAssistantMode
+   *  or forced on by the AMI_CRON_ASSISTANT_MODE env var (operator override, polled
+   *  each tick so it can be flipped without a restart). Introspection surface so a
+   *  diagnostic can report whether the idle gate is currently bypassed. */
+  isAssistantMode(): boolean {
+    return (
+      this.assistantMode ||
+      process.env.AMI_CRON_ASSISTANT_MODE === '1' ||
+      process.env.AMI_CRON_ASSISTANT_MODE === 'true'
+    );
+  }
+
   /** The jitter config in effect for the most recent tick (baseline merged with any
    *  live operator env override). Introspection surface for diagnostics. */
   getJitterConfig(): CronJitterConfig {
@@ -325,7 +355,7 @@ export class CronScheduler {
     };
   }
 
-  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number }): CronJob {
+  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number; utc?: boolean }): CronJob {
     if (this.jobs.size >= MAX_JOBS) {
       throw new Error(`Maximum of ${MAX_JOBS} cron jobs reached. Delete existing jobs first.`);
     }
@@ -359,17 +389,18 @@ export class CronScheduler {
       );
     }
     const recurring = opts.recurring ?? true;
+    const utc = opts.utc ?? false;
     // Runaway-schedule guard: a recurring job may not fire more often than the floor.
     if (recurring) {
-      const nextTwo = this.computeNextRun(opts.cron);
+      const nextTwo = this.computeNextRun(opts.cron, undefined, utc);
       if (nextTwo !== null) {
-        const following = this.computeNextRun(opts.cron, nextTwo);
+        const following = this.computeNextRun(opts.cron, nextTwo, utc);
         if (following !== null && following - nextTwo < MIN_INTERVAL_MS) {
           throw new Error(`Recurring cron fires more often than the ${MIN_INTERVAL_MS / 1000}s minimum interval.`);
         }
       }
     }
-    const nextRun = this.computeNextRun(opts.cron);
+    const nextRun = this.computeNextRun(opts.cron, undefined, utc);
     // FUNCTIONAL: reject a structurally-valid-but-unsatisfiable schedule at the
     // engine boundary (e.g. "0 0 30 2 *", "0 0 31 4 *"). Previously such a job was
     // created with nextRun undefined and silently never fired — a dead job the
@@ -392,6 +423,7 @@ export class CronScheduler {
       nextRun,
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.permanent ? { permanent: true } : {}),
+      ...(utc ? { utc: true } : {}),
       ...(opts.maxRuns !== undefined ? { maxRuns: opts.maxRuns, runCount: 0 } : {}),
       ...(opts.maxAgeDays !== undefined ? { maxAgeDays: opts.maxAgeDays } : {}),
     };
@@ -412,7 +444,7 @@ export class CronScheduler {
       const err = validateCronExpression(opts.cron);
       if (err) throw new Error(`Invalid cron expression: ${err}`);
       job.cron = opts.cron;
-      job.nextRun = this.computeNextRun(opts.cron) ?? undefined;
+      job.nextRun = this.computeNextRun(opts.cron, undefined, job.utc) ?? undefined;
     }
     if (opts.prompt !== undefined) job.prompt = opts.prompt;
     if (opts.recurring !== undefined) job.recurring = opts.recurring;
@@ -502,7 +534,7 @@ export class CronScheduler {
       if (job.recurring) {
         // Forward jitter spreads recurring fires to avoid thundering herds; the
         // window is proportional to the REAL gap between this fire and the next.
-        const nextAfter = this.safeComputeNextRun(job.cron, job.nextRun);
+        const nextAfter = this.safeComputeNextRun(job.cron, job.nextRun, job.utc);
         const gap = nextAfter !== null ? nextAfter - job.nextRun : null;
         const jitter = computeJitter(gap, job.id, this.jitterConfig);
         if (now >= job.nextRun + jitter) due.push(job);
@@ -543,7 +575,7 @@ export class CronScheduler {
     if (job.recurring && !budgetExhausted) {
       // Never throw inside the fire loop: a cron that no longer has a future
       // match leaves nextRun undefined (the job simply stops firing).
-      job.nextRun = this.safeComputeNextRun(job.cron) ?? undefined;
+      job.nextRun = this.safeComputeNextRun(job.cron, undefined, job.utc) ?? undefined;
     } else {
       // One-shot, or a recurring job that has used up its run budget → remove it.
       this.jobs.delete(id);
@@ -556,9 +588,9 @@ export class CronScheduler {
   /** computeNextRun that never throws — returns null on invalid/no-match. Used
    *  in the fire loop and missed-task detection so a single bad job can't crash
    *  the scheduler. */
-  safeComputeNextRun(cron: string, fromTime?: number): number | null {
+  safeComputeNextRun(cron: string, fromTime?: number, utc = false): number | null {
     try {
-      return this.computeNextRun(cron, fromTime);
+      return this.computeNextRun(cron, fromTime, utc);
     } catch {
       return null;
     }
@@ -638,7 +670,10 @@ export class CronScheduler {
     // Keep our durable lease fresh (heartbeat) and detect if it was stolen/removed.
     this.heartbeatLock();
     this.expireOld(onDue);
-    if (this.busyCheck?.()) return;
+    // Idle gate: defer firing while the session is mid-turn so a cron never
+    // interrupts in-flight work — UNLESS assistant-mode bypass is active, in which
+    // case a due job fires immediately for lower latency.
+    if (this.busyCheck?.() && !this.isAssistantMode()) return;
     const due = this.getDueJobs();
     // Batched fire-stamp persistence: N durable fires in one tick coalesce into
     // a single saveDurable() write instead of one write per fired job. markRun is
@@ -809,12 +844,12 @@ export class CronScheduler {
     for (const job of this.jobs.values()) {
       if (job.recurring) {
         // Recurring: a scheduled fire fell between the last fire and now.
-        const nextRun = this.safeComputeNextRun(job.cron, job.lastFiredAt ?? job.createdAt);
+        const nextRun = this.safeComputeNextRun(job.cron, job.lastFiredAt ?? job.createdAt, job.utc);
         if (nextRun !== null && nextRun < now) missed.push(job);
       } else {
         // One-shot: never fired AND its scheduled time has already passed.
         if (job.lastFiredAt) continue;
-        const nextRun = job.nextRun ?? this.safeComputeNextRun(job.cron, job.createdAt);
+        const nextRun = job.nextRun ?? this.safeComputeNextRun(job.cron, job.createdAt, job.utc);
         if (nextRun !== null && nextRun < now) missed.push(job);
       }
     }
@@ -864,7 +899,7 @@ export class CronScheduler {
     return notification;
   }
 
-  computeNextRun(cron: string, fromTime?: number): number | null {
+  computeNextRun(cron: string, fromTime?: number, utc = false): number | null {
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) {
       throw new Error(`Invalid cron expression: ${cron}`);
@@ -872,8 +907,34 @@ export class CronScheduler {
     const [minSpec, hourSpec, domSpec, monSpec, dowSpec] = parts;
     const now = fromTime ? new Date(fromTime) : new Date();
     const check = new Date(now);
+    // Round up to the next whole minute. Seconds/minutes are tz-agnostic (they move
+    // the absolute instant identically whether read as local or UTC), so this stays
+    // the same for both modes.
     check.setSeconds(0, 0);
     check.setMinutes(check.getMinutes() + 1);
+
+    // Field extraction + coarse skip-ahead run in the job's reference zone. A UTC job
+    // (utc:true) reads/writes every calendar field in UTC so the fire lands on the
+    // same absolute instant regardless of the host timezone (server/remote-trigger
+    // parity); the default reads the host's local wall clock. getTime() comparisons
+    // remain absolute in both modes, so only the component accessors differ.
+    const getMonth = utc ? (d: Date) => d.getUTCMonth() : (d: Date) => d.getMonth();
+    const toNextMonth = utc
+      ? (d: Date) => { d.setUTCMonth(d.getUTCMonth() + 1, 1); d.setUTCHours(0, 0, 0, 0); }
+      : (d: Date) => { d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0, 0, 0); };
+    const getDate = utc ? (d: Date) => d.getUTCDate() : (d: Date) => d.getDate();
+    const getDay = utc ? (d: Date) => d.getUTCDay() : (d: Date) => d.getDay();
+    const toNextDay = utc
+      ? (d: Date) => { d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(0, 0, 0, 0); }
+      : (d: Date) => { d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); };
+    const getHours = utc ? (d: Date) => d.getUTCHours() : (d: Date) => d.getHours();
+    const toNextHour = utc
+      ? (d: Date) => d.setUTCHours(d.getUTCHours() + 1, 0, 0, 0)
+      : (d: Date) => d.setHours(d.getHours() + 1, 0, 0, 0);
+    const getMinutes = utc ? (d: Date) => d.getUTCMinutes() : (d: Date) => d.getMinutes();
+    const toNextMinute = utc
+      ? (d: Date) => d.setUTCMinutes(d.getUTCMinutes() + 1, 0, 0)
+      : (d: Date) => d.setMinutes(d.getMinutes() + 1, 0, 0);
 
     // A field that matches EVERY value in its range (e.g. "1-31" for day-of-month,
     // "0-6"/"0-7"/"*/1" for day-of-week) is a semantic wildcard, not a restriction —
@@ -894,26 +955,24 @@ export class CronScheduler {
     // identical. A match beyond the window still reads as unsatisfiable (null).
     const horizonMs = check.getTime() + (SCAN_HORIZON_MIN - 1) * 60_000;
     while (check.getTime() <= horizonMs) {
-      if (!matchField(check.getMonth() + 1, monSpec, 1, 12)) {
-        check.setMonth(check.getMonth() + 1, 1);
-        check.setHours(0, 0, 0, 0);
+      if (!matchField(getMonth(check) + 1, monSpec, 1, 12)) {
+        toNextMonth(check);
         continue;
       }
-      const domMatch = matchField(check.getDate(), domSpec, 1, 31);
-      const dowMatch = matchField(check.getDay(), dowSpec, 0, 6);
+      const domMatch = matchField(getDate(check), domSpec, 1, 31);
+      const dowMatch = matchField(getDay(check), dowSpec, 0, 6);
       // Standard cron: when BOTH dom and dow are restricted, use OR semantics
       const dayMatch = (domRestricted && dowRestricted) ? (domMatch || dowMatch) : (domMatch && dowMatch);
       if (!dayMatch) {
-        check.setDate(check.getDate() + 1);
-        check.setHours(0, 0, 0, 0);
+        toNextDay(check);
         continue;
       }
-      if (!matchField(check.getHours(), hourSpec, 0, 23)) {
-        check.setHours(check.getHours() + 1, 0, 0, 0);
+      if (!matchField(getHours(check), hourSpec, 0, 23)) {
+        toNextHour(check);
         continue;
       }
-      if (!matchField(check.getMinutes(), minSpec, 0, 59)) {
-        check.setMinutes(check.getMinutes() + 1, 0, 0);
+      if (!matchField(getMinutes(check), minSpec, 0, 59)) {
+        toNextMinute(check);
         continue;
       }
       return check.getTime();
@@ -923,7 +982,8 @@ export class CronScheduler {
     return null;
   }
 
-  formatSchedule(cron: string): string {
+  formatSchedule(cron: string, opts?: { utc?: boolean }): string {
+    const utc = opts?.utc ?? false;
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) return cron;
     const [min, hour, dom, mon, dow] = parts;
@@ -935,7 +995,11 @@ export class CronScheduler {
 
     // A specific minute + specific hour reads best as a 12-hour wall-clock time.
     if (minPlain && hourPlain) {
-      const timeStr = to12Hour(parseInt(hour, 10), parseInt(min, 10));
+      // A UTC job's hour:minute are UTC; render them in the host's local time (with
+      // a short TZ label) so the user sees when it actually fires here. A local job
+      // renders its wall-clock time verbatim. Mirrors Claude's formatLocalTime vs
+      // formatUtcTimeAsLocal split (src/utils/cron.ts).
+      const timeStr = formatClockTime(parseInt(hour, 10), parseInt(min, 10), utc);
       // When a fixed daily time is NOT further restricted by day-of-month/month,
       // read the whole schedule as a single fluent phrase that leads with the day
       // context — "every day at 9:00 am", "every Mon at 9:00 am",
@@ -948,7 +1012,12 @@ export class CronScheduler {
         const singleDow = /^[0-6]$/.exec(dow);
         if (singleDow) {
           const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          return `every ${names[parseInt(singleDow[0], 10)]} at ${timeStr}`;
+          const dowIndex = parseInt(singleDow[0], 10);
+          // For a UTC job the weekday is a UTC weekday; a midnight-crossing TZ offset
+          // can land it on a different LOCAL day, so resolve the actual local weekday
+          // from the UTC instant (parity with Claude's utc dayIndex recomputation).
+          const dayName = utc ? localWeekdayForUtc(dowIndex, parseInt(hour, 10), parseInt(min, 10), names) : names[dowIndex];
+          return `every ${dayName} at ${timeStr}`;
         }
       }
       pieces.push(`at ${timeStr}`);
@@ -1068,6 +1137,9 @@ export class CronScheduler {
     // A corrupt on-disk maxAgeDays (negative / fractional) could silently disable or
     // truncate expiry, so reject the whole entry rather than trust it.
     if (j.maxAgeDays !== undefined && (!Number.isInteger(j.maxAgeDays) || (j.maxAgeDays as number) < 0)) return false;
+    // A corrupt on-disk `utc` flag must not smuggle a non-boolean into the compute
+    // path (which branches on truthiness) — reject the whole entry.
+    if (j.utc !== undefined && typeof j.utc !== 'boolean') return false;
     return true;
   }
 
@@ -1105,6 +1177,33 @@ export function to12Hour(hour: number, minute: number): string {
   const period = hour < 12 ? 'am' : 'pm';
   const h12 = hour % 12 === 0 ? 12 : hour % 12;
   return `${h12}:${String(minute).padStart(2, '0')} ${period}`;
+}
+
+/** Render a cron (hour, minute) for display. In local mode it is the wall-clock
+ *  time verbatim (AMI's lowercase am/pm style). In UTC mode the pair is treated as
+ *  UTC and rendered in the host's local timezone with a short TZ label (e.g.
+ *  "9:00 am PST") so a server/remote-defined schedule shows when it fires HERE.
+ *  Mirrors Claude's formatLocalTime / formatUtcTimeAsLocal split (src/utils/cron.ts). */
+export function formatClockTime(hour: number, minute: number, utc: boolean): string {
+  if (!utc) return to12Hour(hour, minute);
+  const d = new Date();
+  d.setUTCHours(hour, minute, 0, 0);
+  // Keep the TZ label (uppercase) but lowercase only the AM/PM to match AMI's style.
+  return d
+    .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+    .replace(/\b([AP]M)\b/, m => m.toLowerCase());
+}
+
+/** The LOCAL weekday short-name for a schedule whose day-of-week + hour:minute are
+ *  expressed in UTC. A UTC midnight-crossing offset can push a "Monday 23:00 UTC"
+ *  fire onto Sunday or Tuesday locally, so resolve the weekday from the actual UTC
+ *  instant. Mirrors Claude's utc dayIndex recomputation (src/utils/cron.ts). */
+function localWeekdayForUtc(dowIndex: number, hour: number, minute: number, names: string[]): string {
+  const ref = new Date();
+  const daysToAdd = (dowIndex - ref.getUTCDay() + 7) % 7;
+  ref.setUTCDate(ref.getUTCDate() + daysToAdd);
+  ref.setUTCHours(hour, minute, 0, 0);
+  return names[ref.getDay()];
 }
 
 export function matchField(value: number, spec: string, min: number, max: number): boolean {

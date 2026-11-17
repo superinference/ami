@@ -95,7 +95,9 @@ export const cronListTool: ToolDefinition = {
     }
 
     const lines = sortJobsForDisplay(jobs).map(j => {
-      const schedule = sched.formatSchedule(j.cron);
+      // A UTC-defined job renders its schedule in the host's local time with a TZ
+      // label so a server/remote schedule reads as "when it fires here".
+      const schedule = sched.formatSchedule(j.cron, { utc: j.utc });
       const active = isActiveJob(j);
       const next = active ? new Date(j.nextRun as number).toLocaleString() : 'N/A';
       // Surface a custom per-job expiry window so a user can see at a glance that a
@@ -108,6 +110,7 @@ export const cronListTool: ToolDefinition = {
         j.recurring ? 'recurring' : 'one-shot',
         j.durable ? 'durable' : 'session-only',
         ...(j.permanent ? ['permanent'] : []),
+        ...(j.utc ? ['UTC'] : []),
         ...ageFlag,
         ...(active ? [] : ['inactive']),
       ].join(', ');
