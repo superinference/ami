@@ -704,6 +704,37 @@ function buildGrepArgs(
   return args;
 }
 
+/**
+ * Strip a single trailing CR so CRLF-terminated searcher output (Windows, or a
+ * grepped CRLF file) yields clean lines. Shared by the streaming splitter and the
+ * final-remainder flush so both treat line endings identically.
+ */
+export function stripTrailingCR(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
+/**
+ * Split a raw stdout chunk into COMPLETE lines while carrying the partial trailing
+ * line forward as a remainder across chunk boundaries. Mirrors Claude Code's
+ * `ripGrepStream` chunk handling (ripgrep.ts): prepend the prior remainder, split
+ * on `\n`, pop the last (possibly partial) segment back into `remainder`, and strip
+ * a trailing CR from each complete line. A searcher writes result lines as they are
+ * found, but a single write may land mid-line — this lets a caller flush finished
+ * lines early (incremental paint) without ever emitting a torn partial line.
+ *
+ * The returned `remainder` is NOT CR-stripped (it is an incomplete line); callers
+ * flush it with {@link stripTrailingCR} only on a clean close, never on abort.
+ */
+export function splitStreamLines(
+  remainder: string,
+  chunk: string,
+): { lines: string[]; remainder: string } {
+  const data = remainder + chunk;
+  const parts = data.split('\n');
+  const nextRemainder = parts.pop() ?? '';
+  return { lines: parts.map(stripTrailingCR), remainder: nextRemainder };
+}
+
 export function runSearch(
   args: string[],
   command: string,
@@ -714,6 +745,20 @@ export function runSearch(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    // Early-result streaming: when the caller provides a progress sink, forward
+    // COMPLETE result lines as each stdout chunk arrives (incremental paint) while
+    // still accumulating the authoritative buffered `stdout` the final result is
+    // parsed from. A partial trailing line is carried in `progressRemainder` across
+    // chunk boundaries and flushed only on a clean close — never a torn tail from a
+    // killed/aborted/timed-out process. Mirrors Claude Code's `ripGrepStream`.
+    const onProgress = context.onProgress;
+    let progressRemainder = '';
+    const streamProgress = (chunk: string): void => {
+      if (!onProgress) return;
+      const split = splitStreamLines(progressRemainder, chunk);
+      progressRemainder = split.remainder;
+      for (const line of split.lines) onProgress(line);
+    };
 
     let child: ReturnType<typeof spawn>;
     try {
@@ -784,7 +829,9 @@ export function runSearch(
     let outputTruncated = false;
     child.stdout!.on('data', (data: Buffer) => {
       if (outputTruncated) return;
-      stdout += data.toString();
+      const text = data.toString();
+      stdout += text;
+      streamProgress(text);
       if (Buffer.byteLength(stdout) > MAX_SEARCH_OUTPUT_BYTES) {
         // Stop buffering and kill the child so it can't keep streaming into memory.
         outputTruncated = true;
@@ -838,6 +885,10 @@ export function runSearch(
 
       // Exit code 1 means no matches — a normal result, not an error.
       if (code === 0 || isGrepNoMatchExit(code ?? 0)) {
+        // Clean close: flush the last partial line (no trailing newline) that was
+        // held back as the remainder. Only here — a torn tail from a timed-out /
+        // signalled / aborted process is never flushed.
+        if (onProgress && progressRemainder) onProgress(stripTrailingCR(progressRemainder));
         settle({ output: stdout });
         return;
       }

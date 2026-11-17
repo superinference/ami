@@ -298,7 +298,7 @@ export type {
   TurnMetricsSnapshot,
 } from './turn-metrics';
 export { TurnMetrics, formatTurnBudget } from './turn-metrics';
-export { isGrepNoMatchExit, stripGrepFlags, grepLineFilePath } from './tools/grep';
+export { isGrepNoMatchExit, stripGrepFlags, grepLineFilePath, splitStreamLines, stripTrailingCR } from './tools/grep';
 export {
   resolveRipgrepConfig,
   getRipgrepStatus,
