@@ -1538,6 +1538,18 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\b(Stop-Computer|Restart-Computer)\b/i, description: 'PowerShell power control' },
   { pattern: /\bClear-RecycleBin\b/i, description: 'PowerShell empties the recycle bin (irreversible)' },
   { pattern: /\b(Format-Volume|Clear-Disk)\b/i, description: 'PowerShell disk format / wipe' },
+  // Same-UID heap/credential scraping vectors. A prompt-injected command running
+  // as AMI's own UID can attach a debugger/tracer to the agent (or a peer) process
+  // and read provider API keys (ANTHROPIC_API_KEY / Bearer tokens) straight out of
+  // its heap, or read them via /proc/<pid>/mem. Claude Code closes this by calling
+  // prctl(PR_SET_DUMPABLE,0) via Bun FFI (upstreamproxy.ts); AMI runs on the Node
+  // runtime (no libc FFI), so it blocks the attach vectors unconditionally at the
+  // permission boundary instead — the hardline block overrides every mode.
+  { pattern: /\bgdb\b[^\n]*\s--?p(?:id)?\b/, description: 'gdb attach to a live process (in-memory credential scraping vector)' },
+  { pattern: /\blldb\b[^\n]*\s(?:-p|--pid|--attach-pid|--attach-name|-n)\b/, description: 'lldb attach to a live process (in-memory credential scraping vector)' },
+  { pattern: /\b(?:strace|ltrace)\b[^\n]*\s-p\b/, description: 'strace/ltrace attach to a live process (in-memory credential scraping vector)' },
+  { pattern: /\/proc\/(?:\d+|self|\$\{?[\w}$]*)\/mem\b/, description: 'reading /proc/<pid>/mem (process-memory / credential scraping vector)' },
+  { pattern: /\bprocess_vm_readv\b/, description: 'process_vm_readv cross-process memory read (credential scraping vector)' },
 ];
 
 /** Serializable snapshot of the built-in (default) permission patterns. */
