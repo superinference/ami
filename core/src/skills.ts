@@ -48,6 +48,17 @@ export interface SkillDefinition {
    *  until its precondition holds. Absent ⇒ always enabled. Evaluated via
    *  {@link isSkillEnabled} (a throwing predicate is treated as disabled). */
   isEnabled?: () => boolean;
+  /** DECLARATIVE environment/feature-flag gate (parity with Claude's bundled skills
+   *  that register conditionally on an environment/config flag, e.g. `stuck.ts`'s
+   *  env-gated registration and `index.ts`'s feature-flag-gated bundled set). The
+   *  skill is available ONLY when EVERY named environment variable is set to a
+   *  non-empty value; an unset/blank var hides the skill from listings/context and
+   *  the skill tool — exactly like a `false` {@link isEnabled}. Unlike `isEnabled`
+   *  (a JS predicate a disk/plugin skill cannot author in YAML), this is a plain
+   *  string list declarable in SKILL.md frontmatter (`required-env`). Evaluated by
+   *  {@link isSkillEnabled} (which honors it ALONGSIDE `isEnabled`), so no consumer
+   *  needs a second gate. Absent/empty ⇒ no env requirement. */
+  requiredEnv?: string[];
   /** When true, invoking this skill with no argument is an error that returns
    *  {@link missingArgumentMessage} (or a generated help line) instead of running an
    *  argument-less skill body (parity with Claude's required-argument skills, e.g.
@@ -200,6 +211,14 @@ export interface AgentDefinition {
   description: string;
   systemPrompt: string;   // The agent's system prompt (markdown body)
   filePath: string;
+  /** The agent definition's on-disk FILE basename (with extension), tracked
+   *  SEPARATELY from the resolved {@link name} (parity with Claude's agentFileUtils,
+   *  which distinguishes the file name from the frontmatter agent type). When a file
+   *  declares a `name:` frontmatter that differs from its filename, the frontmatter
+   *  wins for the canonical {@link name} but the filename is retained here so a
+   *  mismatch can be surfaced (as a load warning) instead of silently masked. Absent
+   *  for in-memory/built-in agents. Compared via {@link agentFileNameMismatch}. */
+  fileName?: string;
   model?: string;         // Model override; the literal 'inherit' means "use the parent's model"
   maxTurns?: number;
   /** Allowed tool names. `undefined` ⇒ ALL tools (no restriction); a present but
@@ -520,6 +539,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'agent', 'getPromptForCommand', 'frontmatterKeys', 'files',
   // Base command/skill properties
   'name', 'description', 'hasUserSpecifiedDescription', 'isEnabled', 'isHidden',
+  'requiredEnv',
   'aliases', 'isMcp', 'argumentHint', 'whenToUse', 'paths', 'version',
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
@@ -822,12 +842,42 @@ export function parseSkillAliases(value: unknown): string[] {
 }
 
 /**
- * True when a skill is currently available (parity with Claude's bundled skill
- * `isEnabled`). A skill with no predicate is always enabled; otherwise the
- * predicate decides. A predicate that THROWS is treated as DISABLED — a broken
- * availability gate hides the skill rather than crashing the loader/listing.
+ * True when EVERY environment variable named in `required` is set to a non-empty
+ * value in `env` (parity with Claude's env/feature-flag-gated bundled skills). An
+ * absent/empty requirement list is trivially satisfied; a variable that is unset,
+ * `undefined`, or an empty/whitespace-only string fails the gate. A non-string
+ * entry is ignored (treated as "no requirement" for that slot) so a malformed
+ * frontmatter list can never crash the gate. Pure: the caller supplies `env`.
  */
-export function isSkillEnabled(skill: Pick<SkillDefinition, 'isEnabled'>): boolean {
+export function requiredEnvSatisfied(
+  required: readonly string[] | undefined,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (!required || required.length === 0) return true;
+  for (const name of required) {
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const value = env[name];
+    if (value === undefined || value.trim().length === 0) return false;
+  }
+  return true;
+}
+
+/**
+ * True when a skill is currently available (parity with Claude's bundled skill
+ * `isEnabled` + its env/feature-flag-gated registration). A skill is enabled when
+ * BOTH gates pass: (1) its declarative {@link SkillDefinition.requiredEnv} — every
+ * named env var is set non-empty (evaluated via {@link requiredEnvSatisfied}
+ * against `env`, defaulting to `process.env`) — AND (2) its {@link
+ * SkillDefinition.isEnabled} predicate (absent ⇒ enabled; a predicate that THROWS
+ * is treated as DISABLED so a broken gate hides the skill rather than crashing the
+ * loader/listing). Every call site (listings, context, the skill tool, agent
+ * preload) therefore honors the env gate with no additional wiring.
+ */
+export function isSkillEnabled(
+  skill: Pick<SkillDefinition, 'isEnabled' | 'requiredEnv'>,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (!requiredEnvSatisfied(skill.requiredEnv, env)) return false;
   if (!skill.isEnabled) return true;
   try {
     return skill.isEnabled() === true;
@@ -1486,6 +1536,27 @@ export function applySkillTemplateVariables(
  */
 export function isBuiltInAgent(agent: Pick<AgentDefinition, 'source'>): boolean {
   return agent.source === 'built-in';
+}
+
+/**
+ * Detect a mismatch between an agent's on-disk {@link AgentDefinition.fileName} and
+ * its resolved canonical {@link AgentDefinition.name} (parity with Claude's
+ * agentFileUtils filename-vs-agentType handling). The extension is stripped from the
+ * filename before comparison. Returns the filename-derived type (the base name) when
+ * it differs from `name`, so the loader can surface an actionable "file X declares
+ * agent Y" warning instead of silently masking the divergence; returns `null` when
+ * there is no filename, the filename has no base, or the two already agree. Never
+ * throws.
+ */
+export function agentFileNameMismatch(
+  agent: Pick<AgentDefinition, 'name' | 'fileName'>,
+): string | null {
+  const fn = agent.fileName;
+  if (typeof fn !== 'string' || fn.trim().length === 0) return null;
+  // Strip a single trailing extension (`.md`), keeping the base name's casing.
+  const base = fn.replace(/\.[^./\\]+$/, '').trim();
+  if (base.length === 0 || base === agent.name) return null;
+  return base;
 }
 
 // ---------------------------------------------------------------------------
