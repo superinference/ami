@@ -6,6 +6,32 @@ export interface RateLimitBucket {
   resetAt: number;
 }
 
+/** Overage/spillover tier state parsed from the unified rate-limit headers. */
+export interface RateLimitOverage {
+  /** Overage tier status, typically `'allowed'` or `'rejected'`. */
+  status: string;
+  /** Overage reset instant (Unix epoch SECONDS), or null when the server omitted it. */
+  resetsAt: number | null;
+}
+
+/** Raw utilization of a single rate-limit window (parity: Claude's RawWindowUtilization). */
+export interface RawWindowUtilization {
+  /** Utilization fraction in [0, 1]. */
+  utilization: number;
+  /** Reset instant as a Unix epoch in SECONDS, or null when unknown. */
+  resetsAt: number | null;
+}
+
+/**
+ * Raw per-window utilization snapshot, tracked on EVERY response (parity: Claude's
+ * getRawUtilization). Exposed to statusline scripts and diagnostics so a window's
+ * burn can be surfaced without waiting for a warning threshold to fire.
+ */
+export interface RawUtilization {
+  requests?: RawWindowUtilization;
+  tokens?: RawWindowUtilization;
+}
+
 export interface RateLimitStatus {
   requests: RateLimitBucket | null;
   tokens: RateLimitBucket | null;
@@ -24,6 +50,19 @@ export interface RateLimitStatus {
    * the header, so it only reflects the latest directive.
    */
   retryAfterMs: number | null;
+  /**
+   * Overage/spillover tier (parity: Anthropic unified overage headers), when the
+   * server reported one. Present means a two-tier limit is in effect; see
+   * {@link RateLimitStatus.isUsingOverage}.
+   */
+  overage?: RateLimitOverage;
+  /**
+   * True when the primary tier is rejected but the overage tier still permits the
+   * request — i.e. the session is currently drawing on spillover quota.
+   */
+  isUsingOverage?: boolean;
+  /** Scope the unified limit applies to (e.g. `'seven_day_opus'`), when reported. */
+  representativeClaim?: string;
 }
 
 /** Tunable thresholds for a {@link RateLimitTracker}. */
@@ -77,6 +116,11 @@ export class RateLimitTracker {
   private tokensWindowMs = 0;
   // Server-directed Retry-After (ms) from the most recent response, or null.
   private retryAfterMs: number | null = null;
+  // Unified two-tier state from the most recent response (parity: Anthropic
+  // unified rate-limit headers). Null entries mean the server reported none.
+  private unifiedStatus: string | null = null;
+  private overage: RateLimitOverage | null = null;
+  private representativeClaim: string | null = null;
   private readonly warnThreshold: number;
   private readonly errorThreshold: number;
 
@@ -91,6 +135,18 @@ export class RateLimitTracker {
     // absent). It is a per-response directive, so a later response without the
     // header clears it rather than letting a stale directive linger.
     this.retryAfterMs = info.retryAfterMs;
+    // Capture the unified two-tier status (parity: Anthropic unified headers). A
+    // response without these clears them so a stale directive never lingers.
+    this.unifiedStatus = info.unifiedStatus ?? null;
+    this.representativeClaim = info.representativeClaim ?? null;
+    this.overage = info.overageStatus
+      ? {
+          status: info.overageStatus,
+          resetsAt: info.overageResetAt
+            ? Math.floor(this.clampResetAt(info.overageResetAt.getTime()) / 1000)
+            : null,
+        }
+      : null;
     const reqReset = headers['x-ratelimit-reset-requests'];
 
     if (info.limitRequests !== null && info.remainingRequests !== null) {
@@ -150,6 +206,13 @@ export class RateLimitTracker {
       retryAfterMs: this.retryAfterMs,
     };
 
+    if (this.overage) {
+      status.overage = this.overage;
+      // Soft overage: the primary tier is rejected but spillover quota remains.
+      status.isUsingOverage = this.unifiedStatus === 'rejected' && this.overage.status === 'allowed';
+    }
+    if (this.representativeClaim) status.representativeClaim = this.representativeClaim;
+
     if (shouldWarn) {
       // Surface whichever dimension is closer to its limit.
       const useReq = reqWarn && (!tokWarn || reqPct >= tokPct);
@@ -166,6 +229,27 @@ export class RateLimitTracker {
     }
 
     return status;
+  }
+
+  /**
+   * Raw per-window utilization from the most recent response, tracked on EVERY
+   * update (unlike {@link RateLimitStatus.warnMessage}, which only materializes
+   * once a warning threshold fires). Each bucket reports a utilization fraction in
+   * [0, 1] plus its reset instant (Unix epoch SECONDS); a bucket never observed is
+   * omitted. Surfaced to statusline scripts/diagnostics (parity: Claude's
+   * getRawUtilization), so the current burn is visible without a warning pending.
+   */
+  getRawUtilization(): RawUtilization {
+    const result: RawUtilization = {};
+    const toWindow = (bucket: RateLimitBucket): RawWindowUtilization => ({
+      utilization: bucket.limit > 0
+        ? Math.max(0, Math.min(1, (bucket.limit - bucket.remaining) / bucket.limit))
+        : 1,
+      resetsAt: bucket.resetAt > 0 ? Math.floor(bucket.resetAt / 1000) : null,
+    });
+    if (this.requests) result.requests = toWindow(this.requests);
+    if (this.tokens) result.tokens = toWindow(this.tokens);
+    return result;
   }
 
   /**

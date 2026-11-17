@@ -6,6 +6,26 @@ export interface RateLimitInfo {
   resetAtTokens: Date | null;
   limitRequests: number | null;
   limitTokens: number | null;
+  /**
+   * Anthropic unified rate-limit tier status (`anthropic-ratelimit-unified-status`),
+   * typically `'allowed'` or `'rejected'`; null when the server did not report one.
+   * Drives the two-tier {@link isHardRateLimited} decision. Optional so hand-built
+   * `RateLimitInfo` literals (which predate the two-tier fields) stay valid.
+   */
+  unifiedStatus?: string | null;
+  /**
+   * Overage/spillover tier status (`anthropic-ratelimit-unified-overage-status`).
+   * When the primary tier is `'rejected'` but this is `'allowed'`, spillover quota
+   * remains and the request is tolerated (soft tier) rather than hard-failed.
+   */
+  overageStatus?: string | null;
+  /** Overage tier reset instant (`anthropic-ratelimit-unified-overage-reset`). */
+  overageResetAt?: Date | null;
+  /**
+   * Scope the unified limit applies to (`anthropic-ratelimit-unified-representative-claim`),
+   * e.g. `'seven_day_opus'`; null when absent.
+   */
+  representativeClaim?: string | null;
 }
 
 export function parseRateLimitHeaders(headers: Record<string, string | string[] | undefined>): RateLimitInfo {
@@ -13,6 +33,10 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
     const v = headers[name] ?? headers[name.toLowerCase()];
     return Array.isArray(v) ? v[0] : v;
   };
+
+  const unifiedStatus = get('anthropic-ratelimit-unified-status');
+  const overageStatus = get('anthropic-ratelimit-unified-overage-status');
+  const representativeClaim = get('anthropic-ratelimit-unified-representative-claim');
 
   return {
     retryAfterMs: parseRetryAfterHeader(get('retry-after')),
@@ -22,6 +46,10 @@ export function parseRateLimitHeaders(headers: Record<string, string | string[] 
     resetAtTokens: parseResetHeader(get('x-ratelimit-reset-tokens')),
     limitRequests: parseIntHeader(get('x-ratelimit-limit-requests') ?? get('ratelimit-limit')),
     limitTokens: parseIntHeader(get('x-ratelimit-limit-tokens')),
+    unifiedStatus: unifiedStatus ? unifiedStatus.trim() : null,
+    overageStatus: overageStatus ? overageStatus.trim() : null,
+    overageResetAt: parseResetHeader(get('anthropic-ratelimit-unified-overage-reset')),
+    representativeClaim: representativeClaim ? representativeClaim.trim() : null,
   };
 }
 
@@ -81,8 +109,27 @@ function parseResetHeader(value: string | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * Two-tier (primary + overage/spillover) hard rate-limit decision, mirroring
+ * Claude Code's rateLimitMocking `shouldThrow429`: a `'rejected'` primary tier is
+ * only a HARD limit when there is no overage tier or the overage tier is ALSO
+ * `'rejected'`. A `'rejected'` primary with an `'allowed'` overage means spillover
+ * quota remains, so the request should be tolerated rather than hard-failed.
+ * Returns false when the server reported no unified status at all.
+ */
+export function isHardRateLimited(info: RateLimitInfo): boolean {
+  if (info.unifiedStatus !== 'rejected') return false;
+  return !info.overageStatus || info.overageStatus === 'rejected';
+}
+
 export function shouldBackoff(info: RateLimitInfo): boolean {
+  // An explicit server directive always wins.
   if (info.retryAfterMs !== null && info.retryAfterMs > 0) return true;
+  // When the server reports a unified tier status, it is authoritative over the
+  // per-bucket remaining heuristics: a soft overage (primary rejected, overage
+  // allowed) still has spillover quota, so we do NOT back off even if a bucket's
+  // remaining counter hit zero.
+  if (info.unifiedStatus) return isHardRateLimited(info);
   if (info.remainingRequests !== null && info.remainingRequests <= 0) return true;
   if (info.remainingTokens !== null && info.remainingTokens <= 0) return true;
   return false;

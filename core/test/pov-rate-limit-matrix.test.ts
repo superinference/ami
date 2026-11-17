@@ -91,6 +91,10 @@ describe('pov-rate-limit-matrix: parseRateLimitHeaders (x-ratelimit-* variants)'
       resetAtTokens: null,
       limitRequests: null,
       limitTokens: null,
+      unifiedStatus: null,
+      overageStatus: null,
+      overageResetAt: null,
+      representativeClaim: null,
     } satisfies RateLimitInfo);
   });
 

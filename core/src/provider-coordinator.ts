@@ -1,7 +1,7 @@
 import type { ProviderConfig, ProviderSubsystem } from './types';
 import { inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv, isFirstPartyBaseUrl } from './provider';
 import { RateLimitTracker } from './rate-limiter';
-import type { RateLimitStatus } from './rate-limiter';
+import type { RateLimitStatus, RawUtilization } from './rate-limiter';
 import { CredentialPool } from './credential-pool';
 import { ProviderHealthTracker } from './provider-health';
 import type { ProviderHealthStats } from './provider-health';
@@ -198,6 +198,16 @@ export class ProviderCoordinator {
 
   getRateLimitStatus(): RateLimitStatus {
     return this.rateLimits.getStatus();
+  }
+
+  /**
+   * Raw per-window rate-limit utilization from the most recent response (fraction
+   * in [0, 1] + reset instant per bucket), tracked on every response rather than
+   * only when a warning fires. Surfaced to the statusline so a ported script can
+   * read `.rate_limit.requests.utilization` (parity: Claude's getRawUtilization).
+   */
+  getRawUtilization(): RawUtilization {
+    return this.rateLimits.getRawUtilization();
   }
 
   /**
