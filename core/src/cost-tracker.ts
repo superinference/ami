@@ -106,6 +106,28 @@ const CACHED_PRICE_RATIO = 0.1;
 const CACHE_WRITE_PRICE_RATIO = 1.25;
 
 /**
+ * Cache-WRITE multiplier for the 1-hour (extended) TTL. Anthropic bills a
+ * 1-hour cache write at 2× the base input price (vs 1.25× for the 5-minute TTL).
+ * When a usage record splits its cache-creation tokens into an ephemeral-1h vs
+ * ephemeral-5m breakdown (Anthropic Usage.cache_creation), re-pricing the 1h
+ * portion at 1.25× would undercount a long-TTL-cache session's real spend.
+ */
+const CACHE_WRITE_1H_PRICE_RATIO = 2;
+
+/**
+ * Billing service tiers (Anthropic Usage.service_tier). `batch` is billed at
+ * HALF the standard per-token rate; `priority`/`standard` at the standard rate
+ * (priority's surcharge is not publicly a flat multiplier, so it re-prices at
+ * standard rather than guessing). Re-pricing a batch-billed session at the
+ * standard rate would OVERSTATE its cost by 2×, so the cross-agent spend view
+ * must honor the recorded tier.
+ */
+export type UsageServiceTier = 'standard' | 'batch' | 'priority';
+
+/** Per-token discount applied to a `batch` service-tier usage record (−50%). */
+const BATCH_TIER_DISCOUNT = 0.5;
+
+/**
  * Flat per-request charge for a server-side web_search tool use. Anthropic bills
  * web search at $10 / 1000 requests = $0.01 each, independent of token usage; a
  * session that web-searches undercounts spend without this component.
@@ -458,6 +480,19 @@ export function estimateUsageCost(
     completionTokens: number;
     /** Count of server-side web_search requests in this usage record. */
     webSearchRequests?: number;
+    /**
+     * Portion of `cacheCreationTokens` written at the 1-hour (extended) TTL — priced
+     * at {@link CACHE_WRITE_1H_PRICE_RATIO}× input instead of the 5-minute 1.25×. The
+     * remaining `cacheCreationTokens − cacheCreation1hTokens` is billed at the 5m rate.
+     * Omit (or 0) for a pure 5-minute cache write.
+     */
+    cacheCreation1hTokens?: number;
+    /**
+     * Anthropic billing service tier for this record. A `batch`-tier record is
+     * re-priced at half the standard per-token cost; `standard`/`priority` at the
+     * standard rate. Omit to assume standard-tier pricing.
+     */
+    serviceTier?: UsageServiceTier;
   },
   /**
    * Configured default (main-loop) model whose REAL pricing tier is used when `model`
@@ -470,13 +505,22 @@ export function estimateUsageCost(
   const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
   // Prefer a model-specific cache-write price; fall back to the global 1.25x ratio.
   const actualCacheWritePPM = cacheWritePPM ?? inputPPM * CACHE_WRITE_PRICE_RATIO;
-  return (
+  // Split cache-creation into its 1-hour (2× input) and 5-minute (1.25×) portions.
+  // The 1h price is always input-rate-relative (no per-model 1h column exists); the
+  // 5m portion keeps the model-specific/global cache-write rate. Clamp the 1h slice to
+  // the total so a malformed record can't price negative 5m tokens.
+  const totalCacheCreate = Math.max(0, u.cacheCreationTokens);
+  const create1h = Math.min(totalCacheCreate, Math.max(0, u.cacheCreation1hTokens ?? 0));
+  const create5m = totalCacheCreate - create1h;
+  const gross =
     (Math.max(0, u.uncachedPromptTokens) / 1_000_000) * inputPPM +
     (Math.max(0, u.cachedPromptTokens) / 1_000_000) * actualCachedPPM +
-    (Math.max(0, u.cacheCreationTokens) / 1_000_000) * actualCacheWritePPM +
+    (create5m / 1_000_000) * actualCacheWritePPM +
+    (create1h / 1_000_000) * inputPPM * CACHE_WRITE_1H_PRICE_RATIO +
     (Math.max(0, u.completionTokens) / 1_000_000) * outputPPM +
-    Math.max(0, u.webSearchRequests ?? 0) * WEB_SEARCH_COST_PER_REQUEST
-  );
+    Math.max(0, u.webSearchRequests ?? 0) * WEB_SEARCH_COST_PER_REQUEST;
+  // Batch-tier records are billed at half the standard per-token/-request cost.
+  return u.serviceTier === 'batch' ? gross * BATCH_TIER_DISCOUNT : gross;
 }
 
 // ---------------------------------------------------------------------------
