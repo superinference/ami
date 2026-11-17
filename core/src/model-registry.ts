@@ -109,6 +109,15 @@ export function detectProvider(config: ProviderConfig): string {
   const key = config.apiKey || '';
   const url = config.baseUrl || '';
 
+  // Explicit cloud-routing opt-in toggle for Bedrock (parity with Claude Code's
+  // getAPIProvider, utils/model/providers.ts:L6-L14): route to the managed cloud
+  // provider purely from the env toggle, independent of whether an AWS credential
+  // happens to be exported — so a user who runs via Bedrock is never mis-detected
+  // as a first-party/OpenAI endpoint by credential sniffing. Honors both the
+  // Claude-compatible var and AMI's own convention (mirrors the vertex toggle below
+  // and the cloud-provider list in common/engine-factory's preconnect skip).
+  if (process.env.CLAUDE_CODE_USE_BEDROCK || process.env.SUPERINFERENCE_USE_BEDROCK) return 'amazon-bedrock';
+
   // Env-based detection for vertex
   if (process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.CLAUDE_CODE_USE_VERTEX) return 'anthropic-vertex';
 
@@ -414,12 +423,64 @@ const DEPRECATED_REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: str
  * successor without a provider round-trip.
  */
 export function suggestDeprecatedReplacement(modelId: string, available: string[]): string | undefined {
+  // Opt-out: CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1 suppresses the
+  // deprecated→successor remap entirely (parity with Claude Code's
+  // useModelMigrationNotifications opt-out env, hooks/notifs/
+  // useModelMigrationNotifications.tsx:L24-L29). With it set, a user who pins a
+  // legacy id is neither auto-migrated (reference-journal's startup migration) nor
+  // nudged with a "did you mean" suggestion — their explicit choice stands.
+  if (isLegacyModelRemapDisabled()) return undefined;
   for (const { pattern, replacement } of DEPRECATED_REPLACEMENTS) {
     if (pattern.test(modelId)) {
       // Prefer the successor the provider actually lists; otherwise suggest the
       // canonical successor id so the user still has a concrete target.
       const live = available.find(id => id.toLowerCase().includes(replacement.toLowerCase()));
       return live ?? replacement;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * True when the legacy-model remap is opted out via
+ * CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP (parity with Claude Code's env opt-out,
+ * useModelMigrationNotifications.tsx:L24-L29). Accepts the usual truthy spellings
+ * (1/true/yes/on, case-insensitive, trimmed). The SINGLE source of the opt-out
+ * decision, consumed by both the advisory {@link suggestDeprecatedReplacement}
+ * suggestion and the persisted-settings startup auto-migration
+ * (reference-journal's migrateDeprecatedModelAlias) so the knob governs every
+ * legacy-id remap path identically.
+ */
+export function isLegacyModelRemapDisabled(): boolean {
+  const v = (process.env.CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Family-version fallback: map a FAILING too-new model id DOWN to the previous
+ * generation in its own family (e.g. opus-4-6 → opus-4-1, sonnet-4-6 → sonnet-4-5,
+ * sonnet-4-5 → sonnet-4, haiku-4-5 → claude-3-5-haiku). Mirrors Claude Code's
+ * get3PModelFallbackSuggestion (services/api/errors.ts:L936-L959): when a
+ * third-party / self-hosted provider does not (yet) carry the newest generation,
+ * the model-id error names the prior sibling it is likely to have — a concrete
+ * "try this instead". This is DISTINCT from {@link suggestDeprecatedReplacement}
+ * (which maps a RETIRED old id UP to its current successor); here the id is too new
+ * for the endpoint, so we step DOWN. Returns undefined for an unrecognized id.
+ */
+const FAMILY_VERSION_FALLBACKS: ReadonlyArray<{ pattern: RegExp; fallback: string }> = [
+  { pattern: /opus-?4[._-]?6/i, fallback: 'claude-opus-4-1' },
+  { pattern: /sonnet-?4[._-]?6/i, fallback: 'claude-sonnet-4-5' },
+  { pattern: /sonnet-?4[._-]?5/i, fallback: 'claude-sonnet-4' },
+  { pattern: /opus-?4[._-]?5/i, fallback: 'claude-opus-4-1' },
+  { pattern: /haiku-?4[._-]?5/i, fallback: 'claude-3-5-haiku' },
+];
+export function suggestFamilyVersionFallback(modelId: string, available: string[] = []): string | undefined {
+  for (const { pattern, fallback } of FAMILY_VERSION_FALLBACKS) {
+    if (pattern.test(modelId)) {
+      // Prefer the prior version the provider actually lists; otherwise return the
+      // canonical prior id so the user still has a concrete target.
+      const live = available.find(id => id.toLowerCase().includes(fallback.toLowerCase()));
+      return live ?? fallback;
     }
   }
   return undefined;
@@ -492,6 +553,32 @@ export const MODEL_SHORT_KEYS: Record<string, string> = {
   opus45: 'claude-opus-4-5',
   opus46: 'claude-opus-4-6',
 };
+
+/**
+ * Env-var knobs that steer model routing / legacy-id remap, surfaced in
+ * `ami --introspect` (modelEnvToggles) so the feature manifest documents them —
+ * the repo invariant that every new env-controlled capability is discoverable.
+ * The SINGLE declaration of these toggles; the behavior lives in
+ * {@link detectProvider} (routing) and {@link isLegacyModelRemapDisabled} /
+ * {@link suggestDeprecatedReplacement} (remap opt-out).
+ */
+export const MODEL_ENV_TOGGLES = [
+  {
+    env: 'CLAUDE_CODE_USE_BEDROCK',
+    affects: 'provider-routing',
+    description: 'Route to the amazon-bedrock provider from the explicit toggle, independent of credential sniffing (parity with Claude Code getAPIProvider).',
+  },
+  {
+    env: 'SUPERINFERENCE_USE_BEDROCK',
+    affects: 'provider-routing',
+    description: "AMI-convention alias of CLAUDE_CODE_USE_BEDROCK; either selects the amazon-bedrock provider.",
+  },
+  {
+    env: 'CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP',
+    affects: 'model-remap',
+    description: 'Opt out of the deprecated→successor model remap — suppresses both the startup settings migration and the /model "did you mean" suggestion (parity with Claude Code useModelMigrationNotifications).',
+  },
+] as const;
 
 /** Normalize an input for alias matching: trimmed + lower-cased. */
 function normalizeAlias(input: string): string {
@@ -622,9 +709,15 @@ export async function validateModel(
   const partial = boundary.length > 0
     ? boundary
     : ids.filter(id => id.includes(effective) || effective.includes(id));
+  // Ranking of the "did you mean" suggestion when there is no match:
+  //  1. a boundary/substring partial (handled above),
+  //  2. a RETIRED-id successor (suggestDeprecatedReplacement maps old → new),
+  //  3. a too-new family id stepped DOWN to the prior generation the endpoint is
+  //     likelier to carry (suggestFamilyVersionFallback — parity with Claude's
+  //     get3PModelFallbackSuggestion for third-party/self-hosted providers).
   const suggestion = partial.length > 0
     ? partial[0]
-    : suggestDeprecatedReplacement(effective, ids);
+    : (suggestDeprecatedReplacement(effective, ids) ?? suggestFamilyVersionFallback(effective, ids));
 
   return { valid: false, available: ids, suggestion, errorKind: 'none' };
 }
@@ -728,13 +821,60 @@ export function getModelDescription(modelId: string): string | undefined {
 }
 
 /**
- * Combined picker annotation for a model id: a friendly `displayName` (always a
- * usable string) plus an optional `description`. Mirrors Claude's ModelOption
- * `{ label, description }` so a picker row can show a human label + sub-line
- * instead of a bare id.
+ * The current (newest) concrete model id per Claude family. A pinned model whose
+ * display name differs from its family's current model is an OLDER version, so the
+ * picker can surface a "newer version available" upgrade affordance. Mirrors Claude
+ * Code's getDefault{Opus,Sonnet,Haiku}Model used by getModelFamilyInfo
+ * (utils/model/modelOptions.ts:L385-L459); kept in sync with the newest entries of
+ * {@link MODEL_SHORT_KEYS}.
  */
-export function getModelMetadata(modelId: string): { displayName: string; description?: string } {
-  return { displayName: getModelDisplayName(modelId), description: getModelDescription(modelId) };
+const FAMILY_CURRENT_MODEL: Record<'opus' | 'sonnet' | 'haiku', string> = {
+  opus: 'claude-opus-4-6',
+  sonnet: 'claude-sonnet-4-6',
+  haiku: 'claude-haiku-4-5',
+};
+
+/** Capitalized family alias to name in the upgrade hint ("Opus"/"Sonnet"/"Haiku"). */
+const FAMILY_ALIAS_LABEL: Record<'opus' | 'sonnet' | 'haiku', string> = {
+  opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku',
+};
+
+/**
+ * Upgrade affordance for a PINNED OLDER model: when `modelId` resolves to a known
+ * Claude family (opus/sonnet/haiku) whose current version is a DIFFERENT (newer)
+ * build than the pinned one, returns
+ * `Newer version available · select <Alias> for <CurrentVersionName>` — otherwise
+ * undefined (unknown id, non-Claude family, or already the current version).
+ * Mirrors Claude Code's getKnownModelOption upgrade-hint description
+ * (utils/model/modelOptions.ts:L431-L459). Surfaced by the /model picker via
+ * {@link getModelMetadata}.
+ */
+export function getNewerVersionHint(modelId: string): string | undefined {
+  const { base } = splitOneMillionSuffix((modelId ?? '').trim());
+  const hit = matchModelPattern(base);
+  if (!hit) return undefined;
+  const family = hit.family;
+  if (family !== 'opus' && family !== 'sonnet' && family !== 'haiku') return undefined;
+  const current = FAMILY_CURRENT_MODEL[family];
+  const currentName = getModelDisplayName(current);
+  // Same build as the family's current version → nothing to upgrade to.
+  if (hit.name === currentName) return undefined;
+  return `Newer version available · select ${FAMILY_ALIAS_LABEL[family]} for ${currentName}`;
+}
+
+/**
+ * Combined picker annotation for a model id: a friendly `displayName` (always a
+ * usable string), an optional `description`, and an optional `upgrade` hint when a
+ * newer version of the pinned model's family is available. Mirrors Claude's
+ * ModelOption `{ label, description }` so a picker row can show a human label + a
+ * sub-line (and an upgrade nudge) instead of a bare id.
+ */
+export function getModelMetadata(modelId: string): { displayName: string; description?: string; upgrade?: string } {
+  return {
+    displayName: getModelDisplayName(modelId),
+    description: getModelDescription(modelId),
+    upgrade: getNewerVersionHint(modelId),
+  };
 }
 
 export function formatModelList(models: string[], provider: string): string {
