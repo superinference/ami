@@ -493,6 +493,14 @@ const SAFE_COMMANDS = new Set([
   'tree',
   // Computational / text read-only utilities (side-effect-free)
   'seq', 'expr', 'printf', 'comm', 'cmp', 'numfmt', 'getconf', 'tsort', 'pr', 'fmt',
+  // Encoding / checksum read-only utilities (flag-validated). base64 only decodes/
+  // encodes to stdout; the *sum commands only read files to compute/verify a hash.
+  // Mirrors Claude's base64 / sha256sum / sha1sum / md5sum read-only configs.
+  'base64', 'sha256sum', 'sha1sum', 'md5sum',
+  // Read-only type checker (flag-validated, --watch blocked). Mirrors Claude's
+  // PYRIGHT_READ_ONLY_COMMANDS. `dotnet` is handled specially below (only its
+  // read-only top-level flags like --version/--info are auto-allowed).
+  'pyright', 'dotnet',
 ]);
 
 /**
@@ -545,6 +553,93 @@ const FD_ARG_TYPES: Record<string, FlagArgType> = {
   '-g': 'string', '-p': 'string',
 };
 
+/**
+ * Arg-type map for `base64`. Decode/mode flags take no argument; the line-length
+ * flags are numeric; `-i`/`--input` names a file to READ (never a write). Mirrors
+ * Claude's base64 safeFlags (readOnlyValidation.ts). macOS base64 ignores POSIX
+ * `--`, hence respectsDoubleDash:false on the entry below.
+ */
+const BASE64_ARG_TYPES: Record<string, FlagArgType> = {
+  '-d': 'none', '-D': 'none', '--decode': 'none',
+  '-b': 'number', '--break': 'number', '-w': 'number', '--wrap': 'number',
+  '-i': 'string', '--input': 'string',
+  '--ignore-garbage': 'none',
+  '-h': 'none', '--help': 'none', '--version': 'none',
+};
+
+/**
+ * Arg-type map shared by the checksum commands (`sha256sum`/`sha1sum`/`md5sum`).
+ * Every flag only selects an input mode, a verification mode, or an output
+ * format — none write anything. Mirrors Claude's checksum safeFlags.
+ */
+const CHECKSUM_ARG_TYPES: Record<string, FlagArgType> = {
+  '-b': 'none', '--binary': 'none', '-t': 'none', '--text': 'none',
+  '-c': 'none', '--check': 'none', '--ignore-missing': 'none',
+  '--quiet': 'none', '--status': 'none', '--strict': 'none',
+  '-w': 'none', '--warn': 'none',
+  '--tag': 'none', '-z': 'none', '--zero': 'none',
+  '--help': 'none', '--version': 'none',
+};
+
+/**
+ * Arg-type map for `grep`. Pattern/file flags take a string value, the rest are
+ * no-arg mode selectors. Strict: any flag outside this set (notably the
+ * preprocessor/exec-adjacent flags blocked below) falls through to a prompt.
+ * Mirrors Claude's grep safeFlags.
+ */
+const GREP_ARG_TYPES: Record<string, FlagArgType> = {
+  '-e': 'string', '--regexp': 'string', '-f': 'string', '--file': 'string',
+  '-F': 'none', '--fixed-strings': 'none', '-G': 'none', '--basic-regexp': 'none',
+  '-E': 'none', '--extended-regexp': 'none', '-P': 'none', '--perl-regexp': 'none',
+  '-i': 'none', '--ignore-case': 'none', '-v': 'none', '--invert-match': 'none',
+  '-n': 'none', '--line-number': 'none', '-c': 'none', '--count': 'none',
+  '-l': 'none', '--files-with-matches': 'none', '-L': 'none', '--files-without-match': 'none',
+  '-o': 'none', '--only-matching': 'none', '-w': 'none', '--word-regexp': 'none',
+  '-x': 'none', '--line-regexp': 'none', '-r': 'none', '-R': 'none', '--recursive': 'none',
+  '-h': 'none', '--no-filename': 'none', '-H': 'none', '--with-filename': 'none',
+  '-A': 'number', '--after-context': 'number', '-B': 'number', '--before-context': 'number',
+  '-C': 'number', '--context': 'number', '-m': 'number', '--max-count': 'number',
+  '-s': 'none', '--no-messages': 'none', '-a': 'none', '--text': 'none',
+  '-q': 'none', '--quiet': 'none', '--color': 'string', '--colour': 'string',
+  '--include': 'string', '--exclude': 'string', '--exclude-dir': 'string',
+  '-V': 'none', '--version': 'none',
+};
+
+/**
+ * Arg-type map for `pyright`. Project/version/level flags take a string value;
+ * stats/verbosity/version flags are no-arg. Strict: unknown flags prompt. The
+ * long-running `--watch`/`-w` is blocked via dangerousArgs below. pyright treats
+ * `--` as a FILE path (not end-of-options), so respectsDoubleDash:false keeps the
+ * validator scanning past it. Mirrors Claude's PYRIGHT_READ_ONLY_COMMANDS.
+ */
+const PYRIGHT_ARG_TYPES: Record<string, FlagArgType> = {
+  '--outputjson': 'none', '--project': 'string', '-p': 'string',
+  '--pythonversion': 'string', '--pythonplatform': 'string',
+  '--typeshedpath': 'string', '--venvpath': 'string', '--level': 'string',
+  '--stats': 'none', '--verbose': 'none', '--version': 'none',
+  '--dependencies': 'none', '--warnings': 'none',
+};
+
+/**
+ * `dotnet` top-level flags that are purely read-only SDK queries. Any other
+ * invocation (build/run/test/…) must prompt. Mirrors Claude's
+ * DOTNET_READ_ONLY_FLAGS / isDotnetSafe.
+ */
+const DOTNET_READ_ONLY_FLAGS = new Set([
+  '--version', '--info', '--list-runtimes', '--list-sdks',
+]);
+
+/**
+ * Whether a `dotnet` invocation is a read-only SDK query: it has at least one
+ * argument AND every argument is a recognised read-only top-level flag. A bare
+ * `dotnet` (prints help but is treated as non-read by Claude) and any subcommand
+ * (build/run/…) return false. Mirrors Claude's isDotnetSafe.
+ */
+function isDotnetSafe(args: string[]): boolean {
+  if (args.length === 0) return false;
+  return args.every(a => DOTNET_READ_ONLY_FLAGS.has(a.toLowerCase()));
+}
+
 const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; dangerousArgs?: (args: string[]) => boolean; respectsDoubleDash?: boolean }> = {
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
@@ -582,8 +677,11 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
     dangerousArgs: (args) => args.some(a => !a.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(a)),
   },
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
-  fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
-  fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch']), argTypes: FD_ARG_TYPES },
+  // `-l`/`--list-details` is excluded: fd internally execs `ls` as a subprocess
+  // (same pathway as --exec-batch — a PATH-hijack / arbitrary-exec risk), so it is
+  // blocked alongside the exec flags. Mirrors Claude's fd -l exclusion.
+  fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch', '-l', '--list-details']), argTypes: FD_ARG_TYPES },
+  fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch', '-l', '--list-details']), argTypes: FD_ARG_TYPES },
   // `find` does NOT honor POSIX `--` for its expression primaries — a `--` only
   // ends the list of starting-point paths, so `find . -- -delete` STILL deletes.
   // Keep scanning past `--` (respectsDoubleDash:false) so a write/exec primary
@@ -604,6 +702,21 @@ const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<st
   // sort is read-only EXCEPT `-o/--output FILE`, which writes the sorted result to
   // a file. Block the output flags; other sort flags stay safe (S: strict off).
   sort: { allowed: new Set([]), blocked: new Set(['-o', '--output']) },
+  // base64: encode/decode to stdout only. Typed flags (numeric wrap, string input
+  // file) + respectsDoubleDash:false because macOS base64 ignores POSIX `--`.
+  base64: { allowed: new Set(Object.keys(BASE64_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: BASE64_ARG_TYPES, respectsDoubleDash: false },
+  // Checksum commands: read files + compute/verify a hash. No flag writes.
+  sha256sum: { allowed: new Set(Object.keys(CHECKSUM_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: CHECKSUM_ARG_TYPES },
+  sha1sum: { allowed: new Set(Object.keys(CHECKSUM_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: CHECKSUM_ARG_TYPES },
+  md5sum: { allowed: new Set(Object.keys(CHECKSUM_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: CHECKSUM_ARG_TYPES },
+  // grep: read-only search. Strict typed allowlist so any flag outside the known
+  // read-only set (e.g. an unrecognised/exec-adjacent flag) falls through to a
+  // prompt instead of being silently auto-approved. Mirrors Claude's grep safeFlags.
+  grep: { allowed: new Set(Object.keys(GREP_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: GREP_ARG_TYPES },
+  // pyright: read-only type checker. Strict typed allowlist; `--watch`/`-w` is a
+  // long-running process (blocked via dangerousArgs). pyright treats `--` as a
+  // file path, so keep scanning past it (respectsDoubleDash:false).
+  pyright: { allowed: new Set(Object.keys(PYRIGHT_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: PYRIGHT_ARG_TYPES, respectsDoubleDash: false, dangerousArgs: (args) => args.some(a => a === '--watch' || a === '-w') },
 };
 
 /**
@@ -952,6 +1065,9 @@ const DOCKER_SAFE_SUBCOMMANDS = new Set([
 const SAFE_PREFIXES = new Set([
   'git status', 'git log', 'git diff', 'git branch', 'git show',
   'git remote', 'git tag', 'git stash list', 'git rev-parse',
+  // `git ls-remote` lists refs on a remote — read-only, EXCEPT the --server-option
+  // exfil vector gated in isGitInvocationReadOnly. Mirrors Claude's ls-remote config.
+  'git ls-remote',
   'npm list', 'npm ls', 'npm view',
   'tsc', 'tsc --noEmit',
   'cargo build', 'cargo check', 'cargo test', 'cargo clippy',
@@ -1780,6 +1896,17 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
   // A file-writing output flag turns ANY read subcommand into a write.
   for (const a of rest) {
     if (a === '-o' || a === '--output' || a.startsWith('--output=')) return false;
+  }
+
+  // `git ls-remote` is read-only EXCEPT `--server-option`/`-o`, which transmit an
+  // arbitrary attacker-controlled string to the remote in the protocol-v2
+  // capability advertisement — a network WRITE / exfil primitive on a nominally
+  // read-only command. `-o` is already caught by the output-flag scan above; block
+  // the long form here too. Mirrors Claude's ls-remote --server-option exclusion.
+  if (sub === 'ls-remote') {
+    for (const a of rest) {
+      if (a === '--server-option' || a.startsWith('--server-option=')) return false;
+    }
   }
 
   if (sub === 'branch' || sub === 'tag') {
@@ -3684,6 +3811,11 @@ export class PermissionManager {
 
         // xargs: must target a safe command
         if (cmd === 'xargs' && !isXargsSafe(unwrapped)) return 'unsafe';
+
+        // `dotnet`: only its read-only top-level SDK queries (--version/--info/
+        // --list-runtimes/--list-sdks) are auto-safe. A bare `dotnet` (help) or any
+        // subcommand (build/run/test/…) must prompt. Mirrors Claude's isDotnetSafe.
+        if (cmd === 'dotnet' && !isDotnetSafe(args)) return 'unsafe';
 
         // Block shell substitutions ($VAR, $(cmd)) but allow glob patterns
         if (containsShellSubstitution(unwrapped)) return 'unsafe';
