@@ -22,7 +22,6 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
-import { isSafeSegment } from './skill-catalog';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { log, logError } from './logger';
 import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked } from './config';
@@ -64,18 +63,6 @@ export function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.
     return path.join(resolveHome(env, homedir), value.slice(1));
   }
   return value;
-}
-
-/**
- * The conventional per-user executable directory — `~/.local/bin` — where a
- * native installer places its launcher so it lands on a login `$PATH` without
- * root (parity: Claude Code's xdg.ts `getUserBinDir`). Not technically an XDG
- * base dir, but it follows the same `~/.local/*` convention (`$XDG_DATA_HOME`
- * defaults to `~/.local/share`). Home is resolved via {@link resolveHome} so a
- * redirected `$HOME` is honored; `homedir` is an injectable test seam.
- */
-export function getUserBinDir(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
-  return path.join(resolveHome(env, homedir), '.local', 'bin');
 }
 
 /**
@@ -155,43 +142,6 @@ export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env, homedir?:
   const resolved = override ?? path.join(resolveHome(env, homedir), '.ami').normalize('NFC');
   _configDirCache.set(cacheKey, resolved);
   return resolved;
-}
-
-/**
- * Resolve the platform-standard CACHE root for TRANSIENT data (debug logs, error
- * logs, MCP logs) — deliberately SEPARATE from the durable config/data dir
- * ({@link resolveConfigDir}) so a user (or the OS) can wipe transient cache without
- * touching sessions/memory/checkpoints, and so cache follows platform conventions
- * (parity: Claude Code's cachePaths.ts `envPaths('claude-cli').cache`). Precedence:
- *   1. An explicit `AMI_CACHE_DIR` override (tilde-expanded, dangerous-root rejected,
- *      NFC-normalized) — the single cache-location knob.
- *   2. The platform cache base for the `superinference` app:
- *      - darwin  → `~/Library/Caches/superinference`
- *      - win32   → `%LOCALAPPDATA%/superinference/Cache` (falls back to `~/AppData/Local`)
- *      - posix   → `$XDG_CACHE_HOME/superinference` (falls back to `~/.cache/superinference`)
- * `platform` is an injectable test seam so the darwin/win branches are reachable off-host.
- */
-export function resolveCacheDir(
-  env: NodeJS.ProcessEnv = process.env,
-  homedir?: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  const override = env.AMI_CACHE_DIR;
-  if (override && override.trim()) {
-    const expanded = expandConfigDir(override, env, homedir);
-    if (!isDangerousStorageRoot(expanded)) return expanded.normalize('NFC');
-    logError('resolve-cache-dir', 'rejecting dangerous AMI_CACHE_DIR override', { value: override });
-  }
-  const home = resolveHome(env, homedir);
-  if (platform === 'darwin') {
-    return path.join(home, 'Library', 'Caches', 'superinference').normalize('NFC');
-  }
-  if (platform === 'win32') {
-    const base = env.LOCALAPPDATA && env.LOCALAPPDATA.trim() ? env.LOCALAPPDATA : path.join(home, 'AppData', 'Local');
-    return path.join(base, 'superinference', 'Cache').normalize('NFC');
-  }
-  const xdg = env.XDG_CACHE_HOME && env.XDG_CACHE_HOME.trim() ? env.XDG_CACHE_HOME : path.join(home, '.cache');
-  return path.join(xdg, 'superinference').normalize('NFC');
 }
 
 /**
@@ -561,64 +511,6 @@ function resolveGitRootUncached(cwd: string): string {
   return canonicalizePath(cwd);
 }
 
-/**
- * Normalize a git remote URL to a stable, clone-protocol-independent `host/owner/repo`
- * identity (lower-cased, `.git` stripped) so an SSH clone and an HTTPS clone of the
- * same repository map to the SAME string (parity: Claude Code's git.ts
- * `normalizeGitRemoteUrl`). Returns null for a URL it cannot parse (so the caller
- * falls back to a path-based identity). Handles:
- *   - SSH shorthand `git@host:owner/repo(.git)`
- *   - URL form `https|http|ssh://[user@]host/owner/repo(.git)`
- */
-export function normalizeGitRemoteUrl(url: string): string | null {
-  const trimmed = url.trim();
-  if (!trimmed) return null;
-  // A linear trailing-`.git` strip in code (instead of an optional regex suffix) —
-  // keeps both patterns backtracking-free (no lazy quantifier + optional tail).
-  const stripGit = (s: string) => s.replace(/\.git$/, '');
-  // SSH shorthand: git@host:owner/repo(.git)
-  const ssh = trimmed.match(/^git@([^:]+):(.+)$/);
-  if (ssh && ssh[1] && ssh[2]) return `${ssh[1]}/${stripGit(ssh[2])}`.toLowerCase();
-  // URL form: https|http|ssh://[user@]host/owner/repo(.git). The scheme is matched
-  // with a single-quantifier regex; the optional userinfo + host/path split is done
-  // procedurally (indexOf) to keep the matcher free of nested quantifiers (no ReDoS).
-  const scheme = trimmed.match(/^(?:https?|ssh):\/\/(.+)$/);
-  if (scheme && scheme[1]) {
-    let rest = scheme[1];
-    const at = rest.indexOf('@');
-    const firstSlash = rest.indexOf('/');
-    // Drop `user@` only when the '@' precedes the first '/' (i.e. it is userinfo,
-    // not part of the path).
-    if (at !== -1 && (firstSlash === -1 || at < firstSlash)) rest = rest.slice(at + 1);
-    const sep = rest.indexOf('/');
-    if (sep > 0) {
-      const host = rest.slice(0, sep);
-      const repoPath = rest.slice(sep + 1);
-      if (host && repoPath && !host.includes('@')) return `${host}/${stripGit(repoPath)}`.toLowerCase();
-    }
-  }
-  return null;
-}
-
-/**
- * A stable, privacy-preserving project identity derived from the repo's normalized
- * remote: `sha256(normalizeGitRemoteUrl(remote)).slice(0,16)` (parity: Claude Code's
- * git.ts `getRepoRemoteHash`). Unlike {@link projectSlug} (which embeds the full local
- * cwd and therefore both leaks the on-disk path into state-dir/log names and diverges
- * per-clone/per-worktree), this id is IDENTICAL across SSH/HTTPS clones and every
- * worktree of one repo, and never exposes the repo name. Offered ALONGSIDE the cwd slug
- * (not a replacement). Returns null when `cwd` is not in a git repo, has no `origin`
- * remote, or the remote cannot be normalized — the caller then falls back to the slug.
- * Resolves the remote via the shared, timeout-bounded {@link runGit}; never throws.
- */
-export function repoRemoteHash(cwd: string): string | null {
-  const remote = runGit('config --get remote.origin.url', cwd);
-  if (!remote) return null;
-  const normalized = normalizeGitRemoteUrl(remote);
-  if (!normalized) return null;
-  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
-}
-
 /** Project slug: the dashboard derives a per-cwd folder by replacing non-alphanumerics with '-'.
  *  A slug over {@link MAX_SLUG_LENGTH} is truncated and suffixed with an 8-hex-char
  *  sha256 of the raw cwd, so deep paths stay collision-resistant and within fs limits. */
@@ -660,34 +552,11 @@ export function journalPathFor(cwd: string, sessionId: string, env: NodeJS.Proce
   return file;
 }
 
-/**
- * Absolute path of a sidechain/subagent journal file (projects/<slug>/subagents/...).
- *
- * An optional `subdir` nests the file under a grouping folder so related subagents
- * of one workflow/task run roll up as a unit downstream — e.g. `subdir='workflows/<runId>'`
- * yields `subagents/workflows/<runId>/agent-<id>.jsonl` (parity: Claude Code's
- * sessionStorage.ts agentId→subdir grouping / `getAgentTranscriptPath`). The default
- * (no `subdir`) keeps the flat `subagents/agent-<id>.jsonl` layout. Each `/`- or
- * `\`-separated segment of `subdir` is path-safety validated ({@link isSafeSegment});
- * an empty or unsafe `subdir` silently falls back to the flat dir (never throws, never
- * escapes `subagents/`, which {@link assertPathWithin} also enforces against `root`).
- */
-export function subagentJournalPathFor(
-  cwd: string,
-  agentId: string,
-  env: NodeJS.ProcessEnv = process.env,
-  subdir?: string,
-): string {
-  const root = path.join(resolveConfigDir(env), 'projects', projectSlug(cwd), 'subagents');
-  let base = root;
-  if (subdir && subdir.trim()) {
-    const segments = subdir.split(/[/\\]+/).filter(Boolean);
-    if (segments.length > 0 && segments.every(isSafeSegment)) {
-      base = path.join(root, ...segments);
-    }
-  }
+/** Absolute path of a sidechain/subagent journal file (projects/<slug>/subagents/...). */
+export function subagentJournalPathFor(cwd: string, agentId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const base = path.join(resolveConfigDir(env), 'projects', projectSlug(cwd), 'subagents');
   const file = path.join(base, `agent-${sanitizeId(agentId)}.jsonl`);
-  assertPathWithin(file, root);
+  assertPathWithin(file, base);
   return file;
 }
 
