@@ -1522,6 +1522,63 @@ export function detectHardlineCommand(command: string): { blocked: boolean; desc
   return { blocked: false, description: null };
 }
 
+/**
+ * A single destructive-command signature: a {@link RegExp} and the
+ * human-readable {@link warning} shown for it. Mirrors Claude's
+ * `DestructivePattern` (utils/.../destructiveCommandWarning.ts, bash variant).
+ */
+interface DestructivePattern {
+  pattern: RegExp;
+  warning: string;
+}
+
+/**
+ * Ordered bash destructive-command signatures, MOST-SPECIFIC-FIRST so the first
+ * match wins (a recursive+force `rm` is reported ahead of a plain recursive one).
+ * Purely informational — these drive the human-readable note surfaced in a
+ * permission prompt ({@link getDestructiveCommandWarning}); they do NOT change
+ * any allow/deny decision (that is owned by {@link PermissionManager.check} /
+ * {@link detectHardlineCommand}). Parity with Claude's bash DESTRUCTIVE_PATTERNS.
+ */
+const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
+  // Git — data loss / hard to reverse.
+  { pattern: /\bgit\s+reset\s+--hard\b/, warning: 'Note: may discard uncommitted changes' },
+  { pattern: /\bgit\s+push\b[^;&|\n]*[ \t](--force|--force-with-lease|-f)\b/, warning: 'Note: may overwrite remote history' },
+  { pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/, warning: 'Note: may permanently delete untracked files' },
+  { pattern: /\bgit\s+checkout\s+(?:--[ \t])?\.(?=$|[ \t;&|\n])/, warning: 'Note: may discard all working tree changes' },
+  { pattern: /\bgit\s+restore\s+(?:--[ \t])?\.(?=$|[ \t;&|\n])/, warning: 'Note: may discard all working tree changes' },
+  { pattern: /\bgit\s+stash[ \t]+(drop|clear)\b/, warning: 'Note: may permanently remove stashed changes' },
+  { pattern: /\bgit\s+branch\s+(-D[ \t]|--delete\s+--force|--force\s+--delete)\b/, warning: 'Note: may force-delete a branch' },
+  // Git — safety bypass.
+  { pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/, warning: 'Note: may skip safety hooks' },
+  { pattern: /\bgit\s+commit\b[^;&|\n]*--amend\b/, warning: 'Note: may rewrite the last commit' },
+  // File deletion (dangerous target paths are handled separately by the hardline
+  // / dangerous-removal guards; this is the informational note).
+  { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f|(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]/, warning: 'Note: may recursively force-remove files' },
+  { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]/, warning: 'Note: may recursively remove files' },
+  { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f/, warning: 'Note: may force-remove files' },
+  // Database.
+  { pattern: /\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b/i, warning: 'Note: may drop or truncate database objects' },
+  { pattern: /\bDELETE\s+FROM\s+\w+[ \t]*(;|"|'|\n|$)/i, warning: 'Note: may delete all rows from a database table' },
+  // Infrastructure.
+  { pattern: /\bkubectl\s+delete\b/, warning: 'Note: may delete Kubernetes resources' },
+  { pattern: /\bterraform\s+destroy\b/, warning: 'Note: may destroy Terraform infrastructure' },
+];
+
+/**
+ * Return a specific, human-readable warning for a potentially destructive bash
+ * command (most-specific signature wins), or `null` when none matches. This is
+ * purely INFORMATIONAL: it explains WHY a command is destructive in a permission
+ * prompt and never gates auto-approval. Mirrors Claude's `getDestructiveCommandWarning`
+ * (bash). The allow/deny logic stays in {@link PermissionManager.check}.
+ */
+export function getDestructiveCommandWarning(command: string): string | null {
+  for (const { pattern, warning } of DESTRUCTIVE_WARNING_PATTERNS) {
+    if (pattern.test(command)) return warning;
+  }
+  return null;
+}
+
 export function detectCommandChaining(command: string): { chained: boolean; operators: string[]; count: number } {
   const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
   const operators: string[] = [];
@@ -3085,6 +3142,26 @@ export function resolveConfigFolderScope(
  * the plain one-off allow). All suggestions default to the ephemeral `session`
  * destination — persistence is a separate, explicit choice.
  */
+/**
+ * Derive the DOMAIN a `web_fetch` call targets, for a domain-scoped "always
+ * allow" rule — the URL's lowercased hostname, or `null` when the input carries
+ * no usable URL. Parity with Claude's WebFetch `inputToPermissionRuleContent`
+ * (which yields `domain:<hostname>`); AMI's canonical web_fetch rule content is
+ * the BARE hostname (`web_fetch(example.com)`) so it matches AMI's existing
+ * web_fetch matcher and sandbox-domain extraction — an intentional superset
+ * divergence kept consistent with {@link validatePermissionRule}.
+ */
+export function deriveWebFetchDomainRuleContent(input: Record<string, unknown>): string | null {
+  const url = input.url;
+  if (typeof url !== 'string' || url.length === 0) return null;
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname ? hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildPermissionSuggestions(
   toolName: string,
   input: Record<string, unknown>,
@@ -3097,6 +3174,15 @@ export function buildPermissionSuggestions(
       .map(prefix => ({ toolName: 'bash', ruleContent: `${prefix}*` }));
     return rules.length > 0
       ? [{ type: 'addRules', behavior: 'allow', destination: 'session', rules }]
+      : [];
+  }
+  if (canonical === 'web_fetch') {
+    // Domain-scoped "always allow" candidate: grant exactly the URL's host, not a
+    // tool-wide web_fetch allow (least privilege). Parity with Claude's
+    // "Yes, and don't ask again for <hostname>" option.
+    const domain = deriveWebFetchDomainRuleContent(input);
+    return domain
+      ? [{ type: 'addRules', behavior: 'allow', destination: 'session', rules: [{ toolName: 'web_fetch', ruleContent: domain }] }]
       : [];
   }
   const filePath = (input.file_path ?? input.path) as unknown;
@@ -3947,7 +4033,14 @@ export class PermissionManager {
         return { type: 'safetyCheck', check: 'systemDir', message: 'Command writes to a system directory and requires approval' };
       }
       if (this.classifyBashCommand(command) === 'destructive') {
-        return { type: 'safetyCheck', check: 'destructive', message: 'Command is destructive and requires approval' };
+        // Surface the SPECIFIC human-readable warning (parity with Claude's
+        // getDestructiveCommandWarning) when the command matches a known signature,
+        // so the prompt says WHY it is destructive; else a generic line.
+        const warning = getDestructiveCommandWarning(command);
+        return {
+          type: 'safetyCheck', check: 'destructive',
+          message: warning ? `${warning} — approval required` : 'Command is destructive and requires approval',
+        };
       }
       const toctou = this.bashToctouEscalation(command);
       if (toctou !== null) {
