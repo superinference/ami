@@ -387,8 +387,12 @@ export type PermissionDecisionReason =
   /**
    * A hook (PreToolUse / PermissionRequest) asked for or denied confirmation.
    * Mirrors Claude's `hook` decisionReason (hookName + optional reason + source tag).
+   * `behavior` is the decision the hook actually returned (allow/deny/ask) when it
+   * made one, so the message can read "<hook> allowed/denied/asked for confirmation
+   * for this action" (parity with Claude's toolHooks `getRuleBehaviorDescription`
+   * phrasing) instead of the generic "requires approval".
    */
-  | { type: 'hook'; hookName: string; reason?: string; hookSource?: string }
+  | { type: 'hook'; hookName: string; reason?: string; hookSource?: string; behavior?: 'allow' | 'deny' | 'ask' }
   /**
    * The call opted out of the sandbox (`dangerouslyDisableSandbox`), so it must be
    * explicitly authorized to run unsandboxed. Mirrors Claude's `sandboxOverride`
@@ -401,6 +405,25 @@ export const SAFETY_CHECK_KINDS = [
   'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec', 'toctou',
 ] as const;
 export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
+
+/**
+ * Map a permission BEHAVIOR enum (`allow`/`deny`/`ask`) to its grammatical past-tense
+ * prose, so a decision can be narrated in a sentence — "<hook> allowed this action",
+ * "<rule> denied this action", "<hook> asked for confirmation for this action".
+ * Mirrors Claude's `getRuleBehaviorDescription` (utils/permissions/PermissionResult.ts),
+ * where `ask` (the default) reads "asked for confirmation for". A single canonical
+ * mapping so callers never hand-roll the allow→"allowed" / deny→"denied" conversion.
+ */
+export function getRuleBehaviorDescription(behavior: 'allow' | 'deny' | 'ask'): string {
+  switch (behavior) {
+    case 'allow':
+      return 'allowed';
+    case 'deny':
+      return 'denied';
+    default:
+      return 'asked for confirmation for';
+  }
+}
 
 /** Build a human-readable explanation from a structured decision reason. */
 export function createPermissionRequestMessage(reason: PermissionDecisionReason): string {
@@ -420,8 +443,10 @@ export function createPermissionRequestMessage(reason: PermissionDecisionReason)
       return `The safety classifier${reason.name ? ` (${reason.name})` : ''} flagged this action${reason.reason ? `: ${reason.reason}` : ''}`;
     case 'workingDir':
       return reason.reason;
-    case 'hook':
-      return `Hook "${reason.hookName}" requires approval for this action${reason.reason ? `: ${reason.reason}` : ''}`;
+    case 'hook': {
+      const verb = reason.behavior ? getRuleBehaviorDescription(reason.behavior) : 'requires approval for';
+      return `Hook "${reason.hookName}" ${verb} this action${reason.reason ? `: ${reason.reason}` : ''}`;
+    }
     case 'sandboxOverride':
       return 'This action requires permission to bypass the sandbox';
     case 'other':
@@ -1416,6 +1441,8 @@ export interface DefaultPermissionPatterns {
   destructiveCommands: string[];
   /** SQL statement patterns classified DESTRUCTIVE. */
   destructiveSqlPatterns: string[];
+  /** Bash base-commands `acceptEdits` mode auto-approves without a prompt. */
+  acceptEditsAutoAllowedCommands: string[];
 }
 
 /**
@@ -1434,6 +1461,7 @@ export function getDefaultPermissionPatterns(): DefaultPermissionPatterns {
     hardlineDenied: HARDLINE_PATTERNS.map(h => ({ pattern: h.pattern.source, description: h.description })),
     destructiveCommands: [...DESTRUCTIVE_COMMANDS].sort(),
     destructiveSqlPatterns: DESTRUCTIVE_SQL_PATTERNS.map(p => p.source),
+    acceptEditsAutoAllowedCommands: [...getAutoAllowedCommands('acceptEdits')],
   };
 }
 
@@ -2159,6 +2187,22 @@ export function isAcceptEditsFilesystemMutation(command: string): boolean {
     if (!base || !ACCEPT_EDITS_FS_COMMANDS.has(base)) return false;
   }
   return true;
+}
+
+/**
+ * Introspection accessor: the bash base-commands a given permission {@link
+ * PermissionMode} auto-approves without a prompt, SORTED for stable display.
+ * Only `acceptEdits` auto-allows a fixed edit-adjacent set (the SAME canonical
+ * {@link ACCEPT_EDITS_FS_COMMANDS} the runtime {@link isAcceptEditsFilesystemMutation}
+ * gate uses — no duplicate table); every other mode returns an empty list (their
+ * auto-approval is classification-driven, not a fixed command set). Mirrors
+ * Claude's `getAutoAllowedCommands(mode)` (BashTool/modeValidation.ts), adapted to
+ * AMI's superset divergence that excludes `rm`/`rmdir` so deletions stay gated.
+ * Surfaced through {@link getDefaultPermissionPatterns} (→ `/permissions defaults`)
+ * so a user can see exactly which commands acceptEdits waves through.
+ */
+export function getAutoAllowedCommands(mode: PermissionMode): readonly string[] {
+  return mode === 'acceptEdits' ? [...ACCEPT_EDITS_FS_COMMANDS].sort() : [];
 }
 
 /**
