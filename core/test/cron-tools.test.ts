@@ -57,7 +57,7 @@ describe('cronDeleteTool', () => {
     });
     const result = await cronDeleteTool.execute!({ id: job.id }, ctx);
     assert.ok(!result.isError);
-    assert.ok(result.output.includes('Deleted'));
+    assert.ok(result.output.includes('Cancelled'));
     assert.ok(result.output.includes(job.id));
   });
 });

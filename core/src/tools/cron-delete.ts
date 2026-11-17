@@ -16,6 +16,18 @@ export const cronDeleteTool: ToolDefinition = {
     'You can only delete jobs you own; a job created by another teammate is rejected. ' +
     'Pass ignoreMissing:true to treat an already-deleted / unknown id as a no-op (idempotent) ' +
     'instead of an error.',
+  // PARITY (additive): long-form when-to-use guidance kept ALONGSIDE the terse
+  // description (Claude splits CRON_DELETE_DESCRIPTION vs buildCronDeletePrompt).
+  // Surfaced to the model when AMI's tools are exposed over MCP (mcp-server.ts
+  // appends `prompt` to `description`). Mirrors Claude's durable-aware wording:
+  // a cancel removes the job previously scheduled by cron_create from the durable
+  // on-disk store OR the in-memory session store, depending on how it was created.
+  prompt:
+    'Cancel a cron job previously scheduled with cron_create. For a durable job this removes it ' +
+    'from the persisted on-disk scheduler store (scheduled_tasks.json); for a session-only job it ' +
+    'removes it from the in-memory session store — so the job stops firing in both cases. ' +
+    'Pass the id (or ids / all) exactly as shown by cron_list. A teammate/sub-agent can only cancel ' +
+    'its own jobs. Cancelling an already-removed job is an error unless you pass ignoreMissing:true.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -41,6 +53,31 @@ export const cronDeleteTool: ToolDefinition = {
     },
     // Exactly one selector (id | ids | all) is required; enforced in execute so the
     // mutual-exclusivity / "pick one" error is surfaced cleanly.
+  },
+  // PARITY (additive): declared structured-result schema (Claude's CronDeleteTool
+  // outputSchema). Object-rooted so the provider advertises it
+  // (toolDefinitionsToOpenAI exposes object-root outputSchema only). Lets a
+  // programmatic / SDK / resume caller branch on the deleted id(s) + count +
+  // errorCode without parsing the human-readable message string.
+  outputSchema: {
+    type: 'object',
+    properties: {
+      deleted: { type: 'number', description: 'How many jobs were actually cancelled by this call.' },
+      deletedIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'The ids of the jobs that were cancelled (empty when none matched).',
+      },
+      errorCode: {
+        type: 'number',
+        description: 'Present on failure: 1 = validation / not-found, 2 = ownership/authorization refusal.',
+      },
+      alreadyDeleted: {
+        type: 'boolean',
+        description: 'True on an ignoreMissing no-op where the single target id was already gone.',
+      },
+    },
+    required: ['deleted'],
   },
   isReadOnly: false,
 
@@ -82,7 +119,7 @@ export const cronDeleteTool: ToolDefinition = {
       ids = sched.list(context.agentId).map(j => j.id);
       if (ids.length === 0) {
         // Idempotent no-op: nothing scheduled is not an error.
-        return { output: 'No scheduled jobs to delete.', metadata: { deleted: 0 } };
+        return { output: 'No scheduled jobs to delete.', metadata: { deleted: 0, deletedIds: [] } };
       }
     } else if (hasIds) {
       const raw = input.ids;
@@ -140,18 +177,23 @@ export const cronDeleteTool: ToolDefinition = {
       }
       if (missing.length > 0) {
         if (ignoreMissing) {
-          return { output: `Job "${id}" was already deleted (nothing to do).`, metadata: { deleted: 0, alreadyDeleted: true } };
+          return { output: `Job "${id}" was already deleted (nothing to do).`, metadata: { deleted: 0, deletedIds: [], alreadyDeleted: true } };
         }
-        return { output: `Error: job "${id}" not found.`, isError: true, metadata: { errorCode: 1 } };
+        // Name the entity so the message matches the "scheduled job" vocabulary of
+        // the description (parity: Claude's `No scheduled job with id '<id>'`).
+        return { output: `Error: no scheduled job with id "${id}" (not found).`, isError: true, metadata: { errorCode: 1 } };
       }
-      return { output: `Deleted job ${id}.`, metadata: { deleted: 1 } };
+      // Verb aligned with the tool's "Cancel" description (parity: Claude's
+      // `Cancelled job <id>.`).
+      return { output: `Cancelled job ${id}.`, metadata: { deleted: 1, deletedIds: [id] } };
     }
 
     // Bulk / all path: aggregate a summary. Authorization failures are always a
     // hard error; missing ids are an error only when ignoreMissing is false.
     const isError = unauthorized.length > 0 || (missing.length > 0 && !ignoreMissing);
     const parts: string[] = [];
-    if (deleted.length > 0) parts.push(`Deleted ${deleted.length} job(s): ${deleted.join(', ')}.`);
+    // Verb aligned with the tool's "Cancel" description (parity).
+    if (deleted.length > 0) parts.push(`Cancelled ${deleted.length} job(s): ${deleted.join(', ')}.`);
     if (missing.length > 0) {
       parts.push(
         ignoreMissing
@@ -169,9 +211,9 @@ export const cronDeleteTool: ToolDefinition = {
         output: `Error: ${body}`,
         isError: true,
         // Authorization failures (errorCode 2) outrank not-found (errorCode 1).
-        metadata: { errorCode: unauthorized.length > 0 ? 2 : 1, deleted: deleted.length },
+        metadata: { errorCode: unauthorized.length > 0 ? 2 : 1, deleted: deleted.length, deletedIds: deleted },
       };
     }
-    return { output: body, metadata: { deleted: deleted.length } };
+    return { output: body, metadata: { deleted: deleted.length, deletedIds: deleted } };
   },
 };

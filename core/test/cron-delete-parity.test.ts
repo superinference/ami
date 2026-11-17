@@ -37,14 +37,16 @@ describe('cron-delete parity — additive superset', () => {
     const j = makeJob(ctx.cwd, 'p');
     const r = await cronDeleteTool.execute!({ id: j.id }, ctx);
     assert.equal(r.isError, undefined);
-    assert.match(r.output, /Deleted job/);
+    assert.match(r.output, /Cancelled job/);
     assert.ok(r.output.includes(j.id));
+    assert.deepEqual(r.metadata?.deletedIds, [j.id]);
   });
 
   it('single id: not found is an error with errorCode 1 (legacy path)', async () => {
     const ctx = freshCtx();
     const r = await cronDeleteTool.execute!({ id: 'missing-job' }, ctx);
     assert.equal(r.isError, true);
+    assert.match(r.output, /no scheduled job with id "missing-job"/);
     assert.match(r.output, /not found/);
     assert.equal(r.metadata?.errorCode, 1);
   });
@@ -57,7 +59,8 @@ describe('cron-delete parity — additive superset', () => {
     const r = await cronDeleteTool.execute!({ ids: [a.id, b.id] }, ctx);
     assert.notEqual(r.isError, true);                 // RED on old: "unknown parameter(s): ids"
     assert.equal(r.metadata?.deleted, 2);
-    assert.match(r.output, /Deleted 2 job\(s\)/);
+    assert.match(r.output, /Cancelled 2 job\(s\)/);
+    assert.deepEqual((r.metadata?.deletedIds as string[]).sort(), [a.id, b.id].sort());
     assert.equal(getScheduler(ctx.cwd).list().length, 0);
   });
 
@@ -98,8 +101,9 @@ describe('cron-delete parity — additive superset', () => {
     assert.equal(r.isError, true);                    // RED on old: "unknown parameter(s): ids"
     assert.equal(r.metadata?.errorCode, 1);
     assert.match(r.output, /Not found: nope/);
-    assert.match(r.output, /Deleted 1 job\(s\)/);     // the found one is still removed
+    assert.match(r.output, /Cancelled 1 job\(s\)/);   // the found one is still removed
     assert.equal(r.metadata?.deleted, 1);
+    assert.deepEqual(r.metadata?.deletedIds, [a.id]);
   });
 
   it('FIX surfacing: bulk with ignoreMissing skips missing ids without error', async () => {
@@ -185,5 +189,44 @@ describe('cron-delete parity — additive superset', () => {
     const r = await cronDeleteTool.execute!({ id: 'x', bogus: 1 } as Record<string, unknown>, ctx);
     assert.equal(r.isError, true);
     assert.match(r.output, /unknown parameter/);
+  });
+
+  // ---- PARITY: separate rich prompt vs terse description ----
+  it('declares a long-form prompt alongside the description (durable file vs session store + cron_create)', () => {
+    const p = cronDeleteTool.prompt;
+    assert.equal(typeof p, 'string');
+    // mentions where the job is removed from (parity: Claude buildCronDeletePrompt)
+    assert.match(p!, /cron_create/);
+    assert.match(p!, /scheduled_tasks\.json/);
+    assert.match(p!, /session/i);
+    // the prompt is distinct from the terse description, not a copy of it
+    assert.notEqual(p, cronDeleteTool.description);
+  });
+
+  // ---- PARITY: declared structured output schema ----
+  it('declares an object-rooted outputSchema carrying the deleted count/ids', () => {
+    const os = cronDeleteTool.outputSchema;
+    assert.ok(os, 'outputSchema must be declared');
+    assert.equal(os!.type, 'object');            // object-root => advertised by provider
+    assert.ok(os!.properties?.deleted, 'deleted field declared');
+    assert.ok(os!.properties?.deletedIds, 'deletedIds field declared');
+    assert.deepEqual(os!.required, ['deleted']);
+  });
+
+  it('structured result: single delete carries deletedIds; all:true empty carries []', async () => {
+    const ctx = freshCtx();
+    const j = makeJob(ctx.cwd, 'p');
+    const r = await cronDeleteTool.execute!({ id: j.id }, ctx);
+    assert.deepEqual(r.metadata?.deletedIds, [j.id]);
+
+    const empty = await cronDeleteTool.execute!({ all: true }, ctx);
+    assert.deepEqual(empty.metadata?.deletedIds, []);
+  });
+
+  it('ignoreMissing single no-op reports deleted:0 and empty deletedIds', async () => {
+    const ctx = freshCtx();
+    const r = await cronDeleteTool.execute!({ id: 'ghost', ignoreMissing: true }, ctx);
+    assert.equal(r.metadata?.deleted, 0);
+    assert.deepEqual(r.metadata?.deletedIds, []);
   });
 });

@@ -225,7 +225,7 @@ describe('cronDeleteTool', () => {
 
     const result = await cronDeleteTool.execute({ id: job.id }, ctx(tmpDir));
     assert.ok(!result.isError);
-    assert.ok(result.output.includes('Deleted'));
+    assert.ok(result.output.includes('Cancelled'));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
