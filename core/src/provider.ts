@@ -1374,21 +1374,64 @@ export function mergeBetaTokens(existing: string | null | undefined, token: stri
 }
 
 /**
+ * Shape a well-formed Anthropic beta token must have: it starts with an
+ * alphanumeric and contains only letters, digits, `.`, `_` and `-`
+ * (e.g. `context-1m-2025-08-07`). This is exactly the character set the real
+ * beta tokens use, and — critically — it excludes whitespace, commas, and
+ * CR/LF/control characters.
+ */
+const SAFE_BETA_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * True when `token` is a structurally valid, header-injection-safe
+ * `anthropic-beta` value. Mirrors the defensive input-validation Claude Code
+ * applies to externally-supplied betas (utils/betas.ts `filterAllowedSdkBetas`),
+ * adapted to AMI's model: AMI treats `ANTHROPIC_BETAS` as a trusted *operator*
+ * escape hatch (not a semi-trusted SDK-consumer boundary), so instead of a hard
+ * value allowlist that would defeat the escape hatch it validates the token
+ * SHAPE. That still closes the real failure modes a raw passthrough leaves open:
+ * a stray space / comma / control char or a `\r\n`-carrying value that would
+ * either 400 the request or smuggle an extra header line.
+ */
+export function isSafeBetaToken(token: string): boolean {
+  return SAFE_BETA_TOKEN.test(token);
+}
+
+/**
  * User escape-hatch beta tokens from the `ANTHROPIC_BETAS` env var: a
  * comma-separated list appended to the `anthropic-beta` header regardless of
  * model, so a user can opt into any API beta without a code change. Mirrors
  * Claude Code's provider-neutral ANTHROPIC_BETAS knob (comma-split, trimmed,
  * empties dropped).
+ *
+ * Each token is additionally validated for header-safety via
+ * {@link isSafeBetaToken}: a malformed entry (embedded whitespace, control
+ * chars, or a smuggled `\r\n` header line) is dropped so one bad env value can
+ * neither 400 every request nor inject an extra HTTP header. Well-formed betas
+ * — including ones AMI has no built-in constant for — pass through unchanged, so
+ * the operator escape hatch is preserved.
  */
 export function getExtraAnthropicBetas(): string[] {
   return (process.env.ANTHROPIC_BETAS ?? '')
     .split(',')
     .map(t => t.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isSafeBetaToken);
 }
 
 /** Anthropic beta token for 1h extended prompt-cache TTL. */
 export const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11';
+
+/**
+ * Anthropic beta token that unlocks a cross-session prompt-cache `scope`
+ * (`global` / `org`) on `cache_control`. Mirrors Claude Code's
+ * `PROMPT_CACHING_SCOPE_BETA_HEADER` (constants/betas.ts). The scope widens cache
+ * reuse beyond the single API key: an `org`-scoped block can be served from a
+ * cache written by another key in the same organization, and `global` is broader
+ * still. Required whenever a scoped `cache_control` is sent — without it the API
+ * rejects the `scope` field.
+ */
+export const PROMPT_CACHING_SCOPE_BETA = 'prompt-caching-scope-2026-01-05';
 
 /**
  * Anthropic beta token that lets the model interleave `thinking` blocks between
@@ -1528,6 +1571,11 @@ export function computeAnthropicBetas(
   if (opts.disableBetas) return [];
   const betas: string[] = [];
   if (opts.includeCacheTtlBeta && opts.cacheTtl === '1h') betas.push(EXTENDED_CACHE_TTL_BETA);
+  // Cross-session cache scope ('global'/'org') is an explicit operator opt-in via
+  // AMI_PROMPT_CACHE_SCOPE; the scoped cache_control the knob produces is rejected
+  // without this beta, so it must accompany any scoped request (non-experimental —
+  // a deliberate config choice, not a kill-switchable experiment).
+  if (resolvePromptCacheScope()) betas.push(PROMPT_CACHING_SCOPE_BETA);
   if (supportsOneMillionContextBeta(modelId)) betas.push(ONE_MILLION_CONTEXT_BETA);
   if (!experimentalBetasDisabled()) {
     if (supportsInterleavedThinking(modelId) && !interleavedThinkingDisabled()) {
@@ -2761,12 +2809,48 @@ function promptTokensForFit(
 }
 
 /**
- * Build the Anthropic ephemeral cache-control object, honoring an optional TTL.
- * '1h' requires Anthropic's extended-cache beta; default (undefined/'5m') uses
- * the standard 5-minute ephemeral cache.
+ * Cross-session prompt-cache scope. `'org'` lets any API key in the same
+ * organization reuse a cache block this run wrote; `'global'` is broader still.
+ * Mirrors Claude Code's `CacheScope` (utils/api.ts). Unset = the default,
+ * key-private ephemeral cache.
  */
-export function buildAnthropicCacheControl(cacheTtl?: '5m' | '1h'): { type: 'ephemeral'; ttl?: '1h' } {
-  return cacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
+export type PromptCacheScope = 'global' | 'org';
+
+/** Env var that opts a run into a wider cross-session prompt-cache scope. */
+export const PROMPT_CACHE_SCOPE_ENV = 'AMI_PROMPT_CACHE_SCOPE';
+
+/**
+ * Resolve the effective prompt-cache scope from {@link PROMPT_CACHE_SCOPE_ENV}.
+ * Only the exact values `'global'` / `'org'` (case-insensitive, trimmed) are
+ * honored; anything else — including unset, whitespace, or junk — resolves to
+ * `undefined`, i.e. the default key-private cache. Purely ADDITIVE and
+ * behavior-preserving when the env is absent. Read at call time so it is
+ * toggleable per process. Exported for unit testing.
+ */
+export function resolvePromptCacheScope(env: NodeJS.ProcessEnv = process.env): PromptCacheScope | undefined {
+  const raw = env[PROMPT_CACHE_SCOPE_ENV]?.trim().toLowerCase();
+  return raw === 'global' || raw === 'org' ? raw : undefined;
+}
+
+/**
+ * Build the Anthropic ephemeral cache-control object, honoring an optional TTL
+ * and an optional cross-session {@link PromptCacheScope}. '1h' requires
+ * Anthropic's extended-cache beta; default (undefined/'5m') uses the standard
+ * 5-minute ephemeral cache. A `scope` ('global'/'org'), when supplied, is
+ * attached so the block can be reused across sessions/keys; it requires
+ * {@link PROMPT_CACHING_SCOPE_BETA}, which {@link computeAnthropicBetas} adds
+ * whenever a scope is active. `scope` defaults to {@link resolvePromptCacheScope}
+ * so every existing call site picks the knob up with no threading; pass an
+ * explicit value (or `undefined`) to override.
+ */
+export function buildAnthropicCacheControl(
+  cacheTtl?: '5m' | '1h',
+  scope: PromptCacheScope | undefined = resolvePromptCacheScope(),
+): { type: 'ephemeral'; ttl?: '1h'; scope?: PromptCacheScope } {
+  const base: { type: 'ephemeral'; ttl?: '1h'; scope?: PromptCacheScope } =
+    cacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
+  if (scope) base.scope = scope;
+  return base;
 }
 
 /** Env var that sets a configurable DEFAULT prompt-cache TTL. */
