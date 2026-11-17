@@ -683,6 +683,53 @@ export function isAutoMemoryEnabled(
   return true;
 }
 
+/**
+ * The independently-gateable instruction/memory SOURCE tiers. Parity with Claude
+ * Code's per-source `isSettingSourceEnabled('userSettings' | 'projectSettings' |
+ * 'localSettings')` gate (utils/claudemd.ts): a host/SDK can disable whole
+ * instruction sources (e.g. a sandboxed run that must ignore checked-in project
+ * instructions, or a run that loads nothing user-global).
+ *  - `user`: user-global instructions (`~/.ami`, `~/.claude/CLAUDE.md`).
+ *  - `project`: checked-in project instruction files (CLAUDE.md / AGENTS.md / …).
+ *  - `local`: gitignored project-local override variants (`*.local.md`).
+ * Team-managed `.ami/rules/` are NOT a gateable source here — those are the
+ * project's enforced rules and always load (mirroring the exclude-list rule that
+ * never excludes managed rules).
+ */
+export type MemorySource = 'user' | 'project' | 'local';
+
+/** Per-tier disable env var, mirroring {@link DISABLE_AUTO_MEMORY_ENV}. */
+const MEMORY_SOURCE_DISABLE_ENV: Record<MemorySource, string> = {
+  user: 'AMI_DISABLE_USER_MEMORY',
+  project: 'AMI_DISABLE_PROJECT_MEMORY',
+  local: 'AMI_DISABLE_LOCAL_MEMORY',
+};
+
+/**
+ * Whether a given instruction/memory SOURCE tier should load. Priority chain
+ * (first that applies wins), mirroring {@link isAutoMemoryEnabled} and Claude
+ * Code's per-source `isSettingSourceEnabled`:
+ *   1. The tier's `AMI_DISABLE_{USER,PROJECT,LOCAL}_MEMORY` env var — a truthy
+ *      value ({@link isEnvTruthy}) forces the tier OFF; an explicitly-falsy value
+ *      (`0`/`false`/`no`/`off`) forces it ON, overriding a settings opt-out.
+ *   2. `settingsEnabled` (a resolved per-tier setting), when the env var is unset.
+ *   3. Default: enabled.
+ * This is orthogonal to {@link isAutoMemoryEnabled} (which gates the stored/team
+ * auto-memory system): these three gate the INSTRUCTION-FILE tiers.
+ */
+export function isMemorySourceEnabled(
+  source: MemorySource,
+  env: NodeJS.ProcessEnv = process.env,
+  settingsEnabled?: boolean,
+): boolean {
+  const raw = env[MEMORY_SOURCE_DISABLE_ENV[source]];
+  if (raw !== undefined && raw.trim() !== '') {
+    return !isEnvTruthy(raw);
+  }
+  if (settingsEnabled !== undefined) return settingsEnabled;
+  return true;
+}
+
 const ENABLE_TEAM_MEMORY_ENV = 'AMI_ENABLE_TEAM_MEMORY';
 
 /**
@@ -1764,8 +1811,12 @@ export class MemoryManager {
     const root = path.parse(currentDir).root;
     let depth = 0;
 
+    // Per-tier enable gates (parity: Claude Code's per-source isSettingSourceEnabled).
+    const projectEnabled = isMemorySourceEnabled('project');
+    const localEnabled = isMemorySourceEnabled('local');
+
     while (depth <= MAX_PARENT_SCAN_DEPTH) {
-      const found = this.findInstructionFile(currentDir);
+      const found = projectEnabled ? this.findInstructionFile(currentDir) : null;
       if (found && !isInstructionExcluded(found, excludes)) {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
@@ -1789,12 +1840,16 @@ export class MemoryManager {
               memoryType: 'Project',
             });
           }
-        } catch {
-          // File unreadable — skip silently
+        } catch (err) {
+          // ENOENT/ENOTDIR (absent) is the silent fallback; a genuine error
+          // (EACCES/EIO on a file the user expects loaded) is surfaced via the
+          // shared errno classifier instead of vanishing (parity: Claude Code's
+          // handleMemoryFileReadError).
+          logUnexpectedReadError(err, found);
         }
       }
 
-      for (const localFile of LOCAL_VARIANTS) {
+      if (localEnabled) for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
         if (isInstructionExcluded(localPath, excludes)) continue;
         try {
@@ -1816,8 +1871,10 @@ export class MemoryManager {
               });
             }
           }
-        } catch {
-          // File doesn't exist or inaccessible — expected
+        } catch (err) {
+          // ENOENT/ENOTDIR (absent) silent; EACCES/other surfaced (gap: errno-aware
+          // memory-file read error handling).
+          logUnexpectedReadError(err, localPath);
         }
       }
 
@@ -1847,8 +1904,11 @@ export class MemoryManager {
         if (fs.statSync(filePath).isFile()) {
           return filePath;
         }
-      } catch {
-        // File doesn't exist or inaccessible
+      } catch (err) {
+        // ENOENT/ENOTDIR (this candidate just isn't present) is the normal case;
+        // an EACCES/EIO on a candidate that DOES exist is surfaced rather than
+        // silently making the file undiscoverable (parity: errno-aware reads).
+        logUnexpectedReadError(err, filePath);
       }
     }
     return null;
@@ -1874,7 +1934,10 @@ export class MemoryManager {
             const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             sections.push(content);
           }
-        } catch {}
+        } catch (err) {
+          // Absent is silent; a genuine read error is surfaced (errno-aware reads).
+          logUnexpectedReadError(err, found);
+        }
       }
       const parent = path.dirname(dir);
       if (parent === dir) break;
@@ -2223,6 +2286,9 @@ export class MemoryManager {
    * ~/.claude/, resolving @path imports. Returns '' when none exist.
    */
   loadUserGlobalInstructions(): string {
+    // Per-tier enable gate (parity: Claude Code's isSettingSourceEnabled('userSettings')):
+    // the user-global instruction tier can be independently disabled.
+    if (!isMemorySourceEnabled('user')) return '';
     const sections: string[] = [];
     for (const base of [path.join(os.homedir(), '.ami'), path.join(os.homedir(), '.claude')]) {
       const found = this.findInstructionFile(base);
@@ -2230,7 +2296,10 @@ export class MemoryManager {
       try {
         const raw = fs.readFileSync(found, 'utf-8').trim();
         if (raw) sections.push(this.resolveAtImports(sanitizeContent(raw, found), found));
-      } catch { /* unreadable — skip */ }
+      } catch (err) {
+        // Absent is silent; a genuine read error is surfaced (errno-aware reads).
+        logUnexpectedReadError(err, found);
+      }
     }
     return sections.join('\n\n');
   }
@@ -3297,12 +3366,16 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
     // 2. Project-level instruction files
     const excludes = this.memoryExcludes();
+    // Per-tier enable gates (parity: Claude Code's per-source isSettingSourceEnabled);
+    // identical gating to loadProjectInstructions so the two discovery passes agree.
+    const projectEnabled = isMemorySourceEnabled('project');
+    const localEnabled = isMemorySourceEnabled('local');
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
 
     while (depth <= MAX_PARENT_SCAN_DEPTH) {
-      const found = this.findInstructionFile(currentDir);
+      const found = projectEnabled ? this.findInstructionFile(currentDir) : null;
       if (found && !isInstructionExcluded(found, excludes)) {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
@@ -3310,13 +3383,16 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
             const content = sanitizeContent(raw, found);
             sources.push({ content, level: 'project', path: found });
           }
-        } catch { /* skip */ }
+        } catch (err) {
+          // Absent is silent; a genuine read error is surfaced (errno-aware reads).
+          logUnexpectedReadError(err, found);
+        }
       }
 
       // 3. Local-level override variants (`*.local.md`) — gitignored, project-local,
       //    distinct from a hand-authored user-global instruction (parity: Claude's
       //    'Local' memory scope, utils/memory/types.ts).
-      for (const localFile of LOCAL_VARIANTS) {
+      if (localEnabled) for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
         if (isInstructionExcluded(localPath, excludes)) continue;
         try {
@@ -3327,7 +3403,10 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
               sources.push({ content, level: 'local', path: localPath });
             }
           }
-        } catch { /* skip */ }
+        } catch (err) {
+          // Absent is silent; a genuine read error is surfaced (errno-aware reads).
+          logUnexpectedReadError(err, localPath);
+        }
       }
 
       const parentDir = path.dirname(currentDir);
