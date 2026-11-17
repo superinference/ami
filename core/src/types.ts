@@ -551,6 +551,14 @@ export interface ToolContext {
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number; fileReadMaxTokens?: number; fileReadMaxSizeBytes?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
+  /** Optional sub-agent handoff safety classifier (parity: Claude's classifyHandoffIfNeeded).
+   *  When provided, it reviews an autonomous (yolo/auto) sub-agent's tool calls before the
+   *  result is handed back to the parent; omitted, the task tool uses its built-in
+   *  dangerous-command heuristic. See tools/handoff-review.ts. */
+  _handoffClassifier?: (
+    actions: Array<{ tool: string; command?: string }>,
+  ) => { flagged: boolean; reason?: string; unavailable?: boolean }
+    | Promise<{ flagged: boolean; reason?: string; unavailable?: boolean }>;
   /** Parent engine's permission rules, forwarded to subagents so deny rules are inherited. */
   _parentPermissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Parent engine's LIVE permission mode (the resolved stance, incl. yolo/propagation).

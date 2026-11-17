@@ -13,7 +13,8 @@ import { spillToolText } from './spill-output';
 import { mapChildToSubagentEvent } from './subagent-relay';
 import { collapseReadSearchRun } from './tool-activity-class';
 import { inheritBedrockRegionPrefix } from '../bedrock';
-import { getCurrentTeam, registerTeamMember, setTeamMemberActive, teamAllowedPathsToRules } from './team';
+import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemberActive, teamAllowedPathsToRules, loadTeamFromDisk } from './team';
+import { reviewSubagentHandoff, type HandoffAction } from './handoff-review';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
 import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
@@ -1485,6 +1486,10 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     description: 'Display color for this subagent\'s badge/row in the live roster so parallel agents are visually distinguishable. Overrides a named subagent_type\'s own color. Omit to let the UI derive a stable color from the agent name.',
     enum: [...AGENT_COLORS],
   },
+  team_name: {
+    type: 'string',
+    description: 'Join this spawned agent to a named team (created by team_create) as a member — it is registered in that team\'s roster and tagged with the team so the lead can address and track it. The team must already exist. Requires `name` (an unnamed agent cannot be an addressable teammate). Omit to join the currently-active team, if any.',
+  },
 };
 
 /**
@@ -1864,6 +1869,23 @@ export const taskTool: ToolDefinition = {
         isError: true,
       };
     }
+
+    // team_name (parity: Claude's Agent-tool `team_name`): join the spawned agent to
+    // a NAMED, already-existing team. Resolve it up front so an invalid/nonexistent
+    // team or an unnamed spawn is rejected before any sub-engine is built. When
+    // omitted, the agent joins the currently-active team (if any) as before.
+    const rawTeamName = input.team_name as string | undefined;
+    const requestedTeamName = rawTeamName && rawTeamName.trim().length > 0 ? rawTeamName.trim() : undefined;
+    if (requestedTeamName && !(input.name as string | undefined)?.trim()) {
+      return { output: 'Error: team_name requires name — an unnamed agent cannot join a team as an addressable member.', isError: true };
+    }
+    const resolvedTeam = requestedTeamName
+      ? (getCurrentTeam()?.name === requestedTeamName ? getCurrentTeam() : (loadTeamFromDisk(context.cwd, requestedTeamName)?.team ?? null))
+      : getCurrentTeam();
+    if (requestedTeamName && !resolvedTeam) {
+      return { output: `Error: team "${requestedTeamName}" not found. Create it first with team_create, or omit team_name to join the active team.`, isError: true };
+    }
+    const resolvedTeamName = resolvedTeam?.name;
 
     if (thoroughness !== undefined && !(EXPLORE_THOROUGHNESS_LEVELS as readonly string[]).includes(thoroughness)) {
       return {
@@ -2590,17 +2612,18 @@ export const taskTool: ToolDefinition = {
     // invisible to them, and the user talks mainly to the lead (mirrors Claude
     // Code's teammatePromptAddendum). Without this the machinery exists but the
     // teammate is never told it can/should message its peers.
-    if (agentName && getCurrentTeam()) {
+    if (agentName && resolvedTeam) {
       effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}\n\n---\n\n${effectivePrompt}`;
     }
 
-    // PARITY (additive): a named teammate spawned into an active team inherits the
-    // team-wide declarative allowed-path permissions (teamAllowedPaths) as session
-    // allow-rules, mirroring Claude Code's teammateInit path→rule conversion. The
-    // lead sets these when creating the team; each teammate gets them on spawn so
-    // the whole team shares a consistent, team-scoped path allowlist.
-    if (agentName && getCurrentTeam()) {
-      const teamRules = teamAllowedPathsToRules(getCurrentTeam());
+    // PARITY (additive): a named teammate spawned into a team (the active team, or a
+    // team named via `team_name`) inherits the team-wide declarative allowed-path
+    // permissions (teamAllowedPaths) as session allow-rules, mirroring Claude Code's
+    // teammateInit path→rule conversion. The lead sets these when creating the team;
+    // each teammate gets them on spawn so the whole team shares a consistent,
+    // team-scoped path allowlist.
+    if (agentName && resolvedTeam) {
+      const teamRules = teamAllowedPathsToRules(resolvedTeam);
       if (teamRules.length > 0) {
         subConfig.permissionRules = [...(subConfig.permissionRules ?? []), ...teamRules];
       }
@@ -2628,8 +2651,10 @@ export const taskTool: ToolDefinition = {
       persistAgentRegistry(context.cwd);
       // If a team is active, a named teammate joins it as an active member so the
       // team-delete guard can see it and refuse to disband while it runs.
-      if (agentName && getCurrentTeam()) {
-        registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
+      if (agentName && resolvedTeam) {
+        const memberRecord = { name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd };
+        if (requestedTeamName) registerTeamMemberInto(context.cwd, requestedTeamName, memberRecord);
+        else registerTeamMember(memberRecord);
       }
       const tasksDir = projectStateDir(context.cwd, 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
@@ -2647,7 +2672,7 @@ export const taskTool: ToolDefinition = {
           // resumed continuation vs a fresh spawn, and the team the agent joined so
           // task_list can tally distinct teams.
           resumed: !!resumeTarget,
-          ...(getCurrentTeam()?.name ? { teamName: getCurrentTeam()!.name } : {}),
+          ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
         });
         const fm = context.processManager.flowManager;
         if (fm) {
@@ -2685,8 +2710,10 @@ export const taskTool: ToolDefinition = {
     // Persist the registry snapshot so this agent is resumable from a LATER process
     // (durable cross-process resume — parity: Claude's on-disk agent metadata).
     persistAgentRegistry(context.cwd);
-    if (agentName && getCurrentTeam()) {
-      registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
+    if (agentName && resolvedTeam) {
+      const memberRecord = { name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd };
+      if (requestedTeamName) registerTeamMemberInto(context.cwd, requestedTeamName, memberRecord);
+      else registerTeamMember(memberRecord);
     }
     let resultText = '';
 
@@ -2735,6 +2762,9 @@ export const taskTool: ToolDefinition = {
     let cacheHitRate: number | undefined;
     const startedAt = Date.now();
     const recentActivities: string[] = [];
+    // Record each tool call this sub-agent makes so its handoff can be safety-reviewed
+    // before control returns to the parent (yolo/auto only — reviewSubagentHandoff).
+    const handoffActions: HandoffAction[] = [];
     let exitReason: import('../types').ExitReason | undefined;
     let sawAbortError = false;
     // The text of the sub-agent's most recent text-bearing assistant turn. Tracking
@@ -2832,6 +2862,9 @@ export const taskTool: ToolDefinition = {
           toolUseCount++;
           recentActivities.push(`tool:${event.toolName}`);
           if (recentActivities.length > 5) recentActivities.shift();
+          // Capture the tool call for the handoff safety review (yolo/auto only).
+          const cmd = event.input?.command;
+          handoffActions.push({ tool: event.toolName, command: typeof cmd === 'string' ? cmd : undefined });
         }
         if (event.type === 'usage_update') {
           totalTokens = event.stats?.totalTokens ?? totalTokens;
@@ -2866,7 +2899,7 @@ export const taskTool: ToolDefinition = {
             // Introspection markers (parity: Claude resumeAgent / pillLabel), same
             // as the explicit-background path above.
             resumed: !!resumeTarget,
-            ...(getCurrentTeam()?.name ? { teamName: getCurrentTeam()!.name } : {}),
+            ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
           });
           const fm = context.processManager.flowManager;
           if (fm) {
@@ -2984,7 +3017,21 @@ export const taskTool: ToolDefinition = {
     const rawBody = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
     // Prepend any skills-preload note (a declared preload skill that could not be
     // resolved) so the typo/disabled skill is visible to the parent, not silent.
-    const body = `${cwdFallbackNote}${agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n` : ''}${rawBody}`;
+    const bodyBase = `${cwdFallbackNote}${agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n` : ''}${rawBody}`;
+    // Handoff safety review (parity: Claude's classifyHandoffIfNeeded): when the
+    // sub-agent ran in an AUTONOMOUS mode (auto-allow/bypassPermissions) its tool
+    // calls were auto-approved with no human in the loop, so review them across the
+    // trust boundary and prepend a SECURITY WARNING if it took a dangerous action —
+    // or a soft "classifier unavailable, verify" note if the reviewer could not run.
+    // A no-op in interactive/ask/plan modes. The parent-supplied classifier (if any)
+    // overrides the built-in dangerous-command heuristic.
+    const body = await reviewSubagentHandoff({
+      output: bodyBase,
+      permissionMode: resolvedPermissionMode,
+      actions: handoffActions,
+      cwd: effectiveCwd,
+      classifier: context._handoffClassifier,
+    });
     // Continue-affordance: tell the parent it CAN message/resume this agent to
     // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
     // run OR a named one-shot built-in type (Explore/Plan) — which are never

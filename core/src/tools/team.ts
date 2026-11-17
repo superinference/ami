@@ -1347,6 +1347,48 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
 }
 
 /**
+ * Register (or update) a teammate in a team identified BY NAME — the on-disk target
+ * of a `task({ team_name })` spawn (parity: Claude Code's `team_name` Agent-tool
+ * parameter, which JOINs a spawned agent to a named team). When `teamName` is the
+ * current in-memory team this delegates to {@link registerTeamMember} (in-memory +
+ * persist); otherwise it loads that team's file off disk, appends/updates the
+ * member (preserving an existing color, else assigning the next palette color), and
+ * writes it back under a file lock. Returns true when the member was recorded, or
+ * false when no team by that name exists (the caller surfaces the error). Does NOT
+ * mutate the current in-memory team singleton when targeting a different team.
+ */
+export function registerTeamMemberInto(
+  cwd: string,
+  teamName: string,
+  member: Omit<TeamMember, 'joinedAt' | 'isActive'> & { joinedAt?: string; isActive?: boolean },
+): boolean {
+  if (currentTeam && currentTeam.name === teamName) {
+    registerTeamMember(member);
+    return true;
+  }
+  const loaded = loadTeamFromDisk(cwd, teamName);
+  if (!loaded) return false;
+  const { team, dir } = loaded;
+  const existing = team.members.find(m => m.name === member.name || m.agentId === member.agentId);
+  if (existing) {
+    const color = existing.color ?? member.color ?? assignTeammateColor(member.agentId || existing.agentId);
+    Object.assign(existing, member, { isActive: member.isActive ?? true, color });
+  } else {
+    const color = member.color ?? assignTeammateColor(member.agentId);
+    team.members.push({ ...member, color, joinedAt: member.joinedAt || new Date().toISOString(), isActive: member.isActive ?? true });
+  }
+  const file = teamFilePath(dir);
+  withFileLock(file, () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(team, null, 2));
+  }).catch(() => {
+    try { fs.writeFileSync(file, JSON.stringify(team, null, 2)); } catch { /* best-effort */ }
+  });
+  teamDebug(`Added member ${member.name} (${member.agentId}) to on-disk team ${teamName}`);
+  return true;
+}
+
+/**
  * Mark a teammate active/idle by name or agentId. No-op when no team or member.
  * Skips the disk write when the value is unchanged (write-if-changed guard,
  * mirroring Claude Code's `setMemberActive`). Stamps `idleSince` when a member
