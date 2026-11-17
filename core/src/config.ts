@@ -5,6 +5,7 @@ import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
 import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type SkillUsageStat } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
+import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { levenshteinDistance } from './tools/path-suggest';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 
@@ -1399,6 +1400,56 @@ export function formatConfigValueIssues(issues: readonly ConfigValueIssue[]): st
   const perIssue = issues.map(i => `${i.field}: ${i.message}${i.tip ? ` (${i.tip})` : ''}`).join('; ');
   const docLinks = [...new Set(issues.map(i => i.docLink).filter((d): d is string => typeof d === 'string'))];
   return docLinks.length > 0 ? `${perIssue}. Learn more: ${docLinks.join(', ')}` : perIssue;
+}
+
+/**
+ * Group a set of {@link ConfigDiagnostic}s into a {@link TreeNode} keyed by the config
+ * FILE they belong to (file labels sorted alphabetically for deterministic output),
+ * each file nesting its per-field value issues ({@link ConfigValueIssue}) or, for a
+ * non-`invalid-value` diagnostic, its single message under the diagnostic `kind`.
+ *
+ * This is the structured input for {@link formatConfigDiagnosticsTree} — parity with
+ * Claude Code's `ValidationErrorsList`, which groups settings errors by file and renders
+ * each file's errors as a nested tree. Multiple bad config files across the merge
+ * waterfall (user / project / managed) are shown at once rather than one flat string.
+ */
+export function buildConfigDiagnosticsTree(diagnostics: readonly ConfigDiagnostic[]): TreeNode {
+  // Accumulate per-file, then re-insert keys in sorted order so treeify renders files
+  // alphabetically (parity: Object.keys(...).sort()).
+  const byFile = new Map<string, TreeNode>();
+  for (const d of diagnostics) {
+    const fileLabel = d.sourceName ? `${d.sourceName} config (${d.path})` : d.path;
+    let fileNode = byFile.get(fileLabel);
+    if (!fileNode) {
+      fileNode = {};
+      byFile.set(fileLabel, fileNode);
+    }
+    if (d.issues && d.issues.length > 0) {
+      for (const issue of d.issues) {
+        fileNode[issue.field] = `${issue.message}${issue.tip ? ` (${issue.tip})` : ''}`;
+      }
+    } else {
+      fileNode[d.kind] = d.message;
+    }
+  }
+  const tree: TreeNode = {};
+  for (const fileLabel of [...byFile.keys()].sort()) {
+    tree[fileLabel] = byFile.get(fileLabel) as TreeNode;
+  }
+  return tree;
+}
+
+/**
+ * Render {@link ConfigDiagnostic}s as a file-grouped, path-nested ASCII tree via
+ * {@link treeify}. Empty input yields an empty string (nothing to show). The optional
+ * {@link TreeifyOptions} are forwarded so a CLI caller can inject colour.
+ */
+export function formatConfigDiagnosticsTree(
+  diagnostics: readonly ConfigDiagnostic[],
+  options?: TreeifyOptions,
+): string {
+  if (diagnostics.length === 0) return '';
+  return treeify(buildConfigDiagnosticsTree(diagnostics), options);
 }
 
 // ---------------------------------------------------------------------------

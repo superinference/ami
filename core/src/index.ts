@@ -197,7 +197,7 @@ export type { PermissionRuleSource } from './permissions';
 export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata, getAgentModelOptions, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, resolveOverriddenModel, MODEL_ENV_TOGGLES } from './model-registry';
 export type { AgentModelOption } from './model-registry';
 export type { ValidateModelResult, ModelAlias } from './model-registry';
-export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, applyConfigStartupKnobs, applyConfigCaCerts, applyConfigGitignore, applyConfigAutoCompact, applyConfigPlansDirectory, applyConfigAnthropicBetas, resolveAdditionalDirectories, FAST_MODE_BETA, REDACT_THINKING_BETA, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, CONFIG_DOC_BASE, getConfigJSONSchema, CONFIG_SCHEMA_URL, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS, loadPersistedSkillUsage, persistSkillUsageStat } from './config';
+export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, applyConfigStartupKnobs, applyConfigCaCerts, applyConfigGitignore, applyConfigAutoCompact, applyConfigPlansDirectory, applyConfigAnthropicBetas, resolveAdditionalDirectories, FAST_MODE_BETA, REDACT_THINKING_BETA, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, buildConfigDiagnosticsTree, formatConfigDiagnosticsTree, CONFIG_DOC_BASE, getConfigJSONSchema, CONFIG_SCHEMA_URL, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS, loadPersistedSkillUsage, persistSkillUsageStat } from './config';
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue, ConfigSource, ConfigJSONSchema, ConfigSchemaProperty } from './config';
 export { STRATEGY_NAMES, NOOP_EDIT_ERROR } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
@@ -244,6 +244,8 @@ export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tok
 export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+export { treeify } from './utils/treeify';
+export type { TreeNode, TreeValue, TreeifyOptions, TreeColorRole } from './utils/treeify';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
