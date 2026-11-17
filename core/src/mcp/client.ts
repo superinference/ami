@@ -917,8 +917,14 @@ export class McpClient extends EventEmitter {
 
   /** Injected by the manager/engine: resolve a server elicitation request. */
   onElicitation?: (request: McpElicitationRequest) => Promise<McpElicitationResult>;
-  /** Injected by the manager/engine: run an LLM turn for a sampling request. */
-  onSampling?: (request: McpSamplingRequest) => Promise<McpSamplingResult>;
+  /**
+   * Injected by the manager/engine: run an LLM turn for a sampling request. The
+   * optional `signal` is the per-request abort the client forwards — it fires
+   * when the server sends `notifications/cancelled` for this request or the
+   * connection drops, so an in-flight server-initiated model turn is cancellable
+   * (parity with Claude Code threading the SDK's `extra.signal`).
+   */
+  onSampling?: (request: McpSamplingRequest, signal?: AbortSignal) => Promise<McpSamplingResult>;
 
   constructor(options: {
     command: string;
@@ -2759,11 +2765,34 @@ export class McpClient extends EventEmitter {
       this.respondToServerRequest(id, { error: { code: -32601, message: 'sampling not supported by this client' } });
       return;
     }
+    // Register an abort controller so an inbound notifications/cancelled for this
+    // request id (or a connection drop, which aborts all _inboundAborts) cancels
+    // the in-flight model turn instead of letting it run to completion and burn
+    // tokens — parity with Claude Code threading the SDK's per-request
+    // `extra.signal` into the sampling handler.
+    const controller = new AbortController();
+    this._inboundAborts.set(id, controller);
+    let serverCancelled = false;
+    const params = (notification.params ?? {}) as unknown as McpSamplingRequest;
     try {
-      const result = await this.onSampling((notification.params ?? {}) as unknown as McpSamplingRequest);
-      this.respondToServerRequest(id, { result });
+      const samplingPromise = this.onSampling(params, controller.signal);
+      // Race the handler against server cancellation so a handler that does not
+      // observe the signal still unblocks the read loop. Swallow the handler's
+      // late settlement if cancellation wins the race (avoid an unhandled
+      // rejection). Per MCP spec a cancelled request is NOT answered.
+      samplingPromise.catch(() => {});
+      const abortPromise = new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          serverCancelled = true;
+          reject(new Error('sampling request cancelled by server'));
+        }, { once: true });
+      });
+      const result = await Promise.race([samplingPromise, abortPromise]);
+      if (!serverCancelled) this.respondToServerRequest(id, { result });
     } catch (err) {
-      this.respondToServerRequest(id, { error: { code: -32603, message: err instanceof Error ? err.message : 'sampling failed' } });
+      if (!serverCancelled) this.respondToServerRequest(id, { error: { code: -32603, message: err instanceof Error ? err.message : 'sampling failed' } });
+    } finally {
+      this._inboundAborts.delete(id);
     }
   }
 

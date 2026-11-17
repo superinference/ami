@@ -1019,7 +1019,7 @@ export class McpManager extends EventEmitter {
   /** Engine-injected resolver for server elicitation requests (server name + request → user's answer). */
   private _elicitationHandler: ((serverName: string, request: McpElicitationRequest) => Promise<McpElicitationResult>) | null = null;
   /** Engine-injected resolver for server sampling requests (run an LLM turn on the server's behalf). */
-  private _samplingHandler: ((serverName: string, request: McpSamplingRequest) => Promise<McpSamplingResult>) | null = null;
+  private _samplingHandler: ((serverName: string, request: McpSamplingRequest, signal?: AbortSignal) => Promise<McpSamplingResult>) | null = null;
 
   /**
    * Wire the elicitation resolver. Read at call-time, so it applies to servers
@@ -1030,8 +1030,13 @@ export class McpManager extends EventEmitter {
     this._elicitationHandler = fn;
   }
 
-  /** Wire the sampling resolver. Absent a handler, clients refuse with a JSON-RPC error. */
-  setSamplingHandler(fn: (serverName: string, request: McpSamplingRequest) => Promise<McpSamplingResult>): void {
+  /**
+   * Wire the sampling resolver. Absent a handler, clients refuse with a JSON-RPC
+   * error. The optional `signal` is the per-request abort forwarded from the
+   * client (server `notifications/cancelled` or a dropped connection) so an
+   * in-flight server-initiated model turn can be cancelled.
+   */
+  setSamplingHandler(fn: (serverName: string, request: McpSamplingRequest, signal?: AbortSignal) => Promise<McpSamplingResult>): void {
     this._samplingHandler = fn;
   }
 
@@ -1495,9 +1500,9 @@ export class McpManager extends EventEmitter {
       this._elicitationHandler
         ? this._elicitationHandler(name, request)
         : Promise.resolve({ action: 'decline' as const });
-    client.onSampling = (request) =>
+    client.onSampling = (request, signal) =>
       this._samplingHandler
-        ? this._samplingHandler(name, request)
+        ? this._samplingHandler(name, request, signal)
         : Promise.reject(new Error(`sampling not supported (no handler) for server '${name}'`));
 
     // A freshly (re)registered client is a live server again — clear any stale
