@@ -65,7 +65,33 @@ interface AgentMessage {
    * when the sender is not a colored roster member (e.g. the bare lead session).
    */
   color?: string;
+  /**
+   * Urgency discriminator for a plain-text message: `proactive` marks an unsolicited
+   * surfacing the recipient needs to see NOW (a blocker, a completion while it was
+   * away) rather than a `normal` reply. Mirrors Claude Code's BriefTool
+   * `status: 'normal' | 'proactive'` (tools/BriefTool/BriefTool.ts) — AMI's send_message
+   * IS the model→teammate/user channel, so the same discriminator rides here. Stamped
+   * from the model-supplied `status` at the single canonical delivery site; absent
+   * (treated as `normal`) when the sender does not set it. Consumed by
+   * {@link drainMailboxPrioritized} (a proactive peer message drains ahead of ordinary
+   * peer chatter so it is not starved) and surfaced on the send result's metadata so a
+   * frontend can special-case it (e.g. a notification). Only meaningful on plain text —
+   * a structured control message carries its own lifecycle semantics.
+   */
+  status?: MessageStatus;
 }
+
+/**
+ * Urgency discriminator for a plain-text teammate/user message. Mirrors Claude
+ * Code's BriefTool status enum:
+ * - `normal`    — an ordinary reply to something just said (the default).
+ * - `proactive` — an unsolicited surfacing the recipient needs to see now (a
+ *                 blocker, a completion while it was away, an unprompted update).
+ */
+export type MessageStatus = 'normal' | 'proactive';
+
+/** The accepted {@link MessageStatus} values, for input validation. */
+const MESSAGE_STATUSES = new Set<MessageStatus>(['normal', 'proactive']);
 
 /**
  * The origin category of a mailbox message. Mirrors Claude Code's
@@ -1043,9 +1069,22 @@ export function notifyLeadTeammateIdle(agentName: string): boolean {
 export function notifyLeadTeammateTerminated(agentName: string, message?: string): boolean {
   if (!agentName || !agentName.trim()) return false;
   if (agentName.toLowerCase() === TEAM_LEAD_NAME.toLowerCase()) return false;
+  // Any still-open tasks assigned to the dying teammate are now orphaned. Fold a
+  // terse "now unassigned: #id (subject), …" summary into the notice so the lead can
+  // reassign them, then release them from the registry (they are no longer owned by
+  // anyone). Mirrors Claude Code's unassignTeammateTasks notificationMessage.
+  const orphaned = getOpenTaskAssignments(agentName);
+  openTaskAssignments.delete(agentName);
+  const base = (message && message.trim()) ? message.trim() : undefined;
+  let note = base;
+  if (orphaned.length > 0) {
+    const list = orphaned.map(t => `#${t.taskId}${t.subject ? ` (${t.subject})` : ''}`).join(', ');
+    const summary = `${orphaned.length} task(s) now unassigned: ${list}`;
+    note = base ? `${base} — ${summary}` : summary;
+  }
   const payload: TeammateTerminated = {
     type: 'teammate_terminated',
-    ...(message && message.trim() ? { message: message.trim() } : {}),
+    ...(note ? { message: note } : {}),
   };
   enqueue(TEAM_LEAD_NAME, {
     from: agentName,
@@ -1258,6 +1297,45 @@ export function getAwaitingPlanApprovalRequestId(agentName: string): string | un
   return awaitingPlanApproval.get(agentName);
 }
 
+// --- Open task-assignment tracking (for the shutdown/terminate summary) ------
+// A task_assignment routed to a teammate opens a unit of work owned BY that
+// teammate; a matching idle_notification carrying `completedTaskId` closes it.
+// Tracking the set of still-open assignments per assignee lets the termination
+// path report WHICH tasks are now orphaned when a teammate dies, so the lead can
+// reassign them — mirroring Claude Code's unassignTeammateTasks building a
+// "X has shut down. The following tasks are now unassigned: …" notice
+// (hooks/useInboxPoller.ts). Keyed by the assignee's bare name (the same identity
+// task_assignment addresses and the terminate path resolves). Maps taskId→subject
+// so the summary can name each orphaned task.
+const openTaskAssignments = new Map<string, Map<string, string>>();
+
+/** Record a task as open/assigned to a teammate (idempotent on taskId). */
+function recordTaskAssignment(assignee: string, taskId: string, subject: string): void {
+  const tasks = openTaskAssignments.get(assignee) ?? new Map<string, string>();
+  tasks.set(taskId, subject);
+  openTaskAssignments.set(assignee, tasks);
+}
+
+/** Close one of a teammate's open assignments (e.g. it reported the task done). */
+function clearTaskAssignment(assignee: string, taskId: string): void {
+  const tasks = openTaskAssignments.get(assignee);
+  if (!tasks) return;
+  tasks.delete(taskId);
+  if (tasks.size === 0) openTaskAssignments.delete(assignee);
+}
+
+/**
+ * The still-open tasks assigned to a teammate, as `{ taskId, subject }` records in
+ * assignment order. Introspection surface for the unassignment summary — lets a
+ * caller (and tests) see what work would be orphaned if the teammate died, without
+ * mutating the registry. Empty array when the teammate owns no open task.
+ */
+export function getOpenTaskAssignments(assignee: string): { taskId: string; subject: string }[] {
+  const tasks = openTaskAssignments.get(assignee);
+  if (!tasks) return [];
+  return [...tasks.entries()].map(([taskId, subject]) => ({ taskId, subject }));
+}
+
 export function getMailbox(agentName: string): AgentMessage[] {
   return mailboxes.get(agentName) || [];
 }
@@ -1285,6 +1363,7 @@ export function purgeMailbox(agentName: string): void {
   outboundDms.delete(agentName);
   outstandingShutdowns.delete(agentName);
   awaitingPlanApproval.delete(agentName);
+  openTaskAssignments.delete(agentName);
 }
 
 export function resetAllMailboxes(): void {
@@ -1296,6 +1375,7 @@ export function resetAllMailboxes(): void {
   outboundDms.clear();
   outstandingShutdowns.clear();
   awaitingPlanApproval.clear();
+  openTaskAssignments.clear();
   messageSeq = 0;
 }
 
@@ -1392,7 +1472,11 @@ export function pollMailbox(
  *     ({@link isPermissionRelatedResponse}, mirroring Claude's control-first scan);
  *  3. then messages FROM the team lead — the lead carries user intent and
  *     coordination, so its messages are not starved behind peer chatter;
- *  4. then everything else (peer messages).
+ *  4. then PROACTIVE peer messages — a teammate that marked a message `proactive`
+ *     is surfacing a blocker/completion the recipient needs to see now, so it is
+ *     not starved behind ordinary peer chatter (mirrors Claude Code's BriefTool
+ *     proactive-status urgency; the urgency rides on {@link AgentMessage.status});
+ *  5. then everything else (ordinary/`normal` peer messages).
  * FIFO order is preserved WITHIN each tier (a stable partition), so same-tier
  * messages keep their arrival order. Equivalent to the unordered drain of
  * `pollMailbox(agentName)` in membership — nothing is dropped — only the order
@@ -1404,6 +1488,7 @@ export function drainMailboxPrioritized(agentName: string): AgentMessage[] {
   const shutdowns: AgentMessage[] = [];
   const permissions: AgentMessage[] = [];
   const lead: AgentMessage[] = [];
+  const proactive: AgentMessage[] = [];
   const rest: AgentMessage[] = [];
   for (const m of messages) {
     const parsed = parseStructuredMessage(m.content);
@@ -1413,11 +1498,13 @@ export function drainMailboxPrioritized(agentName: string): AgentMessage[] {
       permissions.push(m);
     } else if (m.from === TEAM_LEAD_NAME) {
       lead.push(m);
+    } else if (m.status === 'proactive') {
+      proactive.push(m);
     } else {
       rest.push(m);
     }
   }
-  return [...shutdowns, ...permissions, ...lead, ...rest];
+  return [...shutdowns, ...permissions, ...lead, ...proactive, ...rest];
 }
 
 /**
@@ -1810,6 +1897,16 @@ export const sendMessageTool: ToolDefinition = {
         type: 'string',
         description: 'Short 5-10 word summary shown as a preview in the UI.',
       },
+      status: {
+        type: 'string',
+        enum: ['normal', 'proactive'],
+        description:
+          "Urgency of a plain-text message. Use 'proactive' when surfacing something the " +
+          "recipient has NOT asked for and needs to see now (a blocker, a completion while " +
+          "they were away); use 'normal' (the default) when replying. A proactive message " +
+          'drains ahead of ordinary peer chatter at the recipient. Ignored for structured ' +
+          'control messages.',
+      },
     },
     required: ['to', 'content'],
   },
@@ -2078,6 +2175,9 @@ export const sendMessageTool: ToolDefinition = {
           const assignedBy = from;
           const wire = JSON.stringify({ ...structured, assignedBy, description: structured.description ?? '' });
           enqueue(to, { from, to, content: wire, timestamp: Date.now() });
+          // Track the open assignment (keyed by the addressed teammate) so a later
+          // termination can report it as orphaned/unassigned.
+          recordTaskAssignment(toRaw, structured.taskId, structured.subject);
           return { output: `Task #${structured.taskId} "${structured.subject}" assigned to ${toRaw} [from: ${from}]` };
         }
         case 'idle_notification': {
@@ -2100,6 +2200,9 @@ export const sendMessageTool: ToolDefinition = {
             }
           }
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
+          // A reported completed task is no longer open for this teammate — close it
+          // so the termination summary never lists already-finished work as orphaned.
+          if (structured.completedTaskId) clearTaskAssignment(from, structured.completedTaskId);
           const reasonTag = structured.idleReason ? ` (${structured.idleReason})` : '';
           return { output: `Idle notification sent to ${TEAM_LEAD_NAME}${reasonTag}${derivedTag} [from: ${from}]` };
         }
@@ -2196,6 +2299,17 @@ export const sendMessageTool: ToolDefinition = {
 
     // --- Plain text ------------------------------------------------------
     const summary = input.summary as string | undefined;
+    // Urgency discriminator (plain text only). A present value must be valid — a bad
+    // value is rejected with a self-correcting message rather than silently coerced,
+    // mirroring the parser's treatment of the structured enums. Absent => normal.
+    let status: MessageStatus | undefined;
+    if (input.status !== undefined) {
+      if (typeof input.status !== 'string' || !MESSAGE_STATUSES.has(input.status as MessageStatus)) {
+        return validationError(`"status" must be one of: ${[...MESSAGE_STATUSES].join(', ')}.`);
+      }
+      // Only `proactive` is carried (normal is the default — no need to stamp it).
+      if (input.status === 'proactive') status = 'proactive';
+    }
     // Every plain-text message must carry a short UI preview (Claude's summary
     // contract). The model's summary wins; when it omits one we DEFAULT a derived
     // preview onto the stored message so the UI / idle-summary path always has one
@@ -2207,6 +2321,7 @@ export const sendMessageTool: ToolDefinition = {
       content,
       summary: effectiveSummary || undefined,
       timestamp: Date.now(),
+      ...(status ? { status } : {}),
     };
 
     if (toRaw === '*') {
@@ -2233,7 +2348,10 @@ export const sendMessageTool: ToolDefinition = {
         return { output: 'No teammates to broadcast to (no other agents are reachable).' };
       }
       traceMailbox('broadcast', { from, recipients: recipients.length });
-      return { output: `Broadcast sent to ${recipients.length} agent(s): ${recipients.join(', ')}` };
+      return {
+        output: `Broadcast sent to ${recipients.length} agent(s): ${recipients.join(', ')}`,
+        ...(status ? { metadata: { status } } : {}),
+      };
     }
 
     // Dead-recipient boundary: if other agents are live this session (a live
@@ -2268,9 +2386,15 @@ export const sendMessageTool: ToolDefinition = {
 
     const summaryTag = summary ? ` — "${summary}"` : '';
     const affordance = deliveryAffordance(toRaw, to, context);
+    // Surface the typed delivery-warning discriminant and/or the proactive urgency on
+    // the structured metadata channel (the same programmatic contract errorCode rides
+    // on) so a frontend can special-case either without re-parsing the output string.
+    const meta: Record<string, unknown> = {};
+    if (deliveryWarning) meta.deliveryWarning = deliveryWarning;
+    if (status) meta.status = status;
     return {
       output: `Message sent to "${toRaw}"${summaryTag} [from: ${from}] (${content.length} chars)${affordance}${unreachableWarn}`,
-      ...(deliveryWarning ? { metadata: { deliveryWarning } } : {}),
+      ...(Object.keys(meta).length > 0 ? { metadata: meta } : {}),
     };
   },
 };
