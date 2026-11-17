@@ -1494,10 +1494,31 @@ export class SessionManager {
    * fork is given a unique `"<base> (Branch)"` title — deduped with a numbered
    * suffix on collision (`(Branch 2)`, `(Branch 3)`, …) — from `opts.title`, else
    * the source title, else its first user prompt (parity: getUniqueForkName).
+   *
+   * Boundary guards (parity: Claude's createFork `No conversation to branch` /
+   * `No messages to branch`): forking a brand-new / empty / message-less source is
+   * a clean error, never a zero-message fork. A source with no transcript at all
+   * (missing/non-array/empty `messages` — the analog of Claude's unreadable or
+   * zero-length transcript file) throws `'No conversation to branch'`; a source
+   * that HAS entries but none that survive the main-conversation filter (every
+   * entry is a subagent sidechain) throws `'No messages to branch'`.
    */
   fork(source: Session, opts: { upToMessageId?: string; title?: string } = {}): Session {
+    // No transcript at all — the analog of Claude's unreadable / zero-length
+    // transcript file (createFork L79-87). Caught before any work so a brand-new
+    // session can never be branched into a 0-message fork.
+    if (!Array.isArray(source.messages) || source.messages.length === 0) {
+      throw new Error('No conversation to branch');
+    }
     // Branch only the main conversation — subagent sidechains are their own trees.
-    let msgs = source.messages.filter(m => !m.isSidechain);
+    const msgsAll = source.messages.filter(m => !m.isSidechain);
+    // The source had entries but none are main-conversation messages (every turn
+    // was a subagent sidechain) — parity: createFork L113-115 `No messages to
+    // branch` when `mainConversationEntries.length === 0`.
+    if (msgsAll.length === 0) {
+      throw new Error('No messages to branch');
+    }
+    let msgs = msgsAll;
     if (opts.upToMessageId !== undefined) {
       const cut = msgs.findIndex(m => m.uuid === opts.upToMessageId);
       if (cut === -1) {
