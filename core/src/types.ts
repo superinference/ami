@@ -1015,6 +1015,49 @@ export function mergeSkillUsageStat(
   return { ...(record ?? {}), [name]: { usageCount: prevCount + 1, lastUsedAt: now } };
 }
 
+/** The operating MODE a session ran under, persisted so `--resume` can reconcile a
+ *  resumed session against the live environment (parity: Claude Code's
+ *  `coordinatorMode.ts` `SessionMode` / `matchSessionMode`). `'coordinator'` is the
+ *  pure-orchestrator stance (SUPERINFERENCE_COORDINATOR_MODE); `'normal'` is the
+ *  default implementer stance. Distinct from permission mode and sandbox mode. */
+export const SESSION_OPERATING_MODES = ['normal', 'coordinator'] as const;
+export type SessionOperatingMode = (typeof SESSION_OPERATING_MODES)[number];
+
+/** Outcome of reconciling a resumed session's stored operating mode against the live
+ *  mode (see {@link reconcileSessionMode}). `changed` is true only when the caller must
+ *  flip the live mode; `target` is the mode the session should run under; `warning` is a
+ *  human-readable notice to surface when (and only when) a flip occurred. */
+export interface SessionModeReconciliation {
+  changed: boolean;
+  target: SessionOperatingMode;
+  warning?: string;
+}
+
+/**
+ * Reconcile a resumed session's STORED operating mode against the CURRENT (live) mode,
+ * returning what the caller should do. Pure — it mutates nothing and reads no globals, so
+ * every resume path can share one decision formula. Branch logic mirrors Claude Code's
+ * `matchSessionMode` (coordinator/coordinatorMode.ts):
+ *   - `stored === undefined` → no-op (`changed:false`), back-compat for sessions saved
+ *     before operating-mode tracking existed (they carry no mode to match).
+ *   - `stored === current` → no-op; the live mode already matches the resumed session.
+ *   - mismatch → `changed:true`, `target = stored` (the resumed session wins), and a
+ *     `warning` describing the correction ("Entered/Exited coordinator mode to match
+ *     resumed session.") so a silently-wrong mode on resume is surfaced + corrected.
+ */
+export function reconcileSessionMode(
+  stored: SessionOperatingMode | undefined,
+  current: SessionOperatingMode,
+): SessionModeReconciliation {
+  if (stored === undefined || stored === current) {
+    return { changed: false, target: current };
+  }
+  const warning = stored === 'coordinator'
+    ? 'Entered coordinator mode to match resumed session.'
+    : 'Exited coordinator mode to match resumed session.';
+  return { changed: true, target: stored, warning };
+}
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }

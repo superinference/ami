@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
-import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage } from './types';
+import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage, SessionOperatingMode } from './types';
 import { asSessionId } from './types';
 import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDir, projectSlug, MAX_SLUG_LENGTH } from './reference-journal';
 import { assertPathWithin } from './path-safety';
@@ -383,6 +383,13 @@ export interface Session {
      *  the transcript if the file is missing. Parity: Claude's copyPlanForResume
      *  plan-slug restoration. Absent when the session was never in plan mode. */
     plan?: { filePath: string; active: boolean };
+    /** Operating mode (`'normal'` | `'coordinator'`) the session ran under when saved,
+     *  persisted so `--resume` can reconcile a resumed session against the live
+     *  environment (flip into/out of coordinator mode to match) instead of silently
+     *  running under whatever the current env dictates. Absent on sessions saved before
+     *  mode tracking existed → reconciliation is a no-op (back-compat). Parity: Claude
+     *  Code's `matchSessionMode` / persisted session mode. */
+    operatingMode?: SessionOperatingMode;
   };
 }
 
