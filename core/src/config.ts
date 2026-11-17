@@ -470,6 +470,16 @@ export interface ProjectConfig {
    */
   worktreeToolsEnabled?: boolean;
   /**
+   * Persisted auto-connect-to-IDE toggle (parity: Claude Code's `autoConnectIde`
+   * settings key / the `addIde` waterfall in useIDEIntegration.ts). ONE enabling
+   * input to the engine's IDE auto-connect waterfall ({@link import('./mcp').shouldAutoConnectIde});
+   * a supported editor terminal, an inherited `AMI_SSE_PORT`, or a truthy
+   * `AMI_AUTO_CONNECT_IDE` env also enable it, while an explicit-falsy
+   * `AMI_AUTO_CONNECT_IDE` is a hard opt-out. Threaded into
+   * {@link EngineConfig.autoConnectIde} by the engine factory.
+   */
+  autoConnectIde?: boolean;
+  /**
    * Show the OSC 9;4 taskbar/tab progress indicator in supported terminals (parity:
    * Claude Code's `terminalProgressBarEnabled` settings key). AMI emits progress by
    * default (its long-standing behavior); an explicit `false` suppresses it by seeding
@@ -1148,7 +1158,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['autoMemoryEnabled', 'boolean'], ['autoDreamEnabled', 'boolean'],
   ['sessionMemoryEnabled', 'boolean'], ['enableTitleGeneration', 'boolean'],
   ['worktreeToolsEnabled', 'boolean'], ['terminalProgressBarEnabled', 'boolean'],
-  ['showTurnDuration', 'boolean'],
+  ['showTurnDuration', 'boolean'], ['autoConnectIde', 'boolean'],
   // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
   // cli env knobs by {@link applyConfigStartupKnobs} — declared here so they are
   // recognized (no spurious unknown-key warning) + base-type validated.
@@ -2313,6 +2323,7 @@ export function mergeConfigs(
     if (layer.sessionMemoryEnabled !== undefined) merged.sessionMemoryEnabled = layer.sessionMemoryEnabled;
     if (layer.enableTitleGeneration !== undefined) merged.enableTitleGeneration = layer.enableTitleGeneration;
     if (layer.worktreeToolsEnabled !== undefined) merged.worktreeToolsEnabled = layer.worktreeToolsEnabled;
+    if (layer.autoConnectIde !== undefined) merged.autoConnectIde = layer.autoConnectIde;
     if (layer.terminalProgressBarEnabled !== undefined) merged.terminalProgressBarEnabled = layer.terminalProgressBarEnabled;
     if (layer.showTurnDuration !== undefined) merged.showTurnDuration = layer.showTurnDuration;
     // Cosmetic / output-detail startup knobs: last-layer-wins scalars + object the
