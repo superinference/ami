@@ -590,3 +590,20 @@ export {
   isUpper,
   boundaryBonus,
 } from './fuzzy-score';
+
+// --- secure-storage building blocks (Linux libsecret backend + generic contract) ---
+export {
+  defaultSecretToolRunner,
+  isSecretToolAvailable,
+  resetSecretToolAvailableCache,
+  isLibsecretPreferred,
+  createLibsecretStorage,
+  LIBSECRET_CACHE_TTL_MS,
+} from './secure-storage';
+export type {
+  SecureStorage,
+  SecureStorageWriteResult,
+  SecretToolRunResult,
+  SecretToolRunner,
+  LibsecretStorageOptions,
+} from './secure-storage';
