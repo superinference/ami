@@ -1602,6 +1602,29 @@ export function formatAgentMemoryDimension(agent: Pick<AgentDefinition, 'memory'
 }
 
 /**
+ * Resolve the model string to DISPLAY for an agent row/detail (parity with Claude
+ * Code's `resolveAgentModelDisplay`, agentDisplay.ts): the agent's own declared
+ * {@link AgentDefinition.model} when set, otherwise the `defaultModel` the caller
+ * supplies as the effective subagent default (AMI's equivalent of Claude's
+ * `getDefaultSubagentModel()` — typically the session's current model a
+ * no-model/inheriting subagent runs under). The literal `'inherit'` sentinel is
+ * surfaced verbatim (so the listing can say an agent inherits the parent model
+ * rather than printing a concrete name), and a blank/absent result yields
+ * `undefined` so the row shows no `· <model>` affordance at all. Pure: the caller
+ * passes the default rather than core reaching into session config.
+ */
+export function resolveAgentModelDisplay(
+  agent: Pick<AgentDefinition, 'model'>,
+  defaultModel?: string,
+): string | undefined {
+  const raw = typeof agent.model === 'string' && agent.model.trim().length > 0
+    ? agent.model.trim()
+    : (typeof defaultModel === 'string' && defaultModel.trim().length > 0 ? defaultModel.trim() : undefined);
+  if (raw === undefined) return undefined;
+  return raw === 'inherit' ? 'inherit' : raw;
+}
+
+/**
  * Collapse an agent's scoped-skills allowlist for display (parity with Claude
  * Code's AgentDetail skills list: `skills.length > 10 ? '${n} skills' :
  * skills.join(', ')`). An agent that declares many skills shows a `'N skills'`
