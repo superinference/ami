@@ -369,14 +369,34 @@ export interface MemoryEntry {
 }
 
 /**
- * Instruction source with level differentiation.
- * - managed: from .ami/rules/ directory (team-managed rules)
- * - user: from memory/ or user-specific files (CLAUDE.local.md, SUPERINFERENCE.local.md)
- * - project: from project instruction files (CLAUDE.md, SUPERINFERENCE.md, etc.)
+ * The unified memory-source taxonomy — WHERE an instruction/memory originated,
+ * as a first-class label distinct from its {@link MemoryType}. Parity with Claude
+ * Code's `MEMORY_TYPE_VALUES` (utils/memory/types.ts): User, Project, Local,
+ * Managed, AutoMem and (feature-gated) TeamMem. AMI previously collapsed Local
+ * (`*.local.md`), AutoMem (auto-captured stored memory) and Team (shared store)
+ * all into `'user'`; they are now tagged distinctly so `/memory`, diagnostics and
+ * provenance can tell a gitignored local override, an auto-captured memory and a
+ * shared team memory apart from a hand-authored user-global instruction.
+ * - `managed`: `.ami/rules/` (team-managed, scoped rules)
+ * - `user`: user-global instructions (`~/.ami`, `~/.claude/CLAUDE.md`)
+ * - `local`: project-local, gitignored override files (CLAUDE.local.md, SUPERINFERENCE.local.md)
+ * - `project`: checked-in project instruction files (CLAUDE.md, AGENTS.md, SUPERINFERENCE.md, …)
+ * - `automem`: auto-captured stored memories (the `memory/` store)
+ * - `team`: shared team-memory store (only when {@link isTeamMemoryEnabled})
  */
+export const MEMORY_SOURCE_LEVELS = [
+  'managed',
+  'user',
+  'local',
+  'project',
+  'automem',
+  'team',
+] as const;
+export type MemorySourceLevel = (typeof MEMORY_SOURCE_LEVELS)[number];
+
 export interface InstructionSource {
   content: string;
-  level: 'managed' | 'user' | 'project';
+  level: MemorySourceLevel;
   path: string;
 }
 
@@ -1172,7 +1192,24 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) {
+      // A line that is neither a `key: value` pair nor an empty/comment line is
+      // malformed YAML. AMI previously skipped it SILENTLY, so a typo'd header
+      // (e.g. a bare `description` with no colon) vanished with no signal. Surface
+      // it (named) rather than dropping it quietly — parity with Claude Code's
+      // yaml.ts error surfacing on malformed input. Blank lines, `# comments` and
+      // stray `- list items` (which the block-sequence loop consumes) are benign.
+      const probe = line.trim();
+      if (probe !== '' && !probe.startsWith('#') && !/^-(\s|$)/.test(probe)) {
+        coreLog(
+          'memory',
+          `Failed to parse frontmatter${sourcePath ? ` in ${redactLogPath(sourcePath)}` : ''}: malformed line (no key) '${probe.slice(0, 80)}'`,
+          undefined,
+          'warn',
+        );
+      }
+      continue;
+    }
     const key = line.slice(0, colonIdx).trim();
     if (!key) continue;
     let value = line.slice(colonIdx + 1).trim();
@@ -3037,7 +3074,9 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         } catch { /* skip */ }
       }
 
-      // 3. User-level local variants
+      // 3. Local-level override variants (`*.local.md`) — gitignored, project-local,
+      //    distinct from a hand-authored user-global instruction (parity: Claude's
+      //    'Local' memory scope, utils/memory/types.ts).
       for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
         if (isInstructionExcluded(localPath, excludes)) continue;
@@ -3046,7 +3085,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
             const raw = fs.readFileSync(localPath, 'utf-8').trim();
             if (raw) {
               const content = sanitizeContent(raw, localPath);
-              sources.push({ content, level: 'user', path: localPath });
+              sources.push({ content, level: 'local', path: localPath });
             }
           }
         } catch { /* skip */ }
@@ -3066,10 +3105,23 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       sources.push({ content: userGlobal, level: 'user', path: '<user-global>' });
     }
 
-    // 5. User memories
+    // 5. Auto-captured stored memories (the `memory/` store) — tagged 'automem'
+    //    (parity: Claude's 'AutoMem' scope) so they are distinguishable from a
+    //    hand-authored user-global instruction in provenance surfaces.
     const memories = this.loadMemories();
     for (const mem of memories) {
-      sources.push({ content: mem.content, level: 'user', path: mem.path });
+      sources.push({ content: mem.content, level: 'automem', path: mem.path });
+    }
+
+    // 6. Shared team-memory store — a FIRST-CLASS 'team' scope, loaded ONLY when
+    //    the team-memory capability is enabled (parity: Claude's feature('TEAMMEM')
+    //    gate on the 'TeamMem' scope, utils/memory/types.ts). Each shared file is
+    //    already symlink-contained + secret-scanned by loadTeamMemories.
+    if (isTeamMemoryEnabled()) {
+      const teamDir = this.getTeamMemoryDir();
+      for (const content of this.loadTeamMemories()) {
+        sources.push({ content, level: 'team', path: teamDir });
+      }
     }
 
     return sources;

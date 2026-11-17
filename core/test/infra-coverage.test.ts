@@ -1277,7 +1277,8 @@ describe('MemoryManager — collectInstructionSources with currentFile (line 895
     const mgr = new MemoryManager(tmpDir);
     const sources = await mgr.collectInstructionSources();
     assert.ok(sources.some(s => s.level === 'project'));
-    assert.ok(sources.some(s => s.level === 'user'));
+    // CLAUDE.local.md is a distinct 'local' (gitignored override) scope.
+    assert.ok(sources.some(s => s.level === 'local'));
   });
 
   it('includes user memories in collected sources', async () => {
@@ -1287,7 +1288,8 @@ describe('MemoryManager — collectInstructionSources with currentFile (line 895
 
     const mgr = new MemoryManager(tmpDir);
     const sources = await mgr.collectInstructionSources();
-    assert.ok(sources.some(s => s.level === 'user' && s.content.includes('Preference content')));
+    // Auto-captured stored memories are now the distinct 'automem' scope.
+    assert.ok(sources.some(s => s.level === 'automem' && s.content.includes('Preference content')));
   });
 });
 

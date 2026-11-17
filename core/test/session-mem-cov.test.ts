@@ -628,7 +628,8 @@ describe('MemoryManager — instruction loading', () => {
     const all = await mgr.collectInstructionSources();
     assert.ok(all.some(s => s.level === 'managed'));
     assert.ok(all.some(s => s.level === 'project' && s.content.includes('proj-rule')));
-    assert.ok(all.some(s => s.level === 'user' && s.content.includes('local-rule')));
+    // CLAUDE.local.md is now a distinct 'local' (gitignored override) scope, not 'user'.
+    assert.ok(all.some(s => s.level === 'local' && s.content.includes('local-rule')));
 
     const forFile = await mgr.collectInstructionSources('src/x.ts');
     assert.ok(forFile.some(s => s.level === 'managed'));

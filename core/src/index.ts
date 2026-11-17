@@ -6,8 +6,8 @@ export type { ProviderDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
 export type { SkillResolution } from './tools/skill';
-export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
-export type { MemoryEntry, MemoryType, InstructionSource, MemoryPathScope } from './memory';
+export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, MEMORY_SOURCE_LEVELS, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
+export type { MemoryEntry, MemoryType, MemorySourceLevel, InstructionSource, MemoryPathScope } from './memory';
 export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES, isENOENT, sanitizePluginIdSegment, generatePluginId, COMMAND_SOURCES, COMMAND_TYPES, isPluginAvailable, parsePluginSettings, isCommandEnabled, isCommandHidden, getCommandDisplayName, redactSensitiveCommandArgs, registerCommandAliases, REDACTED_COMMAND_ARGS, normalizePluginSubdirPath, hashPluginSubdirPath } from './plugins';
 export type { PluginBundle, CommandDefinition, CommandMetadata, PluginCommandsMetadataContext, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure, CommandSource, CommandType, PluginIdPrefix, PluginRequirements, PluginSettings, PluginAvailabilityContext, CommandScanDiagnostics } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
