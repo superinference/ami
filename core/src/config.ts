@@ -325,6 +325,12 @@ export interface ProjectConfig {
    * `SUPERINFERENCE_DISABLE_GIT_INSTRUCTIONS` env var overrides this knob.
    */
   includeGitInstructions?: boolean;
+  /**
+   * Suppress proactive plugin-installation hints (parity: Claude Code's
+   * `disableHintRecommendations` preference). When `true`, the `/plugin recommend`
+   * flow withholds the prompt. Toggled via `/plugin hints on|off`.
+   */
+  pluginHintsDisabled?: boolean;
 }
 
 /**
@@ -905,6 +911,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['sessionMemoryInterval', 'number'], ['alwaysLoadMcpServers', 'string[]'],
   ['continueOnInvalidConfig', 'boolean'], ['outputStyle', 'string'],
   ['includeGitInstructions', 'boolean'],
+  ['pluginHintsDisabled', 'boolean'],
 ];
 
 /**

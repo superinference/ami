@@ -68,6 +68,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       strictMcpConfig: true, mcpRequireApproval: true, maxUsageLimitWaitMs: 1000,
       sessionMemoryInterval: 5, alwaysLoadMcpServers: ['srv'], continueOnInvalidConfig: true,
       outputStyle: 'concise', includeGitInstructions: false,
+      pluginHintsDisabled: true,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
