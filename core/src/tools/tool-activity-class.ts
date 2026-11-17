@@ -261,6 +261,19 @@ export function describeToolActivity(
       const q = firstString(inp.query);
       return q ? `Searching the web for ${truncate(q)}` : 'Searching the web';
     }
+    case 'enter_worktree': {
+      // Human-friendly present-tense progress label while the worktree is created,
+      // distinct from the raw snake_case tool name. Parity: Claude's EnterWorktreeTool
+      // userFacingName() => 'Creating worktree'.
+      const label = firstString(inp.name, inp.description);
+      return label ? `Creating worktree ${truncate(label)}` : 'Creating worktree';
+    }
+    case 'exit_worktree': {
+      // Parity: Claude's ExitWorktreeTool human-friendly progress label, with the
+      // keep-vs-remove action surfaced.
+      const action = firstString(inp.action);
+      return action ? `Exiting worktree (${truncate(action)})` : 'Exiting worktree';
+    }
     default:
       return undefined;
   }

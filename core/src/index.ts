@@ -187,8 +187,11 @@ export type {
   UsageStats,
 } from './types';
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType, AutoModeConfig, StreamingToolProgress, PromptSuggestionResolution } from './types';
-export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS, SESSION_OPERATING_MODES, mergeSkillUsageStat, reconcileSessionMode, MAX_LSP_RECOMMENDATION_IGNORED_COUNT, isLspRecommendationDisabled, shouldEnablePromptSuggestion } from './types';
-export type { SkillUsageStat, SessionOperatingMode, SessionModeReconciliation } from './types';
+export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS, SESSION_OPERATING_MODES, mergeSkillUsageStat, reconcileSessionMode, MAX_LSP_RECOMMENDATION_IGNORED_COUNT, isLspRecommendationDisabled, shouldEnablePromptSuggestion,
+  MIN_SLOW_PROGRESS_REVEAL_SECONDS, shouldRevealSlowProgress, sanitizeToolInputSummary, resolveSentAt,
+  selectModelFacingOutput, selectUserFacingOutput, shouldRenderGroupedToolUse, isSuggestionMessage,
+  shouldForcePermissionCheck, validateSummarizeMetadata } from './types';
+export type { SkillUsageStat, SessionOperatingMode, SessionModeReconciliation, SystemMessageKind, SummarizeMetadata } from './types';
 export { getModelCapabilities, registerModelCapabilities, clearDynamicCapabilities, discoverFromModelList, clampEffortLevel, modelSupportsMaxEffort, modelSupportsAdvisor, modelAlwaysOnThinking, resolveMaxEffortLevel, requiresResponsesAPI, parseClaudeVersion, claudeReasoningCapabilities, is1mContextDisabled, supportsOneMillionContextBeta, normalizeModelStringForAPI, getSmallFastModel, SMALL_FAST_MODEL_ENV_VARS, THINKING_LEVELS, REVIEW_EFFORT_LEVELS, getModelDeprecationWarning, toApiProviderClass, hasUltrathinkKeyword, findThinkingTriggerPositions, get3PModelFallbackSuggestion, getAvailableContextUpgrade } from './model-capabilities';
 export type { ApiProviderClass, ContextUpgrade } from './model-capabilities';
 export { formatTokenCount } from './token-format';

@@ -222,7 +222,20 @@ export interface SystemMessage extends TranscriptMeta {
   /** Severity level: 'info' messages are suppressed unless verbose; 'warning'/'error'
    *  change the styling (color/dot). Parity: Claude's SystemMessage `level`. */
   level?: 'info' | 'warning' | 'error';
+  /** Optional semantic subtype classifying WHY this system message was emitted, so a
+   *  renderer can present a category distinctly (e.g. a proactive `'suggestion'` like
+   *  "Skill \"x\" updated with improvements." rendered as a hint rather than a plain
+   *  system line). Absent ⇒ a generic system message. Check with
+   *  {@link isSuggestionMessage}. Parity: Claude's `createSystemMessage` subtype
+   *  argument (`'suggestion'`). */
+  kind?: SystemMessageKind;
 }
+
+/** Semantic subtype of a {@link SystemMessage}. `'suggestion'` tags a proactive,
+ *  dismissible hint (e.g. a skill-improvement confirmation) so the UI can style it
+ *  apart from ordinary system output. Parity: Claude's `createSystemMessage`
+ *  message-subtype parameter. */
+export type SystemMessageKind = 'suggestion';
 
 export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessage;
 
@@ -370,6 +383,22 @@ export interface ToolResult {
    *  transcript can show the "(elapsed · N lines)" affordance on the completed
    *  call. See {@link StreamingToolProgress}. */
   progress?: StreamingToolProgress;
+  /** Emit-time ISO-8601 timestamp stamped when the tool actually RAN, on the
+   *  originating process. Carried separately from the surrounding message so a
+   *  resumed/replayed session can render a per-result timestamp. Deliberately
+   *  OPTIONAL: pre-timestamp results replayed from an older transcript omit it and
+   *  must still render — never assume it is present. Populate/read via
+   *  {@link resolveSentAt}. Parity: Claude's BriefTool output `sentAt`. */
+  sentAt?: string;
+  /** The USER-facing payload, decoupled from the model-facing `output`. When a tool
+   *  wants the model to receive only a terse receipt (e.g. "Message delivered to
+   *  user.") while the human sees the full message/attachments, it sets the rich
+   *  content here and a short receipt in `output`. Renderers show this to the user;
+   *  the model context keeps `output`. Selected via {@link selectUserFacingOutput} /
+   *  {@link selectModelFacingOutput}. Absent → both audiences see `output`. Parity:
+   *  Claude's BriefTool `output.data` (UI) vs `mapToolResultToToolResultBlockParam`
+   *  model receipt. */
+  userFacingContent?: string;
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
@@ -602,6 +631,13 @@ export interface ToolContext {
    *  CLAUDE_SKILL_DIR (and CLAUDE_PLUGIN_ROOT for plugin-packaged skills), so imported
    *  Claude-Code skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */
   skillEnv?: Record<string, string>;
+  /** Force the per-call permission check to run even when a hook / auto-approval path
+   *  would otherwise bypass it (a forked/untrusted sub-agent context that must not
+   *  inherit the parent's auto-grants). When `true`, callers MUST route through the
+   *  normal permission flow regardless of any auto-approve verdict. Resolve the final
+   *  decision with {@link shouldForcePermissionCheck}. Parity: Claude's forked-agent
+   *  `requireCanUseTool` override (utils/forkedAgent.ts). */
+  requireCanUseTool?: boolean;
   abortSignal: AbortSignal;
   /** Early-wake hook for the `sleep` tool: returns true when inbound user input is
    *  queued (e.g. a mid-turn message pushed via injectMidTurnUserMessage). When
@@ -841,6 +877,12 @@ export interface ToolDefinition {
    *  on the first-party `api.anthropic.com` path (proxies/Bedrock/Vertex 400 on the field).
    *  Parity: Claude's per-tool `eager_input_streaming` on the cached tool schema. */
   eagerInputStreaming?: boolean;
+  /** Per-tool opt-in to GROUPED rendering: when `true`, consecutive calls to this
+   *  tool are collapsed into one summary row by a group-aware renderer instead of
+   *  each call drawing its own header. Absent / `false` ⇒ render each call
+   *  individually. Resolve with {@link shouldRenderGroupedToolUse}. Parity: Claude's
+   *  per-tool `renderGroupedToolUse` opt-in (utils/groupToolUses.ts). */
+  renderGroupedToolUse?: boolean;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 
@@ -1196,7 +1238,19 @@ export type EngineEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call_generating'; toolName: string; toolIndex: number; argsDelta: string }
   | { type: 'tool_use_start'; toolName: string; toolCallId: string; input: Record<string, unknown> }
-  | { type: 'tool_use_progress'; toolCallId: string; data: string }
+  | { type: 'tool_use_progress'; toolCallId: string; data: string;
+      /** Live wall-clock seconds the underlying command/task has been running, so a
+       *  frontend can show a ticking "(1m3s · N lines)" affordance on a slow in-flight
+       *  call without re-parsing `data`. Revealed only past the
+       *  {@link MIN_SLOW_PROGRESS_REVEAL_SECONDS} threshold (see
+       *  {@link shouldRevealSlowProgress}) so brief commands don't flicker a timer.
+       *  Parity: Claude's bash_progress/powershell_progress `elapsedTimeSeconds`
+       *  (components/messages/CollapsedReadSearchContent.tsx). Omitted when unmeasured. */
+      elapsedSeconds?: number;
+      /** Total output lines seen so far for the running command, for the live
+       *  "· N lines" counter. Parity: Claude's shell-progress `totalLines`. Omitted
+       *  when the tool does not count lines. */
+      totalLines?: number }
   | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean }
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
@@ -1211,7 +1265,14 @@ export type EngineEvent =
   | { type: 'analytics_summary'; summary: Record<string, number> }
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
-  | { type: 'user_question'; toolCallId: string; question: string; options: UserQuestionOption[]; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown>; defaultIndex?: number }
+  | { type: 'user_question'; toolCallId: string; question: string; options: UserQuestionOption[]; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown>; defaultIndex?: number;
+      /** Dimmed secondary context shown beside the prompt title: a terse summary of
+       *  the TOOL INPUT that triggered this question (e.g. the command/file a
+       *  permission-style ask refers to), so the user sees WHAT is being asked about
+       *  without it crowding the main `question`. `null`/empty are normalized to
+       *  undefined by {@link sanitizeToolInputSummary}. Parity: Claude's PromptDialog
+       *  `toolInputSummary` rendered in the `titleRight` slot. */
+      toolInputSummary?: string | null }
   | { type: 'session_title'; title: string }
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
@@ -1224,7 +1285,14 @@ export type EngineEvent =
        *  but differ in type. Lets a roster surface the classification at a glance. Parity:
        *  Claude's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
       taskType?: string }
-  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
+  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string;
+      /** A concise mid-turn progress summary for the sub-agent's work so far (a forked
+       *  summarizer phrase emitted periodically), distinct from the per-step `detail`
+       *  activity line — lets a roster show "what this agent is accomplishing" rather
+       *  than only its latest raw action. Parity: Claude's task progress `summary`
+       *  field alongside `last_tool_name` (utils/task/sdkProgress.ts). Omitted until a
+       *  summary has been computed. */
+      summary?: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number; outputPath?: string }
   | { type: 'todo_update'; todos: TodoItemView[] }
   /** An MCP server pushed a resource-update (`notifications/resources/updated`) or
@@ -1781,6 +1849,121 @@ export function shouldEnablePromptSuggestion(resolution: PromptSuggestionResolut
   if (resolution.envOverride !== undefined) return resolution.envOverride;
   if (resolution.nonInteractive) return false;
   return resolution.configEnabled ?? true;
+}
+
+// ---------------------------------------------------------------------------
+// w88 parity primitives — pure, dependency-free building blocks for the typed
+// schema additions above (event fields, ToolResult/ToolDefinition/SystemMessage
+// fields). Each mirrors a specific Claude Code behavior; display/rendering stays
+// in the cli layer, these only derive/validate data.
+// ---------------------------------------------------------------------------
+
+/** Minimum wall-clock seconds an in-flight command must have been running before a
+ *  live "(elapsed · N lines)" progress suffix is revealed, so brief commands never
+ *  flicker a timer. Parity: Claude's 2-second slow-command reveal threshold
+ *  (components/messages/CollapsedReadSearchContent.tsx). */
+export const MIN_SLOW_PROGRESS_REVEAL_SECONDS = 2;
+
+/** Whether a running tool call has been slow enough to reveal its live elapsed/line
+ *  progress affordance. `undefined`/unmeasured elapsed ⇒ not revealed. Pure; mirrors
+ *  Claude's `elapsedTimeSeconds >= 2` gate for the ticking progress suffix. */
+export function shouldRevealSlowProgress(
+  elapsedSeconds: number | undefined,
+  thresholdSeconds: number = MIN_SLOW_PROGRESS_REVEAL_SECONDS,
+): boolean {
+  return typeof elapsedSeconds === 'number' && elapsedSeconds >= thresholdSeconds;
+}
+
+/** Normalize a {@link EngineEvent}'s `toolInputSummary` (a `user_question` field): a
+ *  `null`, `undefined`, or whitespace-only value collapses to `undefined` so a
+ *  renderer can treat "no summary" uniformly; otherwise the trimmed text is returned.
+ *  Parity: Claude's PromptDialog `toolInputSummary?: string | null` handling. */
+export function sanitizeToolInputSummary(summary: string | null | undefined): string | undefined {
+  if (summary == null) return undefined;
+  const trimmed = summary.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Resolve a {@link ToolResult.sentAt} emit timestamp: keep an already-stamped value
+ *  (so a resumed/replayed result shows its ORIGINAL time), otherwise stamp `nowIso`
+ *  (defaulting to the current clock). This enforces the "optional for replay, stamped
+ *  once at execution" invariant in one place. Parity: Claude's BriefTool
+ *  `sentAt = new Date().toISOString()` captured at execution and preserved on resume. */
+export function resolveSentAt(existing: string | undefined, nowIso: string = new Date().toISOString()): string {
+  return existing ?? nowIso;
+}
+
+/** The MODEL-facing output for a {@link ToolResult}: always the terse `output`
+ *  (the model never re-ingests a decoupled user-facing payload). Parity: Claude's
+ *  `mapToolResultToToolResultBlockParam` returning only the receipt. */
+export function selectModelFacingOutput(result: Pick<ToolResult, 'output'>): string {
+  return result.output;
+}
+
+/** The USER-facing output for a {@link ToolResult}: the decoupled
+ *  {@link ToolResult.userFacingContent} when set, else the plain `output`. Parity:
+ *  Claude's BriefTool `output.data` (UI) vs the model receipt. */
+export function selectUserFacingOutput(result: Pick<ToolResult, 'output' | 'userFacingContent'>): string {
+  return result.userFacingContent ?? result.output;
+}
+
+/** Whether a tool opts into grouped (collapsed) rendering of consecutive calls.
+ *  Absent field ⇒ `false` (render each call individually). Parity: Claude's per-tool
+ *  `renderGroupedToolUse` opt-in. */
+export function shouldRenderGroupedToolUse(tool: Pick<ToolDefinition, 'renderGroupedToolUse'>): boolean {
+  return tool.renderGroupedToolUse === true;
+}
+
+/** Whether a {@link SystemMessage} is a proactive `'suggestion'` (e.g. a
+ *  skill-improvement confirmation), so a renderer can style it apart from ordinary
+ *  system output. Parity: Claude's `'suggestion'` message subtype. */
+export function isSuggestionMessage(message: Pick<SystemMessage, 'kind'>): boolean {
+  return message.kind === 'suggestion';
+}
+
+/** Final permission-check decision for a tool call given an upstream auto-approval
+ *  verdict and a {@link ToolContext.requireCanUseTool} override: the override FORCES a
+ *  real check (returns `true`) even when `autoApproved` is `true`; otherwise an
+ *  auto-approval skips the check (returns `false`). Parity: Claude's forked-agent
+ *  `requireCanUseTool` that re-asserts the permission gate past hook auto-approval. */
+export function shouldForcePermissionCheck(opts: {
+  requireCanUseTool?: boolean;
+  autoApproved?: boolean;
+}): boolean {
+  if (opts.requireCanUseTool === true) return true;
+  return opts.autoApproved !== true;
+}
+
+/** Persisted metadata attached to a conversation-summary (compaction) marker so it is
+ *  re-rendered inline in history: how many messages were summarized, the direction of
+ *  the summary, and the optional user focus/context note. Validate raw/persisted input
+ *  with {@link validateSummarizeMetadata}. Parity: Claude's `summarizeMetadata`
+ *  ({messagesSummarized, direction, userContext}) on the summary user message. */
+export interface SummarizeMetadata {
+  /** Number of prior messages folded into the summary. */
+  messagesSummarized: number;
+  /** Which end of the transcript was summarized. Parity: Claude's `direction`. */
+  direction?: 'before' | 'after';
+  /** Optional free-text focus/context the user supplied to steer the summary
+   *  (re-rendered as `Context: "…"`). */
+  userContext?: string;
+}
+
+/** Validate + normalize a raw/persisted {@link SummarizeMetadata} object (e.g. loaded
+ *  from a resumed session). Returns a clean metadata object, or `null` when the shape
+ *  is unusable (missing/negative/non-integer count). Pure guard — no display. */
+export function validateSummarizeMetadata(raw: unknown): SummarizeMetadata | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const count = o.messagesSummarized;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return null;
+  const meta: SummarizeMetadata = { messagesSummarized: count };
+  if (o.direction === 'before' || o.direction === 'after') meta.direction = o.direction;
+  if (typeof o.userContext === 'string') {
+    const ctx = o.userContext.trim();
+    if (ctx.length > 0) meta.userContext = ctx;
+  }
+  return meta;
 }
 
 // ---------------------------------------------------------------------------
