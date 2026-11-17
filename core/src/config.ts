@@ -389,6 +389,76 @@ export interface ProjectConfig {
    * {@link applyConfigAnthropicBetas}.
    */
   redactThinking?: boolean;
+  // -------------------------------------------------------------------------
+  // Engine-behavior knobs (round 2) that {@link mergeConfigs} previously DROPPED.
+  //
+  // Each of these was ALREADY read off the MERGED project config by a
+  // `common/src/engine-factory.ts` resolver, yet NONE was copied by that merge — so a
+  // value set in `.ami/config.json` (or any file tier) was silently discarded and the
+  // documented knob only ever took effect when a caller injected a `projectConfig`
+  // object directly (bypassing the file waterfall). Declaring them here (+ their type
+  // in {@link PROJECT_CONFIG_FIELD_TYPES} and their copy in {@link mergeConfigs}) makes
+  // them recognized (no spurious unknown-key warning), value-validated, and actually
+  // honored from the config files — the same fix the w78 cluster applied. Same class of
+  // bug, newly-found keys. Parity: Claude Code's settings-schema keys flowing through
+  // the settings cascade into the running session.
+  // -------------------------------------------------------------------------
+  /**
+   * Gate the eager background session-memory extraction pass (parity: Claude Code's
+   * `autoMemoryEnabled` settings key). Read by `engine-factory` {@link resolveAutoMemory};
+   * an explicit `false` forces consolidation OFF regardless of the `AMI_DISABLE_AUTO_MEMORY`
+   * env/default. Unset defers to the env + default-on behavior.
+   */
+  autoMemoryEnabled?: boolean;
+  /**
+   * Alias of {@link autoMemoryEnabled} gating background memory consolidation (parity:
+   * Claude Code's `autoDreamEnabled` settings key). `engine-factory`
+   * {@link resolveAutoMemory} accepts either name (and `sessionMemoryEnabled`) as the
+   * equivalent tri-state; a real boolean wins over the env/default.
+   */
+  autoDreamEnabled?: boolean;
+  /**
+   * AMI-native alias of {@link autoMemoryEnabled} (also honored by `engine-factory`
+   * {@link resolveAutoMemory}). Kept so a pre-existing `sessionMemoryEnabled` in a
+   * config file takes effect rather than being silently dropped by the merge.
+   */
+  sessionMemoryEnabled?: boolean;
+  /**
+   * Persist whether the per-turn conversation-title generation pass runs (read by
+   * `engine-factory` {@link resolveTitleGenerationEnabled}). An explicit boolean is the
+   * config tier of its precedence waterfall (opt flag > `AMI_ENABLE_TITLE_GENERATION`
+   * env > this config boolean > non-interactive/SDK default-off). Unset keeps the
+   * interactive default-on.
+   */
+  enableTitleGeneration?: boolean;
+  /**
+   * Persist whether the worktree capability tools (`enter_worktree` / `exit_worktree`)
+   * are advertised to the model (read by `engine-factory` {@link resolveWorktreeToolsEnabled};
+   * parity: Claude Code's worktree-mode toggle `isWorktreeModeEnabled`). Config tier of
+   * the precedence waterfall (opt flag > `AMI_WORKTREE_TOOLS` env > this config boolean >
+   * default-on). A locked-down/CI config can drop them as a unit.
+   */
+  worktreeToolsEnabled?: boolean;
+  /**
+   * Show the OSC 9;4 taskbar/tab progress indicator in supported terminals (parity:
+   * Claude Code's `terminalProgressBarEnabled` settings key). AMI emits progress by
+   * default (its long-standing behavior); an explicit `false` suppresses it by seeding
+   * the `AMI_NO_PROGRESS` kill-switch via {@link applyConfigTerminalProgress}, so the
+   * persisted preference no longer requires exporting the env var. An explicit
+   * `AMI_NO_PROGRESS` env value still WINS. Unset/`true` keeps AMI's default-on
+   * (superset divergence from Claude's default-off-unless-set — AMI never regresses the
+   * loved default, only ADDs the opt-out knob).
+   */
+  terminalProgressBarEnabled?: boolean;
+  /**
+   * Show the per-turn duration on the completion line ("✳ Worked FOR 1m 3s · done …")
+   * (parity: Claude Code's `showTurnDuration` settings key). AMI shows it by default;
+   * an explicit `false` suppresses ONLY the duration (keeping the verb/wall-clock) by
+   * seeding `AMI_SHOW_TURN_DURATION` via {@link applyConfigTurnDuration}, so the choice
+   * can be persisted instead of exporting the env var. An explicit `AMI_SHOW_TURN_DURATION`
+   * env value still WINS. Unset/`true` keeps the default-on.
+   */
+  showTurnDuration?: boolean;
 }
 
 /**
@@ -976,6 +1046,12 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['respectGitignore', 'boolean'], ['autoCompactEnabled', 'boolean'],
   ['fastMode', 'boolean'], ['redactThinking', 'boolean'],
   ['additionalDirectories', 'string[]'],
+  // Engine-behavior knobs (round 2) the engine factory already reads but mergeConfigs
+  // previously dropped — declared here so they are recognized + base-type validated.
+  ['autoMemoryEnabled', 'boolean'], ['autoDreamEnabled', 'boolean'],
+  ['sessionMemoryEnabled', 'boolean'], ['enableTitleGeneration', 'boolean'],
+  ['worktreeToolsEnabled', 'boolean'], ['terminalProgressBarEnabled', 'boolean'],
+  ['showTurnDuration', 'boolean'],
 ];
 
 /**
@@ -2117,6 +2193,17 @@ export function mergeConfigs(
     if (layer.fastMode !== undefined) merged.fastMode = layer.fastMode;
     if (layer.redactThinking !== undefined) merged.redactThinking = layer.redactThinking;
     if (layer.additionalDirectories !== undefined) merged.additionalDirectories = mergeConfigArray(merged.additionalDirectories, layer.additionalDirectories);
+    // Engine-behavior knobs (round 2): last-layer-wins scalars the engine factory
+    // already reads off the merged config (resolveAutoMemory / resolveTitleGenerationEnabled
+    // / resolveWorktreeToolsEnabled) and the two startup env bridges below consume. Before
+    // this they were READ yet never COPIED here, so a file-tier value was silently dropped.
+    if (layer.autoMemoryEnabled !== undefined) merged.autoMemoryEnabled = layer.autoMemoryEnabled;
+    if (layer.autoDreamEnabled !== undefined) merged.autoDreamEnabled = layer.autoDreamEnabled;
+    if (layer.sessionMemoryEnabled !== undefined) merged.sessionMemoryEnabled = layer.sessionMemoryEnabled;
+    if (layer.enableTitleGeneration !== undefined) merged.enableTitleGeneration = layer.enableTitleGeneration;
+    if (layer.worktreeToolsEnabled !== undefined) merged.worktreeToolsEnabled = layer.worktreeToolsEnabled;
+    if (layer.terminalProgressBarEnabled !== undefined) merged.terminalProgressBarEnabled = layer.terminalProgressBarEnabled;
+    if (layer.showTurnDuration !== undefined) merged.showTurnDuration = layer.showTurnDuration;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -2470,13 +2557,59 @@ export function applyConfigAnthropicBetas(
   target.ANTHROPIC_BETAS = merged.join(',');
 }
 
+/** Env kill-switch (cli `PROGRESS_REPORTING_ENV`) consumed by the OSC 9;4 progress gate. */
+export const NO_PROGRESS_ENV = 'AMI_NO_PROGRESS';
+/** Env knob (cli `resolveShowTurnDuration`) that suppresses the per-turn duration. */
+export const SHOW_TURN_DURATION_ENV = 'AMI_SHOW_TURN_DURATION';
+
+/**
+ * Bridge the persisted {@link ProjectConfig.terminalProgressBarEnabled} knob into the
+ * existing `AMI_NO_PROGRESS` kill-switch that the cli OSC 9;4 progress gate
+ * (`isProgressReportingAvailable`) already reads — so a user can persist "no progress
+ * bar" in project/user config instead of exporting the env var (parity: Claude Code's
+ * `terminalProgressBarEnabled` setting). An explicit `AMI_NO_PROGRESS` already in
+ * `target` WINS (one-shot override); otherwise `terminalProgressBarEnabled === false`
+ * arms the kill-switch. Unset/`true` is a no-op (progress stays on — AMI's default; a
+ * superset divergence from Claude's default-off, keeping AMI's loved default while
+ * ADDing the opt-out).
+ */
+export function applyConfigTerminalProgress(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[NO_PROGRESS_ENV] !== undefined) return;
+  if (config?.terminalProgressBarEnabled === false) {
+    target[NO_PROGRESS_ENV] = '1';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.showTurnDuration} knob into the existing
+ * `AMI_SHOW_TURN_DURATION` env knob that the cli `resolveShowTurnDuration` already
+ * reads — so a user can persist "hide the per-turn duration" in project/user config
+ * instead of exporting the env var (parity: Claude Code's `showTurnDuration` setting).
+ * An explicit `AMI_SHOW_TURN_DURATION` already in `target` WINS; otherwise
+ * `showTurnDuration === false` arms the suppression (the resolver treats `'0'` as
+ * falsy). Unset/`true` is a no-op (duration stays shown — the default).
+ */
+export function applyConfigTurnDuration(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[SHOW_TURN_DURATION_ENV] !== undefined) return;
+  if (config?.showTurnDuration === false) {
+    target[SHOW_TURN_DURATION_ENV] = '0';
+  }
+}
+
 /**
  * Apply every startup config→runtime knob bridge in one call (the env-targeting
- * ones): CA certs, glob-gitignore, auto-compaction, plans directory, and Anthropic
- * betas. Called once at engine setup with the MERGED config so a value from any file
- * tier takes effect, mirroring {@link applyConfigLanguage}. `{@link resolveAdditionalDirectories}`
- * is applied separately (it returns a value threaded into the PermissionManager's
- * allowed read roots rather than mutating `target`).
+ * ones): CA certs, glob-gitignore, auto-compaction, plans directory, Anthropic betas,
+ * the OSC 9;4 progress kill-switch, and the per-turn duration suppression. Called once
+ * at engine setup with the MERGED config so a value from any file tier takes effect,
+ * mirroring {@link applyConfigLanguage}. `{@link resolveAdditionalDirectories}` is
+ * applied separately (it returns a value threaded into the PermissionManager's allowed
+ * read roots rather than mutating `target`).
  */
 export function applyConfigStartupKnobs(
   config: ProjectConfig | null | undefined,
@@ -2487,6 +2620,8 @@ export function applyConfigStartupKnobs(
   applyConfigAutoCompact(config, target);
   applyConfigPlansDirectory(config, target);
   applyConfigAnthropicBetas(config, target);
+  applyConfigTerminalProgress(config, target);
+  applyConfigTurnDuration(config, target);
 }
 
 /**
