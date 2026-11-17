@@ -8,6 +8,7 @@ import { validateUrlSafety, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, Egre
 import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
 import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
+import { isSandboxNetworkAskEnabled, requestSandboxHostAccess } from './sandbox-permission-registry';
 import { parseEnvBool } from '../utils/env';
 import { resolveToolOutputMaxChars, loadProjectConfig } from '../config';
 
@@ -511,6 +512,28 @@ export const webFetchTool: ToolDefinition = {
         return { output: `Error: ${ssrfResult.error}`, isError: true };
       }
       pinnedIP = ssrfResult.resolvedIP;
+    }
+
+    // PARITY (interactive per-host sandbox egress approval — Claude's
+    // SandboxAskCallback / createSandboxAskCallback): when the deny-by-default
+    // egress gate (AMI_SANDBOX_NETWORK_ASK) is on, a host that is neither already
+    // granted nor approved here must be approved at request time with the exact
+    // "Allow network connection to <host>?" wording, routed through the same
+    // permission-prompt handler the rest of the tools use. An approval records a
+    // session grant shared with the bash sandbox (so a later sandboxed command to
+    // the same host is also permitted); a deny refuses the fetch. Placed BEFORE the
+    // cache read so a denied host cannot be served previously-cached content either.
+    // Default OFF → no behavior change. Independent of _allowLocalhostForTesting so
+    // the gate is exercisable end-to-end against a local mock server.
+    if (isSandboxNetworkAskEnabled()) {
+      const egressAllowed = await requestSandboxHostAccess(
+        host,
+        context._permissionPromptHandler,
+        context.abortSignal,
+      );
+      if (!egressAllowed) {
+        return { output: `Error: Network connection to "${host}" was not approved.`, isError: true };
+      }
     }
 
     // Response cache check (after SSRF to prevent cache bypass)

@@ -27,6 +27,8 @@
  * session-scoped grant set and its mutators.
  */
 
+import type { PermissionPromptHandler } from '../permissions';
+
 /** Session-scoped set of network hosts the leader has approved for sandbox egress. */
 const grantedSandboxHosts = new Set<string>();
 
@@ -70,6 +72,105 @@ export function processSandboxPermissionResponse(params: {
   if (!params.allow) return false;
   recordSandboxHostGrant(params.host);
   return true;
+}
+
+/**
+ * PARITY (Claude's `createSandboxAskCallback` prompt wording — structuredIO.ts
+ * L745 `Allow network connection to ${host}?`): the EXACT user-facing message an
+ * interactive per-host sandbox egress approval shows. Centralized so the host
+ * backend, the container backend, and the web_fetch egress gate all ask with
+ * identical wording (no per-site string drift). Trims the host for display.
+ */
+export function sandboxNetworkAskMessage(host: string): string {
+  return `Allow network connection to ${host.trim()}?`;
+}
+
+/**
+ * PARITY (interactive per-host sandbox egress gate — Claude's `SandboxAskCallback`):
+ * the env gate `AMI_SANDBOX_NETWORK_ASK` that turns the LOCAL deny-by-default
+ * outbound posture on. When enabled, a network egress to a host that is neither
+ * pre-allowlisted nor already granted is surfaced for an interactive allow/deny
+ * decision ({@link requestSandboxHostAccess}) instead of being silently allowed or
+ * hard-failed. Default OFF → the pre-declared static allowlist behavior is
+ * unchanged. Reads an injectable env for testability (mirrors the other sandbox env
+ * gates). Truthy = `1`/`true`/`yes`/`on`.
+ */
+export const SANDBOX_NETWORK_ASK_ENV = 'AMI_SANDBOX_NETWORK_ASK';
+export function isSandboxNetworkAskEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env[SANDBOX_NETWORK_ASK_ENV] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * The runtime per-host network-egress request shape, parity with Claude's
+ * `NetworkHostPattern` handed to a `SandboxAskCallback`. `port` is optional and
+ * carried for parity; the grant is keyed on `host` (DNS, case-insensitive).
+ */
+export interface NetworkHostPattern {
+  host: string;
+  port?: number;
+}
+
+/**
+ * PARITY (Claude's `SandboxAskCallback`): a callback invoked when a sandboxed/
+ * network egress is attempted to a host that is not already permitted. Resolves
+ * `true` to allow the connection, `false` to deny it (fail-closed on error).
+ */
+export type SandboxAskCallback = (hostPattern: NetworkHostPattern) => Promise<boolean>;
+
+/**
+ * PARITY (interactive per-host sandbox network approval — Claude's
+ * `createSandboxAskCallback` + REPL `sandboxAskCallback`): decide whether an
+ * outbound connection to `host` may proceed, prompting the user ON DEMAND when it
+ * is not already permitted. Semantics:
+ *   - an empty host → `false` (fail-closed);
+ *   - a host already granted this session ({@link isSandboxHostGranted}) → `true`
+ *     with no re-prompt (idempotent, mirrors Claude not re-asking a granted host);
+ *   - otherwise, when a {@link PermissionPromptHandler} is available, prompt with
+ *     the exact {@link sandboxNetworkAskMessage} wording. An allow* verdict RECORDS
+ *     the grant ({@link recordSandboxHostGrant}) — so the SAME host is subsequently
+ *     reachable from both the bash sandbox allowlist (host + container backends fold
+ *     {@link getGrantedSandboxHosts}) and further web fetches — and returns `true`;
+ *     a deny/cancel returns `false`;
+ *   - no handler available → `false` (fail-closed, mirroring Claude's `catch → deny`).
+ * A handler that throws is caught and treated as a deny (fail-closed). This is the
+ * single canonical approval entry point reused by every egress site (no parallel
+ * approval path).
+ */
+export async function requestSandboxHostAccess(
+  host: string,
+  handler: PermissionPromptHandler | undefined,
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  const h = normalizeHost(host);
+  if (h.length === 0) return false;
+  if (isSandboxHostGranted(h)) return true;
+  if (!handler) return false;
+  let verdict;
+  try {
+    verdict = await handler.showPrompt('sandbox', sandboxNetworkAskMessage(h), undefined, abortSignal);
+  } catch {
+    return false;
+  }
+  if (verdict.action.startsWith('allow')) {
+    recordSandboxHostGrant(h);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * PARITY (Claude's `createSandboxAskCallback`): build a {@link SandboxAskCallback}
+ * bound to a permission handler + abort signal, delegating each decision to the
+ * canonical {@link requestSandboxHostAccess}. Lets a consumer hand a plain
+ * `(hostPattern) => Promise<boolean>` to a sandbox/egress layer exactly as Claude's
+ * callback is shaped, without re-implementing the approval logic.
+ */
+export function createSandboxAskCallback(
+  handler: PermissionPromptHandler | undefined,
+  abortSignal?: AbortSignal,
+): SandboxAskCallback {
+  return (hostPattern) => requestSandboxHostAccess(hostPattern.host, handler, abortSignal);
 }
 
 /**

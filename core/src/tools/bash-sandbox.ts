@@ -3,6 +3,7 @@ import { homedir, release } from 'os';
 import { isAbsolute, resolve as resolvePath } from 'path';
 import { wildcardMatch } from '../permissions';
 import type { SandboxPolicy } from '../types';
+import { getGrantedSandboxHosts, isSandboxHostGranted } from './sandbox-permission-registry';
 
 export interface SandboxConfig {
   allowNetwork: boolean;
@@ -986,6 +987,23 @@ export function describeSandboxFallbackWarning(
   );
 }
 
+/**
+ * Trim, drop empties, and de-duplicate a host list while preserving first-seen
+ * order. Used to merge a static allowlist with the session's granted hosts so a
+ * host that appears in both is emitted once. Pure.
+ */
+export function dedupeHostList(hosts: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of hosts) {
+    const h = raw.trim();
+    if (h.length === 0 || seen.has(h)) continue;
+    seen.add(h);
+    out.push(h);
+  }
+  return out;
+}
+
 export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig): string {
   // `--map-root-user` fails inside a NESTED user namespace (the UID map is
   // already consumed), so `enableWeakerNestedSandbox` drops it to let a weaker
@@ -994,8 +1012,19 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
     ? ['--mount', '--pid', '--fork']
     : ['--map-root-user', '--mount', '--pid', '--fork'];
 
-  const hasAllowedDomains =
-    cfg.allowedDomains && cfg.allowedDomains.length > 0;
+  // PARITY (host-backend per-host egress grant — mirrors wrapWithDocker): fold any
+  // host the leader approved (`sandbox_permission_response`) OR a user approved
+  // interactively (`requestSandboxHostAccess`) into the effective outbound allowlist,
+  // and drop it from the denylist so a granted host WINS. This makes an on-demand
+  // egress approval honored on the unshare backend too — previously only the
+  // container backend honored grants, so a granted host worked in container mode but
+  // was still blackholed on the host backend (the exact parity hole this closes).
+  const effectiveAllowedDomains = dedupeHostList([
+    ...(cfg.allowedDomains ?? []),
+    ...getGrantedSandboxHosts(),
+  ]);
+  const effectiveDeniedDomains = (cfg.deniedDomains ?? []).filter((d) => !isSandboxHostGranted(d));
+  const hasAllowedDomains = effectiveAllowedDomains.length > 0;
 
   if (!cfg.allowNetwork) {
     // Always create a network namespace. When allowedDomains is set we keep
@@ -1025,7 +1054,7 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   // accepts/default-drop, so a denied host is DROPped first → deny wins over allow.
   const networkRules =
     !cfg.allowNetwork && hasAllowedDomains
-      ? buildDeniedDomainRules(cfg.deniedDomains) + buildNetworkAllowlist(cfg.allowedDomains!)
+      ? buildDeniedDomainRules(effectiveDeniedDomains) + buildNetworkAllowlist(effectiveAllowedDomains)
       : '';
   // PARITY (encoded-command seam): emit either the raw single-quote-escaped command
   // or a base64-decode-and-run expression immune to any nested re-quoting layer.

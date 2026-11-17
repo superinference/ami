@@ -276,6 +276,15 @@ export {
   getGrantedSandboxHosts,
   processSandboxPermissionResponse,
   clearSandboxPermissionGrants,
+  requestSandboxHostAccess,
+  createSandboxAskCallback,
+  sandboxNetworkAskMessage,
+  isSandboxNetworkAskEnabled,
+  SANDBOX_NETWORK_ASK_ENV,
+} from './tools/sandbox-permission-registry';
+export type {
+  SandboxAskCallback,
+  NetworkHostPattern,
 } from './tools/sandbox-permission-registry';
 export type {
   DockerSandboxConfig,
