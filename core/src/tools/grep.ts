@@ -354,7 +354,12 @@ Usage:
     }
 
     if (rgOutcome.output !== null) {
-      const cleaned = rgOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+      // files_with_matches is recency-ordered in JS (stat sort) rather than via
+      // ripgrep's `--sortr`, so rg itself ran multi-threaded (see buildRgArgs).
+      const ordered = outputMode === 'files_with_matches'
+        ? sortFilesWithMatchesByMtime(rgOutcome.output)
+        : rgOutcome.output;
+      const cleaned = ordered.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (rgOutcome.outputTruncated && !result.isError) {
         result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
@@ -384,7 +389,12 @@ Usage:
     }
 
     if (grepOutcome.output !== null) {
-      const cleaned = grepOutcome.output.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+      // Same JS-side recency ordering for the grep-binary fallback, which otherwise
+      // returns files in filesystem/readdir order (gap: inconsistent with the rg path).
+      const ordered = outputMode === 'files_with_matches'
+        ? sortFilesWithMatchesByMtime(grepOutcome.output)
+        : grepOutcome.output;
+      const cleaned = ordered.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (grepOutcome.outputTruncated && !result.isError) {
         result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
@@ -612,7 +622,12 @@ function buildRgArgs(
     args.push('-U', '--multiline-dotall');
   }
 
-  args.push('--sortr', 'modified');
+  // NOTE (functional change): do NOT pass `--sortr modified`. ripgrep disables its
+  // multi-threaded engine whenever a sort is requested, so sorting in rg slowed
+  // every search AND reordered content/count output. Instead, content/count keep
+  // ripgrep's natural (parallel) order and files_with_matches is sorted newest-first
+  // in JS via sortFilesWithMatchesByMtime (stat + mtime). Mirrors Claude Code's
+  // GrepTool, which runs rg parallel and does the mtime sort in JS.
 
   if (include) {
     for (const g of splitGlobFilter(include)) args.push('--glob', g);
@@ -842,6 +857,41 @@ export function runSearch(
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Order a `files_with_matches` result (one file path per line) newest-first by
+ * modification time, with a filename tiebreaker, doing the stat sort in JS so
+ * ripgrep itself runs WITHOUT `--sort`/`--sortr` (ripgrep disables its
+ * multi-threaded engine whenever a sort is requested — see buildRgArgs). This
+ * keeps content/count output in ripgrep's natural parallel order while still
+ * giving the agent recency-ordered file lists on EVERY backend (rg, grep, and —
+ * via its own candidate sort — the in-process walk). A failed `stat` (file
+ * deleted/denied between the search and the stat) sorts as mtime 0 (last). Under
+ * `NODE_ENV==='test'` the order is filename-only so fixtures written in the same
+ * instant are deterministic. Mirrors Claude Code's GrepTool mtime sort.
+ */
+export function sortFilesWithMatchesByMtime(
+  output: string,
+  testMode: boolean = process.env.NODE_ENV === 'test',
+): string {
+  const paths = output.split('\n').filter(line => line.length > 0);
+  if (paths.length <= 1) return output;
+  const withMtime = paths.map((p) => {
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(p).mtimeMs;
+    } catch {
+      // Deleted between the search and this stat, or unreadable — sorts last.
+    }
+    return { p, mtimeMs };
+  });
+  withMtime.sort((a, b) => {
+    if (testMode) return a.p.localeCompare(b.p);
+    const byTime = b.mtimeMs - a.mtimeMs;
+    return byTime !== 0 ? byTime : a.p.localeCompare(b.p);
+  });
+  return withMtime.map((x) => x.p).join('\n');
 }
 
 /**
