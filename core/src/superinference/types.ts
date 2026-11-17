@@ -77,6 +77,46 @@ export interface StopReason {
   detail: string;
 }
 
+/** Minimal view of a `superinference` config block carrying only the critic-model knob
+ *  and its lock flag — the inputs the reviewer-model resolution reads from a given tier. */
+type CriticModelKnob = Pick<SuperInferenceConfig, 'criticModel' | 'canUserConfigureCriticModel'>;
+
+/**
+ * Resolve the effective critic/reviewer model from a USER config tier and a
+ * MANAGED (operator/experiment policy) tier, honouring {@link SuperInferenceConfig.canUserConfigureCriticModel}.
+ *
+ * Parity: Claude Code's advisor `canUserConfigure` lock. When a managed policy pins the
+ * reviewer model (`canUserConfigureCriticModel === false`) the user's `criticModel`
+ * override is IGNORED and the pinned managed model stands (or `''` = inherit the main-loop
+ * model when the policy locked it without naming its own model). Absent a managed opinion,
+ * a user config may self-declare the lock. When user-configurable, the user's model wins,
+ * falling back to any managed default.
+ *
+ * Returns the resolved model string, or `undefined` when NEITHER tier configures a critic
+ * model nor the lock flag — so the caller can omit the key and keep the DEFAULT_CONFIG
+ * ('' = inherit) behaviour unchanged.
+ */
+export function resolveCriticModelLock(
+  userSi: CriticModelKnob | undefined,
+  managedSi: CriticModelKnob | undefined,
+): string | undefined {
+  const managedLock = managedSi?.canUserConfigureCriticModel;
+  const userLock = userSi?.canUserConfigureCriticModel;
+  const userModel = userSi?.criticModel;
+  const managedModel = managedSi?.criticModel;
+  if (
+    managedLock === undefined && userLock === undefined &&
+    userModel === undefined && managedModel === undefined
+  ) {
+    return undefined;
+  }
+  // Pinned when the managed policy locks it (managed wins), or — absent a managed opinion —
+  // when the user config self-declares the lock.
+  const locked = managedLock === false || (managedLock === undefined && userLock === false);
+  if (locked) return managedModel ?? '';
+  return userModel ?? managedModel ?? '';
+}
+
 export const DEFAULT_CONFIG: Required<SuperInferenceConfig> = {
   enabled: true,
   initialBelief: 0.3,
