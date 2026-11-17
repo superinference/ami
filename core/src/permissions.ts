@@ -4826,6 +4826,24 @@ export class PermissionManager {
     return false;
   }
 
+  /**
+   * Synchronously decide whether a bash COMMAND would be DENIED by the user's
+   * configured deny rules (parity with Claude Code's `hasPermissionsToUseTool`
+   * deny half, applied to skill/command-embedded `!`cmd` live-command execution —
+   * promptShellExecution.ts). It reuses the SAME canonical bash deny-matching that
+   * {@link check} uses ({@link anyDenyMatches} → `matchBashPattern`: compound-command
+   * fanout, `$(...)`/backtick decomposition, and de-obfuscation), so a deny a user
+   * configured for the model's own `bash` calls is ALSO honored when a TRUSTED skill
+   * body embeds a live command — closing the gap where a skill injection bypassed
+   * the user's permission rules and was gated only by static bash-safety. Pure read
+   * of the current rule set; never prompts and never mutates state. A blank/non-string
+   * command is not denied (there is nothing to run).
+   */
+  isBashCommandDenied(command: string): boolean {
+    if (typeof command !== 'string' || command.trim().length === 0) return false;
+    return this.anyDenyMatches('bash', { command });
+  }
+
   hasExplicitDeny(toolName: string, input: Record<string, unknown>): boolean {
     if (this.deniedCommands.has(denialKey(toolName, input))) return true;
     // First-match semantics (consistent with check()).
