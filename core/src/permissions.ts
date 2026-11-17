@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
+import { memoizeWithLRU } from './utils/memoize';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
@@ -2392,7 +2393,18 @@ export function countDirectoryChanges(command: string): number {
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
  */
-const _patternCache = new Map<string, RegExp>();
+/**
+ * Compile+cache a glob pattern's regex, bounded via the shared LRU memoizer so a
+ * long-lived process matching many distinct rules can never grow this cache
+ * without bound (dotAll `s`: `*` also spans embedded newlines, so a rule like
+ * `*rm -rf*` still matches a multi-line command and a deny cannot be bypassed by
+ * splitting the command across lines — Claude's dotAll wildcard matching).
+ */
+const _compilePattern = memoizeWithLRU(
+  (pattern: string): RegExp => new RegExp(`^${globToRegexSource(pattern)}$`, 's'),
+  (pattern: string) => pattern,
+  1000,
+);
 /**
  * Match a glob-like pattern (only `*` is special, expanding to any run of
  * characters; every other metachar is escaped) against a value. This is the
@@ -2444,15 +2456,7 @@ function matchPattern(pattern: string, value: string): boolean {
   if (pattern === value) return true;
   if (pattern === '*') return true;
 
-  let regex = _patternCache.get(pattern);
-  if (!regex) {
-    // dotAll (`s`): `*` must also match across embedded newlines, so a rule like
-    // `*rm -rf*` still matches a multi-line command and a deny cannot be bypassed
-    // by splitting the command across lines (Claude's dotAll wildcard matching).
-    regex = new RegExp(`^${globToRegexSource(pattern)}$`, 's');
-    _patternCache.set(pattern, regex);
-  }
-  return regex.test(value);
+  return _compilePattern(pattern).test(value);
 }
 
 /**

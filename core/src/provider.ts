@@ -23,6 +23,7 @@ import { join as pathJoin, dirname as pathDirname } from 'node:path';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
+import { memoizeWithTTLAsync } from './utils/memoize';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong } from './error-classifier';
 import {
@@ -448,7 +449,21 @@ export function describeProviders(): ProviderDescriptor[] {
 
 export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK_PROVIDERS, inferProviderFromBaseUrl, inferProviderFromEnv };
 
-const modelListCache = new Map<string, Promise<Record<string, unknown>[]>>();
+/**
+ * Shared TTL + single-flight memoizer for the provider `/models` list. Concurrent
+ * cold-miss callers for the same endpoint coalesce onto ONE fetch (inFlight
+ * dedup); a successful result is cached for the TTL and served stale-while a
+ * background refresh runs. A failed fetch THROWS so nothing is cached and the
+ * next call retries — the inner fetcher throws on !ok / network error and
+ * {@link loadModelRecords} catches it to fall back to `[]`.
+ */
+const loadModelRecordsCached = memoizeWithTTLAsync(
+  async (url: string, headers: Record<string, string>): Promise<Record<string, unknown>[]> => {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(1500) });
+    if (!res.ok) throw new Error(`model list fetch failed: ${res.status}`);
+    return collectModelRecords(await res.json());
+  },
+);
 
 /**
  * Host-boundary classification of a first-party API base URL. Parses `baseUrl`
@@ -519,27 +534,13 @@ function modelsEndpoint(config: ProviderConfig): { url: string; headers: Record<
 async function loadModelRecords(config: ProviderConfig): Promise<Record<string, unknown>[]> {
   const endpoint = modelsEndpoint(config);
   if (!endpoint) return [];
-  const cacheKey = `${endpoint.url}|${endpoint.headers.Authorization ?? endpoint.headers['x-api-key'] ?? endpoint.headers['x-goog-api-key'] ?? ''}`;
-  const cached = modelListCache.get(cacheKey);
-  if (cached) return cached;
-  const pending = (async () => {
-    try {
-      const res = await fetch(endpoint.url, {
-        headers: endpoint.headers,
-        signal: AbortSignal.timeout(1500),
-      });
-      if (!res.ok) {
-        modelListCache.delete(cacheKey);
-        return [];
-      }
-      return collectModelRecords(await res.json());
-    } catch {
-      modelListCache.delete(cacheKey);
-      return [];
-    }
-  })();
-  modelListCache.set(cacheKey, pending);
-  return pending;
+  try {
+    return await loadModelRecordsCached(endpoint.url, endpoint.headers);
+  } catch {
+    // Non-ok / network failure: nothing was cached, so the caller falls back to
+    // the model table and the next call retries the fetch.
+    return [];
+  }
 }
 
 /**
@@ -552,8 +553,6 @@ export async function fetchAdvertisedContextWindow(config: ProviderConfig): Prom
   const records = await loadModelRecords(config);
   return pickAdvertisedContextWindow(records, config.model);
 }
-
-const huggingFaceCache = new Map<string, Promise<number | undefined>>();
 
 function huggingFaceEndpoint(): string {
   return (process.env.HF_ENDPOINT || 'https://huggingface.co').replace(/\/+$/, '');
@@ -578,6 +577,30 @@ async function readHuggingFaceFile(url: string, headers: Record<string, string>)
 }
 
 /**
+ * Shared TTL + single-flight memoizer for the Hugging Face model-card lookup.
+ * Concurrent cold-miss callers for the same (endpoint, repo, token) coalesce onto
+ * ONE pair of fetches; a successful length is cached for the TTL. When either
+ * file fetch fails at the network level (`'failed'`) the fetcher THROWS so
+ * nothing is cached and the next call retries; a missing/length-less repo caches
+ * `undefined` so the caller stops re-probing a repo with no published length.
+ */
+const loadHuggingFaceContextWindow = memoizeWithTTLAsync(
+  async (endpoint: string, repo: string, token: string | undefined): Promise<number | undefined> => {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const root = repo.split('/').map(part => encodeURIComponent(part)).join('/');
+    const lengths = await Promise.all([
+      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/config.json`, headers),
+      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/tokenizer_config.json`, headers),
+    ]);
+    if (lengths.some(length => length === 'failed')) throw new Error('hugging face fetch failed');
+    const usable = lengths.filter((length): length is number => typeof length === 'number');
+    if (usable.length === 0) return undefined;
+    return Math.max(...usable);
+  },
+);
+
+/**
  * Context length from the Hub model card (`config.json` and
  * `tokenizer_config.json`). A network failure, a missing repo, or no
  * published length returns undefined so the caller can use the table.
@@ -586,24 +609,13 @@ async function readHuggingFaceFile(url: string, headers: Record<string, string>)
 export async function fetchHuggingFaceContextWindow(repo: string, config: ProviderConfig): Promise<number | undefined> {
   const endpoint = huggingFaceEndpoint();
   const token = huggingFaceToken(config);
-  const cacheKey = `${endpoint}|${repo}|${token ?? ''}`;
-  const cached = huggingFaceCache.get(cacheKey);
-  if (cached) return cached;
-  const pending = (async () => {
-    const headers: Record<string, string> = {};
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const root = repo.split('/').map(part => encodeURIComponent(part)).join('/');
-    const lengths = await Promise.all([
-      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/config.json`, headers),
-      readHuggingFaceFile(`${endpoint}/${root}/resolve/main/tokenizer_config.json`, headers),
-    ]);
-    if (lengths.some(length => length === 'failed')) huggingFaceCache.delete(cacheKey);
-    const usable = lengths.filter((length): length is number => typeof length === 'number');
-    if (usable.length === 0) return undefined;
-    return Math.max(...usable);
-  })();
-  huggingFaceCache.set(cacheKey, pending);
-  return pending;
+  try {
+    return await loadHuggingFaceContextWindow(endpoint, repo, token);
+  } catch {
+    // Transient network failure: nothing cached, retry next call; fall back to
+    // the proprietary table for now.
+    return undefined;
+  }
 }
 
 /**
