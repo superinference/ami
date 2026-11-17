@@ -4,6 +4,11 @@ import type {
   ToolContext,
   ToolValidationResult,
 } from '../types';
+import {
+  validateAgainstSchema,
+  validateSchemaShape,
+  type JsonSchema,
+} from './synthetic-output';
 
 /**
  * task_complete — signal that the agent's task is finished.
@@ -24,10 +29,31 @@ import type {
  *     machine-readable validation error rather than being silently accepted.
  *   - ERROR SURFACING — a `failed` status surfaces as an error result; `partial` /
  *     `blocked` surface an honest "not fully complete" signal.
+ *   - SCHEMA-VALIDATED FINAL OUTPUT — an optional caller-supplied `resultSchema`
+ *     is validated (shape + payload) in validateInput so the concluding tool can
+ *     enforce a machine-readable `result`, mirroring Claude's SyntheticOutputTool
+ *     Ajv-backed conclusion ("Output does not match required schema: …").
+ *   - COMPLETION-HOOK VETO — a blocking `taskCompleted` hook can refuse a clean
+ *     completion and feed its reason back to the model (parity: Claude's
+ *     executeTaskCompletedHooks / getTaskCompletedHookMessage).
+ *   - ANTI-SELF-CERTIFICATION — a clean completion that did not affirm a
+ *     verification step gets a nudge to verify before the final summary (parity:
+ *     Claude's verificationNudge).
  *
  * (parity: Claude Code's task-completion signalling — status, result capture,
- * idempotency, validateInput.)
+ * idempotency, validateInput, schema-validated output, completion hooks.)
  */
+
+/**
+ * Anti-self-certification nudge appended to a clean completion the model did not
+ * affirm as verified. Mirrors Claude's verification-agent nudge: a caveat in the
+ * summary is not a substitute for actually running and observing the checks pass.
+ */
+const VERIFICATION_NUDGE =
+  'NOTE: You have not confirmed a verification step (set verified=true only after ' +
+  'you have actually run and observed the tests/checks pass). Verify the work before ' +
+  'your final summary — you cannot self-assign a PARTIAL outcome by listing caveats ' +
+  'in your summary; report an honest status instead of claiming success on unproven work.';
 
 /** Statuses the model may report. Normalised into canonical buckets below. */
 const SUCCESS_STATUSES = ['completed', 'complete', 'success', 'done'] as const;
@@ -141,6 +167,20 @@ export const taskCompleteTool: ToolDefinition = {
         description:
           'Optional structured result/outcome payload captured in the tool result metadata for the caller.',
       },
+      resultSchema: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'Optional JSON Schema the `result` payload MUST satisfy. When present, the ' +
+          'result is validated against it before completion and a precise ' +
+          '"Output does not match required schema" error is returned on mismatch.',
+      },
+      verified: {
+        type: 'boolean',
+        description:
+          'Set true ONLY after you have actually run and observed the relevant ' +
+          'tests/checks pass. A clean completion without this gets a verification nudge.',
+      },
     },
     required: ['summary'],
   },
@@ -154,6 +194,16 @@ export const taskCompleteTool: ToolDefinition = {
   async validateInput(
     input: Record<string, unknown>,
   ): Promise<ToolValidationResult> {
+    // Edge-case rejection: a present `summary` must be a string, so a non-string
+    // (object/array/number) can never be interpolated as "[object Object]" into
+    // the result. (parity: Claude's Tool.validateInput boundary type check.)
+    if (input.summary !== undefined && typeof input.summary !== 'string') {
+      return {
+        result: false,
+        message: 'Invalid summary: must be a string.',
+        errorCode: 1,
+      };
+    }
     if (input.status !== undefined && input.status !== null) {
       if (normalizeTaskStatus(input.status) === undefined) {
         return {
@@ -174,6 +224,32 @@ export const taskCompleteTool: ToolDefinition = {
         };
       }
     }
+    // Schema-validated final output: when a caller-supplied `resultSchema` is
+    // present, validate its shape then the `result` payload against it, returning
+    // a precise diagnostic on mismatch. (parity: Claude's SyntheticOutputTool
+    // Ajv-backed schema conclusion.)
+    if (input.resultSchema !== undefined && input.resultSchema !== null) {
+      const shapeErr = validateSchemaShape(input.resultSchema);
+      if (shapeErr) {
+        return {
+          result: false,
+          message: `Invalid resultSchema: ${shapeErr}.`,
+          errorCode: 1,
+        };
+      }
+      const errors = validateAgainstSchema(
+        input.result,
+        input.resultSchema as JsonSchema,
+        'result',
+      );
+      if (errors.length > 0) {
+        return {
+          result: false,
+          message: `Output does not match required schema: ${errors.join(', ')}`,
+          errorCode: 1,
+        };
+      }
+    }
     return { result: true };
   },
 
@@ -181,7 +257,10 @@ export const taskCompleteTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    const summary = (input.summary as string) || 'Task complete.';
+    // Type-safe read: a non-string that slipped past validateInput (e.g. a direct
+    // execute() call) falls back to the default rather than being interpolated.
+    const summary =
+      (typeof input.summary === 'string' ? input.summary : '') || 'Task complete.';
     const taskId = readTaskId(input);
 
     // Status: default to a clean completion when unspecified. An invalid token
@@ -212,8 +291,49 @@ export const taskCompleteTool: ToolDefinition = {
       };
     }
 
+    // 1b. COMPLETION-HOOK VETO: a blocking `taskCompleted` hook can refuse a CLEAN
+    //     completion and feed its reason back to the model, exactly like
+    //     task_update's status->completed gate. An honest failed/partial/blocked
+    //     signal is already "not done" and is never vetoed. A throwing hook never
+    //     blocks (best-effort). The task is NOT recorded, so the model can retry.
+    if (success && context._hookManager) {
+      let blocking: string[] = [];
+      try {
+        const r = await context._hookManager.executeTaskCompleted({
+          taskId: taskId ?? context.agentId ?? context.sessionId ?? 'task',
+          subject: summary,
+          status: 'completed',
+          signal: context.abortSignal,
+        });
+        const errs = (r as { blockingErrors?: unknown } | void)?.blockingErrors;
+        if (Array.isArray(errs)) {
+          blocking = errs.filter((e): e is string => typeof e === 'string');
+        }
+      } catch {
+        /* a throwing completion hook must not block the signal */
+      }
+      if (blocking.length > 0) {
+        return {
+          output:
+            `Task completion was BLOCKED by a TaskCompleted hook: ${blocking.join('; ')}\n\n` +
+            `The task is NOT complete. Address the feedback above, then signal completion ` +
+            `again. [reason: completion_blocked]`,
+          isError: true,
+          metadata: {
+            taskComplete: false,
+            completionBlocked: true,
+            status,
+            ...(taskId ? { taskId } : {}),
+            blockingErrors: blocking,
+          },
+        };
+      }
+    }
+
     const completedAt = new Date().toISOString();
     if (key !== undefined) completedTasks.add(key);
+
+    const verified = input.verified === true;
 
     // 2. RESULT CAPTURE: surface the structured outcome for the caller.
     const metadata: Record<string, unknown> = {
@@ -221,6 +341,7 @@ export const taskCompleteTool: ToolDefinition = {
       status,
       success,
       summary,
+      verified,
       completedAt,
     };
     if (taskId) metadata.taskId = taskId;
@@ -249,9 +370,11 @@ export const taskCompleteTool: ToolDefinition = {
       };
     }
 
-    // 4. Clean completion — the legacy signal, unchanged.
+    // 4. Clean completion — the legacy signal, plus an anti-self-certification
+    //    verification nudge when the model did not affirm it verified the work.
+    const base = `Task complete. Summary: ${summary}\n\nProduce your final response now. Do not make any more tool calls.`;
     return {
-      output: `Task complete. Summary: ${summary}\n\nProduce your final response now. Do not make any more tool calls.`,
+      output: verified ? base : `${base}\n\n${VERIFICATION_NUDGE}`,
       isError: false,
       metadata,
     };

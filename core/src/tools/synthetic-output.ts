@@ -3,7 +3,7 @@ import { ToolDefinition, ToolResult } from '../types';
 /** Hard cap on the serialized structured-output result size. */
 export const MAX_RESULT_SIZE_CHARS = 100_000;
 
-type JsonSchema = {
+export type JsonSchema = {
   type?: string | string[];
   properties?: Record<string, JsonSchema>;
   required?: string[];
