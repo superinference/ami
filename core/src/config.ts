@@ -2196,6 +2196,20 @@ export const CONFIG_FALLBACK_POLL_MS = 5000;
  */
 export const CONFIG_WATCH_RETRY_MS = 1000;
 
+/**
+ * Managed/policy-tier reconcile-poll interval (ms). The managed-settings file
+ * ({@link getManagedConfigPath}) frequently lives on a path `fs.watch` cannot
+ * reliably observe — a root-owned `/etc` entry, an MDM-pushed network/mount path,
+ * or a `config.d/` drop-in dir — so when managed-tier watching is enabled a
+ * dedicated low-frequency unref'd poll re-reads the merged managed layer and fires
+ * {@link ConfigService.onConfigChange} `source: 'managed'` ONLY when the serialized
+ * policy actually changed. Deliberately slower than the project/global reconcile
+ * poll: enterprise policy changes are rare and the read may hit a slow mount.
+ * Parity: Claude Code's remote/MDM managed-settings `POLLING_INTERVAL_MS` background
+ * refresh that fails open (a failed read is swallowed, never fail-closed mid-session).
+ */
+export const CONFIG_MANAGED_POLL_MS = 60000;
+
 export interface ConfigServiceOptions {
   /**
    * Target env object the project config's `env` block is re-applied to when the
@@ -2225,6 +2239,21 @@ export interface ConfigServiceOptions {
    * SettingSource and threading the real `source` tier through `onChange`.
    */
   watchGlobal?: boolean;
+  /**
+   * Also hot-reload the MANAGED/policy config tier ({@link getManagedConfigPath} +
+   * its `config.d/` drop-ins) mid-session. When enabled, a change to the merged
+   * managed policy fires the {@link ConfigService.onConfigChange} callbacks with
+   * `source: 'managed'`, so an administrator pushing an updated enterprise policy
+   * (or an MDM sync) takes effect without a restart. Backed by a dedicated poll
+   * ({@link CONFIG_MANAGED_POLL_MS}) PLUS an fs.watch on the managed base dir, and
+   * fails OPEN — a transient/tampered read during the refresh is swallowed, never
+   * fail-closed mid-session. Defaults off so a plain `new ConfigService(cwd)` keeps
+   * the project-only behavior. Parity: Claude Code's background managed/policy
+   * settings refresh + `notifyChange('policySettings')`.
+   */
+  watchManaged?: boolean;
+  /** Override the managed-tier reconcile-poll interval (ms); `<= 0` disables it. Test seam. */
+  managedPollMs?: number;
 }
 
 export class ConfigService {
@@ -2252,6 +2281,14 @@ export class ConfigService {
   private globalDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   /** Last-seen serialized global config, so a no-op watcher echo never fires a change. */
   private globalSnapshot: string | null = null;
+  /** Managed-tier (`getManagedConfigPath()`) watch, when `watchManaged` is enabled. */
+  private readonly managedConfigPath: string | null;
+  private readonly managedPollMs: number;
+  private managedWatcher: fs.FSWatcher | null = null;
+  private managedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private managedPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Last-seen serialized merged managed config, so an unchanged poll never fires. */
+  private managedSnapshot: string | null = null;
 
   constructor(cwd: string, opts: ConfigServiceOptions = {}) {
     this.configPath = path.join(cwd, '.ami', 'config.json');
@@ -2268,6 +2305,12 @@ export class ConfigService {
     const globalPath = opts.watchGlobal ? getGlobalConfigPath() : null;
     this.globalConfigPath = globalPath && globalPath !== this.configPath ? globalPath : null;
     if (this.globalConfigPath) this.globalSnapshot = this.readGlobalSnapshot();
+    // Managed-tier watch is resolved from the device-level managed base path (the
+    // SAME path loadManagedConfig's drop-in dir hangs off). Seed the baseline snapshot
+    // so the first real change — not the initial state — fires onConfigChange('managed').
+    this.managedPollMs = opts.managedPollMs ?? CONFIG_MANAGED_POLL_MS;
+    this.managedConfigPath = opts.watchManaged ? getManagedConfigPath() : null;
+    if (this.managedConfigPath) this.managedSnapshot = this.readManagedSnapshot();
   }
 
   /**
@@ -2299,7 +2342,9 @@ export class ConfigService {
     this.started = true;
     this.ensureWatch();
     this.ensureGlobalWatch();
+    this.ensureManagedWatch();
     this.startFallbackPoll();
+    this.startManagedPoll();
   }
 
   /**
@@ -2359,6 +2404,88 @@ export class ConfigService {
     for (const cb of this.onConfigChangeCallbacks) {
       try { cb('global', this.globalConfigPath!); } catch (err) { coreLog('config', 'onConfigChange callback error', { error: String(err) }); }
     }
+  }
+
+  /**
+   * Establish the managed-tier (`getManagedConfigPath()`) watcher when `watchManaged`
+   * is on and its base directory exists. A change fires the onConfigChange callbacks
+   * tagged `source: 'managed'`. Mirrors {@link ensureGlobalWatch}: it only NOTIFIES
+   * which tier changed (the engine re-reads the whole waterfall). A missing managed
+   * dir is a quiet no-op — the {@link startManagedPoll} reconcile poll still picks up
+   * the file appearing later (and covers `config.d/` drop-ins a non-recursive watcher
+   * cannot see).
+   */
+  private ensureManagedWatch(): void {
+    if (!this.managedConfigPath || this.managedWatcher) return;
+    const dir = path.dirname(this.managedConfigPath);
+    if (!fsHooks.existsSync(dir)) return;
+    try {
+      this.managedWatcher = fsHooks.watch(dir, (_e, filename) => this.onManagedWatchEvent(filename));
+      this.managedWatcher.unref();
+      this.managedWatcher.on('error', () => {
+        if (this.managedWatcher) { try { this.managedWatcher.close(); } catch { /* already dead */ } this.managedWatcher = null; }
+      });
+      coreLog('config', `watching managed config ${this.managedConfigPath} for changes`);
+    } catch {
+      // watch() can throw (inotify exhaustion / an unreadable /etc dir); leave managed
+      // hot-reload to the poll rather than breaking the project watcher.
+      this.managedWatcher = null;
+    }
+  }
+
+  /**
+   * Serialize the merged managed config for change detection, failing OPEN: a managed
+   * file that is absent, transiently unreadable, or (newly) tampered/broken throws from
+   * {@link loadManagedConfig} — here that is caught and collapsed to the `null` snapshot
+   * rather than crashing the poll, so a mid-session managed refresh never fail-closes the
+   * running session. The initial LOAD path (engine bootstrap) still fails closed; this is
+   * only the live-refresh safety net. Parity: Claude's background poll swallowing errors.
+   */
+  private readManagedSnapshot(): string {
+    try {
+      return JSON.stringify(loadManagedConfig() ?? null);
+    } catch {
+      return JSON.stringify(null);
+    }
+  }
+
+  /** Debounce a managed base-dir event into a single change notification. */
+  private onManagedWatchEvent(filename: string | null): void {
+    if (!this.managedConfigPath) return;
+    // React to the base file itself OR any `config.d/` drop-in change; a null filename
+    // (some platforms omit it) also triggers a re-check — the snapshot diff is the real
+    // gate, so an over-eager event is harmless (an unchanged policy fires nothing).
+    if (filename !== null && filename !== path.basename(this.managedConfigPath) && !filename.endsWith('.json')) return;
+    if (this.managedDebounceTimer) clearTimeout(this.managedDebounceTimer);
+    this.managedDebounceTimer = setTimeout(() => {
+      this.managedDebounceTimer = null;
+      this.processManagedChange();
+    }, this.debounceMs);
+    this.managedDebounceTimer.unref();
+  }
+
+  /** Fire onConfigChange('managed', …) when the merged managed policy actually changed. */
+  private processManagedChange(): void {
+    if (!this.managedConfigPath) return;
+    const next = this.readManagedSnapshot();
+    if (next === this.managedSnapshot) return;
+    this.managedSnapshot = next;
+    coreLog('config', `managed config ${this.managedConfigPath} changed; notifying listeners`);
+    for (const cb of this.onConfigChangeCallbacks) {
+      try { cb('managed', this.managedConfigPath); } catch (err) { coreLog('config', 'onConfigChange callback error', { error: String(err) }); }
+    }
+  }
+
+  /**
+   * Low-frequency unref'd reconcile poll for the managed tier, so a policy change on a
+   * path `fs.watch` cannot observe (root-owned `/etc`, an MDM network mount, a `config.d/`
+   * drop-in) is still picked up within one interval. Disabled when managed watching is
+   * off or the interval is non-positive. Parity: Claude's managed-settings background poll.
+   */
+  private startManagedPoll(): void {
+    if (this.managedPollTimer || !this.managedConfigPath || this.managedPollMs <= 0) return;
+    this.managedPollTimer = setInterval(() => { this.processManagedChange(); }, this.managedPollMs);
+    this.managedPollTimer.unref();
   }
 
   /**
@@ -2560,8 +2687,10 @@ export class ConfigService {
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.globalDebounceTimer) { clearTimeout(this.globalDebounceTimer); this.globalDebounceTimer = null; }
+    if (this.managedDebounceTimer) { clearTimeout(this.managedDebounceTimer); this.managedDebounceTimer = null; }
+    if (this.managedPollTimer) { clearInterval(this.managedPollTimer); this.managedPollTimer = null; }
     const closing: Array<Promise<void>> = [];
-    for (const w of [this.watcher, this.globalWatcher]) {
+    for (const w of [this.watcher, this.globalWatcher, this.managedWatcher]) {
       if (!w) continue;
       // A real FSWatcher is an EventEmitter and signals completion via a 'close' event;
       // await it so teardown can know the watcher has fully stopped. (A minimal test
@@ -2573,6 +2702,7 @@ export class ConfigService {
     }
     this.watcher = null;
     this.globalWatcher = null;
+    this.managedWatcher = null;
     this.started = false;
     return Promise.all(closing).then(() => undefined);
   }
