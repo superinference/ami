@@ -199,3 +199,45 @@ export const CRON_ENV = 'AMI_CRON';
 export function isCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return capabilityEnabled(env[CRON_ENV]);
 }
+
+/**
+ * Env var holding a comma-separated blanket DENY list for the advertised tool pool.
+ * PARITY (additive): mirrors Claude Code's `filterToolsByDenyRules` (tools.ts) — a
+ * config-driven blocklist that strips tools from the pool before the model sees them,
+ * instead of AMI's previously fixed-at-compile-time reserved set. Each entry is one of:
+ *   - an exact tool name (`web_search`),
+ *   - a `name*` prefix wildcard (`cron_*` drops the whole cron family),
+ *   - an `mcp__<server>` server rule that drops every `mcp__<server>__*` tool.
+ * Empty / unset → nothing denied (AMI's always-on default is preserved).
+ */
+export const DENY_TOOLS_ENV = 'AMI_DENY_TOOLS';
+
+/** Parse {@link DENY_TOOLS_ENV} into a de-duplicated, trimmed rule set. */
+export function parseDeniedTools(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const raw = env[DENY_TOOLS_ENV];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  );
+}
+
+/**
+ * True when `name` is blocked by any rule in `denied` — an exact match, a `prefix*`
+ * wildcard, or an `mcp__<server>` server rule that covers every tool namespaced to
+ * that server (`mcp__<server>__<tool>`). Shared matcher so the registry filter and
+ * any future caller apply identical deny semantics.
+ */
+export function isToolDenied(name: string, denied: ReadonlySet<string>): boolean {
+  if (denied.size === 0) return false;
+  if (denied.has(name)) return true;
+  for (const rule of denied) {
+    if (rule.endsWith('*') && name.startsWith(rule.slice(0, -1))) return true;
+    if (rule.startsWith('mcp__') && !rule.includes('*') && name.startsWith(`${rule}__`)) {
+      return true;
+    }
+  }
+  return false;
+}

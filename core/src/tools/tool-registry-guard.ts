@@ -39,6 +39,25 @@ export function validateToolName(name: string): string | null {
   return null;
 }
 
+/**
+ * PARITY (additive): canonical form of a tool name used for reserved-prefix and
+ * cross-source collision matching. Mirrors the intent of Claude Code's
+ * `normalizeNameForMCP` (services/mcp/normalization.ts): because
+ * {@link validateToolName} has already rejected any out-of-charset name by the
+ * time matching runs, canonicalization only has to fold the two spoof vectors a
+ * crafted non-core name could use to dodge an exact/`startsWith` reserved check —
+ * letter case (`Bash` vs `bash`) and doubled / leading underscores (`__bash`,
+ * `task__create`) that forge or pad the `__`/`_` delimiter.
+ *
+ * Unlike `normalizeNameForMCP`, AMI deliberately does NOT strip a TRAILING
+ * underscore: {@link RESERVED_TOOL_PREFIXES} uses a trailing `_` as a namespace
+ * boundary marker (`task_`, `agent_`), so a trailing `_` is significant and the
+ * prefix-boundary check (not canonicalization) is what matches `bash_`.
+ */
+export function canonicalToolName(name: string): string {
+  return name.toLowerCase().replace(/_+/g, '_').replace(/^_/, '');
+}
+
 /** Minimal structural shape a tool definition must satisfy to be registrable.
  *  Kept local (not importing the full `ToolDefinition`) so this guard stays a
  *  standalone building block. */
@@ -76,9 +95,14 @@ export function validateToolDefinition(tool: RegistrableToolLike): string | null
 }
 
 function matchesReservedPrefix(name: string): string | null {
+  // PARITY (additive): match on the CANONICAL form so a non-core source cannot slip
+  // a tool past the reserved guard with a case variant (`Bash`) or a doubled/leading
+  // underscore (`__bash`, `task__create`) that is equivalent after normalization.
+  const canonical = canonicalToolName(name);
   for (const prefix of RESERVED_TOOL_PREFIXES) {
-    const boundary = prefix.endsWith('_') ? prefix : prefix + '_';
-    if (name === prefix || name.startsWith(boundary)) return prefix;
+    const canonicalPrefix = prefix.toLowerCase();
+    const boundary = canonicalPrefix.endsWith('_') ? canonicalPrefix : canonicalPrefix + '_';
+    if (canonical === canonicalPrefix || canonical.startsWith(boundary)) return prefix;
   }
   return null;
 }
@@ -115,7 +139,9 @@ export function detectToolConflict(
       toolName,
       existingSource,
       conflictingSource: source,
-      reason: `Tool "${toolName}" already registered by "${existingSource}"`,
+      // PARITY (additive): state the OUTCOME + REMEDY, not just the condition —
+      // the incumbent stays active and the newcomer is ignored; renaming resolves it.
+      reason: `Tool "${toolName}" already registered by "${existingSource}" — the existing tool stays active and this one is ignored; rename the conflicting tool (e.g. prefix it with the plugin/server name) to register it alongside.`,
     };
   }
 
@@ -126,7 +152,29 @@ export function detectToolConflict(
         toolName,
         existingSource: 'core',
         conflictingSource: source,
-        reason: `Tool "${toolName}" conflicts with reserved prefix "${prefix}"`,
+        // PARITY (additive): outcome + remedy wording (see above).
+        reason: `Tool "${toolName}" conflicts with reserved prefix "${prefix}" — reserved for built-in tools, so this one is ignored; rename it (e.g. prefix it with the plugin/server name) so it is not dropped.`,
+      };
+    }
+  }
+
+  // PARITY (additive): canonical cross-source collision. Two textually-different
+  // names from DIFFERENT sources that collapse to the same canonical form (e.g. a
+  // plugin's `My_Tool` vs a core `my_tool`, or `__fetch` vs `fetch`) would collide
+  // once the provider normalizes them, silently shadowing one another. Catch it at
+  // the single registration chokepoint instead of at request time.
+  const canonical = canonicalToolName(toolName);
+  for (const [existingName, owner] of existingTools) {
+    if (
+      owner !== source &&
+      existingName !== toolName &&
+      canonicalToolName(existingName) === canonical
+    ) {
+      return {
+        toolName,
+        existingSource: owner,
+        conflictingSource: source,
+        reason: `Tool "${toolName}" collides with "${existingName}" (registered by "${owner}") after name canonicalization — the provider would treat them as the same tool; rename one so their canonical names differ.`,
       };
     }
   }
@@ -319,13 +367,21 @@ export function filterAvailableTools<
   tools: readonly T[],
   context?: C,
   alwaysAvailable?: ReadonlySet<string> | readonly string[],
+  denied?: (name: string) => boolean,
 ): T[] {
   const protectedSet =
     alwaysAvailable instanceof Set
       ? alwaysAvailable
       : new Set<string>(alwaysAvailable ?? []);
   return tools.filter((tool) => {
+    // Protected (ESSENTIAL + ORCHESTRATION tier) tools can never be gated out — this
+    // precedence preserves the TUI/CLI parity invariant that a stance can be activated
+    // from any tier, so an operator `deny` knob applies only to the non-protected pool.
     if (protectedSet.has(tool.name)) return true;
+    // PARITY (additive): operator-configurable blanket deny of a tool/source from the
+    // advertised pool, mirroring Claude Code's `filterToolsByDenyRules` (tools.ts) —
+    // a denied tool is stripped before the model ever sees it.
+    if (denied && denied(tool.name)) return false;
     if (typeof tool.isEnabled !== 'function') return true;
     return tool.isEnabled(context) === true;
   });

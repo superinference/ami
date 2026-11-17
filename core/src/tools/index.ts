@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolInputSchema, ToolContext } from '../types';
 import { ToolRegistryGuard, type ToolConflict, filterAvailableTools } from './tool-registry-guard';
+import { parseDeniedTools, isToolDenied } from './tool-gates';
 import { bashTool } from './bash';
 import { fileReadTool } from './file-read';
 import { fileEditTool } from './file-edit';
@@ -191,7 +192,17 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     lspTool,
   ];
 
-  for (const tool of filterAvailableTools<ToolDefinition, ToolContext>(allTools)) {
+  // PARITY (additive): apply the operator-configurable AMI_DENY_TOOLS blocklist so a
+  // denied tool/server is stripped from the pool before registration (and therefore
+  // before the model or tool-search can see it), mirroring Claude's deny-rule filter.
+  const denied = parseDeniedTools();
+  const denyPredicate = denied.size > 0 ? (name: string) => isToolDenied(name, denied) : undefined;
+  for (const tool of filterAvailableTools<ToolDefinition, ToolContext>(
+    allTools,
+    undefined,
+    undefined,
+    denyPredicate,
+  )) {
     registry.register(tool);
   }
 
@@ -352,6 +363,9 @@ export {
   LSP_ENV,
   WORKFLOW_SCRIPTS_ENV,
   CRON_ENV,
+  DENY_TOOLS_ENV,
+  parseDeniedTools,
+  isToolDenied,
 } from './tool-gates';
 export {
   getToolCategory,

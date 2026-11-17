@@ -342,7 +342,7 @@ export type { CustomizationSurface, StrictPluginOnlyPolicy } from './plugin-only
 export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveManagedApproval, MANAGED_SETTINGS_DECISIONS } from './managed-settings-guard';
 export type { ManagedSettingsDecision, ManagedSettingsReview } from './managed-settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
-export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, filterAvailableTools, toolMatchesName, findToolByName, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
+export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, canonicalToolName, filterAvailableTools, toolMatchesName, findToolByName, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
 export type { ToolConflict, RegistrableToolLike } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
