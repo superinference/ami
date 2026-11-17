@@ -119,3 +119,24 @@ export function getSymbolAtPosition(
     return null;
   }
 }
+
+/**
+ * Resolve the symbol at a USER-FACING 1-based `(line, character)` — the coordinate
+ * form editors and the LSP tool's `line`/`character` inputs use — by converting to
+ * the 0-based protocol indices {@link getSymbolAtPosition} expects (`line-1`,
+ * `character-1`) and delegating. Mirrors Claude Code's `getSymbolAtPosition`
+ * call-site conversion (tools/LSPTool/UI.tsx: `getSymbolAtPosition(filePath,
+ * line-1, character-1)`), consolidating the off-by-one into ONE place so every
+ * 1-based caller resolves the same symbol instead of re-deriving the conversion.
+ * A non-positive line/character (0-based would be negative) returns `null`.
+ */
+export function getSymbolAtPosition1Based(
+  filePath: string,
+  line: number,
+  character: number,
+): string | null {
+  if (!Number.isInteger(line) || !Number.isInteger(character) || line < 1 || character < 1) {
+    return null;
+  }
+  return getSymbolAtPosition(filePath, line - 1, character - 1);
+}

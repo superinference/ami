@@ -28,7 +28,22 @@ export {
   resolvePluginLspEnvironment,
 } from './config';
 export type { LspServerConfig, LspPluginEnvironment } from './config';
-export { getSymbolAtPosition, MAX_READ_BYTES, MAX_SYMBOL_LENGTH } from './symbol-context';
+export { getSymbolAtPosition, getSymbolAtPosition1Based, MAX_READ_BYTES, MAX_SYMBOL_LENGTH } from './symbol-context';
+export {
+  getMatchingLspPlugins,
+  getTopLspRecommendation,
+  applyLspRecommendationResponse,
+  formatLspRecommendationHint,
+  lspFileExtension,
+  LspRecommendationSession,
+} from './recommendation';
+export type {
+  LspRecommendationResponse,
+  LspRecommendationConfig,
+  LspPluginCandidate,
+  LspPluginRecommendation,
+  MatchLspPluginsOptions,
+} from './recommendation';
 export {
   LSPDiagnosticRegistry,
   getLSPDiagnosticRegistry,
