@@ -1297,6 +1297,32 @@ export function getAwaitingPlanApprovalRequestId(agentName: string): string | un
   return awaitingPlanApproval.get(agentName);
 }
 
+/**
+ * Purge the PENDING cross-agent request/handshake registries that must NOT survive a
+ * session reset (`/clear`): the outstanding shutdown-request handshakes
+ * ({@link hasOutstandingShutdownRequest}) and the blocked-on-plan-approval boundaries
+ * ({@link isAwaitingPlanApproval}). These are AMI's analog of Claude Code's pending
+ * permission-callback registry, which `/clear` wipes via `clearAllPendingCallbacks`
+ * (hooks/useSwarmPermissionPoller.ts L108-116) so a fresh conversation never inherits a
+ * stale "teammate X is still mid-shutdown / still awaiting plan approval" decision. Left
+ * unresolved, such state wrongly SHORT-CIRCUITS a new request after `/clear`: a re-sent
+ * shutdown_request is treated as an idempotent no-op against last session's outstanding
+ * handshake (execute's `outstandingShutdowns.get(toRaw)` early return), and a teammate is
+ * reported blocked on a plan it submitted in a conversation that no longer exists.
+ *
+ * Deliberately leaves the live mailbox QUEUES untouched — an in-process teammate that is
+ * still running keeps its inbox; only the pending-DECISION bookkeeping is reset. For a
+ * full per-agent teardown (queues, waiters, notifiers, …) use {@link purgeMailbox}; for a
+ * whole-process reset (tests) use {@link resetAllMailboxes}. Returns the total number of
+ * pending entries cleared, so a caller can surface an introspectable confirmation.
+ */
+export function clearPendingCrossAgentHandshakes(): number {
+  const cleared = outstandingShutdowns.size + awaitingPlanApproval.size;
+  outstandingShutdowns.clear();
+  awaitingPlanApproval.clear();
+  return cleared;
+}
+
 // --- Open task-assignment tracking (for the shutdown/terminate summary) ------
 // A task_assignment routed to a teammate opens a unit of work owned BY that
 // teammate; a matching idle_notification carrying `completedTaskId` closes it.
