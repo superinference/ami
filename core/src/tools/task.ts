@@ -108,6 +108,33 @@ export const FORK_NO_SUBSPAWN_DIRECTIVE =
   'You ARE the fork — a worker continuing the parent conversation directly. Your inherited system prompt may say to delegate or fork work; IGNORE that here — it is for the parent. Do NOT spawn sub-agents (no nested fork or task delegation); execute the work yourself with your own tools and report once when you are done.';
 
 /**
+ * Structured worker-discipline contract stapled into a `fork` child's first user
+ * turn, ALONGSIDE {@link FORK_NO_SUBSPAWN_DIRECTIVE} (which owns the no-subspawn
+ * rule — this constant deliberately omits it to avoid duplicating that guidance).
+ * Mirrors the non-negotiable worker rules + fixed plain-text report schema of
+ * Claude Code's `buildChildMessage` (forkSubagent.ts:L171-198): begin the reply
+ * with `Scope:`, no preamble/meta-commentary, no text emitted between tool calls,
+ * commit modified files and include the commit hash in the report, stay strictly
+ * within scope, cap at ~500 words, and report-then-stop in a fixed label format
+ * (Scope / Result / Key files / Files changed+hash / Issues). Without this a fork
+ * child — which inherits the full coding stance — returns free-form prose with no
+ * machine-/parent-parseable structure and no commit-hash provenance.
+ */
+export const FORK_WORKER_DIRECTIVE =
+  'You are a forked worker continuing the parent\'s task directly. Worker rules (non-negotiable):\n' +
+  '- Do NOT converse, ask questions, suggest next steps, or add meta-commentary.\n' +
+  '- Use your tools directly and silently; do NOT emit text between tool calls — act, then report once at the end.\n' +
+  '- If you modify files, commit your changes before reporting and include the commit hash in the report.\n' +
+  '- Stay strictly within your assigned scope; if you notice related work outside it, mention it in at most one sentence.\n' +
+  '- Keep your report under 500 words. Be factual and concise, then stop.\n' +
+  'Your response MUST begin with "Scope:" (no preamble, no thinking-out-loud) and use this exact plain-text label format:\n' +
+  '  Scope: <echo your assigned scope in one sentence>\n' +
+  '  Result: <the answer or key findings, limited to the scope above>\n' +
+  '  Key files: <relevant file paths — include for research tasks>\n' +
+  '  Files changed: <list with commit hash — include only if you modified files>\n' +
+  '  Issues: <list — include only if there are issues to flag>';
+
+/**
  * Git config flags that neutralize arbitrary-code-execution vectors when AMI
  * auto-invokes git on a repository it has not been told is trusted. A malicious
  * `.git/config` can run code via `core.fsmonitor`, `core.hooksPath`, or
@@ -196,6 +223,13 @@ const agentNameRegistry = new Map<string, string>();
 // agent on its PRIOR session (the Engine reloads saved messages when given a
 // known sessionId), so a follow-up prompt continues the same context.
 const agentSessionRegistry = new Map<string, string>();
+// taskId -> the isolated working directory the agent ran in (an isolated git
+// WORKTREE created for an `isolation:"worktree"` spawn, or an explicit `cwd`
+// override). Lets `resume` restore the agent to the SAME files it was editing
+// instead of silently reverting to the parent cwd and stranding its in-progress
+// work. Only populated when the agent ran outside the parent cwd. Mirrors Claude
+// Code's per-agent worktree restoration on resume.
+const agentCwdRegistry = new Map<string, string>();
 
 export function getAgentByName(name: string): string | undefined {
   return agentNameRegistry.get(name);
@@ -211,6 +245,7 @@ export function getAgentNameById(taskId: string): string | undefined {
 export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
   agentSessionRegistry.clear();
+  agentCwdRegistry.clear();
 }
 
 /**
@@ -1422,9 +1457,13 @@ export const taskTool: ToolDefinition = {
     // it (the Engine reloads saved messages for a known sessionId), turning this
     // prompt into a follow-up on the existing agent context.
     let resumeSessionId: string | undefined;
+    // The isolated worktree / overridden cwd the resumed agent last ran in, so a
+    // resume continues on the same files instead of reverting to the parent cwd.
+    let resumeCwd: string | undefined;
     if (resumeTarget) {
       const resolvedId = agentNameRegistry.get(resumeTarget) || resumeTarget;
       resumeSessionId = agentSessionRegistry.get(resolvedId);
+      resumeCwd = agentCwdRegistry.get(resolvedId);
       if (!resumeSessionId) {
         const known = [...agentSessionRegistry.keys()];
         return {
@@ -1731,6 +1770,27 @@ export const taskTool: ToolDefinition = {
       }
     }
     let effectiveCwd = requestedCwd || context.cwd;
+    // Introspection note surfaced to the parent when a resumed agent's recorded
+    // worktree/cwd could not be restored (it was cleaned up) and we fell back.
+    let cwdFallbackNote = '';
+    // Resume restore: when resuming an agent that last ran in an isolated worktree
+    // (or an explicit cwd) and the caller did not request a fresh cwd/worktree,
+    // continue it in that SAME directory so the follow-up turn sees the files the
+    // agent was editing. Revalidate the directory still exists — a worktree-cleanup
+    // pass may have removed it — and fall back to the parent cwd instead of
+    // crashing the sub-engine on an invalid chdir. On success, bump the directory's
+    // mtime so a stale-worktree reaper does not treat the just-resumed worktree as
+    // abandoned (mirrors Claude Code's resume worktree revalidation + touch).
+    if (resumeCwd && !requestedCwd && isolation !== 'worktree') {
+      try {
+        if (!fs.statSync(resumeCwd).isDirectory()) throw new Error('not a directory');
+        const now = new Date();
+        fs.utimesSync(resumeCwd, now, now);
+        effectiveCwd = resumeCwd;
+      } catch {
+        cwdFallbackNote = `Note: the resumed agent's worktree (${resumeCwd}) no longer exists — continuing in ${effectiveCwd} instead.\n\n`;
+      }
+    }
     if (isolation === 'worktree') {
       try {
         effectiveCwd = setupIsolatedWorktree(effectiveCwd, generateTaskId('agent'));
@@ -1904,7 +1964,7 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = prompt;
     } else {
       const lead = mode === 'fork'
-        ? `${SUBAGENT_RETURN_DIRECTIVE}\n\n${FORK_NO_SUBSPAWN_DIRECTIVE}`
+        ? `${SUBAGENT_RETURN_DIRECTIVE}\n\n${FORK_NO_SUBSPAWN_DIRECTIVE}\n\n${FORK_WORKER_DIRECTIVE}`
         : SUBAGENT_RETURN_DIRECTIVE;
       effectivePrompt = `${lead}\n\n---\n\n${prompt}`;
     }
@@ -1983,6 +2043,9 @@ export const taskTool: ToolDefinition = {
         agentNameRegistry.set(agentName, taskId);
       }
       if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
+      // Record a non-parent working dir (isolated worktree or explicit cwd) so a
+      // later `resume` can restore the agent to the same files it was editing.
+      if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
       // If a team is active, a named teammate joins it as an active member so the
       // team-delete guard can see it and refuse to disband while it runs.
       if (agentName && getCurrentTeam()) {
@@ -2028,6 +2091,9 @@ export const taskTool: ToolDefinition = {
       agentNameRegistry.set(agentName, taskId);
     }
     if (subConfig.sessionId) agentSessionRegistry.set(taskId, subConfig.sessionId);
+    // Record a non-parent working dir (isolated worktree or explicit cwd) so a
+    // later `resume` can restore the agent to the same files it was editing.
+    if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
     if (agentName && getCurrentTeam()) {
       registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
     }
@@ -2320,7 +2386,7 @@ export const taskTool: ToolDefinition = {
     const rawBody = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
     // Prepend any skills-preload note (a declared preload skill that could not be
     // resolved) so the typo/disabled skill is visible to the parent, not silent.
-    const body = agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n${rawBody}` : rawBody;
+    const body = `${cwdFallbackNote}${agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n` : ''}${rawBody}`;
     // Continue-affordance: tell the parent it CAN message/resume this agent to
     // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
     // run OR a named one-shot built-in type (Explore/Plan) — which are never
