@@ -233,6 +233,8 @@ export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, Au
 export { stripDisplayTags } from './utils/display-tags';
 export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
 export type { PythonPackageManager } from './utils/package-manager';
+export { getInstallPlatform, getOsRelease, isDistroFamily, detectMise, detectAsdf, detectHomebrew, detectWinget, detectPacman, detectDeb, detectRpm, detectApk, getPackageManager, upgradeInstructionFor, resetPackageManagerCaches, packageManagerHooks } from './package-manager';
+export type { PackageManager, InstallPlatform, OsRelease } from './package-manager';
 export { ProcessManager, TASK_STATUS, TASK_KINDS, TASK_ATTENTION_STATES, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
 export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta, TaskMessage, ForegroundSync } from './process-manager';
 
