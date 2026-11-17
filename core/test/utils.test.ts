@@ -185,19 +185,25 @@ describe('truncateToTokenLimit', () => {
     const text = 'a'.repeat(1000); // 250 tokens
     const result = truncateToTokenLimit(text, 10); // max 10 tokens = ~40 chars
     assert.ok(result.length < text.length);
-    assert.ok(result.includes('[truncated]'));
+    assert.ok(result.includes('[truncated'));
+    assert.match(result, /tokens omitted/);
   });
 
-  it('returns [truncated] for maxTokens <= 0', () => {
-    assert.equal(truncateToTokenLimit('anything', 0), '[truncated]');
-    assert.equal(truncateToTokenLimit('anything', -1), '[truncated]');
+  it('returns a quantified marker for maxTokens <= 0', () => {
+    for (const budget of [0, -1]) {
+      const out = truncateToTokenLimit('anything', budget);
+      assert.match(out, /tokens omitted/);
+      assert.match(out, /request the specific section to see the rest/);
+    }
   });
 
   it('preserves beginning of text when truncating', () => {
+    // Budget must exceed the informative marker's own token cost for any content
+    // to be preserved; at tiny budgets the marker alone is returned.
     const text = 'START_MARKER' + 'x'.repeat(1000);
-    const result = truncateToTokenLimit(text, 20);
+    const result = truncateToTokenLimit(text, 100);
     assert.ok(result.startsWith('START_MARKER'));
-    assert.ok(result.includes('[truncated]'));
+    assert.ok(result.includes('[truncated'));
   });
 
   it('does not truncate text exactly at the limit', () => {

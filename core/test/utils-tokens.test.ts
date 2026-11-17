@@ -4,6 +4,7 @@ import {
   estimateTokens,
   estimateToolSchemaTokens,
   truncateToTokenLimit,
+  truncationMarker,
 } from '../src/utils/tokens';
 
 // ---------------------------------------------------------------------------
@@ -148,24 +149,36 @@ describe('truncateToTokenLimit – unit', () => {
     assert.equal(truncateToTokenLimit('hello', 100), 'hello');
   });
 
-  it('returns [truncated] for maxTokens = 0', () => {
-    assert.equal(truncateToTokenLimit('any', 0), '[truncated]');
+  it('drops the whole input and quantifies it for maxTokens = 0', () => {
+    // 'any' = 3 chars ≈ 1 token; the marker has no leading newline (nothing kept).
+    assert.equal(
+      truncateToTokenLimit('any', 0),
+      '[truncated — ~1 tokens omitted; request the specific section to see the rest]',
+    );
   });
 
-  it('returns [truncated] for maxTokens < 0', () => {
-    assert.equal(truncateToTokenLimit('any', -5), '[truncated]');
+  it('drops the whole input and quantifies it for maxTokens < 0', () => {
+    const result = truncateToTokenLimit('any', -5);
+    assert.ok(!result.startsWith('\n'));
+    assert.match(result, /~1 tokens omitted/);
+    assert.match(result, /request the specific section to see the rest/);
   });
 
-  it('truncates text exceeding the limit', () => {
+  it('truncates text exceeding the limit with a quantified recovery marker', () => {
     const text = 'x'.repeat(1000);
     const result = truncateToTokenLimit(text, 10);
     assert.ok(result.length < text.length);
-    assert.ok(result.endsWith('[truncated]'));
+    assert.ok(result.includes('[truncated'));
+    assert.match(result, /tokens omitted/);
+    assert.match(result, /request the specific section to see the rest/);
+    // The omitted-token figure is a real number, not a bare marker.
+    assert.match(result, /~\d+ tokens omitted/);
   });
 
   it('preserves the start of the text', () => {
+    // Budget exceeds the informative marker's own token cost, so content is kept.
     const text = 'START' + 'x'.repeat(1000);
-    const result = truncateToTokenLimit(text, 20);
+    const result = truncateToTokenLimit(text, 100);
     assert.ok(result.startsWith('START'));
   });
 
@@ -178,10 +191,11 @@ describe('truncateToTokenLimit – unit', () => {
     assert.equal(truncateToTokenLimit(text, 10), text);
   });
 
-  it('includes [truncated] marker in output', () => {
+  it('includes the truncation marker in output', () => {
     const text = 'a'.repeat(200);
     const result = truncateToTokenLimit(text, 5);
-    assert.ok(result.includes('[truncated]'));
+    assert.ok(result.includes('[truncated'));
+    assert.match(result, /tokens omitted/);
   });
 
   it('truncates harder for a denser charsPerToken ratio', () => {
@@ -191,8 +205,8 @@ describe('truncateToTokenLimit – unit', () => {
     // At the JSON ratio the same text is 200 tokens, so it must be truncated to fit 100.
     const dense = truncateToTokenLimit(text, 100, 2);
     assert.ok(dense.length < text.length);
-    assert.ok(dense.endsWith('[truncated]'));
-    // The truncated result genuinely fits the budget at the same ratio.
+    assert.match(dense, /tokens omitted/);
+    // The truncated result genuinely fits the budget at the same ratio, marker included.
     assert.ok(estimateTokens(dense, 2) <= 100);
   });
 
@@ -200,5 +214,34 @@ describe('truncateToTokenLimit – unit', () => {
     const text = 'a'.repeat(40); // exactly 10 tokens @4:1
     assert.equal(truncateToTokenLimit(text, 10, 0), text);
     assert.equal(truncateToTokenLimit(text, 10, -2), text);
+  });
+
+  it('reports a larger omitted-token count the more is dropped (discriminates the quantity)', () => {
+    const small = truncateToTokenLimit('a'.repeat(400), 10);
+    const big = truncateToTokenLimit('a'.repeat(4000), 10);
+    const n = (s: string): number => Number(/~(\d+) tokens omitted/.exec(s)?.[1]);
+    assert.ok(n(small) > 0);
+    assert.ok(n(big) > n(small), `expected ${n(big)} > ${n(small)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// truncationMarker
+// ---------------------------------------------------------------------------
+
+describe('truncationMarker – unit', () => {
+  it('quantifies omitted tokens and gives a recovery hint', () => {
+    const m = truncationMarker(42, true);
+    assert.match(m, /~42 tokens omitted/);
+    assert.match(m, /request the specific section to see the rest/);
+  });
+
+  it('prepends a newline only when content was kept', () => {
+    assert.ok(truncationMarker(5, true).startsWith('\n'));
+    assert.ok(!truncationMarker(5, false).startsWith('\n'));
+  });
+
+  it('never reports a negative omitted count', () => {
+    assert.match(truncationMarker(-3, false), /~0 tokens omitted/);
   });
 });

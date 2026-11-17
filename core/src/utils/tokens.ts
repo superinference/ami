@@ -69,9 +69,30 @@ export function estimateToolSchemaTokens(
 }
 
 /**
+ * Builds an informative truncation marker that quantifies how much was dropped
+ * and hints at how to recover the rest (parity with Claude's quantified
+ * end-truncation markers — `... [output truncated - NKB removed]` /
+ * `truncated ... Use FileReadTool to read more`). A bare `[truncated]` tells the
+ * reader only that *something* was cut, with no sense of HOW MUCH is missing or
+ * that more is retrievable, which invites silently acting on partial data; the
+ * omitted-token count plus the recovery hint make the gap and the remedy
+ * explicit.
+ *
+ * `leadingNewline` separates the marker from preserved content when text was
+ * kept; it is omitted when the whole input was dropped (nothing to separate
+ * from).
+ */
+export function truncationMarker(omittedTokens: number, leadingNewline: boolean): string {
+  const prefix = leadingNewline ? '\n' : '';
+  return `${prefix}[truncated — ~${Math.max(0, omittedTokens)} tokens omitted; request the specific section to see the rest]`;
+}
+
+/**
  * Truncates text so that it approximately fits within `maxTokens`.
  * If the text is already within the limit it is returned unchanged.
- * Otherwise it is sliced and a `[truncated]` marker is appended.
+ * Otherwise it is sliced and an informative truncation marker is appended that
+ * quantifies the omitted tokens and hints at how to retrieve the rest (see
+ * {@link truncationMarker}).
  *
  * `charsPerToken` (default ~4) controls the ratio used for both the budget
  * check and the slice length, so dense content (e.g. JSON — pass
@@ -84,15 +105,23 @@ export function truncateToTokenLimit(
   maxTokens: number,
   charsPerToken: number = CHARS_PER_TOKEN,
 ): string {
-  if (maxTokens <= 0) return '[truncated]';
   const ratio = charsPerToken > 0 ? charsPerToken : CHARS_PER_TOKEN;
-  if (estimateTokens(text, ratio) <= maxTokens) return text;
+  const totalTokens = estimateTokens(text, ratio);
+  // No budget at all: the entire input is dropped, so the marker (with no
+  // leading newline — there is no preserved content to separate from) reports
+  // every token as omitted.
+  if (maxTokens <= 0) return truncationMarker(totalTokens, false);
+  if (totalTokens <= maxTokens) return text;
 
-  // Reserve a small amount of space for the truncation marker
-  const markerText = '\n[truncated]';
-  const markerTokens = estimateTokens(markerText, ratio);
+  // Reserve space for the marker. Its length depends on the omitted-token count,
+  // so size the reservation with the full-text token total — a conservative
+  // upper bound on the final count, keeping the kept slice safely within budget
+  // regardless of how much is ultimately dropped.
+  const markerTokens = estimateTokens(truncationMarker(totalTokens, true), ratio);
   const availableTokens = Math.max(0, maxTokens - markerTokens);
   const maxChars = availableTokens * ratio;
+  const kept = text.slice(0, maxChars);
+  const omittedTokens = Math.max(1, totalTokens - estimateTokens(kept, ratio));
 
-  return text.slice(0, maxChars) + markerText;
+  return kept + truncationMarker(omittedTokens, true);
 }

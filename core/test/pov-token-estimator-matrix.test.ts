@@ -330,18 +330,24 @@ describe('pov/token-estimator matrix: truncateToTokenLimit (companion of tokens.
     assert.equal(truncateToTokenLimit(text, 1000), text);
   });
 
-  it('maxTokens <= 0 returns the bare marker', () => {
-    assert.equal(truncateToTokenLimit('anything', 0), '[truncated]');
-    assert.equal(truncateToTokenLimit('anything', -5), '[truncated]');
+  it('maxTokens <= 0 returns a quantified marker for the whole input', () => {
+    for (const budget of [0, -5]) {
+      const out = truncateToTokenLimit('anything', budget);
+      assert.ok(!out.startsWith('\n'));
+      assert.match(out, /tokens omitted/);
+      assert.match(out, /request the specific section to see the rest/);
+    }
   });
 
-  it('truncates long text and appends the marker', () => {
+  it('truncates long text and appends the quantified recovery marker', () => {
     const text = 'a'.repeat(1000);
-    const out = truncateToTokenLimit(text, 10);
-    assert.ok(out.endsWith('\n[truncated]'));
+    // Budget large enough to exceed the informative marker's own cost, so the
+    // reserve-space invariant (content + marker fits the budget) holds.
+    const out = truncateToTokenLimit(text, 100);
+    assert.match(out, /\n\[truncated — ~\d+ tokens omitted; request the specific section to see the rest\]$/);
     assert.ok(out.length < text.length);
-    // Result fits within the requested budget.
-    assert.ok(estimateTokens(out) <= 10);
+    // Result fits within the requested budget, marker included.
+    assert.ok(estimateTokens(out) <= 100);
   });
 
   it('text exactly at the limit is returned unchanged', () => {
