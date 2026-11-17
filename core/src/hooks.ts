@@ -1383,10 +1383,23 @@ export function substitutePluginData(text: string, dataDir: string | undefined):
  * callers that export it to a hook create it best-effort first.
  */
 export function resolvePluginDataDir(pluginRoot: string | undefined): string | undefined {
-  if (!pluginRoot || !pluginRoot.trim()) return undefined;
-  const id = sanitizePluginIdSegment(path.basename(pluginRoot.trim()));
+  const id = resolvePluginId(pluginRoot);
   if (!id) return undefined;
   return path.join(os.homedir(), '.ami', 'plugin-data', id);
+}
+
+/**
+ * Resolve the stable plugin IDENTIFIER for a hook whose bundle lives at
+ * `pluginRoot` — the sanitized basename of the bundle root (Claude Code's
+ * per-hook `pluginId` provenance). Canonical: reused by {@link resolvePluginDataDir}
+ * (the data-dir key) and by the hook rewake payload so a backgrounded plugin hook's
+ * completion/wake message is attributable to the plugin that installed it. Returns
+ * `undefined` when `pluginRoot` is empty or its basename sanitizes to nothing.
+ */
+export function resolvePluginId(pluginRoot: string | undefined): string | undefined {
+  if (!pluginRoot || !pluginRoot.trim()) return undefined;
+  const id = sanitizePluginIdSegment(path.basename(pluginRoot.trim()));
+  return id || undefined;
 }
 
 /**
@@ -2026,6 +2039,11 @@ export interface CommandHookConfig {
    *  skillRoot). Populated by loadFromFile's plugin-discovery block; absent for
    *  filesystem (.ami/.claude/config) hooks. */
   pluginRoot?: string;
+  /** Name of the plugin bundle that contributed this hook, when it came from a
+   *  plugin. Carried onto the runtime config so a backgrounded (asyncRewake) hook's
+   *  completion/wake payload is attributable to its plugin (Claude Code's per-hook
+   *  `pluginName`/`pluginId` provenance). Absent for filesystem/config hooks. */
+  pluginName?: string;
 }
 
 export interface PromptHookConfig {
@@ -2044,6 +2062,11 @@ export interface PromptHookConfig {
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
+  /** Plugin bundle root + name when contributed by a plugin — carried so a
+   *  backgrounded prompt hook's rewake payload is attributable to its plugin
+   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+  pluginRoot?: string;
+  pluginName?: string;
 }
 
 export interface HttpHookConfig {
@@ -2067,6 +2090,11 @@ export interface HttpHookConfig {
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
+  /** Plugin bundle root + name when contributed by a plugin — carried so a
+   *  backgrounded HTTP hook's rewake payload is attributable to its plugin
+   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+  pluginRoot?: string;
+  pluginName?: string;
 }
 
 /**
@@ -2095,6 +2123,11 @@ export interface AgentHookConfig {
   asyncRewake?: boolean;
   /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
   statusMessage?: string;
+  /** Plugin bundle root + name when contributed by a plugin — carried so a
+   *  backgrounded agent hook's rewake payload is attributable to its plugin
+   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+  pluginRoot?: string;
+  pluginName?: string;
 }
 
 export interface HookDecisionOutput {
@@ -3451,6 +3484,24 @@ export class HookManager extends EventEmitter {
     this.emit('hookError', { hookType: config.type, hook: describeHookContent(config), error });
   }
 
+  /**
+   * Plugin provenance for a hook's rewake payload (Claude Code's per-hook
+   * `pluginName`/`pluginId`): the installing plugin's name + stable id, derived
+   * from the plugin root loadFromFile stamped onto the config. Empty object for a
+   * filesystem/config hook (no plugin), so spreading it adds nothing. Lets the
+   * engine attribute a backgrounded hook's `[hookRewake]` system message to its
+   * plugin instead of an anonymous completion notice.
+   */
+  private rewakeAttribution(
+    config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+  ): { pluginName?: string; pluginId?: string } {
+    const out: { pluginName?: string; pluginId?: string } = {};
+    if (config.pluginName) out.pluginName = config.pluginName;
+    const id = resolvePluginId(config.pluginRoot);
+    if (id) out.pluginId = id;
+    return out;
+  }
+
   private postSamplingHooks: HookFn[] = [];
   private stopHooks: StopHookFn[] = [];
   /** Re-entrancy guard: a Stop hook (or its blocking-error re-entry) must not
@@ -3608,6 +3659,14 @@ export class HookManager extends EventEmitter {
           // `${CLAUDE_PLUGIN_ROOT}` placeholders / CLAUDE_PLUGIN_ROOT env resolve to
           // the bundle root at execution time (Claude Code plugin-hook substitution).
           if (pluginRoot && entry.hook && entry.hook.type === 'command') entry.hook.pluginRoot = pluginRoot;
+          // Carry plugin provenance (root + name) onto EVERY hook config type so a
+          // backgrounded (asyncRewake) hook's completion/wake payload is attributable
+          // to the plugin that installed it (Claude Code per-hook `pluginId`). The
+          // runner only sees the config, so the attribution must live on it.
+          if (entry.hook) {
+            if (pluginRoot) entry.hook.pluginRoot = pluginRoot;
+            if (pluginName) entry.hook.pluginName = pluginName;
+          }
           if (source === 'project' && !this._workspaceTrusted) {
             coreLog('hooks', `Skipping project hook (workspace not trusted): ${entry.event}`);
             continue;
@@ -5480,7 +5539,7 @@ export class HookManager extends EventEmitter {
             // Exit 2 is a BLOCKING error, not a clean run: a once hook must retry.
             if (outcome) outcome.success = false;
             if (config.asyncRewake) {
-              this.emit('hookRewake', { event: 'command', message: (stderr || stdout).trim() || 'Background hook completed with exit code 2' });
+              this.emit('hookRewake', { event: 'command', message: (stderr || stdout).trim() || 'Background hook completed with exit code 2', ...this.rewakeAttribution(config) });
             }
             return `DENY:${(stderr || stdout || 'Hook blocked (exit 2)').trim()}`;
           }
@@ -5574,8 +5633,8 @@ export class HookManager extends EventEmitter {
     // Fail-OPEN: a prompt hook whose sub-engine errored/timed out returns '' —
     // surface the error visibly so it is not silent (Claude Code parity).
     if (r.error) this.emitHookError(config, r.error);
-    if (config.asyncRewake && r.error) this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${r.error}` });
-    if (config.asyncRewake && r.output.startsWith('DENY:')) this.emit('hookRewake', { event: 'prompt', message: r.output });
+    if (config.asyncRewake && r.error) this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${r.error}`, ...this.rewakeAttribution(config) });
+    if (config.asyncRewake && r.output.startsWith('DENY:')) this.emit('hookRewake', { event: 'prompt', message: r.output, ...this.rewakeAttribution(config) });
     return r.output;
   }
 
