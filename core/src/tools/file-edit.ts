@@ -137,12 +137,14 @@ function requireReadBeforeEdit(resolved: string, context: ToolContext): ToolResu
     return {
       output: `Error: You must file_read "${resolved}" before editing it, to avoid replacing content you have not seen. Read the file first, then edit.`,
       isError: true,
+      behavior: 'ask',
     };
   }
   if (getFileCache(context.cwd, context.agentId).isPartialView(resolved)) {
     return {
       output: `Error: You have only read a PARTIAL view of "${resolved}" (the file was size-capped on read). Read the full file (file_read with allow_large:true, or offset/limit over the whole file) before editing it, to avoid clobbering content you have not seen.`,
       isError: true,
+      behavior: 'ask',
     };
   }
   return undefined;
@@ -176,7 +178,7 @@ function checkEditSizeLimit(resolved: string): ToolResult | undefined {
   try {
     const stat = fs.statSync(resolved);
     if (stat.size > MAX_EDIT_FILE_SIZE) {
-      return { output: `Error: File size (${(stat.size / 1_073_741_824).toFixed(2)} GiB) exceeds 1 GiB limit. Large files cannot be edited.`, isError: true };
+      return { output: `Error: File size (${(stat.size / 1_073_741_824).toFixed(2)} GiB) exceeds 1 GiB limit. Large files cannot be edited.`, isError: true, behavior: 'ask' };
     }
   } catch {
     // File does not exist yet (or cannot be stat'd) — the size cap does not
@@ -801,7 +803,7 @@ async function applySequentialEdits(
   const freshness = fileCache.describeChange(resolved);
   if (freshness.changed) {
     fileCache.delete(resolved);
-    return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true };
+    return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true, behavior: 'ask' };
   }
 
   const originalEnding = detectLineEnding(rawContent);
@@ -904,6 +906,7 @@ async function applySequentialEdits(
     return {
       output: `No edits applied.\n${notes.join('\n')}`,
       isError: true,
+      behavior: 'ask',
     };
   }
 
@@ -1202,6 +1205,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: 'Error: old_string and new_string are identical. No changes needed.',
         isError: true,
+        behavior: 'ask',
       };
     }
 
@@ -1262,7 +1266,7 @@ export const fileEditTool: ToolDefinition = {
     const freshness = fileCache.describeChange(resolved);
     if (freshness.changed) {
       fileCache.delete(resolved);
-      return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true };
+      return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true, behavior: 'ask' };
     }
 
     const originalEnding = detectLineEnding(rawContent);
@@ -1281,6 +1285,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: `Error: old_string (${normalizedOld.length} chars) is larger than the entire file "${resolved}" (${content.length} chars), so it cannot match. Re-read the file with file_read and target a smaller, exact span.`,
         isError: true,
+        behavior: 'ask',
       };
     }
 
@@ -1291,6 +1296,7 @@ export const fileEditTool: ToolDefinition = {
         return {
           output: `Error: the edit to ${resolved} produces no change — old_string and new_string are equivalent after normalization. No edit applied.`,
           isError: true,
+          behavior: 'ask',
         };
       }
       if (result.matchCount === 0) {
@@ -1322,6 +1328,7 @@ export const fileEditTool: ToolDefinition = {
         return {
           output: `Error: old_string not found in ${resolved}. The string must match the file content EXACTLY. Re-read the file with file_read before retrying.${hintText}${previewBlock}`,
           isError: true,
+          behavior: 'ask',
         };
       }
       if (replaceAll) {
@@ -1363,6 +1370,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: `Error: old_string matches ${result.matchCount} locations in ${resolved}. Add more surrounding context to make it unique, or use replace_all: true to replace all ${result.matchCount} occurrences.`,
         isError: true,
+        behavior: 'ask',
       };
     }
 

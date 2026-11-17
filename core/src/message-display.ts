@@ -19,23 +19,28 @@ import { SYNTHETIC_TOOL_RESULT_PLACEHOLDER } from './provider-transform';
 // Tool-result state (parity: UserToolResultMessage.tsx L40-L104)
 // ---------------------------------------------------------------------------
 
-export const TOOL_RESULT_STATES = ['canceled', 'rejected', 'interrupted', 'error', 'success'] as const;
+export const TOOL_RESULT_STATES = ['canceled', 'rejected', 'interrupted', 'ask', 'error', 'success'] as const;
 export type ToolResultState = (typeof TOOL_RESULT_STATES)[number];
 
 /**
- * Discriminate a {@link ToolResult} into one of five mutually-exclusive render
+ * Discriminate a {@link ToolResult} into one of six mutually-exclusive render
  * states, instead of collapsing everything non-successful into a single `isError`.
  *
  * Precedence mirrors Claude's component order: an explicit `canceled` marker wins,
  * then `rejected` (user denied at a permission prompt), then `interrupted`
  * (stop/abort with no real result — also inferred from the synthetic interrupt
  * placeholder content so a result that only carries the sentinel text is still
- * classified correctly), then a plain `isError`, else `success`.
+ * classified correctly), then `ask` (a RECOVERABLE validation failure the model is
+ * expected to fix and retry — `behavior: 'ask'`, distinct from a fatal error so a
+ * frontend can present an "ask and retry" affordance instead of a hard stop), then a
+ * plain `isError`, else `success`. Parity: Claude's FileEditTool `behavior: 'ask'`
+ * vs `'error'` split surfaced through the tool-result message renderer.
  */
 export function classifyToolResultState(result: ToolResult): ToolResultState {
   if (result.canceled) return 'canceled';
   if (result.rejected) return 'rejected';
   if (result.interrupted || result.output === SYNTHETIC_TOOL_RESULT_PLACEHOLDER) return 'interrupted';
+  if (result.behavior === 'ask') return 'ask';
   if (result.isError) return 'error';
   return 'success';
 }

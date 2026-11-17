@@ -331,6 +331,15 @@ export interface ToolResult {
    *  result. Parity: Claude's `INTERRUPT_MESSAGE_FOR_TOOL_USE`. Distinct from a tool
    *  that produced an error output. Drives the "interrupted" render state. */
   interrupted?: boolean;
+  /** Severity of a failing result, for tools that distinguish a RECOVERABLE
+   *  validation outcome from a FATAL error. `'ask'` marks a soft failure the model is
+   *  expected to fix and retry (e.g. a file_edit whose `old_string` was not found, the
+   *  file was not read first, the edit is a no-op, or the file changed since it was
+   *  read) — the call still carries `isError: true`, but a frontend/transcript can
+   *  present it as an "ask and retry" prompt rather than a hard stop. `'error'` (or
+   *  absent) is a plain fatal error. Parity: Claude's FileEditTool validation
+   *  `behavior: 'ask' | 'error'`. Classified by {@link classifyToolResultState}. */
+  behavior?: 'ask' | 'error';
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
@@ -1182,7 +1191,7 @@ export type EngineEvent =
        *  Claude's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
       taskType?: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
-  | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number }
+  | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number; outputPath?: string }
   | { type: 'todo_update'; todos: TodoItemView[] }
   /** An MCP server pushed a resource-update (`notifications/resources/updated`) or
    *  resource-list-change (`notifications/resources/list_changed`) notification.

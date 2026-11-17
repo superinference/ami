@@ -3374,7 +3374,7 @@ export const taskTool: ToolDefinition = {
         }).catch(() => {});
         context._emitChild?.({
           type: 'subagent_result', nodeId: taskId, depth: relayDepth,
-          success: true, summary: `auto-backgrounded after ${Math.round(autoBgMs / 1000)}s`, tokens: totalTokens,
+          success: true, summary: `auto-backgrounded after ${Math.round(autoBgMs / 1000)}s`, tokens: totalTokens, outputPath,
         });
         return { output: `Background agent started (auto-backgrounded after ${Math.round(autoBgMs / 1000)}s): ${taskId}\nThe foreground delegation ran past the auto-background threshold and is now running detached. To collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop.` };
       }
