@@ -143,6 +143,12 @@ export const notebookEditTool: ToolDefinition = {
   // Discovery hint for tool_search using synonyms NOT already in the name/
   // description, so a deferred notebook_edit is findable by "jupyter"/"ipynb".
   searchHint: 'jupyter ipynb notebook cell code markdown edit insert delete',
+  // Human-friendly affordance label (parity: Claude's NotebookEditTool
+  // `userFacingName: () => 'Edit Notebook'`). Surfaced as introspection/affordance
+  // metadata via `ami --introspect` so the stable snake_case id (`notebook_edit`)
+  // carries a readable name for discovery/tooling. Static — the label does not
+  // depend on the call arguments.
+  userFacingName: () => 'Edit Notebook',
   // Human-readable live-progress phrase (parity: Claude's NotebookEdit
   // getActivityDescription -> "Editing notebook <summary>"). Delegates to the ONE
   // canonical phrasing rule (describeToolActivity) so a sub-agent's task_list
