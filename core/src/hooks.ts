@@ -17,6 +17,7 @@ import { isRestrictedToPluginOnly } from './plugin-only-policy';
 import { stripBom } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
+import type { PermissionUpdate, PermissionMode } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 import { getSmallFastModel } from './model-capabilities';
 import { isEnvTruthy } from './privacy-level';
@@ -252,6 +253,19 @@ export interface PermissionContext {
   command?: string;
   reason?: string;
   retry?: boolean;
+  /** Active permission posture (`ask` | `deny-all` | `auto-allow` | `plan`) so a
+   *  PermissionRequest hook can branch on the mode when deciding — Claude Code's
+   *  CoordinatorPermissionParams.permissionMode threaded into `runHooks`. */
+  permissionMode?: PermissionMode;
+  /** Permission-rule updates the engine is already suggesting for this call; a
+   *  hook may inspect them before returning its own `updatedPermissions`. Mirrors
+   *  Claude's `suggestions: PermissionUpdate[]` param to `runHooks`. */
+  suggestions?: PermissionUpdate[];
+  /** Turn abort signal — threaded in so a slow/hanging in-process permission hook
+   *  (and a command-hook subprocess) is cancelled when the user interrupts (Esc /
+   *  Ctrl-C). Parity with Claude threading `abortController.signal` into
+   *  `executePermissionRequestHooks` / the classifier. */
+  abortSignal?: AbortSignal;
 }
 
 export interface TaskEventContext {
@@ -345,7 +359,22 @@ export type CompactHookFn = (context: CompactContext) => Promise<void>;
 /** PreCompact hook: may inject/override compaction instructions and surface a
  *  user-facing display message (Claude Code parity). */
 export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void>;
-export type PermissionHookFn = (context: PermissionContext) => Promise<{ action?: 'allow' | 'deny'; reason?: string } | void>;
+/**
+ * Result a PermissionRequest hook may return (Claude Code's PermissionDecision
+ * from `runHooks`). Beyond allow/deny, an ALLOW may rewrite the tool input
+ * (`updatedInput`) and/or add durable permission rules the engine persists
+ * (`updatedPermissions`); a DENY may set `interrupt` to abort the whole turn
+ * instead of just skipping this one tool call.
+ */
+export interface PermissionHookResult {
+  action?: 'allow' | 'deny';
+  reason?: string;
+  updatedInput?: Record<string, unknown>;
+  updatedPermissions?: PermissionUpdate[];
+  interrupt?: boolean;
+}
+
+export type PermissionHookFn = (context: PermissionContext) => Promise<PermissionHookResult | void>;
 /** TaskCreated hook: like a TaskCompleted hook, a blocking TaskCreated hook can
  *  VETO a just-created task by returning a blockingError; the task tool then rolls
  *  back the created task and surfaces the reason (Claude Code parity —
@@ -435,6 +464,28 @@ export function runWithTimeout<T>(work: Promise<T>, timeoutMs: number, label: st
     work.then(
       v => { clearTimeout(timer); resolve(v); },
       e => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/**
+ * Race an in-process (function) hook callback against an abort signal so a
+ * user interrupt (Esc / Ctrl-C) stops the caller awaiting a slow/hanging
+ * callback — the JS callback itself cannot be forcibly cancelled, but the caller
+ * stops waiting and the signal short-circuits the remaining callbacks. Parity
+ * with Claude threading `abortController.signal` into its permission-hook loop.
+ * No signal → the work passes through unchanged. Shared so no call site
+ * re-implements the abort Promise.race.
+ */
+export function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(new Error('aborted'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      v => { signal.removeEventListener('abort', onAbort); resolve(v); },
+      e => { signal.removeEventListener('abort', onAbort); reject(e); },
     );
   });
 }
@@ -923,6 +974,7 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   agentType: 'agent_type', teammateName: 'teammate_name', teamName: 'team_name',
   loadReason: 'load_reason', memoryType: 'memory_type',
   notificationType: 'notification_type',
+  permissionMode: 'permission_mode',
 };
 
 /**
@@ -1028,10 +1080,13 @@ export function validateHookDecisionOutput(
       return `Hook output field "${k}" must be a string.`;
     }
   }
-  for (const k of ['continue', 'suppressOutput', 'async'] as const) {
+  for (const k of ['continue', 'suppressOutput', 'async', 'interrupt'] as const) {
     if (parsed[k] !== undefined && typeof parsed[k] !== 'boolean') {
       return `Hook output field "${k}" must be a boolean.`;
     }
+  }
+  if (parsed.updatedPermissions !== undefined && !Array.isArray(parsed.updatedPermissions)) {
+    return `Hook output field "updatedPermissions" must be an array.`;
   }
   if (
     parsed.asyncTimeout !== undefined &&
@@ -1603,6 +1658,12 @@ export interface HookDecisionOutput {
   /** Background-hook lifetime budget (ms) a hook may self-declare alongside
    *  `async:true` (Claude Code's `asyncTimeout`). */
   asyncTimeout?: number;
+  /** PermissionRequest ALLOW: durable permission-rule mutations the engine should
+   *  persist (Claude Code's `decision.updatedPermissions`). */
+  updatedPermissions?: PermissionUpdate[];
+  /** PermissionRequest DENY: abort the whole turn (not just skip this tool) —
+   *  Claude Code's `decision.interrupt` → `abortController.abort()`. */
+  interrupt?: boolean;
 }
 
 export type HookCallback = (event: string, data: unknown) => Promise<HookDecisionOutput | string | void>;
@@ -2594,14 +2655,47 @@ export class HookManager extends EventEmitter {
         case 'permissionRequest': {
           const fn: PermissionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('permissionRequest', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput });
-            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.permissionRequestHooks, fn, 'permissionRequest');
+            // Surface the active posture + already-suggested rule updates to the
+            // hook (Claude's permissionMode + suggestions params), and thread the
+            // turn abort signal so a slow command hook is cancelled on interrupt.
+            const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput, permissionMode: ctx.permissionMode, suggestions: ctx.suggestions });
+            const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.permissionRequestHooks, fn, 'permissionRequest');
             if (result.startsWith('DENY:')) return { action: 'deny' as const, reason: result.slice(5).trim() };
             if (result === 'ALLOW' || result.startsWith('ALLOW:')) return { action: 'allow' as const };
+            // A command hook emitting `{permissionDecision:'allow', updatedInput}`
+            // is flattened by runHookByType into the generic `MODIFY:<json>`
+            // sentinel; recover it as an ALLOW that rewrites the tool input
+            // (Claude's decision.updatedInput on allow). An additionalContext-only
+            // MODIFY carries no rewrite, so allow without touching the input.
+            if (result.startsWith('MODIFY:')) {
+              const out: PermissionHookResult = { action: 'allow' as const };
+              try {
+                const payload = JSON.parse(result.slice(7));
+                if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+                  const keys = Object.keys(payload);
+                  if (!(keys.length === 1 && keys[0] === 'additionalContext')) out.updatedInput = payload as Record<string, unknown>;
+                }
+              } catch { /* non-JSON MODIFY payload → bare allow */ }
+              return out;
+            }
             try {
               const parsed: HookDecisionOutput = JSON.parse(result);
-              if (parsed.permissionDecision === 'allow' || parsed.decision === 'approve') return { action: 'allow' as const };
-              if (parsed.permissionDecision === 'deny' || parsed.decision === 'deny' || parsed.decision === 'block') return { action: 'deny' as const, reason: parsed.reason ?? 'Hook denied' };
+              if (parsed.permissionDecision === 'allow' || parsed.decision === 'approve') {
+                // An ALLOW may rewrite the tool input and/or carry durable
+                // permission-rule mutations the engine persists (Claude's
+                // decision.updatedInput / decision.updatedPermissions).
+                const out: PermissionHookResult = { action: 'allow' as const };
+                if (parsed.updatedInput && typeof parsed.updatedInput === 'object' && !Array.isArray(parsed.updatedInput)) out.updatedInput = parsed.updatedInput;
+                if (Array.isArray(parsed.updatedPermissions) && parsed.updatedPermissions.length > 0) out.updatedPermissions = parsed.updatedPermissions as PermissionUpdate[];
+                return out;
+              }
+              if (parsed.permissionDecision === 'deny' || parsed.decision === 'deny' || parsed.decision === 'block') {
+                // A DENY may set `interrupt` to abort the whole turn rather than
+                // just skipping this one tool (Claude's decision.interrupt).
+                const out: PermissionHookResult = { action: 'deny' as const, reason: parsed.reason ?? 'Hook denied' };
+                if (parsed.interrupt === true) out.interrupt = true;
+                return out;
+              }
               // Strict rejection (Claude Code parseHookOutput): an unrecognized
               // decision/permissionDecision value is a validation error, not a
               // silent no-op. Fail CLOSED so a typo can't let a tool through.
@@ -3108,11 +3202,15 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  async executePermissionRequest(ctx: PermissionContext): Promise<{ action?: 'allow' | 'deny'; reason?: string } | void> {
-    return this.withConcurrencyGate('permissionRequest', async (): Promise<{ action?: 'allow' | 'deny'; reason?: string } | void> => {
+  async executePermissionRequest(ctx: PermissionContext): Promise<PermissionHookResult | void> {
+    return this.withConcurrencyGate('permissionRequest', async (): Promise<PermissionHookResult | void> => {
       for (const hook of this.permissionRequestHooks) {
+        // Stop consulting hooks once the turn is aborted (user interrupt): a
+        // cancelled permission request yields no decision and falls through to
+        // policy (Claude's abort-aware runHooks loop).
+        if (ctx.abortSignal?.aborted) break;
         try {
-          const result = await hook(ctx);
+          const result = await raceAbort(hook(ctx), ctx.abortSignal);
           if (result && result.action) return result;
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
