@@ -16,6 +16,12 @@ import type { ThinkingLevel } from './model-capabilities';
 import { isSafeRelativePath } from './skill-catalog';
 import { estimateTokens } from './utils/tokens';
 
+/** The classification tokens a command/skill may declare (parity with Claude's
+ *  command `kind`). `'workflow'` badges a workflow-backed command in help/typeahead;
+ *  a plain skill declares none. */
+export const SKILL_KINDS = ['workflow'] as const;
+export type SkillKind = (typeof SKILL_KINDS)[number];
+
 export interface SkillDefinition {
   name: string;
   description: string;
@@ -95,6 +101,19 @@ export interface SkillDefinition {
    *  command `userFacingName()`) WITHOUT changing the canonical lookup `name`.
    *  Resolved — with the `name` fallback — via {@link skillUserFacingName}. */
   userFacingName?: string;
+  /** Base directory exported to the skill's `!`-blocks / hooks as
+   *  `CLAUDE_PLUGIN_ROOT` (and the `AMI_PLUGIN_ROOT` alias) — parity with Claude's
+   *  PromptCommand `skillRoot`. Lets a plugin/disk skill reference its bundle files
+   *  by an absolute `${CLAUDE_PLUGIN_ROOT}/...` path regardless of the session cwd.
+   *  Resolved — with a fallback to the skill's own on-disk directory — via
+   *  {@link skillPluginRoot}; the substitution itself is done by
+   *  `substitutePluginRoot` (hooks.ts). Already a {@link SAFE_SKILL_PROPERTIES}
+   *  member (declarative metadata, not injectable auto-run code). */
+  skillRoot?: string;
+  /** Discriminator badging a workflow-backed command/skill in help/typeahead
+   *  (parity with Claude's command `kind: 'workflow'`). Purely a classification
+   *  surfaced by the listing; absent ⇒ a plain skill. Read via {@link skillKind}. */
+  kind?: SkillKind;
   /** When true, the skill is UNAVAILABLE in a non-interactive (detached / `--prompt`)
    *  run (parity with Claude's command `disableNonInteractive`). An explicit
    *  {@link supportsNonInteractive} overrides it. Gated via
@@ -485,7 +504,17 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
   'isSensitive', 'disableNonInteractive', 'supportsNonInteractive',
-  'shell', 'templateVars',
+  'shell', 'templateVars', 'kind',
+  // Stance/tool-restriction properties (reviewed-safe declarative metadata the
+  // loader + skill tool consume to SCOPE a skill's toolset/permissions — they
+  // narrow or configure, they are not injectable auto-run code). This block makes
+  // the CANONICAL set the single source of truth for the skill-tool permission
+  // gate too (core/core/src/tools/skill.ts imports it), replacing a diverged
+  // second copy that omitted shell/templateVars/immediate/skillRoot/files/
+  // getPromptForCommand/progressMessage — which made the gate wrongly route a
+  // skill legitimately using those safe fields through the permission prompt.
+  'allowedTools', 'disallowedTools', 'permissionMode', 'autoAllowPatterns',
+  'mcpServers', 'mcpAutoAllowPatterns', 'mcpToolGuidance', 'defaultThinkingLevel',
 ]);
 
 /**
@@ -1055,6 +1084,37 @@ export function isSkillAvailableNonInteractive(
   if (skill.supportsNonInteractive === true) return true;
   if (skill.supportsNonInteractive === false) return false;
   return skill.disableNonInteractive !== true;
+}
+
+/**
+ * Resolve the base directory a skill exports to its `!`-blocks / hooks as
+ * `CLAUDE_PLUGIN_ROOT` (parity with Claude's PromptCommand `skillRoot`). Returns
+ * the skill's explicit {@link SkillDefinition.skillRoot} when it is a non-empty
+ * string; otherwise falls back to the directory of its real on-disk
+ * {@link SkillDefinition.filePath} (a `<builtin>`/in-memory sentinel or a bare
+ * filename yields no directory). Returns `undefined` when neither is available, so
+ * a caller can skip the `${CLAUDE_PLUGIN_ROOT}` substitution. Never throws.
+ */
+export function skillPluginRoot(
+  skill: Pick<SkillDefinition, 'skillRoot' | 'filePath'>,
+): string | undefined {
+  if (typeof skill.skillRoot === 'string' && skill.skillRoot.trim().length > 0) {
+    return skill.skillRoot.trim();
+  }
+  const fp = skill.filePath;
+  if (typeof fp !== 'string' || fp.startsWith('<') || !fp.includes('/')) return undefined;
+  const slash = fp.lastIndexOf('/');
+  const dir = fp.slice(0, slash);
+  return dir.length > 0 ? dir : undefined;
+}
+
+/**
+ * The classification of a command/skill for help/typeahead badging (parity with
+ * Claude's command `kind`). Returns the declared {@link SkillDefinition.kind}
+ * (currently only `'workflow'`) or `undefined` for a plain skill.
+ */
+export function skillKind(skill: Pick<SkillDefinition, 'kind'>): SkillKind | undefined {
+  return skill.kind;
 }
 
 /**

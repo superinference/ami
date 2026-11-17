@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
@@ -117,49 +117,17 @@ export function evaluateSkillPermission(
  * unreviewed field from an installed URL catalog or plugin bundle that tries to
  * influence model/effort/tools) can never silently gain auto-run privileges —
  * it defaults to requiring explicit permission until the property is reviewed and
- * added here. Kept in sync with the fields declared on {@link SkillDefinition}.
+ * added.
+ *
+ * This is the SINGLE canonical set, defined once in `../skills` and re-exported
+ * here for the permission gate below (and for callers importing it from the skill
+ * tool). A previous diverged local copy here omitted several reviewed-safe
+ * declarative fields (`shell`, `templateVars`, `immediate`, `skillRoot`, `files`,
+ * `getPromptForCommand`, `progressMessage`) — so a skill legitimately declaring
+ * any of them was wrongly routed through the permission prompt. Re-exporting the
+ * canonical union keeps the gate and {@link SkillDefinition} in lockstep.
  */
-export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set<string>([
-  'name',
-  'description',
-  'content',
-  'filePath',
-  'version',
-  'whenToUse',
-  'paths',
-  'model',
-  'userInvocable',
-  'allowedTools',
-  'disallowedTools',
-  'argumentHint',
-  'argumentNames',
-  'context',
-  'disableModelInvocation',
-  'effort',
-  'agent',
-  'permissionMode',
-  'autoAllowPatterns',
-  'mcpServers',
-  'mcpAutoAllowPatterns',
-  'mcpToolGuidance',
-  'defaultThinkingLevel',
-  // U023 skill-metadata properties (parity): secondary-name aliases, a
-  // runtime availability predicate, and required-argument declarations. These
-  // are declarative metadata consumed by the loader/skill tool, not code the
-  // catalog can inject to auto-run — safe to allow without explicit approval.
-  'aliases',
-  'isEnabled',
-  'requiresArgument',
-  'missingArgumentMessage',
-  // U023-w67 skill-metadata flags (parity): sensitive-arg masking, help-listing
-  // hiding, a display-name override, and non-interactive gating — declarative
-  // metadata the loader/skill tool consumes, not injectable auto-run code.
-  'isSensitive',
-  'isHidden',
-  'userFacingName',
-  'disableNonInteractive',
-  'supportsNonInteractive',
-]);
+export { SAFE_SKILL_PROPERTIES };
 
 /**
  * Return the skill's property keys that are OUTSIDE {@link SAFE_SKILL_PROPERTIES}
