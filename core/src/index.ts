@@ -7,7 +7,7 @@ export { createDefaultTools } from './tools';
 export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
 export type { SkillResolution } from './tools/skill';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, MEMORY_SOURCE_LEVELS, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
-export type { MemoryEntry, MemoryType, MemorySourceLevel, InstructionSource, MemoryPathScope } from './memory';
+export type { MemoryEntry, MemoryType, MemorySourceLevel, InstructionSource, MemoryPathScope, MemoryLoadSummary } from './memory';
 export { AUTO_DREAM_DEFAULTS, resolveAutoDreamConfig, consolidationLockPath, readLastConsolidatedAt, tryAcquireConsolidationLock, rollbackConsolidationLock, recordConsolidation, isConsolidationDue, buildConsolidationPrompt } from './memory-consolidation';
 export type { AutoDreamConfig, ConsolidationGate } from './memory-consolidation';
 export { SNAPSHOT_META_FILENAME, SYNCED_META_FILENAME, validateSnapshotMeta, validateSyncedMeta, readJsonFile, getSnapshotDirForAgent, checkAgentMemorySnapshot, writeAgentSnapshotMeta, saveAgentSyncedMeta } from './agent-memory-snapshot';

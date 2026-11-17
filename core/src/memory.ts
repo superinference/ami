@@ -359,6 +359,28 @@ export interface MemoryDiagnostic {
   managed?: boolean;
 }
 
+/**
+ * A machine-readable summary of everything the memory/instruction loader pulled
+ * into context for a cwd, produced by {@link MemoryManager.getMemoryLoadSummary}.
+ * Parity with Claude Code's `memory_files_completed` / `tengu_claudemd__initial_load`
+ * introspection events (utils/claudemd.ts:L1014-L1040): rather than the context cost
+ * of loaded instruction/memory files being invisible, the counts (overall + per
+ * source level), total content size and load duration are SURFACED — to `/doctor`
+ * for the user and to the no-PII diagnostics stream for machine monitoring — so a
+ * bloated or slow memory load can be noticed and triaged.
+ */
+export interface MemoryLoadSummary {
+  /** Total number of instruction/memory sources loaded (all levels). */
+  fileCount: number;
+  /** Combined character length of every loaded source's content. */
+  totalBytes: number;
+  /** Wall-clock milliseconds the load (discovery + read) took. */
+  durationMs: number;
+  /** Per-source-level file counts. Every {@link MemorySourceLevel} is present
+   *  (zero when none of that level loaded) so a consumer can render a stable table. */
+  byLevel: Record<MemorySourceLevel, number>;
+}
+
 export interface MemoryEntry {
   path: string;
   content: string;
@@ -3564,5 +3586,47 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     }
 
     return sources;
+  }
+
+  /**
+   * Summarize the memory/instruction load for this cwd — the file count (overall
+   * and per {@link MemorySourceLevel}), the combined content size, and how long the
+   * load took. Reuses {@link collectInstructionSources} (the one canonical discovery
+   * pass covering managed/project/local/user/automem/team) so the summary can never
+   * diverge from what is actually loaded, then emits a no-PII `memory_load_summary`
+   * diagnostic (parity with Claude Code's `memory_files_completed` /
+   * `tengu_claudemd__initial_load` events, utils/claudemd.ts:L1014-L1040) for machine
+   * monitoring. The returned {@link MemoryLoadSummary} is rendered by `/doctor` so the
+   * user can see the context cost of what memory contributes each turn.
+   */
+  async getMemoryLoadSummary(currentFile?: string): Promise<MemoryLoadSummary> {
+    const startTime = Date.now();
+    const sources = await this.collectInstructionSources(currentFile);
+    const byLevel = Object.fromEntries(
+      MEMORY_SOURCE_LEVELS.map(level => [level, 0]),
+    ) as Record<MemorySourceLevel, number>;
+    let totalBytes = 0;
+    for (const s of sources) {
+      byLevel[s.level] += 1;
+      totalBytes += s.content.length;
+    }
+    const summary: MemoryLoadSummary = {
+      fileCount: sources.length,
+      totalBytes,
+      durationMs: Date.now() - startTime,
+      byLevel,
+    };
+    // No-PII introspection surface (paths/content are never logged — only counts,
+    // size and timing), mirroring Claude Code's diagnostics event so an operator can
+    // monitor memory context cost without leaking what was loaded.
+    logForDiagnosticsNoPII('info', 'memory_load_summary', {
+      file_count: summary.fileCount,
+      total_content_length: summary.totalBytes,
+      duration_ms: summary.durationMs,
+      ...Object.fromEntries(
+        MEMORY_SOURCE_LEVELS.map(level => [`${level}_count`, byLevel[level]]),
+      ),
+    });
+    return summary;
   }
 }
