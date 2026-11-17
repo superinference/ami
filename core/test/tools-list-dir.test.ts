@@ -45,6 +45,15 @@ describe('listDirTool – definition', () => {
   it('schema requires path', () => {
     assert.ok(listDirTool.inputSchema.required?.includes('path'));
   });
+
+  it('description gives when-to-use guidance and notes the entry cap', () => {
+    const d = listDirTool.description.toLowerCase();
+    // When-to-use affordance: steer the model toward glob/grep for the other jobs.
+    assert.ok(d.includes('glob'), 'should mention glob as an alternative');
+    assert.ok(d.includes('grep'), 'should mention grep as an alternative');
+    // Truncation note: the 1000-entry cap must be disclosed in the description.
+    assert.ok(d.includes('1000'), 'should note the 1000-entry truncation cap');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -187,6 +196,56 @@ describe('listDirTool – UNC path guard', () => {
     const result = await listDirTool.execute({ path: '//attacker/share' }, ctx());
     assert.equal(result.isError, true);
     assert.ok(result.output.includes('UNC'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Read-deny filtering (do not leak the names of permission-denied files)
+// ---------------------------------------------------------------------------
+
+describe('listDirTool – read-deny filtering', () => {
+  it('omits entries whose basename matches a read-deny glob', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SECRET=1');
+    const result = await listDirTool.execute(
+      { path: tmpDir },
+      ctx({ readIgnorePatterns: ['.env'] }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('.env'), 'denied file name must not leak');
+    // The non-denied entries are still present.
+    assert.ok(result.output.includes('file1.txt'));
+    // The reported count reflects only the surfaced (non-denied) entries.
+    assert.ok(result.output.includes('4 entries'));
+  });
+
+  it('omits directory entries matching an any-depth deny glob', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'secrets'));
+    const result = await listDirTool.execute(
+      { path: tmpDir },
+      ctx({ readIgnorePatterns: ['**/secrets'] }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('secrets/'), 'denied dir name must not leak');
+    assert.ok(result.output.includes('subdir/'));
+  });
+
+  it('matches deny globs anchored at the cwd-relative path', async () => {
+    const nested = path.join(tmpDir, 'subdir');
+    fs.writeFileSync(path.join(nested, 'token.key'), 'x');
+    const result = await listDirTool.execute(
+      { path: nested },
+      // Pattern anchored by relative path from cwd (subdir/token.key).
+      ctx({ readIgnorePatterns: ['subdir/*.key'] }),
+    );
+    assert.ok(!result.isError);
+    assert.ok(!result.output.includes('token.key'), 'relative-anchored deny must apply');
+  });
+
+  it('lists everything when no deny patterns are configured', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SECRET=1');
+    const result = await listDirTool.execute({ path: tmpDir }, ctx());
+    assert.ok(!result.isError);
+    assert.ok(result.output.includes('.env'), 'no deny rules → nothing filtered');
   });
 });
 

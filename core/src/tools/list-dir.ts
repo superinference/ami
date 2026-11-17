@@ -3,13 +3,21 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { isWithinWorkspaceRoots, isUNCPath } from './tool-utils';
 import { suggestSimilarPaths } from './path-suggest';
+import { matchesReadIgnore } from './read-ignore';
 
 const MAX_ENTRIES = 1000;
 
 export const listDirTool: ToolDefinition = {
   name: 'list_dir',
   description:
-    'List contents of a directory. Returns entries with type indicators (file/directory).',
+    'List the contents of a known directory, returning each entry with a type ' +
+    'indicator ([dir]/[file]). Use it to discover what exists in a specific ' +
+    'directory when you do not yet know exact filenames; reach for glob instead to ' +
+    'match files by name pattern across a tree, and grep to search file contents. ' +
+    'Entries the user has deny-listed for reading are omitted. Results are sorted ' +
+    'directories-first then alphabetically, and capped at ' +
+    `${MAX_ENTRIES} entries — if a directory holds more, only the first ${MAX_ENTRIES} ` +
+    'are shown and the full total is reported.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -105,7 +113,24 @@ export const listDirTool: ToolDefinition = {
     const dirs: string[] = [];
     const files: string[] = [];
 
+    // File-READ deny globs from the permission layer: never ENUMERATE an entry the
+    // user forbade reading — its name alone leaks the existence of a sensitive file
+    // (e.g. `.env`, a credential dir) via the listing. Mirrors how grep/glob exclude
+    // these from search output, reusing the shared matcher so the exclusion matches
+    // exactly what a read of the entry would be denied for. Parity: Claude feeds
+    // getFileReadIgnorePatterns into its directory/file enumeration too.
+    const readIgnore = context.readIgnorePatterns ?? [];
+
     for (const entry of entries) {
+      if (readIgnore.length > 0) {
+        // Prefer the cwd-relative path so an anchored pattern (e.g. `subdir/*.key`)
+        // applies; fall back to the bare name for entries outside cwd (an allowed
+        // read root) — matchesReadIgnore tests the basename too, so any-depth and
+        // bare patterns still match. Mirrors grep's `relative(root, p) || name`.
+        const rel = path.relative(context.cwd, path.join(resolved, entry.name));
+        const matchPath = rel && !rel.startsWith('..') ? rel : entry.name;
+        if (matchesReadIgnore(matchPath, readIgnore)) continue;
+      }
       if (entry.isDirectory()) {
         dirs.push(entry.name);
       } else {
