@@ -443,8 +443,27 @@ export interface McpServerConfig {
    * Claude Code's `WebSocketTransportOptions.autoReconnect`.
    */
   autoReconnect?: boolean;
-  transport?: 'stdio' | 'sse' | 'http' | 'ws' | 'wss';
+  /**
+   * Transport discriminator. Beyond the base transports (stdio / sse / http /
+   * ws / wss), AMI recognizes the Claude-parity IDE discriminants `sse-ide`
+   * (an SSE endpoint exposed by a code editor) and `ws-ide` (a WebSocket one),
+   * plus `sdk` (an in-process / host-wired server). An IDE discriminant carries
+   * a human-readable {@link McpServerConfig.ideName} and is connected over its
+   * BASE transport ({@link canonicalMcpTransport}: `sse-ide`→`sse`,
+   * `ws-ide`→`ws`), so no new dispatch path is needed — only the reserved `ide`
+   * server name ({@link IDE_MCP_SERVER_NAME}) and the editor-name badge differ.
+   */
+  transport?: 'stdio' | 'sse' | 'http' | 'ws' | 'wss' | 'sse-ide' | 'ws-ide' | 'sdk';
   url?: string;
+  /**
+   * Human-readable name of the code editor backing an IDE MCP server (e.g.
+   * "VS Code", "JetBrains"), surfaced on the `/mcp` IDE-connection badge
+   * (Claude-parity `ideName`, useIdeConnectionStatus.ts:L20-24). Only meaningful
+   * when {@link McpServerConfig.transport} is `sse-ide` / `ws-ide`;
+   * {@link getMcpIdeName} gates on that so a stray `ideName` on a non-IDE server
+   * is ignored.
+   */
+  ideName?: string;
   containerConfig?: ContainerConfig;
   /**
    * User-entered config values for a plugin/bundle-declared server, keyed by the
@@ -2543,7 +2562,28 @@ export class McpManager extends EventEmitter {
    * remote URL is treated (never as stdio).
    */
   private effectiveTransport(config: McpServerConfig | undefined): McpServerConfig['transport'] {
-    return config?.transport ?? inferMcpTransportFromUrl(config?.url);
+    // Canonicalize an IDE discriminant (sse-ide/ws-ide) to its base transport so
+    // the connect dispatch + remote-pool bucketing route it over the real wire
+    // protocol; else infer from the URL scheme.
+    return canonicalMcpTransport(config?.transport) ?? inferMcpTransportFromUrl(config?.url);
+  }
+
+  /**
+   * Derived IDE editor-connection status for the reserved `ide` MCP server
+   * (Claude-parity `useIdeConnectionStatus`): `{ status: null, ideName: null }`
+   * when no editor is wired, else the tri-state ({@link ideStatusFromServerState})
+   * plus the human-readable editor name ({@link getMcpIdeName}). Single source of
+   * truth the `/mcp` view renders as the "IDE: <name> (connected)" badge, so the
+   * CLI/TUI never re-derive editor state from raw client fields.
+   */
+  getIdeConnectionStatus(): { status: IdeStatus; ideName: string | null } {
+    if (!this.clients.has(IDE_MCP_SERVER_NAME) && !this.pendingServers.has(IDE_MCP_SERVER_NAME)) {
+      return { status: null, ideName: null };
+    }
+    return {
+      status: ideStatusFromServerState(this.getServerState(IDE_MCP_SERVER_NAME)),
+      ideName: getMcpIdeName(this.configs.get(IDE_MCP_SERVER_NAME)),
+    };
   }
 
   /**
@@ -3338,18 +3378,84 @@ export function formatMcpConnectivitySummary(summary: McpConnectivitySummary): M
   return out;
 }
 
-/** Transport values AMI understands (for config validation / `type` mapping). */
-const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss']);
+/** Transport values AMI understands (for config validation / `type` mapping).
+ *  Includes the Claude-parity IDE discriminants (`sse-ide`/`ws-ide`) and the
+ *  in-process `sdk` transport so a `{ "type": "sse-ide", … }` entry validates. */
+const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss', 'sse-ide', 'ws-ide', 'sdk']);
+
+/**
+ * The reserved MCP server name for the connected code editor (Claude-parity:
+ * `client.name === 'ide'`, useIdeConnectionStatus.ts). The one server whose
+ * connection drives the editor-integration badge; special-cased by
+ * {@link McpManager.getIdeConnectionStatus}.
+ */
+export const IDE_MCP_SERVER_NAME = 'ide';
+
+/**
+ * Canonicalize a transport discriminator to the BASE transport its connection is
+ * actually driven over (Claude-parity IDE discriminants): `sse-ide`→`sse`,
+ * `ws-ide`→`ws`; every base transport (and `sdk`/`undefined`) is returned
+ * unchanged. Routed through by {@link McpManager.effectiveTransport} so an IDE
+ * server connects over its real transport without a bespoke dispatch arm — the
+ * `-ide` suffix only tags provenance + an {@link McpServerConfig.ideName}, not a
+ * different wire protocol.
+ */
+export function canonicalMcpTransport(
+  transport: McpServerConfig['transport'] | undefined,
+): 'stdio' | 'sse' | 'http' | 'ws' | 'wss' | 'sdk' | undefined {
+  if (transport === 'sse-ide') return 'sse';
+  if (transport === 'ws-ide') return 'ws';
+  return transport;
+}
+
+/**
+ * The human-readable editor name for an IDE MCP server, gated on its transport
+ * being an IDE discriminant (Claude-parity, useIdeConnectionStatus.ts:L20-24:
+ * `config.type === 'sse-ide' || config.type === 'ws-ide' ? config.ideName : null`).
+ * Returns `null` for a non-IDE server (or a missing name) so a stray `ideName` on
+ * a plain sse/http server is never surfaced as an editor badge.
+ */
+export function getMcpIdeName(config: McpServerConfig | undefined): string | null {
+  if (!config) return null;
+  return config.transport === 'sse-ide' || config.transport === 'ws-ide'
+    ? config.ideName ?? null
+    : null;
+}
+
+/**
+ * Derived tri-state (+null) IDE connection status a UI badge renders
+ * (Claude-parity `IdeStatus`, useIdeConnectionStatus.ts): `null` means no editor
+ * is connected (no `ide` server at all). Present-but-not-connected buckets as
+ * `connected` (server `ready`), `pending` (still connecting), or `disconnected`
+ * (any other state — error/stopped/needs-auth/disabled).
+ */
+export type IdeStatus = 'connected' | 'pending' | 'disconnected' | null;
+
+/**
+ * Map a live MCP server state onto the editor-badge tri-state (Claude-parity
+ * useIdeConnectionStatus: `connected` ↔ `ready`, `pending` ↔ connecting,
+ * everything else ↔ `disconnected`). The `null` ("no editor") case is decided by
+ * the caller from server presence, so this never returns `null`.
+ */
+export function ideStatusFromServerState(
+  state: McpServerState | McpClientState | undefined,
+): Exclude<IdeStatus, null> {
+  if (state === 'ready') return 'connected';
+  if (state === 'pending' || state === 'connecting') return 'pending';
+  return 'disconnected';
+}
 
 /**
  * Whether a transport is REMOTE (network-backed) rather than a local process.
- * Remote transports (http/sse/ws/wss) share dropped-connection recovery: a close
- * schedules an immediate reconnect, they are grouped under the remote connection
- * pool, and a detected process-suspension force-reconnects them. Single source of
- * truth so every remote-vs-local decision stays consistent as transports are added.
+ * Remote transports (http/sse/ws/wss, plus the IDE discriminants that ride them)
+ * share dropped-connection recovery: a close schedules an immediate reconnect,
+ * they are grouped under the remote connection pool, and a detected
+ * process-suspension force-reconnects them. Single source of truth so every
+ * remote-vs-local decision stays consistent as transports are added.
  */
 export function isRemoteMcpTransport(transport: string | undefined): boolean {
-  return transport === 'http' || transport === 'sse' || transport === 'ws' || transport === 'wss';
+  return transport === 'http' || transport === 'sse' || transport === 'ws' || transport === 'wss'
+    || transport === 'sse-ide' || transport === 'ws-ide';
 }
 
 /** URL schemes a remote MCP endpoint may use (well-formedness validation). */
@@ -3448,11 +3554,11 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
       }
     }
   }
-  for (const key of ['pluginRoot', 'pluginDataDir'] as const) {
+  for (const key of ['pluginRoot', 'pluginDataDir', 'ideName'] as const) {
     if (c[key] !== undefined && typeof c[key] !== 'string') issues.push(`\`${key}\` must be a string`);
   }
   if (c.transport !== undefined && !SUPPORTED_MCP_TRANSPORTS.has(String(c.transport))) {
-    issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, or wss)`);
+    issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, wss, sse-ide, ws-ide, or sdk)`);
   }
   if (c.oauth !== undefined) {
     if (typeof c.oauth !== 'object' || c.oauth === null || Array.isArray(c.oauth)) {
