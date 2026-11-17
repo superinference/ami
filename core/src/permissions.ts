@@ -3301,25 +3301,65 @@ export class PermissionManager {
    * believes was added (and `/remove-dir` likewise narrows the mount set again, since
    * the projection is recomputed from the live root set each turn).
    *
+   * It ALSO folds the active `web_fetch` domain allow/deny rules into
+   * `network.allowedHosts`/`deniedHosts`, so the SAME per-domain allowlist that
+   * governs the WebFetch tool also governs in-sandbox outbound traffic (parity:
+   * Claude's sandbox-adapter, which derives sandbox network domains from WebFetch
+   * permission rules). Without this the sandbox network allowlist is never
+   * populated from permissions and a sandboxed `curl example.com` is unrestricted
+   * even when the user allowed only `web_fetch(github.com)`.
+   *
    * Returns `base` unchanged when there is no policy (bash runs on the host, already
-   * covered by the permission layer) or when no extra roots have been granted — the
-   * fold only ever ADDS roots. Caller-supplied `filesystem.allowWrite` entries are
-   * preserved and de-duplicated with the roots.
+   * covered by the permission layer) or when neither extra roots nor web_fetch
+   * domain rules are present — the fold only ever ADDS roots/domains. Caller-supplied
+   * `filesystem.allowWrite` and `network` entries are preserved and de-duplicated.
    */
   getEffectiveSandboxPolicy(base: SandboxPolicy | undefined): SandboxPolicy | undefined {
     if (!base) return base;
     const roots = [...this.allowedReadRoots];
-    if (roots.length === 0) return base;
-    const existing = base.filesystem?.allowWrite ?? [];
-    const merged = [...existing];
-    const seen = new Set(existing.map((p) => path.normalize(p)));
-    for (const r of roots) {
-      const norm = path.normalize(r);
-      if (seen.has(norm)) continue;
-      seen.add(norm);
-      merged.push(r);
+    const { allow: fetchAllow, deny: fetchDeny } = this.extractWebFetchSandboxDomains();
+    if (roots.length === 0 && fetchAllow.length === 0 && fetchDeny.length === 0) return base;
+    let out: SandboxPolicy = base;
+    if (roots.length > 0) {
+      const existing = base.filesystem?.allowWrite ?? [];
+      const merged = [...existing];
+      const seen = new Set(existing.map((p) => path.normalize(p)));
+      for (const r of roots) {
+        const norm = path.normalize(r);
+        if (seen.has(norm)) continue;
+        seen.add(norm);
+        merged.push(r);
+      }
+      out = { ...out, filesystem: { ...out.filesystem, allowWrite: merged } };
     }
-    return { ...base, filesystem: { ...base.filesystem, allowWrite: merged } };
+    if (fetchAllow.length > 0 || fetchDeny.length > 0) {
+      const net = { ...out.network };
+      if (fetchAllow.length > 0) net.allowedHosts = [...new Set([...(net.allowedHosts ?? []), ...fetchAllow])];
+      if (fetchDeny.length > 0) net.deniedHosts = [...new Set([...(net.deniedHosts ?? []), ...fetchDeny])];
+      out = { ...out, network: net };
+    }
+    return out;
+  }
+
+  /**
+   * Collect the domains named by the active `web_fetch` allow/deny rules so they
+   * can seed the sandbox outbound network allowlist/denylist. AMI's canonical
+   * WebFetch rule content IS the bare domain (`web_fetch(example.com)` /
+   * `web_fetch(*.github.com)`; see {@link validatePermissionRule}); a tool-wide
+   * rule (no pattern, or `*`) names no specific domain and is skipped. Deny rules
+   * feed `deniedHosts` (which wins over `allowedHosts` in the sandbox backend).
+   */
+  private extractWebFetchSandboxDomains(): { allow: string[]; deny: string[] } {
+    const allow: string[] = [];
+    const deny: string[] = [];
+    for (const rule of this.rules) {
+      if (normalizeToolName(rule.tool) !== 'web_fetch') continue;
+      const domain = rule.pattern?.trim();
+      if (!domain || domain === '*') continue;
+      if (rule.action === 'allow') allow.push(domain);
+      else if (rule.action === 'deny') deny.push(domain);
+    }
+    return { allow, deny };
   }
 
   /**

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { getSessionEnvironmentScript } from '../session-environment';
-import { execCommand, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
+import { execCommand, resolveTmpBase, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
@@ -1017,6 +1017,13 @@ export function _resetPythonShimCache(): void { cachedPythonShimDir = undefined;
  * an attacker-plantable PATH-injection vector) and return its path to prepend to PATH. Returns
  * null when a real `python` exists, when there is no `python3` to delegate to, on Windows, or on
  * any fs error. Memoized per process. `pathValue`/`make` are injectable for tests.
+ *
+ * The shim directory is created under {@link resolveTmpBase} (which honors
+ * `AMI_TMPDIR`/`CLAUDE_CODE_TMPDIR`), NOT the raw `os.tmpdir()`. Under a restrictive
+ * sandbox the global tmpdir is not writable — only the sandbox-pinned tmp dir is —
+ * so routing the aux-file write through the same base the sandbox exports keeps the
+ * shim materializable instead of failing on an un-writable `/tmp` (parity: Claude's
+ * PowerShell provider sandbox-tmpdir fallback for provider aux files).
  */
 export function ensurePythonShimDir(pathValue: string | undefined = process.env.PATH, make = true): string | null {
   if (cachedPythonShimDir !== undefined) return cachedPythonShimDir;
@@ -1027,7 +1034,8 @@ export function ensurePythonShimDir(pathValue: string | undefined = process.env.
     return null;
   }
   try {
-    const dir = make ? fs.mkdtempSync(path.join(os.tmpdir(), 'ami-pyshim-')) : path.join(os.tmpdir(), 'ami-pyshim');
+    const tmpBase = resolveTmpBase();
+    const dir = make ? fs.mkdtempSync(path.join(tmpBase, 'ami-pyshim-')) : path.join(tmpBase, 'ami-pyshim');
     if (make) {
       const shim = path.join(dir, 'python');
       fs.writeFileSync(shim, '#!/bin/sh\nexec python3 "$@"\n', { mode: 0o755 });
