@@ -154,8 +154,8 @@ export { Profiler, FpsTracker, slowWarning, formatSecondsShort } from './profile
 export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, FormatTimelineOpts, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts, TimingLifecycleEvent, TraceEvent, PhaseDefinitions, TtftBreakdown, RequestPhase, SpanType, SpanHandle, SpanNode, AgentTrack } from './profiler';
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { isGeneratedFile, filterGeneratedFiles } from './generated-files';
-export { ProviderCoordinator } from './provider-coordinator';
-export type { CoordinatorState, ModelRecovery } from './provider-coordinator';
+export { ProviderCoordinator, UNKNOWN_IDENTIFIER, AUTO_DETECTED_PROVIDER_DISPLAY, UNIDENTIFIED_MODEL_DISPLAY } from './provider-coordinator';
+export type { CoordinatorState, ModelRecovery, CredentialBackpressure } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
 export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites } from './logger';

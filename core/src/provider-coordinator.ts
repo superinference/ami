@@ -6,10 +6,49 @@ import { CredentialPool } from './credential-pool';
 import { ProviderHealthTracker } from './provider-health';
 import type { ProviderHealthStats } from './provider-health';
 import type { ErrorCategory } from './error-classifier';
+import { getModelDisplayName } from './model-registry';
+
+/** Sentinel stored in {@link CoordinatorState} when the model/provider could not
+ *  be inferred from the config, api key, base url, or env. Kept as a stable
+ *  machine-readable value; the user-facing surfaces read the *Display fields. */
+export const UNKNOWN_IDENTIFIER = 'unknown';
+
+/** User-facing phrase shown for a provider that was auto-detected (inferred)
+ *  rather than explicitly configured — a clearer fallback than the bare
+ *  {@link UNKNOWN_IDENTIFIER} sentinel on a `/status` or model line. */
+export const AUTO_DETECTED_PROVIDER_DISPLAY = 'auto-detected provider';
+
+/** User-facing phrase shown for a model id that matched no known family and had
+ *  no explicit id — a clearer fallback than the bare {@link UNKNOWN_IDENTIFIER}. */
+export const UNIDENTIFIED_MODEL_DISPLAY = 'unidentified model';
+
+/** Backpressure signal for a multi-credential pool, returned by
+ *  {@link ProviderCoordinator.getBackpressure}. Lets a caller wait for the
+ *  soonest reset instead of hammering an exhausted/throttled key. */
+export interface CredentialBackpressure {
+  /** True only when a pool exists AND every live credential is currently in
+   *  cooldown (so {@link ProviderCoordinator.getConfig} would hand back the
+   *  last-resort throttled primary key). False when a key is available, or when
+   *  there is no pool (single-credential mode has no exhaustion concept). */
+  exhausted: boolean;
+  /** Soonest epoch (ms) a credential frees up: `Date.now()` when one is already
+   *  available, the earliest `cooldownUntil` when all are throttled, or `null`
+   *  when there is no pool or every credential is permanently dead. */
+  nextAvailableAt: number | null;
+}
 
 export interface CoordinatorState {
   currentModel: string;
   currentProvider: string;
+  /** Friendly, human-readable name for {@link currentModel} ("Sonnet 4.6") via
+   *  the canonical {@link getModelDisplayName}; {@link UNIDENTIFIED_MODEL_DISPLAY}
+   *  when the model is the unknown sentinel. The CLI renders this instead of the
+   *  raw id (core stays formatting-free beyond the shared registry helper). */
+  currentModelDisplay: string;
+  /** User-facing provider label for {@link currentProvider};
+   *  {@link AUTO_DETECTED_PROVIDER_DISPLAY} when the provider is the unknown
+   *  sentinel (rather than surfacing the bare 'unknown' literal). */
+  currentProviderDisplay: string;
   usedFallback: boolean;
   requestCount: number;
   errorCount: number;
@@ -32,7 +71,9 @@ const FALLBACK_COOLDOWN = 3;
 
 export class ProviderCoordinator {
   private subsystem: ProviderSubsystem;
-  private state: CoordinatorState;
+  // The stored state holds only the raw machine-readable fields; the friendly
+  // *Display fields are derived on demand in getState() (never persisted).
+  private state: Omit<CoordinatorState, 'currentModelDisplay' | 'currentProviderDisplay'>;
   private fallbackIndex = 0; // 0 = primary; 1..N = position in the fallback chain
   private fallbackSuccessCount = 0;
   private stickyFallback = false;
@@ -49,8 +90,8 @@ export class ProviderCoordinator {
     this.rateLimits = new RateLimitTracker(subsystem.rateLimit);
     const inferred = this.inferProvider(subsystem.primary);
     this.state = {
-      currentModel: subsystem.primary.model || inferred?.defaultModel || 'unknown',
-      currentProvider: inferred?.provider || subsystem.primary.provider || 'unknown',
+      currentModel: subsystem.primary.model || inferred?.defaultModel || UNKNOWN_IDENTIFIER,
+      currentProvider: inferred?.provider || subsystem.primary.provider || UNKNOWN_IDENTIFIER,
       usedFallback: false,
       requestCount: 0,
       errorCount: 0,
@@ -109,7 +150,44 @@ export class ProviderCoordinator {
   }
 
   getState(): CoordinatorState {
-    return { ...this.state };
+    return {
+      ...this.state,
+      currentModelDisplay: this.modelDisplay(),
+      currentProviderDisplay: this.providerDisplay(),
+    };
+  }
+
+  /** Friendly model name for status/introspection surfaces. Consolidates with the
+   *  canonical {@link getModelDisplayName} registry helper (no parallel table);
+   *  maps the unknown sentinel to a clearer phrase than the bare literal. */
+  private modelDisplay(): string {
+    const raw = this.state.currentModel;
+    return raw === UNKNOWN_IDENTIFIER ? UNIDENTIFIED_MODEL_DISPLAY : getModelDisplayName(raw);
+  }
+
+  /** User-facing provider label; maps the unknown sentinel to an "auto-detected"
+   *  phrase rather than surfacing the bare 'unknown' literal. */
+  private providerDisplay(): string {
+    const raw = this.state.currentProvider;
+    return raw === UNKNOWN_IDENTIFIER ? AUTO_DETECTED_PROVIDER_DISPLAY : raw;
+  }
+
+  /**
+   * Backpressure boundary for a multi-credential pool. {@link getConfig} silently
+   * falls through to the primary key when {@link CredentialPool.acquire} returns
+   * null, so it cannot tell a healthy key from the last-resort throttled one. This
+   * exposes that distinction: the engine can consult it after a 429 to WAIT until
+   * {@link CredentialBackpressure.nextAvailableAt} instead of immediately hammering
+   * an exhausted key with no backoff (parity: Claude Code waits out the window
+   * reset rather than reusing an exhausted credential). Single-credential mode has
+   * no pool and is never "exhausted" (nothing to back off to).
+   */
+  getBackpressure(): CredentialBackpressure {
+    if (!this.credentialPool) return { exhausted: false, nextAvailableAt: null };
+    return {
+      exhausted: this.credentialPool.availableCount === 0,
+      nextAvailableAt: this.credentialPool.nextAvailableAt(),
+    };
   }
 
   recordRequest(): void {
@@ -150,7 +228,7 @@ export class ProviderCoordinator {
       this.fallbackSuccessCount++;
       if (this.fallbackSuccessCount >= FALLBACK_COOLDOWN) {
         const from = this.state.currentModel;
-        const to = this.subsystem.primary.model || 'unknown';
+        const to = this.subsystem.primary.model || UNKNOWN_IDENTIFIER;
         this.fallbackIndex = 0;
         this.fallbackSuccessCount = 0;
         this.state.currentModel = to;
@@ -193,8 +271,8 @@ export class ProviderCoordinator {
     this.subsystem.primary = config;
     this.fallbackIndex = 0;
     const inferred = this.inferProvider(config);
-    this.state.currentModel = config.model || inferred?.defaultModel || 'unknown';
-    this.state.currentProvider = inferred?.provider || config.provider || 'unknown';
+    this.state.currentModel = config.model || inferred?.defaultModel || UNKNOWN_IDENTIFIER;
+    this.state.currentProvider = inferred?.provider || config.provider || UNKNOWN_IDENTIFIER;
   }
 
   updateRateLimits(headers: Record<string, string>): void {
