@@ -4,6 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { getSessionEnvironmentScript } from '../session-environment';
+import { sessionEnvOverrides } from '../session-env-vars';
 import { execCommand, resolveTmpBase, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber } from '../utils/coerce';
@@ -1136,6 +1137,24 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * Build the subprocess env for a bash spawn: the scrubbed base env plus the
+ * active skill's env AND any session-scoped env vars the user set via `/env`.
+ * User-set session vars are merged first and the framework skill env
+ * (CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) applied last so an operator cannot
+ * accidentally clobber the skill wiring. Parity: Claude Code's shell provider
+ * merges `getSessionEnvVars()` into `getEnvironmentOverrides()` for every
+ * spawned command (the REPL process itself is never mutated). The lookup is
+ * session-scoped via `context.sessionId`.
+ */
+function buildSubprocessEnv(context: ToolContext): NodeJS.ProcessEnv {
+  const overrides = sessionEnvOverrides(context.sessionId);
+  const extra = Object.keys(overrides).length > 0
+    ? { ...overrides, ...(context.skillEnv ?? {}) }
+    : context.skillEnv;
+  return scrubEnv(extra);
+}
+
 // Base description shared by every mode, up to (but not including) the git
 // guidance. The git sentence and the background sentence are appended
 // conditionally (see buildBashDescription) so an operator can suppress either.
@@ -1656,7 +1675,7 @@ export const bashTool: ToolDefinition = {
       const taskId = context.processManager.spawn(effectiveCommand, {
         cwd: context.cwd,
         description: desc,
-        env: scrubEnv(context.skillEnv),
+        env: buildSubprocessEnv(context),
         timeoutMs: bgTimeoutMs,
         ...(backgroundKind ? { kind: backgroundKind } : {}),
         // Record the owning agent so the shell is reaped if that agent exits first
@@ -1686,7 +1705,7 @@ export const bashTool: ToolDefinition = {
       cwd: context.cwd,
       timeout: foregroundTimeout,
       abortSignal: context.abortSignal,
-      env: scrubEnv(context.skillEnv),
+      env: buildSubprocessEnv(context),
       onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
       // Persist the COMPLETE stdout to disk so a large build/test log can be
       // read back in full (including the middle the in-memory head+tail window
@@ -1726,7 +1745,7 @@ export const bashTool: ToolDefinition = {
         const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
           description: `[auto-bg] ${extractBashCommentLabel(command)?.slice(0, 60) ?? command.slice(0, 60)}`,
-          env: scrubEnv(context.skillEnv),
+          env: buildSubprocessEnv(context),
           agentId: context.agentId,
         });
         const bgTask = context.processManager.get(taskId);
