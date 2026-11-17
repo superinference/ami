@@ -355,6 +355,7 @@ export {
 } from './tool-gates';
 export {
   getToolCategory,
+  isMcpTool,
   isToolReadOnlyForInput,
   TOOL_CATEGORY_LABELS,
 } from './tool-categories';

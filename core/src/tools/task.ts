@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as child_process from 'child_process';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty, Message } from '../types';
 import { createDefaultTools } from './index';
+import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
@@ -404,6 +405,48 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
 export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   'task', 'send_message', 'structured_output',
 ]);
+
+/**
+ * The read-only tool class an `explore`-mode sub-agent is restricted to — search,
+ * read, and web lookup, no edit/shell/orchestration (mirrors Claude Code's
+ * read-only agent tool bucket). Extracted to a named const so {@link AGENT_MODES}
+ * can describe the explore pool as data and {@link filterToolsForAgent} resolves it
+ * from the single source rather than an inline literal.
+ */
+export const EXPLORE_READ_ONLY_TOOLS = new Set([
+  'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
+  'web_search', 'web_fetch',
+]);
+
+/** How an agent mode's tool pool is derived (data form of {@link filterToolsForAgent}). */
+export interface AgentModeSpec {
+  /** Positive allowlist of tool names, or `undefined` for "all tools" (general). */
+  allow?: ReadonlySet<string>;
+  /** Whether the nested-spawn `task` tool is gated by the nesting-depth cap. */
+  depthGated: boolean;
+  /** `plan_mode` is stripped (interactive-only — would hang a subagent). */
+  stripsPlanMode: boolean;
+}
+
+/**
+ * Discoverable SOURCE OF TRUTH for per-mode agent tool availability — the data
+ * behind {@link filterToolsForAgent} / {@link filterToolsForAsyncAgent}. Mirrors
+ * Claude Code's named per-context tool sets (`constants/tools.ts`:
+ * EXPLORE/COORDINATOR/ASYNC_AGENT_ALLOWED_TOOLS) collected into one introspectable
+ * map so "what can a <mode> agent use" has exactly one answer.
+ *
+ * Two rules hold across EVERY mode and are therefore NOT encoded per-entry:
+ *  - MCP tools (`mcp__*`) are unconditionally available in every mode (parity:
+ *    Claude's `mcp__` bypass, agentToolUtils.ts:L82-85) — see {@link isMcpTool}.
+ *  - the universal {@link ALL_AGENT_DISALLOWED_TOOLS} floor is subtracted last by
+ *    the caller, so no allowlist here can reintroduce a baseline-denied tool.
+ */
+export const AGENT_MODES: Record<'explore' | 'general' | 'coordinator' | 'async', AgentModeSpec> = {
+  explore: { allow: EXPLORE_READ_ONLY_TOOLS, depthGated: false, stripsPlanMode: false },
+  general: { allow: undefined, depthGated: true, stripsPlanMode: true },
+  coordinator: { allow: COORDINATOR_MODE_ALLOWED_TOOLS, depthGated: true, stripsPlanMode: false },
+  async: { allow: ASYNC_AGENT_ALLOWED_TOOLS, depthGated: false, stripsPlanMode: false },
+};
 
 /**
  * Lean system prompt for a `coordinator`-mode sub-agent. It has an
@@ -892,35 +935,31 @@ export function filterToolsForAgent(
   agentDepth?: number,
   maxAgentDepth?: number,
 ): ToolDefinition[] {
-  const readOnlyNames = new Set([
-    'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
-    'web_search', 'web_fetch',
-  ]);
-
-  if (mode === 'explore') {
-    return allTools.filter(t => readOnlyNames.has(t.name));
-  }
-
   const depth = agentDepth ?? 0;
   const maxDepth = maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
   const allowNested = shouldAllowNestedTask(depth, maxDepth);
 
-  // Coordinator mode: a pure-delegation lead restricted to the orchestration-only
-  // allowlist (spawn/message/output). Honours the same nested-task depth cap as
-  // `general` — a coordinator's primary tool IS `task`, but it still cannot spawn
-  // past the max nesting depth.
-  if (mode === 'coordinator') {
-    return allTools.filter(t =>
-      COORDINATOR_MODE_ALLOWED_TOOLS.has(t.name) && (allowNested || t.name !== 'task'));
-  }
+  // Resolve the mode's availability spec from the single source of truth
+  // ({@link AGENT_MODES}); an unknown mode falls back to `general` (all tools).
+  // `explore` and `coordinator` are positive allowlists; `general` is "all tools".
+  const spec = AGENT_MODES[mode as keyof typeof AGENT_MODES] ?? AGENT_MODES.general;
 
-  // plan_mode is an INTERACTIVE-session-only feature: "exit" submits the plan for
-  // user approval, and a subagent has no user to approve it — so a subagent that
-  // enters plan mode hangs forever "awaiting approval". Its state is also module-
-  // global, so a subagent entering plan mode would corrupt the parent engine's
-  // plan state. Autonomous subagents must never get it.
-  return allTools.filter(t =>
-    t.name !== 'plan_mode' && (allowNested || t.name !== 'task'));
+  return allTools.filter(t => {
+    // MCP tools (`mcp__*`) are unconditionally available in EVERY agent mode
+    // (parity: Claude's mcp__ bypass) — a read-only explore or a pure-delegation
+    // coordinator can still reach connected MCP servers. Checked first so the
+    // per-mode allowlist below never has to enumerate dynamic MCP tool names.
+    if (isMcpTool(t)) return true;
+    // plan_mode is INTERACTIVE-session-only: "exit" awaits a user approval that
+    // never comes in a subagent (it would hang), and its state is module-global
+    // (would corrupt the parent's plan state). Stripped for the general tier.
+    if (spec.stripsPlanMode && t.name === 'plan_mode') return false;
+    // The nested-spawn `task` tool is gated by the nesting-depth cap.
+    if (spec.depthGated && t.name === 'task' && !allowNested) return false;
+    // A positive allowlist (explore/coordinator) keeps only its members; `general`
+    // (allow === undefined) keeps everything that survived the rules above.
+    return spec.allow ? spec.allow.has(t.name) : true;
+  });
 }
 
 /**
@@ -933,7 +972,10 @@ export function filterToolsForAgent(
  * task tool execute method.
  */
 export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinition[] {
-  return tools.filter(t => ASYNC_AGENT_ALLOWED_TOOLS.has(t.name));
+  // MCP tools (`mcp__*`) stay available on the background path too (parity: Claude's
+  // mcp__ bypass is unconditional across modes) — a detached agent can still reach
+  // connected MCP servers; only recursion-prone/interactive tools are stripped.
+  return tools.filter(t => isMcpTool(t) || AGENT_MODES.async.allow!.has(t.name));
 }
 
 /**

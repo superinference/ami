@@ -51,12 +51,24 @@ export function isToolReadOnlyForInput(
 }
 
 /**
+ * Whether a tool is an MCP tool — the dynamic `isMcp` flag OR the canonical
+ * `mcp__<server>__<tool>` name prefix. Single source for the MCP discriminator so
+ * the categorizer, the per-mode agent-tool filter (which always allows MCP tools
+ * regardless of mode), and any prefix-based permission/auto-allow matching all agree
+ * on what counts as an MCP tool. Parity: Claude Code treats `mcp__`-prefixed tools
+ * as unconditionally available to every agent mode (agentToolUtils.ts:L82-85).
+ */
+export function isMcpTool(tool: CategorizableTool): boolean {
+  return !!tool.isMcp || tool.name.startsWith('mcp__');
+}
+
+/**
  * Classify a tool into one capability category. Resolution order (first match
  * wins): MCP (dynamic, by `isMcp` flag or `mcp__` name prefix) → execution →
  * edit → read-only (by the tool's own `isReadOnly` metadata) → other (catch-all).
  */
 export function getToolCategory(tool: CategorizableTool): ToolCategory {
-  if (tool.isMcp || tool.name.startsWith('mcp__')) return 'mcp';
+  if (isMcpTool(tool)) return 'mcp';
   if (EXECUTION_TOOLS.has(tool.name)) return 'execution';
   if (EDIT_TOOLS.has(tool.name)) return 'edit';
   if (tool.isReadOnly) return 'read-only';
