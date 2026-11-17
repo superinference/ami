@@ -250,7 +250,9 @@ describe('U041 — manager wiring for ws/wss', () => {
     assert.deepEqual(validateMcpServerConfigShape({ transport: 'wss', url: 'wss://x/mcp' }), []);
     const bad = validateMcpServerConfigShape({ transport: 'carrier-pigeon' });
     assert.equal(bad.length, 1);
-    assert.match(bad[0], /ws, or wss/);
+    // The valid-transport enumeration grew (U018 added the IDE/SDK connection
+    // transports sse-ide/ws-ide/sdk); assert ws + wss are still named among them.
+    assert.match(bad[0], /ws, wss/);
   });
 
   it('connectServer dispatches a ws server to the WebSocket transport', async () => {

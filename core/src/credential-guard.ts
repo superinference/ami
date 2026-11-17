@@ -234,8 +234,15 @@ const HEADER_SECRET_RE = /(?<![A-Za-z0-9_-])(x-api-key)(["']?\s*[:=]\s*["']?)([^
 // cannot drive O(n²) backtracking while scanning for the `://` / `@` anchors.
 const URL_CRED_RE = /([a-z][a-z0-9+.\-]{0,30}:\/\/)([^\s/@:]{1,256}:[^\s/@]{1,4096})@/gi;
 
+// A boolean / flag literal is a config TOGGLE, never a credential — even under an
+// otherwise-unconditional secret key (e.g. `authorization: false` enabling an auth
+// mode, not a token). Excluded so a flag assignment is not falsely redacted, while
+// any real value (incl. a low-entropy opaque token like `basictoken42`) still is.
+const BOOLEAN_FLAG_VALUE_RE = /^(?:true|false|yes|no|on|off|none|null|undefined)$/i;
+
 /** Whether the value assigned to a secret-ish key should be redacted. */
 function assignedSecretShouldRedact(key: string, value: string): boolean {
+  if (BOOLEAN_FLAG_VALUE_RE.test(value)) return false;
   if (UNCONDITIONAL_SECRET_KEY.test(key)) return true;
   return isHighEntropySecret(value);
 }
