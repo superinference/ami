@@ -42,6 +42,27 @@ const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
 const _bashCache = new BashResultCache();
 
 /**
+ * Per-session dedup of surfaced plugin-install hints. A CLI/SDK that emits the
+ * SAME `<ami-hint type="plugin" .../>` tag on stderr for EVERY invocation would
+ * otherwise re-surface (and, once wired, re-resolve) the identical suggestion on
+ * every bash call. This module-level `name@marketplace` set — mutated through the
+ * {@link evaluatePluginHint} `seen` gate — bounds a repeated trigger to a single
+ * surfaced recommendation for the life of the process, so a thrashing source can't
+ * spam the output. Parity: Claude Code's `triedThisSession` set in
+ * `utils/plugins/hintRecommendation.ts` (L83-L96), including its test-only reset.
+ */
+const _pluginHintSession = new Set<string>();
+
+/**
+ * Test-only reset of the per-session plugin-hint dedup set (parity: Claude Code's
+ * `resetHintSessionForTest`, hintRecommendation.ts L94-96), so a test can exercise
+ * the first-surface path again without a fresh process.
+ */
+export function _resetPluginHintSessionForTest(): void {
+  _pluginHintSession.clear();
+}
+
+/**
  * Resolve a millisecond env knob to a bounded positive integer, or `undefined`
  * when absent/blank/invalid so the caller applies its own default. Routed through
  * the single canonical {@link validateBoundedIntEnvVar} so every bash timeout
@@ -524,7 +545,12 @@ export function processPluginHints(stderr: string): {
   const recommendations: PluginRecommendationHint[] = [];
   let note = '';
   for (const h of hints) {
-    const rec = evaluatePluginHint(h, official ? { officialMarketplaces: official } : {});
+    const rec = evaluatePluginHint(h, {
+      ...(official ? { officialMarketplaces: official } : {}),
+      // Session-scoped dedup: a hint already surfaced this process is dropped so a
+      // CLI re-emitting the same tag every call cannot re-surface it (anti-thrash).
+      seen: _pluginHintSession,
+    });
     if (!rec) continue;
     recommendations.push(rec);
     note += `\n\n[Plugin suggestion: ${formatPluginHintNote(rec)}]`;

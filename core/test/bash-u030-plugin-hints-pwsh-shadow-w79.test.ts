@@ -11,6 +11,7 @@ import {
   isPluginHintsEnabled,
   resolveOfficialMarketplaces,
   processPluginHints,
+  _resetPluginHintSessionForTest,
 } from '../src/tools/bash';
 import {
   parsePluginHintTags,
@@ -230,7 +231,7 @@ describe('U030/w79 formatPluginHintNote', () => {
 });
 
 describe('U030/w79 processPluginHints', () => {
-  afterEach(() => { delete process.env.AMI_PLUGIN_HINTS; delete process.env.AMI_PLUGIN_HINT_MARKETPLACES; });
+  afterEach(() => { delete process.env.AMI_PLUGIN_HINTS; delete process.env.AMI_PLUGIN_HINT_MARKETPLACES; _resetPluginHintSessionForTest(); });
   it('always strips the tag; surfaces nothing when the knob is off', () => {
     const r = processPluginHints('err\n<ami-hint type="plugin" value="a@m" sourceCommand="x" />');
     assert.ok(!r.stderr.includes('<ami-hint'));
@@ -248,6 +249,43 @@ describe('U030/w79 processPluginHints', () => {
     process.env.AMI_PLUGIN_HINT_MARKETPLACES = 'official';
     const r = processPluginHints('<ami-hint type="plugin" value="a@rogue" />');
     assert.equal(r.recommendations.length, 0);
+  });
+});
+
+// Gap U030: per-session anti-thrash dedup bounding repeat surfacing of the SAME
+// plugin hint (parity: Claude Code hintRecommendation.ts triedThisSession L83-96).
+describe('U030 processPluginHints — per-session dedup (anti-thrash)', () => {
+  afterEach(() => { delete process.env.AMI_PLUGIN_HINTS; _resetPluginHintSessionForTest(); });
+
+  it('surfaces the SAME hint only once per session, then suppresses repeats', () => {
+    process.env.AMI_PLUGIN_HINTS = '1';
+    const tag = '<ami-hint type="plugin" value="deploy@official" sourceCommand="kubectl" />';
+    const first = processPluginHints(tag);
+    assert.equal(first.recommendations.length, 1, 'first invocation surfaces the hint');
+    assert.ok(first.note.includes('[Plugin suggestion:'), first.note);
+    // A CLI re-emitting the identical tag on a later call must NOT re-surface it.
+    const second = processPluginHints(tag);
+    assert.equal(second.recommendations.length, 0, 'repeat is deduped away');
+    assert.equal(second.note, '', 'no repeat suggestion note');
+    // The tag is still ALWAYS stripped from the model-visible stderr on repeats.
+    assert.ok(!second.stderr.includes('<ami-hint'), second.stderr);
+  });
+
+  it('dedups per identifier — a DIFFERENT hint still surfaces after a seen one', () => {
+    process.env.AMI_PLUGIN_HINTS = '1';
+    processPluginHints('<ami-hint type="plugin" value="deploy@official" sourceCommand="kubectl" />');
+    const other = processPluginHints('<ami-hint type="plugin" value="lint@official" sourceCommand="eslint" />');
+    assert.equal(other.recommendations.length, 1, 'a distinct identifier is not blocked');
+    assert.equal(other.recommendations[0].pluginName, 'lint');
+  });
+
+  it('reset hook re-opens the first-surface path within the same process', () => {
+    process.env.AMI_PLUGIN_HINTS = '1';
+    const tag = '<ami-hint type="plugin" value="deploy@official" sourceCommand="kubectl" />';
+    assert.equal(processPluginHints(tag).recommendations.length, 1);
+    assert.equal(processPluginHints(tag).recommendations.length, 0);
+    _resetPluginHintSessionForTest();
+    assert.equal(processPluginHints(tag).recommendations.length, 1, 'reset clears the seen set');
   });
 });
 
@@ -270,7 +308,7 @@ describe('U030/w79 isPluginHintsEnabled', () => {
 });
 
 describe('U030/w79 bashTool.execute — plugin hint end-to-end', () => {
-  afterEach(() => { mock.restoreAll(); delete process.env.AMI_PLUGIN_HINTS; });
+  afterEach(() => { mock.restoreAll(); delete process.env.AMI_PLUGIN_HINTS; _resetPluginHintSessionForTest(); });
   it('strips the tag from stderr output even when surfacing is disabled', async () => {
     captureExec('boom\n<ami-hint type="plugin" value="deploy@official" sourceCommand="kubectl" />', 1);
     const res = await bashTool.execute({ command: 'kubectl apply' }, ctx());
@@ -286,5 +324,18 @@ describe('U030/w79 bashTool.execute — plugin hint end-to-end', () => {
     const hints = res.metadata?.pluginHints as PluginRecommendationHint[] | undefined;
     assert.equal(hints?.length, 1);
     assert.equal(hints?.[0].pluginName, 'deploy');
+  });
+  it('end-to-end: a repeated stderr hint surfaces once, not on every bash call', async () => {
+    process.env.AMI_PLUGIN_HINTS = '1';
+    // Both invocations emit the IDENTICAL hint tag on stderr.
+    captureExec('done\n<ami-hint type="plugin" value="deploy@official" sourceCommand="kubectl" />', 0);
+    const first = await bashTool.execute({ command: 'kubectl apply' }, ctx());
+    assert.ok(first.output.includes('[Plugin suggestion:'), first.output);
+    assert.ok((first.metadata?.pluginHints as unknown[] | undefined)?.length === 1);
+    const second = await bashTool.execute({ command: 'kubectl apply' }, ctx());
+    assert.ok(!second.output.includes('[Plugin suggestion:'), second.output);
+    assert.equal(second.metadata?.pluginHints, undefined);
+    // The internal tag is still stripped from the model-visible output on the repeat.
+    assert.ok(!second.output.includes('<ami-hint'), second.output);
   });
 });
