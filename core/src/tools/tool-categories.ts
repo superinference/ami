@@ -98,3 +98,52 @@ export function getToolCategory(tool: CategorizableTool): ToolCategory {
   if (tool.isReadOnly) return 'read-only';
   return 'other';
 }
+
+/**
+ * Parse the SERVER segment out of a canonical MCP tool name
+ * (`mcp__<server>__<tool>`). Returns `undefined` for a non-MCP name or one with no
+ * server segment (`mcp__`). Shared single source for the server discriminator so
+ * {@link getMcpServerBuckets} and any caller grouping MCP tools by integration
+ * agree on how the server is extracted. Parity: Claude Code's MCP tool-name parsing.
+ */
+export function mcpServerName(name: string): string | undefined {
+  if (!name.startsWith('mcp__')) return undefined;
+  const rest = name.slice('mcp__'.length);
+  const sep = rest.indexOf('__');
+  const server = sep === -1 ? rest : rest.slice(0, sep);
+  return server || undefined;
+}
+
+/** One MCP server and the tools it contributes (sorted by tool name). */
+export interface McpServerBucket<T extends CategorizableTool> {
+  server: string;
+  tools: T[];
+}
+
+/**
+ * Group a tool set's MCP tools by their contributing server, sorting the servers —
+ * and each server's tools — stably by name via `localeCompare`. Non-MCP tools are
+ * ignored; an MCP tool with no parseable server segment is bucketed under
+ * `'(unknown)'`. Parity: Claude Code's `getMcpServerBuckets` (ToolSelector.tsx),
+ * which presents an agent's MCP tools grouped per server and alphabetically sorted
+ * rather than as one flat list. Used by `tool_search` to surface discovered MCP
+ * tools grouped by integration.
+ */
+export function getMcpServerBuckets<T extends CategorizableTool>(
+  tools: readonly T[],
+): McpServerBucket<T>[] {
+  const byServer = new Map<string, T[]>();
+  for (const t of tools) {
+    if (!isMcpTool(t)) continue;
+    const server = mcpServerName(t.name) ?? '(unknown)';
+    let list = byServer.get(server);
+    if (!list) { list = []; byServer.set(server, list); }
+    list.push(t);
+  }
+  return [...byServer.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([server, ts]) => ({
+      server,
+      tools: [...ts].sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+}

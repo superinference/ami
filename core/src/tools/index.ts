@@ -394,5 +394,7 @@ export {
   isToolReadOnlyForInput,
   isToolConcurrencySafe,
   TOOL_CATEGORY_LABELS,
+  mcpServerName,
+  getMcpServerBuckets,
 } from './tool-categories';
-export type { ToolCategory, CategorizableTool } from './tool-categories';
+export type { ToolCategory, CategorizableTool, McpServerBucket } from './tool-categories';

@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { type SkillDefinition, isStanceSkill } from '../skills';
-import { getToolCategory, TOOL_CATEGORY_LABELS } from './tool-categories';
+import { getToolCategory, TOOL_CATEGORY_LABELS, getMcpServerBuckets, type ToolCategory } from './tool-categories';
 
 let _allTools: ToolDefinition[] = [];
 
@@ -422,6 +422,24 @@ async function runToolSearch(
 
   sections.push('Use tool_search with "select:name" to get details for a specific tool or skill.');
 
+  // Group the MATCHED MCP tools by their contributing server (parity: Claude's
+  // per-server MCP bucketing) so a model discovering several MCP tools sees which
+  // integration each belongs to — additive metadata, no change to the human-readable
+  // ranking. Omitted entirely when no MCP tool matched.
+  const matchedTools = scoredTools.map(s => s.tool);
+  const mcpServers = getMcpServerBuckets(matchedTools)
+    .map(b => ({ server: b.server, tools: b.tools.map(t => t.name) }));
+
+  // Capability-class counts of the matched tools (via the canonical
+  // {@link getToolCategory} classifier — no parallel taxonomy), so a model can see
+  // the mix of read-only / edit / execution / mcp among hits without inspecting
+  // each. Only non-empty classes are reported.
+  const toolCategories: Partial<Record<ToolCategory, number>> = {};
+  for (const t of matchedTools) {
+    const cat = getToolCategory(t);
+    toolCategories[cat] = (toolCategories[cat] ?? 0) + 1;
+  }
+
   return {
     output: sections.join('\n\n'),
     isError: false,
@@ -429,6 +447,8 @@ async function runToolSearch(
       query,
       matches: [...scoredTools.map(s => s.tool.name), ...scoredSkills.map(s => s.skill.name)],
       total_deferred_tools: _allTools.length,
+      ...(Object.keys(toolCategories).length > 0 ? { tool_categories: toolCategories } : {}),
+      ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
     },
   };
 }
