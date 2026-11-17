@@ -337,6 +337,172 @@ function reloadForRead(): void {
   if (persistPath) loadFromDisk();
 }
 
+/**
+ * Default debounce interval (ms) for the task-list directory watcher — mirrors
+ * Claude Code's useTaskListWatcher `DEBOUNCE_MS = 1000`. Rapid successive writes by
+ * concurrent swarm/teammate processes to the shared tasks file would otherwise
+ * trigger a re-scan storm; the debounce coalesces a burst of fs events into a single
+ * reconcile pass.
+ */
+export const DEFAULT_TASK_WATCH_DEBOUNCE_MS = 1000;
+
+/**
+ * Resolve the task-watch debounce interval (PARITY): an explicit argument wins,
+ * then the `AMI_TASK_WATCH_DEBOUNCE_MS` env knob, then the Claude-Code-compatible
+ * `CLAUDE_CODE_TASK_WATCH_DEBOUNCE_MS`, falling back to the default. A non-positive,
+ * non-integer, or unparseable value is ignored (falls through to the next source) so
+ * a bad env value can never disable debouncing or arm a zero/negative timer. Mirrors
+ * the env-waterfall of {@link resolveTaskListId} and the fs.watch+debounce cadence
+ * used by config.ts's hot-reload.
+ */
+export function resolveTaskWatchDebounceMs(explicit?: number): number {
+  const pick = (v: unknown): number | null => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = typeof v === 'number' ? v : Number(String(v).trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+  return (
+    pick(explicit) ??
+    pick(process.env.AMI_TASK_WATCH_DEBOUNCE_MS) ??
+    pick(process.env.CLAUDE_CODE_TASK_WATCH_DEBOUNCE_MS) ??
+    DEFAULT_TASK_WATCH_DEBOUNCE_MS
+  );
+}
+
+/** A task change observed on disk that the in-memory store had not yet applied. */
+export interface ExternalTaskChange {
+  taskId: number;
+  status: string;
+  subject: string;
+}
+
+/**
+ * Read a persisted task file into a fresh Map WITHOUT mutating the global store —
+ * used to diff the on-disk state against the in-memory state when detecting another
+ * process's writes. Invalid/corrupt records are skipped (same per-record validation
+ * as {@link loadFromDisk}); a missing/invalid file yields an empty snapshot.
+ */
+function readTaskFile(file: string): Map<number, Task> {
+  const out = new Map<number, Task>();
+  try {
+    const raw = fs.readFileSync(file, 'utf-8');
+    const data = JSON.parse(raw) as { tasks?: unknown[] };
+    for (const t of Array.isArray(data.tasks) ? data.tasks : []) {
+      if (isValidTaskRecord(t)) out.set(t.id, t);
+    }
+  } catch {
+    /* missing/invalid file → empty snapshot */
+  }
+  return out;
+}
+
+/**
+ * Cross-process task surfacing (PARITY): reconcile the currently-bound task file on
+ * disk against the in-memory store and return the tasks another process
+ * created/changed/deleted since we last observed them. AMI's in-process
+ * {@link emitTaskUpdated} only surfaces THIS session's own mutations; when
+ * teammates/swarm writers share a scoped `tasks-<id>.json`, their writes were
+ * invisible until the model happened to run a read action. This diff powers the live
+ * cross-process `task_updated` feed (the push counterpart to the pull-based
+ * `next`/`claim` loop).
+ *
+ * A change is reported only when the on-disk version actually differs from memory
+ * (status or subject), so a self-write (memory already matches the file it just
+ * wrote) produces NO spurious event. The in-memory store is reconciled to disk for
+ * each reported change so the same external delta is not re-emitted on the next scan.
+ * Returns an empty list when persistence is disabled. Mirrors Claude Code's
+ * task-watcher reconcile that re-lists the dir and surfaces newly-available tasks.
+ */
+export function reconcileExternalTaskChanges(): ExternalTaskChange[] {
+  if (!persistPath) return [];
+  const onDisk = readTaskFile(persistPath);
+  const changes: ExternalTaskChange[] = [];
+  // Added or modified on disk relative to memory.
+  for (const [id, diskTask] of onDisk) {
+    const mem = tasks.get(id);
+    if (!mem || mem.status !== diskTask.status || mem.subject !== diskTask.subject) {
+      changes.push({ taskId: id, status: diskTask.status, subject: diskTask.subject });
+      tasks.set(id, diskTask);
+    }
+  }
+  // Removed on disk but still in memory (another process deleted it).
+  for (const [id, mem] of [...tasks]) {
+    if (!onDisk.has(id)) {
+      changes.push({ taskId: id, status: 'deleted', subject: mem.subject });
+      tasks.delete(id);
+    }
+  }
+  changes.sort((a, b) => a.taskId - b.taskId);
+  return changes;
+}
+
+/** Handle to a live task-list watcher; `close()` is idempotent. */
+export interface TaskListWatcher {
+  close(): void;
+}
+
+/**
+ * Watch the bound task-list directory and invoke `onChange` (debounced) with the
+ * tasks another process created/changed/deleted, so a consumer (the engine's live
+ * `task_updated` feed) can surface cross-process writes between this session's own
+ * turns. Mirrors Claude Code's useTaskListWatcher: an fs.watch on the tasks dir, a
+ * DEBOUNCE_MS timer collapsing bursts, a filename filter so only events for the
+ * BOUND list's file trigger a reconcile, and unref() on both the watcher and the
+ * timer so the watch never keeps the process alive.
+ *
+ * Best-effort throughout: fs.watch throwing (ENOENT race, inotify exhaustion)
+ * degrades to a no-op watcher rather than crashing the caller, and an onChange
+ * callback that throws is isolated so it can never break the watch loop.
+ */
+export function watchTaskList(
+  cwd: string,
+  onChange: (changes: ExternalTaskChange[]) => void,
+  opts: { debounceMs?: number } = {},
+): TaskListWatcher {
+  const dir = projectStateDir(cwd);
+  const debounceMs = resolveTaskWatchDebounceMs(opts.debounceMs);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let watcher: fs.FSWatcher | null = null;
+  let closed = false;
+
+  const fire = (): void => {
+    timer = null;
+    if (closed) return;
+    try {
+      const changes = reconcileExternalTaskChanges();
+      if (changes.length > 0) onChange(changes);
+    } catch {
+      /* a reconcile/consumer failure must never break the watch loop */
+    }
+  };
+  const schedule = (filename: string | null): void => {
+    if (closed || !persistPath) return;
+    // The dir may hold several scoped lists — only react to the bound file.
+    if (filename && filename !== path.basename(persistPath)) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fire, debounceMs);
+    timer.unref?.();
+  };
+
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best-effort */ }
+  try {
+    watcher = fs.watch(dir, (_event, filename) => schedule(filename != null ? String(filename) : null));
+    watcher.unref?.();
+  } catch {
+    /* fs.watch throws synchronously on ENOENT / inotify exhaustion — degrade to no-op */
+  }
+
+  return {
+    close(): void {
+      if (closed) return;
+      closed = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      try { watcher?.close(); } catch { /* already closed */ }
+      watcher = null;
+    },
+  };
+}
+
 const STATUS_ICONS: Record<string, string> = {
   pending: '[ ]',
   in_progress: '[>]',
