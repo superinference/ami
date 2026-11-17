@@ -37,6 +37,21 @@ const ENV_AGENT_ID = 'AMI_TEAMMATE_AGENT_ID';
 const ENV_AGENT_NAME = 'AMI_TEAMMATE_AGENT_NAME';
 const ENV_TEAM_NAME = 'AMI_TEAMMATE_TEAM_NAME';
 const ENV_COLOR = 'AMI_TEAMMATE_COLOR';
+/**
+ * Claude-Code-compatible env knobs for seeding a SEPARATE-PROCESS teammate's
+ * identity (parity: Claude Code's `CLAUDE_CODE_AGENT_ID` /
+ * `CLAUDE_CODE_PARENT_SESSION_ID`, read in `utils/agentContext.ts`). A swarm
+ * teammate launched out-of-process (tmux/iTerm2) has no in-process
+ * {@link TeammateContext} (AsyncLocalStorage) or runtime {@link DynamicTeamContext}
+ * to carry its id, so Claude injects the identity through the environment. AMI
+ * already reads other `CLAUDE_CODE_*` knobs (`CLAUDE_CODE_MAX_*` in
+ * subagent-limiter, `CLAUDE_CODE_PLAN_MODE_REQUIRED` here); these two complete the
+ * set. They sit BELOW AMI's own `AMI_TEAMMATE_*` knob in precedence so AMI's
+ * native variable always wins when both are set — the Claude name is a compat
+ * fallback, not an override.
+ */
+const ENV_CC_AGENT_ID = 'CLAUDE_CODE_AGENT_ID';
+const ENV_CC_PARENT_SESSION_ID = 'CLAUDE_CODE_PARENT_SESSION_ID';
 /** Env-var fallback for the per-teammate plan-mode-required gate (parity: Claude
  *  Code's `CLAUDE_CODE_PLAN_MODE_REQUIRED`). A spawned teammate process inherits
  *  the "must plan before writing code" enforcement through this when no in-process
@@ -381,11 +396,14 @@ export function getDynamicTeamContext(): DynamicTeamContext | null {
 /**
  * This process's resolved agent id, following the identity precedence chain
  * (parity: getAgentId) — in-process {@link TeammateContext} (AsyncLocalStorage) >
- * runtime {@link DynamicTeamContext} > `AMI_TEAMMATE_AGENT_ID` env var. Undefined
- * when none is bound (a standalone, non-team session).
+ * runtime {@link DynamicTeamContext} > `AMI_TEAMMATE_AGENT_ID` env var >
+ * `CLAUDE_CODE_AGENT_ID` env var (Claude-Code compat fallback for an
+ * out-of-process teammate). Undefined when none is bound (a standalone, non-team
+ * session).
  */
 export function getSelfAgentId(): string | undefined {
-  return getTeammateContext()?.agentId ?? dynamicTeamContext?.agentId ?? envIdentity(ENV_AGENT_ID);
+  return getTeammateContext()?.agentId ?? dynamicTeamContext?.agentId
+    ?? envIdentity(ENV_AGENT_ID) ?? envIdentity(ENV_CC_AGENT_ID);
 }
 
 /** This process's resolved agent name (same precedence as {@link getSelfAgentId}). */
@@ -431,13 +449,16 @@ export function getSelfPlanModeRequired(): boolean {
 
 /**
  * This process's resolved parent (lead) session id (parity: Claude Code's
- * `getParentSessionId`), following ALS > dynamic > the active team's
- * `leadSessionId`. Lets a teammate correlate its transcript back to the lead's
+ * `getParentSessionId`), following ALS > dynamic > `CLAUDE_CODE_PARENT_SESSION_ID`
+ * env var (Claude-Code compat for an out-of-process teammate) > the active team's
+ * `leadSessionId`. The explicitly injected env value wins over the local team
+ * fallback so a separately-spawned process correlates to the real lead that
+ * launched it. Lets a teammate correlate its transcript back to the lead's
  * session. Undefined for a standalone session with no team lineage.
  */
 export function getSelfParentSessionId(): string | undefined {
   return getTeammateContext()?.parentSessionId ?? dynamicTeamContext?.parentSessionId
-    ?? currentTeam?.leadSessionId;
+    ?? envIdentity(ENV_CC_PARENT_SESSION_ID) ?? currentTeam?.leadSessionId;
 }
 
 /**
@@ -448,7 +469,7 @@ export function getSelfParentSessionId(): string | undefined {
  */
 export function isTeammate(): boolean {
   if (isInProcessTeammate()) return true;
-  const myId = dynamicTeamContext?.agentId ?? envIdentity(ENV_AGENT_ID);
+  const myId = dynamicTeamContext?.agentId ?? envIdentity(ENV_AGENT_ID) ?? envIdentity(ENV_CC_AGENT_ID);
   const teamName = dynamicTeamContext?.teamName ?? envIdentity(ENV_TEAM_NAME) ?? currentTeam?.name;
   if (!myId || !teamName) return false;
   if (currentTeam && myId === currentTeam.leadAgentId) return false;
