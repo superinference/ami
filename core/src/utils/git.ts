@@ -136,6 +136,40 @@ export function getRepoRemoteHash(cwd: string): string | null {
 }
 
 /**
+ * Trust classification of a repo's `origin` remote, used to pick a safe default
+ * for identity-leaking behavior (commit/PR attribution). Parity with Claude
+ * Code's repo-class gating (`getRepoClassCached()` →
+ * `internal`/`external`/`none`): the classification is keyed to whether the push
+ * target is a remote the user positively owns.
+ *
+ * - `owned`    — the normalized `origin` remote matches one of `ownedPatterns`.
+ * - `external` — a remote exists but matches none of the patterns (public/
+ *                upstream repo the user is merely contributing to).
+ * - `none`     — no `origin` remote (or git unavailable / unparseable URL).
+ *
+ * Callers that want a fail-safe-ON policy (tighten when ownership is NOT
+ * confirmed) should treat anything other than `owned` as untrusted — `external`
+ * and `none` both fall to the strict side, matching Claude's "only a confirmed
+ * internal repo relaxes the guard" rule.
+ */
+export type RepoRemoteClass = 'owned' | 'external' | 'none';
+
+export function classifyRepoRemote(
+  cwd: string,
+  ownedPatterns: readonly string[],
+): RepoRemoteClass {
+  const res = runGit(cwd, ['config', '--get', 'remote.origin.url']);
+  if (!res || res.code !== 0) return 'none';
+  const normalized = normalizeGitRemoteUrl(res.stdout);
+  if (!normalized) return 'none';
+  const owned = ownedPatterns.some(p => {
+    const pat = p.trim().toLowerCase();
+    return pat.length > 0 && normalized.includes(pat);
+  });
+  return owned ? 'owned' : 'external';
+}
+
+/**
  * Resolve the `.git` directory that holds the ref store for `cwd`, following a
  * worktree/submodule `.git` FILE (`gitdir: <path>`) and its `commondir` pointer
  * (linked worktrees keep `refs/remotes/*` in the common dir, not the per-worktree

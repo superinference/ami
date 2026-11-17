@@ -1021,7 +1021,7 @@ describe('git_commit tool', () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
     fs.writeFileSync(path.join(repo, 's.txt'), 'data');
-    mock.method(_gitCommitFs, 'execFileSync', () => { throw 'plain string failure'; });
+    mock.method(_gitCommitFs, 'execFileAsync', () => { throw 'plain string failure'; });
     try {
       const r = await gitCommitTool.execute(
         { message: 'feat: staging blows up', files: ['s.txt'] },

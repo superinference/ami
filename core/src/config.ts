@@ -204,8 +204,16 @@ export interface ProjectConfig {
    * trailer is used. `pr` carries the analogous override text for PR-description
    * attribution. Consumed by {@link resolveCommitAttribution} in
    * core/core/src/tools/git-commit.ts.
+   *
+   * `auto` opts into repo-class-aware attribution (parity: Claude Code's
+   * undercover auto-default): when `true` and no explicit `commit` override is
+   * set, the default AMI trailer is appended ONLY when the repo's `origin` remote
+   * is positively classified as owned (matches one of `ownRemotes`); on an
+   * external/unknown/no-remote repo the trailer is suppressed (fail-safe-ON — the
+   * strict side wins unless ownership is confirmed). `ownRemotes` holds normalized
+   * remote substrings (e.g. `"github.com/myorg/"`) that mark a repo as owned.
    */
-  attribution?: { commit?: string; pr?: string };
+  attribution?: { commit?: string; pr?: string; auto?: boolean; ownRemotes?: string[] };
   /**
    * Persisted preferred RESPONSE language (parity: Claude Code's `LanguagePicker`
    * settings knob). The English language NAME ("japanese", "french", …) the model

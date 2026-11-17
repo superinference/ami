@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand, resolveTmpBase } from '../utils/shell';
-import { detectGitTransientState } from '../utils/git';
+import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { scanForSecrets } from './tool-utils';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
@@ -61,7 +61,28 @@ function stripDisallowedAttribution(message: string): string {
 export const _gitCommitFs = {
   writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
-  execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
+  /**
+   * Async, cancellable staging seam. Parity with Claude Code, which routes every
+   * git invocation through an async child that always forwards `signal` (and
+   * `timeout`): the former blocking `execFileSync('git', ['add', …])` could not
+   * honor `context.abortSignal` and pinned the event loop for the whole `git add`
+   * over a large tree. This argv-form (no shell → injection-safe) async wrapper
+   * forwards the abort signal so staging is interruptible and non-blocking, like
+   * the diff/commit/log steps already are. Mockable in tests via
+   * `mock.method(_gitCommitFs, 'execFileAsync', …)`.
+   */
+  execFileAsync(
+    file: string,
+    args: readonly string[],
+    options: child_process.ExecFileOptions,
+  ): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      child_process.execFile(file, args as string[], options, (err, stdout, stderr) => {
+        if (err) reject(err);
+        else resolve({ stdout: String(stdout), stderr: String(stderr) });
+      });
+    });
+  },
 };
 
 /**
@@ -78,6 +99,71 @@ export function resolveClientSurface(env: NodeJS.ProcessEnv = process.env): stri
   return trimmed && trimmed.length > 0 ? trimmed : 'cli';
 }
 
+/**
+ * Collapse a raw model identifier to a stable, public short name for the commit
+ * surface. Parity with Claude Code's `sanitizeModelName` (buildSurfaceKey +
+ * sanitizeModelName): strip a provider/vendor prefix (`anthropic/claude-…`,
+ * `openai/…`, a bedrock `….anthropic.*` ARN segment) and a trailing
+ * `-YYYYMMDD` / `@date` snapshot suffix so `claude-opus-4-8-20260115` and
+ * `anthropic/claude-opus-4-8` both normalize to `opus-4-8`. A `claude-` family
+ * prefix is dropped too (the AMI trailer already carries the AMI identity). An
+ * unrecognizable/blank value yields `undefined` rather than stamping noise.
+ */
+export function sanitizeModelName(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  let name = raw.trim().toLowerCase();
+  if (!name) return undefined;
+  // Drop a provider prefix segment (last path/colon component wins).
+  name = name.split(/[/:]/).pop() ?? name;
+  // Bedrock/ARN style "us.anthropic.claude-…": keep the trailing model token.
+  name = name.split('.').pop() ?? name;
+  // Strip a trailing date snapshot suffix (-YYYYMMDD or @anything).
+  name = name.replace(/@.*$/, '').replace(/-\d{8}$/, '');
+  // Drop a leading vendor-family prefix.
+  name = name.replace(/^(claude|gpt|gemini)-/, '');
+  name = name.trim();
+  return name.length > 0 ? name : undefined;
+}
+
+/**
+ * Resolve the model name to stamp onto the commit (consumed by git hooks /
+ * downstream tooling, parallel to {@link resolveClientSurface}'s AI_SURFACE).
+ * Honors `AMI_COMMIT_MODEL` first, then the generic `ANTHROPIC_MODEL` /
+ * `AMI_MODEL` the engine already sets, passing the raw value through
+ * {@link sanitizeModelName}. Returns `undefined` when none is set.
+ */
+export function resolveCommitModel(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return sanitizeModelName(env.AMI_COMMIT_MODEL ?? env.AMI_MODEL ?? env.ANTHROPIC_MODEL);
+}
+
+/**
+ * Whether to PRESERVE the repo's own commit hooks / GPG signing even in detached
+ * mode. AMI bypasses them by default in detached runs (anti-hang: a blocking
+ * pre-commit hook or a passphrase prompt would wedge an unattended run), but
+ * Claude's protocol is "NEVER skip hooks unless explicitly requested". Setting
+ * `AMI_DETACHED_PRESERVE_HOOKS=1` is that explicit request — the repo's
+ * pre-commit guards (secret scanners, linters, policy hooks) and signing stay
+ * active in detached mode too. Default/interactive behavior is unchanged.
+ */
+export function shouldPreserveCommitHooks(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AMI_DETACHED_PRESERVE_HOOKS === '1';
+}
+
+/**
+ * Build the normalized one-line commit affordance from `git log --oneline -1`
+ * output ("<shortsha> <subject>") → "Committed <shortsha>: <subject>", so a
+ * frontend can render a clean commit line. Parity with Claude's structured
+ * commit-result summary (sha + kind). Returns '' for empty input; a sha with no
+ * subject yields "Committed <shortsha>".
+ */
+export function formatCommitSummary(onelineOutput: string): string {
+  const line = onelineOutput.trim();
+  if (!line) return '';
+  const m = line.match(/^(\S+)\s+(.*)$/);
+  if (m && m[2].length > 0) return `Committed ${m[1]}: ${m[2]}`;
+  return `Committed ${line}`;
+}
+
 export function buildCommitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   env.GIT_EDITOR = 'false';
@@ -85,6 +171,8 @@ export function buildCommitEnv(): NodeJS.ProcessEnv {
   env.GIT_TERMINAL_PROMPT = '0';
   env.AI_AGENT = 'superinference';
   env.AI_SURFACE = resolveClientSurface(env);
+  const model = resolveCommitModel(env);
+  if (model) env.AI_MODEL = model;
   return env;
 }
 
@@ -104,7 +192,7 @@ export function buildCommitEnv(): NodeJS.ProcessEnv {
  * never blocks a commit — it falls back to the env opt-out / default AMI trailer.
  */
 export function resolveCommitAttribution(cwd: string): string | null {
-  let custom: string | undefined;
+  let attribution: { commit?: string; auto?: boolean; ownRemotes?: string[] } | undefined;
   try {
     const merged = mergeConfigs(
       {}, {},
@@ -113,16 +201,26 @@ export function resolveCommitAttribution(cwd: string): string | null {
       loadLocalConfig(cwd),
       loadManagedConfig(),
     );
-    custom = merged.attribution?.commit;
+    attribution = merged.attribution;
   } catch {
-    custom = undefined;
+    attribution = undefined;
   }
   // Explicit config attribution takes precedence over the deprecated env opt-out.
+  const custom = attribution?.commit;
   if (custom !== undefined) {
     const trimmed = custom.trim();
     return trimmed.length === 0 ? null : trimmed;
   }
   if (process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR === '1') return null;
+  // Opt-in repo-class gate (parity: Claude Code's undercover auto-default). When
+  // `attribution.auto` is enabled, keep the trailer ONLY when the origin remote
+  // is positively classified as owned; external / unknown / no-remote all
+  // suppress it (fail-safe-ON — the strict side wins unless ownership is
+  // confirmed). Explicit `attribution.commit` and the env opt-out above retain
+  // precedence; this gate only decides the otherwise-default case.
+  if (attribution?.auto === true) {
+    if (classifyRepoRemote(cwd, attribution.ownRemotes ?? []) !== 'owned') return null;
+  }
   return CO_AUTHOR_TRAILER;
 }
 
@@ -149,20 +247,29 @@ export const gitCommitTool: ToolDefinition = {
   description:
     'Create a git commit with automatic Co-Authored-By attribution for AMI. ' +
     'Use this instead of running git commit via bash. ' +
-    'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set or the config `attribution.commit` overrides/suppresses it.',
+    'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set or the config `attribution.commit` overrides/suppresses it. ' +
+    'Writing the message: look at the recent commits (`git log --oneline -10`) and follow this repository\'s existing style; pick the verb for the nature of the change — "add" for a wholly new feature, "update" for an enhancement to an existing one, "fix" for a bug fix (also refactor/test/docs/chore); keep it concise (1-2 sentences) and focused on the WHY, not a restatement of the what. ' +
+    'Do not stage files that likely contain secrets (.env, credentials.json, *.pem, id_rsa); this tool refuses them and refuses a staged diff containing an embedded credential.',
   inputSchema: {
     type: 'object',
     properties: {
       message: {
         type: 'string',
-        description: 'The commit message. The Co-Authored-By trailer is appended automatically (unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1) — do not include it.',
+        description:
+          'The commit message. Follow the repo\'s recent-commit style, use the right verb ' +
+          '(add = new feature, update = enhancement, fix = bug fix), and keep it a concise ' +
+          '1-2 sentences focused on the "why" rather than the "what". ' +
+          'The Co-Authored-By trailer is appended automatically (unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1) — do not include it.',
       },
       files: {
         type: 'array',
         items: { type: 'string' },
         description:
           'Files to stage before committing. If omitted, commits whatever is already staged. ' +
-          'Pass ["."] to stage all tracked modified files.',
+          'Pass ["."] to stage all tracked modified files. ' +
+          'Do NOT stage files that likely contain secrets (.env, credentials.json, *.pem, id_rsa, ' +
+          '.git-credentials); such files are refused, and a staged diff whose added lines contain ' +
+          'an API key / token / private key is also refused.',
       },
     },
     required: ['message'],
@@ -211,15 +318,19 @@ export const gitCommitTool: ToolDefinition = {
       }
     }
 
-    // Stage files if specified
+    // Stage files if specified. Runs through the async, cancellable execFileAsync
+    // seam (carries context.abortSignal) so a large `git add` is interruptible and
+    // never blocks the event loop — same cancellation boundary as the diff/commit
+    // steps below.
     if (files && files.length > 0) {
       const safeFiles = files.filter(f => typeof f === 'string');
+      const addArgs = safeFiles.length === 1 && safeFiles[0] === '.'
+        ? ['add', '-u']
+        : ['add', '--', ...safeFiles];
       try {
-        if (safeFiles.length === 1 && safeFiles[0] === '.') {
-          _gitCommitFs.execFileSync('git', ['add', '-u'], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
-        } else {
-          _gitCommitFs.execFileSync('git', ['add', '--', ...safeFiles], { cwd: context.cwd, timeout: 30_000, env, stdio: 'pipe' });
-        }
+        await _gitCommitFs.execFileAsync('git', addArgs, {
+          cwd: context.cwd, timeout: 30_000, env, signal: context.abortSignal,
+        });
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
         return { output: `Error staging files: ${err}`, isError: true };
@@ -254,6 +365,30 @@ export const gitCommitTool: ToolDefinition = {
       };
     }
 
+    // Secret-bearing CONTENT guard: scan the ADDED lines of the staged diff (the
+    // surface where credentials actually leak — an API key / token / private key
+    // pasted into a committed file, not into the subject line). Parity with
+    // Claude's "do not commit files that likely contain secrets" protocol, which
+    // AMI previously enforced only over file NAMES and the message text. Only `+`
+    // (added) lines are scanned so removing a secret is never flagged, reusing the
+    // same shared scanForSecrets ruleset as the message scan.
+    const stagedDiff = await execCommand('git diff --cached --no-color', execOpts);
+    const addedLines = stagedDiff.stdout
+      .split('\n')
+      .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+      .map(l => l.slice(1))
+      .join('\n');
+    const contentSecrets = scanForSecrets(addedLines);
+    if (contentSecrets.length > 0) {
+      const labels = [...new Set(contentSecrets.map(s => s.label))].join(', ');
+      return {
+        output:
+          `Error: refusing to commit — potential secrets detected in the staged changes: ${labels}. ` +
+          'Remove the secret(s) from the staged diff (or unstage the offending hunk) before committing.',
+        isError: true,
+      };
+    }
+
     const secrets = scanForSecrets(message);
     if (secrets.length > 0) {
       return { output: `Warning: Potential secrets detected in commit message: ${secrets.map(s => s.label).join(', ')}. Remove secrets before committing.`, isError: true };
@@ -281,7 +416,10 @@ export const gitCommitTool: ToolDefinition = {
       // In detached/unattended mode, bypass user hooks and GPG signing so a
       // pre-commit hook or a passphrase prompt can't hang the run. In the
       // interactive TUI we deliberately keep the user's hooks/signing active.
-      const unattendedFlags = context.detachedMode
+      // Parity with Claude's "NEVER skip hooks unless explicitly requested": the
+      // bypass can be opted OUT of (preserving the repo's own pre-commit guards /
+      // GPG signing even in detached runs) via AMI_DETACHED_PRESERVE_HOOKS=1.
+      const unattendedFlags = context.detachedMode && !shouldPreserveCommitHooks(env)
         ? ' -c core.hooksPath=/dev/null -c commit.gpgsign=false'
         : '';
       const commitResult = await execCommand(`git${unattendedFlags} commit -F "${tmpFile}"`, execOpts);
@@ -295,11 +433,14 @@ export const gitCommitTool: ToolDefinition = {
       const commitLine = logResult.stdout.trim();
 
       const parts: string[] = [];
+      // Normalized affordance line the frontend can render cleanly ("Committed
+      // <shortsha>: <subject>"), parity with Claude's structured commit summary.
+      const summary = formatCommitSummary(commitLine);
+      if (summary) {
+        parts.push(summary);
+      }
       if (commitResult.stdout.trim()) {
         parts.push(commitResult.stdout.trim());
-      }
-      if (commitLine) {
-        parts.push(commitLine);
       }
 
       return { output: parts.join('\n'), isError: false };
