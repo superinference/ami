@@ -17,6 +17,9 @@ import { createCerebras } from '@ai-sdk/cerebras';
 import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
+import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as pathJoin, dirname as pathDirname } from 'node:path';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
@@ -832,6 +835,153 @@ export function withRequestIdDebugTrace(
       // Never let tracing crash the fetch.
     }
     return base(input, init);
+  }) as typeof globalThis.fetch;
+}
+
+// ---------------------------------------------------------------------------
+// Transport-boundary prompt/response debug capture (AMI_DUMP_PROMPTS).
+//
+// Parity with Claude Code's `createDumpPromptsFetch` (services/api/dumpPrompts.ts):
+// a fetch wrapper that records the EXACT outgoing request (system prompt + full
+// tool schemas + model params — everything in the JSON body) and the raw/streaming
+// response to a JSONL file, for `/issue`-style debugging. Two invariants make it
+// safe to leave composed into the live fetch chain:
+//   1. It never PERTURBS the real API call — the request parse is deferred via
+//      setImmediate (the body can be MBs), the response is read from a `clone()`
+//      (so the caller's stream is untouched), and EVERY error is swallowed.
+//   2. It is a zero-overhead identity passthrough when the env flag is unset, so
+//      wrapping it unconditionally leaves non-debug behavior byte-for-byte identical.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether raw prompt/response dumping is enabled. Any non-empty value other than
+ * `0`/`false` enables it (so `AMI_DUMP_PROMPTS=1` and `AMI_DUMP_PROMPTS=/path/dir`
+ * both enable), matching the "set to turn on" convention of the other AMI knobs.
+ */
+export function dumpPromptsEnabled(): boolean {
+  const v = process.env.AMI_DUMP_PROMPTS;
+  return typeof v === 'string' && v.trim() !== '' && v.trim() !== '0' && v.trim().toLowerCase() !== 'false';
+}
+
+/**
+ * Resolve the directory the JSONL dump files are written to. When
+ * `AMI_DUMP_PROMPTS` is itself a path (contains a path separator) it is used
+ * directly; otherwise a per-user temp subdirectory is used.
+ */
+export function getPromptDumpDir(): string {
+  const v = process.env.AMI_DUMP_PROMPTS?.trim();
+  if (v && (v.includes('/') || v.includes('\\'))) return v;
+  return pathJoin(tmpdir(), 'ami-prompt-dumps');
+}
+
+/** Parse an SSE body into its decoded `data:` JSON chunks (best-effort). */
+async function readDumpSseChunks(body: ReadableStream<Uint8Array>): Promise<unknown[]> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const chunks: unknown[] = [];
+  for (const event of buffer.split('\n\n')) {
+    for (const line of event.split('\n')) {
+      if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+        try { chunks.push(JSON.parse(line.slice(6))); } catch { /* ignore malformed SSE line */ }
+      }
+    }
+  }
+  return chunks;
+}
+
+/** Default JSONL appender: ensure the directory exists, then append one line. */
+async function appendDumpLine(filePath: string, line: string): Promise<void> {
+  await fsMkdir(pathDirname(filePath), { recursive: true });
+  await fsAppendFile(filePath, line + '\n');
+}
+
+export interface PromptDumpDeps {
+  /** Override the env-derived enablement (tests). */
+  enabled?: boolean;
+  /** Override the dump directory (tests). */
+  dir?: string;
+  /** Distinguishes dump files per session/agent (defaults to the process id). */
+  sessionId?: string;
+  /** Timestamp source (tests). */
+  now?: () => string;
+  /** Defer function for the request dump (defaults to setImmediate). */
+  defer?: (fn: () => void) => void;
+  /** JSONL writer (tests); defaults to a best-effort fs append. */
+  write?: (filePath: string, line: string) => void | Promise<void>;
+}
+
+/**
+ * Compose a prompt/response debug-dump wrapper over `fetchImpl`. Returns
+ * `fetchImpl` UNCHANGED (same reference) when dumping is disabled, so callers can
+ * wrap unconditionally without altering identity-based branching or incurring any
+ * overhead. See the section comment above for the two safety invariants.
+ */
+export function withPromptDump(
+  fetchImpl: typeof globalThis.fetch,
+  deps: PromptDumpDeps = {},
+): typeof globalThis.fetch {
+  const enabled = deps.enabled ?? dumpPromptsEnabled();
+  if (!enabled) return fetchImpl;
+
+  const dir = deps.dir ?? getPromptDumpDir();
+  const sessionId = deps.sessionId ?? String(process.pid);
+  const filePath = pathJoin(dir, `prompts-${sessionId}.jsonl`);
+  const now = deps.now ?? (() => new Date().toISOString());
+  const defer = deps.defer ?? ((fn: () => void) => { setImmediate(fn); });
+  const write = deps.write ?? appendDumpLine;
+
+  const safeWrite = (line: string): void => {
+    try { void Promise.resolve(write(filePath, line)).catch(() => {}); } catch { /* best effort */ }
+  };
+
+  return (async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit): Promise<Response> => {
+    let timestamp: string | undefined;
+    if (init?.method === 'POST' && typeof init.body === 'string') {
+      timestamp = now();
+      const body = init.body;
+      const ts = timestamp;
+      // Defer the parse+serialize (body carries the system prompt + every tool
+      // schema — can be MBs) so it never blocks the live request.
+      defer(() => {
+        try {
+          const data: unknown = JSON.parse(body);
+          safeWrite(JSON.stringify({ type: 'request', timestamp: ts, data }));
+        } catch { /* ignore non-JSON / malformed body */ }
+      });
+    }
+
+    const response = await fetchImpl(input, init);
+
+    if (timestamp && response.ok) {
+      // clone() so reading the capture stream never consumes the body the caller
+      // reads. Fire-and-forget: the live call has already returned to the caller.
+      const cloned = response.clone();
+      const ts = timestamp;
+      void (async () => {
+        try {
+          const ct = cloned.headers.get('content-type') ?? '';
+          let data: unknown;
+          if (ct.includes('text/event-stream') && cloned.body) {
+            data = { stream: true, chunks: await readDumpSseChunks(cloned.body) };
+          } else {
+            data = await cloned.json();
+          }
+          safeWrite(JSON.stringify({ type: 'response', timestamp: ts, data }));
+        } catch { /* best effort — never affect the live request */ }
+      })();
+    }
+
+    return response;
   }) as typeof globalThis.fetch;
 }
 
@@ -1898,6 +2048,13 @@ export function resolveModel(config: ProviderConfig) {
     proxyFetch = withFreshConnection(globalThis.fetch);
     proxyActive = true;
   }
+  // Transport-boundary prompt/response capture (AMI_DUMP_PROMPTS). Composed over
+  // the innermost transport so EVERY provider branch (which all derive their fetch
+  // from proxyFetch/headerFetch) captures the fully-assembled request + raw
+  // response. Identity passthrough when disabled, so proxyActive and the composed
+  // fallback below stay unaffected in the common case.
+  const dumpActive = dumpPromptsEnabled();
+  proxyFetch = withPromptDump(proxyFetch, { sessionId: config.promptCacheKey });
   // L6: attach a client-generated request-id header for log correlation /
   // traceability, unless the caller already set one. Additive — merged into the
   // same extra-header fetch wrapper so it rides every outgoing API request. Gated
@@ -1908,7 +2065,7 @@ export function resolveModel(config: ProviderConfig) {
   const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders, injectRequestId) };
   const headerFetch = withExtraHeaders(headersWithRequestId, proxyFetch);
   const bodyFetch = withExtraBody(openAIPromptCacheBody(config.extraBody, config.promptCacheKey, provider, baseUrl), headerFetch ?? proxyFetch);
-  const composedFetch = bodyFetch ?? headerFetch ?? (proxyActive ? proxyFetch : undefined);
+  const composedFetch = bodyFetch ?? headerFetch ?? ((proxyActive || dumpActive) ? proxyFetch : undefined);
   // L22: on the anthropic-vertex path the boundary is consumed by the cache
   // splitter; everywhere else strip it so the model never sees the sentinel.
   const isVertexPath = provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured());
