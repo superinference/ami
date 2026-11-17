@@ -1774,6 +1774,57 @@ export function computeAnthropicBetas(
   if (opts.disableBetas) return [];
   const betas: string[] = [];
   if (opts.includeCacheTtlBeta && opts.cacheTtl === '1h') betas.push(EXTENDED_CACHE_TTL_BETA);
+  // The request-INDEPENDENT portion (model- + settings-gated) is assembled once per
+  // (model, settings) and reused via the memoized {@link getModelBaseBetas}; only the
+  // per-request 5m/1h cache-TTL beta above and the `disableBetas` kill switch vary
+  // per call, so they stay here outside the cache.
+  betas.push(...getModelBaseBetas(modelId));
+  return [...new Set(betas)];
+}
+
+/**
+ * Per-(model, settings) cache of the request-INDEPENDENT beta set — the part of
+ * {@link computeAnthropicBetas} that does NOT vary per request (everything except
+ * the request-specific 5m/1h cache-TTL beta and the `disableBetas` kill switch).
+ * Assembling this set touches model-capability checks AND six env predicates
+ * (experimental kill switch, interleaved opt-out, token-efficient / structured-output
+ * opt-ins, prompt-cache scope, `ANTHROPIC_BETAS`), so it is computed once per
+ * (model, settings) and reused on every subsequent request — mirroring Claude Code's
+ * memoized `getAllModelBetas`/`getModelBetas` (utils/betas.ts).
+ */
+const modelBaseBetasCache = new Map<string, string[]>();
+
+/**
+ * Fingerprint of every env/settings input {@link getModelBaseBetas} reads, folded
+ * into the cache key so the memo never hides a stale env read behind an old entry.
+ * AMI reads these knobs LIVE from process.env (unlike Claude Code, which memoizes
+ * on the model alone and relies solely on explicit cache clears), so a mid-session
+ * settings change yields a new key — freshness is preserved automatically, and
+ * {@link clearBetasCaches} drops the whole map so it can never grow unboundedly
+ * across env generations.
+ */
+function betaSettingsFingerprint(): string {
+  return [
+    experimentalBetasDisabled() ? '1' : '0',
+    interleavedThinkingDisabled() ? '1' : '0',
+    tokenEfficientToolsEnabled() ? '1' : '0',
+    structuredOutputsEnabled() ? '1' : '0',
+    resolvePromptCacheScope() ?? '',
+    getExtraAnthropicBetas().join(','),
+  ].join('|');
+}
+
+/**
+ * The model- + settings-gated beta tokens, memoized by (model, settings). See
+ * {@link modelBaseBetasCache}. The returned array is cache-owned and MUST NOT be
+ * mutated by callers; {@link computeAnthropicBetas} only ever spreads it into a
+ * fresh array, so the cached value is never aliased out.
+ */
+function getModelBaseBetas(modelId: string): string[] {
+  const key = `${modelId}\u0000${betaSettingsFingerprint()}`;
+  const cached = modelBaseBetasCache.get(key);
+  if (cached) return cached;
+  const betas: string[] = [];
   // Cross-session cache scope ('global'/'org') is an explicit operator opt-in via
   // AMI_PROMPT_CACHE_SCOPE; the scoped cache_control the knob produces is rejected
   // without this beta, so it must accompany any scoped request (non-experimental —
@@ -1792,7 +1843,33 @@ export function computeAnthropicBetas(
     }
   }
   betas.push(...getExtraAnthropicBetas());
-  return [...new Set(betas)];
+  const result = [...new Set(betas)];
+  modelBaseBetasCache.set(key, result);
+  return result;
+}
+
+/**
+ * Invalidate the memoized per-model beta set ({@link modelBaseBetasCache}). Called
+ * from the settings-env re-apply path ({@link reapplySettingsEnv}) alongside the
+ * proxy/mTLS and model-capability cache clears, because a re-applied settings `env`
+ * block can change the very knobs {@link betaSettingsFingerprint} folds in
+ * (`ANTHROPIC_BETAS`, the experimental-betas kill switch, interleaved opt-out, the
+ * prompt-cache scope). Mirrors Claude Code's `clearBetasCaches()` invoked on
+ * settings/auth change (utils/betas.ts, auth.ts).
+ */
+export function clearBetasCaches(): void {
+  const cleared = modelBaseBetasCache.size;
+  modelBaseBetasCache.clear();
+  if (cleared > 0) log('provider', `cleared ${cleared} cached model beta set(s) after settings reconfiguration`);
+}
+
+/**
+ * Diagnostic: number of (model, settings) beta sets currently memoized. Lets the
+ * settings-reconfiguration path (or a test) observe that stale entries were
+ * dropped. Mirrors the companion {@link proxyAgentCacheSize}.
+ */
+export function cachedModelBetaSetCount(): number {
+  return modelBaseBetasCache.size;
 }
 
 /**
