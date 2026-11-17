@@ -916,6 +916,14 @@ const SECRET_RULES: SecretRule[] = [
   // infix — match BEFORE the generic `sk-` rule so they label precisely.
   // PARITY ADD: sk-proj-/sk-svcacct-/sk-admin- scoped keys.
   { id: 'openai-project-key', source: '(?:^|[^a-zA-Z0-9])(sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,})' },
+  // OpenAI standard (non-scoped) user API key — the `sk-<20>T3BlbkFJ<20>` form
+  // whose mandatory `T3BlbkFJ` infix is the structural anchor Claude Code's
+  // secretScanner uses for near-zero-false-positive OpenAI detection (the second
+  // alternative of its `openai-api-key` rule). PARITY ADD: matched BEFORE the
+  // generic `sk-` rule so a modern user key is identified by its structure, not
+  // only by the broad prefix heuristic. The generic rule below is kept as AMI's
+  // wider defensive net (superset) for legacy/opaque `sk-` tokens.
+  { id: 'openai-user-key', source: '(?:^|[^a-zA-Z0-9])(sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})' },
   // Anthropic `sk-ant-…` — body contains `-`/`_`, so must precede the generic sk- rule.
   { id: 'anthropic-api-key', source: '(?:^|[^a-zA-Z0-9])(sk-ant-[a-zA-Z0-9_-]{20,})' },
   { id: 'openai-api-key', source: '(?:^|[^a-zA-Z0-9])(sk-[a-zA-Z0-9]{20,})' },

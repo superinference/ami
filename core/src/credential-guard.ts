@@ -42,6 +42,13 @@ const SECRET_RULES: SecretRule[] = [
     pattern:
       /sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})/g,
   },
+  // OpenAI standard (non-scoped) user API key — the `sk-<20>T3BlbkFJ<20>` form.
+  // Its mandatory `T3BlbkFJ` infix is the structural anchor gitleaks/Claude Code
+  // rely on (the second alternative of the `openai-api-key` rule) for high-
+  // confidence OpenAI detection. Precedes the generic `openai_key` rule so a
+  // modern user key is typed by its structure; the generic rule is retained as
+  // the broad defensive net for legacy/opaque `sk-` tokens.
+  { type: 'openai_user_key', pattern: /sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}/g },
   { type: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,4096}/g },
   { type: 'google_key', pattern: /AIza[a-zA-Z0-9_-]{35}/g },
   // Azure AD client secret — distinctive `…<digit>Q~…` infix (gitleaks
