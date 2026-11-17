@@ -67,6 +67,10 @@ export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
 export { describeRule } from './permissions';
 export {
+  PROMPT_RULE_PREFIX, createPromptRuleContent, isPromptRuleContent, extractPromptDescription,
+  managedRuleReadOnlyNotice,
+} from './permissions';
+export {
   AUTO_MODE_DEFAULT_RULES, getDefaultExternalAutoModeRules, resolveAutoModeRules,
   buildAutoModeClassifierPrompt, buildAutoModeClassifierPromptFromConfig,
   AUTO_MODE_UNAVAILABLE_REASONS, classifyAutoModeUnavailableReason, getAutoModeUnavailableNotification,

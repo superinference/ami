@@ -266,6 +266,13 @@ export interface PermissionRule {
 export function describeRule(rule: PermissionRule): string {
   const verb = rule.action === 'allow' ? 'Allow' : rule.action === 'deny' ? 'Deny' : 'Ask before';
   const tool = rule.tool === '*' ? 'any tool' : rule.tool;
+  const origin = rule.source ? ` (from ${permissionRuleSourceDisplayString(rule.source)})` : '';
+  // Natural-language prompt rules describe an action in prose, not a glob — render
+  // them as the description so the preview reads naturally.
+  const promptDescription = extractPromptDescription(rule.pattern);
+  if (promptDescription) {
+    return `${verb} ${tool} commands described as "${promptDescription}"${origin}`;
+  }
   let scope: string;
   if (rule.pattern && rule.pattern !== '*') {
     scope = ` matching "${rule.pattern}"`;
@@ -274,7 +281,6 @@ export function describeRule(rule: PermissionRule): string {
   } else {
     scope = ' calls';
   }
-  const origin = rule.source ? ` (from ${permissionRuleSourceDisplayString(rule.source)})` : '';
   return `${verb} ${tool}${scope}${origin}`;
 }
 
@@ -3627,6 +3633,64 @@ export function deriveWebFetchDomainRuleContent(input: Record<string, unknown>):
 }
 
 /**
+ * Prefix that marks a permission rule's content as a natural-language "prompt
+ * rule" — a human-written DESCRIPTION of what to auto-approve (e.g. "running the
+ * test suite"), as opposed to a glob prefix (`git:*`). Parity: Claude's
+ * `PROMPT_PREFIX` (`utils/permissions/bashClassifier.ts`).
+ */
+export const PROMPT_RULE_PREFIX = 'prompt:';
+
+/**
+ * Encode a free-text description as prompt-rule content (`prompt: <description>`).
+ * This is the canonical rule body saved when a user approves a bash command via
+ * the "yes, and don't ask again — described as …" classifier path, so the grant
+ * is remembered as a reusable natural-language rule rather than a one-off glob.
+ * Parity: Claude's `createPromptRuleContent(description)`.
+ *
+ * DISTINCT from {@link validateAllowedPromptRule}, which guards plan-mode
+ * `allowedPrompts` that AMI stores directly AS glob patterns — this codec names
+ * the separate `prompt:`-prefixed classifier-rule format and never produces a glob.
+ */
+export function createPromptRuleContent(description: string): string {
+  return `${PROMPT_RULE_PREFIX} ${description.trim()}`;
+}
+
+/** Whether a rule's content string is prompt-rule content (carries the
+ *  {@link PROMPT_RULE_PREFIX}); tolerant of leading whitespace. */
+export function isPromptRuleContent(content: string | undefined): boolean {
+  return typeof content === 'string' && content.trimStart().startsWith(PROMPT_RULE_PREFIX);
+}
+
+/**
+ * Recover the human-readable description from prompt-rule content, or `null` when
+ * the content is not a prompt rule or carries no description after the prefix.
+ * Round-trips {@link createPromptRuleContent}. Parity: Claude's
+ * `extractPromptDescription(ruleContent)`.
+ */
+export function extractPromptDescription(content: string | undefined): string | null {
+  if (typeof content !== 'string') return null;
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith(PROMPT_RULE_PREFIX)) return null;
+  const description = trimmed.slice(PROMPT_RULE_PREFIX.length).trim();
+  return description.length > 0 ? description : null;
+}
+
+/**
+ * The read-only detail notice shown for a permission rule that originates from
+ * managed/enterprise policy ({@link isManagedPermissionSource}) — such a rule
+ * cannot be edited or removed by the user. Returns `null` for every
+ * user-editable source, so a caller can branch on "is this rule locked". Parity:
+ * Claude's PermissionRuleList "Rule details" view for `policySettings` rules.
+ */
+export function managedRuleReadOnlyNotice(source: PermissionRuleSource | undefined): string | null {
+  if (!isManagedPermissionSource(source)) return null;
+  return (
+    'This rule is configured by managed settings and cannot be modified.\n' +
+    'Contact your system administrator for more information.'
+  );
+}
+
+/**
  * Turn a granted DIRECTORY into a persistable `file_read` allow rule (parity:
  * Claude's `createReadRuleSuggestion`), so "I pointed the agent at this dir" can be
  * saved as a normal, scoped permission rule rather than only a runtime read root.
@@ -5580,6 +5644,25 @@ export class PermissionManager {
    */
   getRules(): PermissionRule[] {
     return [...this.rules];
+  }
+
+  /**
+   * Whether a rule can be edited/removed by the user. A rule loaded from managed/
+   * enterprise policy ({@link isManagedPermissionSource}) is read-only; every other
+   * source is user-editable. Lets a rule-management UI disable edit/delete and show
+   * {@link ruleReadOnlyNotice} for locked rules. Parity: Claude's PermissionRuleList
+   * policy-rule lockdown.
+   */
+  isRuleEditable(rule: PermissionRule): boolean {
+    return !isManagedPermissionSource(rule.source);
+  }
+
+  /**
+   * The read-only detail notice for a managed/policy rule, or `null` when the rule
+   * is user-editable. Delegates to the pure {@link managedRuleReadOnlyNotice}.
+   */
+  ruleReadOnlyNotice(rule: PermissionRule): string | null {
+    return managedRuleReadOnlyNotice(rule.source);
   }
 
   /**
