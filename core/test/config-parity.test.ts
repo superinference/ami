@@ -50,7 +50,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       thinkingLevel: 't', maxEffortLevel: 'e', fallbackModel: 'f', compactionModel: 'c',
       maxTurns: 1, tokenBudget: 1, maxBudgetUsd: 1, superinference: { enforcing: true },
       skill: 's', enforceAvailableModels: ['a'], bashOutputMaxChars: 1, taskOutputMaxChars: 1,
-      cacheTtl: '5m', safeMode: true, maxWebSearchesPerSession: 1, deferTools: true,
+      cacheTtl: '5m', safeMode: true, hasTrustDialogAccepted: true, maxWebSearchesPerSession: 1, deferTools: true,
       alwaysLoadTools: ['a'], fallbackModels: ['a'], disableBypassPermissionsMode: true,
       disableAllHooks: true, allowManagedHooksOnly: true, enabledPlugins: {}, allowManagedModsOnly: true,
       allowedMcpServers: ['a'], deniedMcpServers: ['a'], managedMcpServers: {}, statusLine: 'l', sandboxExcludedCommands: ['a'],

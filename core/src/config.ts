@@ -43,6 +43,22 @@ export interface ProjectConfig {
   cacheTtl?: '5m' | '1h';
   /** Safe mode: skip untrusted project-local hooks/MCP/memory/skills. */
   safeMode?: boolean;
+  /**
+   * Persisted per-project FOLDER-TRUST grant (parity: Claude Code's
+   * `hasTrustDialogAccepted` project-config knob). When `true` the user has recorded
+   * that THIS workspace is trusted, so project-tier hooks (`.ami/hooks.json`) — and,
+   * in an interactive session, all hooks — are allowed to load instead of being
+   * skipped as an untrusted source. AMI previously had only the INVERSE
+   * {@link safeMode} opt-in distrust and no config-backed way to GRANT trust, so
+   * {@link import('./hooks').HookManager.setWorkspaceTrusted} had no production caller
+   * and project hooks stayed permanently skipped. Consumed by
+   * {@link resolveWorkspaceTrustAccepted} → `HookManager.loadFromFile`. An unset/false
+   * value keeps the untrusted default; the knob only ever PROMOTES trust, never
+   * demotes it. A user-level/per-project decision (lives in project/local/global
+   * config); it can never WIDEN past a managed `safeMode` lockdown, which is
+   * re-applied authoritatively in {@link mergeConfigs}.
+   */
+  hasTrustDialogAccepted?: boolean;
   /** Session-wide cap on web_search tool calls. */
   maxWebSearchesPerSession?: number;
   /**
@@ -747,7 +763,8 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
   ['cleanupPeriodDays', 'number'],
-  ['safeMode', 'boolean'], ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
+  ['safeMode', 'boolean'], ['hasTrustDialogAccepted', 'boolean'],
+  ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
   ['allowManagedModsOnly', 'boolean'], ['allowManagedSandboxDomainsOnly', 'boolean'],
@@ -1706,6 +1723,7 @@ export function mergeConfigs(
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
     if (layer.safeMode !== undefined) merged.safeMode = layer.safeMode;
+    if (layer.hasTrustDialogAccepted !== undefined) merged.hasTrustDialogAccepted = layer.hasTrustDialogAccepted;
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.cleanupPeriodDays !== undefined) merged.cleanupPeriodDays = layer.cleanupPeriodDays;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
@@ -1852,6 +1870,33 @@ export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
     managed,
   );
   return merged.memoryExcludes ?? [];
+}
+
+/**
+ * Resolve whether the workspace rooted at `cwd` has been granted FOLDER TRUST via the
+ * persisted {@link ProjectConfig.hasTrustDialogAccepted} knob, by merging the full
+ * config waterfall (managed > global > project > local — CLI/env carry no trust flag).
+ * Returns `true` only when the merged flag is exactly `true`; a missing/false value is
+ * the untrusted default. Kept in the config layer (not hooks.ts) so there is ONE place
+ * that reads the config files and applies the merge semantics — the same pattern as
+ * {@link resolveConfiguredMemoryExcludes}. A broken/untrusted managed policy fails
+ * closed ({@link ManagedConfigError}); a trust lookup must never abort hook loading
+ * over it, so it is treated as absent. Parity: Claude Code's
+ * `checkHasTrustDialogAccepted()` read of the per-project config knob, consumed by
+ * {@link import('./hooks').HookManager.loadFromFile} to set workspace trust.
+ */
+export function resolveWorkspaceTrustAccepted(cwd: string): boolean {
+  let managed: ProjectConfig | null = null;
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return merged.hasTrustDialogAccepted === true;
 }
 
 // ---------------------------------------------------------------------------

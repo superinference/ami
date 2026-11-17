@@ -14,7 +14,7 @@ import {
   type HookSourceKind,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
-import { stripBom } from './config';
+import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import type { PermissionUpdate, PermissionMode } from './permissions';
@@ -2371,6 +2371,14 @@ export class HookManager extends EventEmitter {
     // Reset the introspection descriptor set so a reload reflects the current
     // on-disk config (no stale accumulation across loads).
     this._descriptors = [];
+    // Folder-trust grant (parity: Claude Code's checkHasTrustDialogAccepted): consult
+    // the persisted `hasTrustDialogAccepted` project-config knob so a user who recorded
+    // trust for this workspace actually gets project-tier hooks (and, interactively, all
+    // hooks) loaded instead of silently skipped. Only PROMOTES trust — an explicitly-set
+    // trusted flag is never demoted, and an unset/false knob keeps the untrusted default.
+    if (!this._workspaceTrusted && resolveWorkspaceTrustAccepted(cwd)) {
+      this._workspaceTrusted = true;
+    }
     // Defense-in-depth: in an interactive session an untrusted workspace fires
     // NO hooks of any tier (Claude Code's shouldSkipHookDueToTrust). Project
     // entries are also gated below, but this blocks user/config-tier hooks too.
