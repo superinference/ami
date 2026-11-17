@@ -44,6 +44,7 @@ import {
   type DiagnosticSource,
   type PublishDiagnosticsParams,
 } from './diagnostic-tracking';
+import { getLSPDiagnosticRegistry } from './diagnostic-registry';
 import {
   LspHealthMonitor,
   type HealthScheduler,
@@ -1042,10 +1043,21 @@ export class LSPClient implements DiagnosticSource {
     }
     const valid = params as PublishDiagnosticsParams;
     const key = normalizeDiagnosticPath(valid.uri);
-    this.diagnosticsByUri.set(key, {
+    const converted: DiagnosticFile = {
       uri: valid.uri,
       diagnostics: convertPublishDiagnostics(valid),
-    });
+    };
+    this.diagnosticsByUri.set(key, converted);
+    // Feed the async delivery registry so a drain (the `diagnostics` tool's
+    // `only_new` mode) can deliver each distinct diagnostic to the conversation at
+    // most once per session. An empty publish (a server CLEARING a file) carries no
+    // diagnostics to deliver, so skip registering it.
+    if (converted.diagnostics.length > 0) {
+      getLSPDiagnosticRegistry().registerPendingLSPDiagnostic({
+        serverName: language,
+        files: [converted],
+      });
+    }
     const waiters = this.diagnosticWaiters.get(key);
     if (waiters) {
       this.diagnosticWaiters.delete(key);
@@ -1382,6 +1394,9 @@ export class LSPClient implements DiagnosticSource {
     this.diagnosticWaiters.clear();
     this.diagnosticFailures.clear();
     this.diagnostics.reset();
+    // Drop the async registry's pending + cross-turn delivered state so a later
+    // session starts clean (parity: resetAllLSPDiagnosticState on session reset).
+    getLSPDiagnosticRegistry().resetAllLSPDiagnosticState();
   }
 
   /**

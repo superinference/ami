@@ -315,6 +315,34 @@ export function areDiagnosticsEqual(a: Diagnostic, b: Diagnostic): boolean {
 }
 
 /**
+ * PARITY (additive): stable content key for a single diagnostic, mirroring Claude
+ * Code's `createDiagnosticKey` (LSPDiagnosticRegistry.ts L106-124). Serializes the
+ * dedup-identity field set — `message`, `severity`, `range`, `source`, `code` — in
+ * a FIXED key order (so two structurally-identical diagnostics always produce the
+ * same string) with `source`/`code` defaulting to `null`. This is the canonical
+ * dedup identity used by the async {@link LSPDiagnosticRegistry} for both
+ * within-batch and cross-turn Set-based deduplication; it encodes exactly the same
+ * fields as {@link areDiagnosticsEqual} (the O(n²) structural comparison used by
+ * {@link dedupeDiagnostics}), kept here as the ONE place that defines diagnostic
+ * identity so the two dedup paths can never diverge.
+ */
+export function createDiagnosticKey(diag: {
+  message: string;
+  severity?: string;
+  range?: unknown;
+  source?: string;
+  code?: string;
+}): string {
+  return JSON.stringify({
+    message: diag.message,
+    severity: diag.severity,
+    range: diag.range,
+    source: diag.source ?? null,
+    code: diag.code ?? null,
+  });
+}
+
+/**
  * FUNCTIONAL (dedup): collapse structurally-identical diagnostics, preserving
  * first-seen order. A language server can legitimately publish the same
  * diagnostic twice (e.g. a rule reported by two overlapping passes, or a

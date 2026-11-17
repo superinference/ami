@@ -445,6 +445,11 @@ export {
   LspHealthMonitor,
   collectLspHealthErrors,
   LSP_POLL_INTERVAL_MS,
+  createDiagnosticKey,
+  LSPDiagnosticRegistry,
+  getLSPDiagnosticRegistry,
+  resetLSPDiagnosticRegistry,
+  MAX_DELIVERED_FILES,
 } from './lsp';
 export type {
   LspServerConfig,
@@ -464,6 +469,9 @@ export type {
   DiagnosticRange,
   DiagnosticPosition,
   PublishDiagnosticsParams,
+  PendingLSPDiagnostic,
+  RegisterPendingInput,
+  DeliveredLSPDiagnostics,
 } from './lsp';
 
 // --- batch #10 additive parity exports ---

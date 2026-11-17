@@ -355,8 +355,12 @@ interface SequentialEdit {
  * (client lookup failure, rejected notify promises) deterministically. Behavior
  * is unchanged in production.
  */
-export const lspHooks: { getClient: () => any } = {
+export const lspHooks: { getClient: () => any; clearDeliveredDiagnostics: (filePath: string) => void } = {
   getClient: () => require('../lsp').getLSPClient(),
+  // Invalidate the async-registry cross-turn dedup cache for an edited file so its
+  // next diagnostics are re-delivered even if identical to previously shown ones.
+  clearDeliveredDiagnostics: (filePath: string) =>
+    require('../lsp').getLSPDiagnosticRegistry().clearDeliveredDiagnosticsForFile(filePath),
 };
 
 function notifyLsp(resolved: string, content: string, context: ToolContext): void {
@@ -379,6 +383,11 @@ export function captureLspBaseline(resolved: string, context: ToolContext): void
   try {
     const lsp = lspHooks.getClient();
     lsp.diagnostics?.beforeFileEdited?.(resolved)?.catch?.(() => {});
+  } catch {}
+  // An edit changes the file's diagnostics, so forget what was already delivered
+  // for it — the next drain must show its fresh diagnostics even if unchanged in text.
+  try {
+    lspHooks.clearDeliveredDiagnostics(resolved);
   } catch {}
 }
 

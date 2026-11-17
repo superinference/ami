@@ -243,6 +243,20 @@ export const _lspDiagHooks = {
       return undefined;
     }
   },
+  /**
+   * Drain the async {@link LSPDiagnosticRegistry} for diagnostics not yet delivered
+   * to the conversation this session (cross-turn dedup), flattening the single
+   * drain result's files. Backs the `diagnostics` tool's `only_new` mode. Lazy
+   * require keeps the LSP subsystem out of the tool's import graph until used.
+   */
+  drainNewDiagnostics(): DiagnosticFile[] {
+    const { getLSPDiagnosticRegistry } = require('../lsp') as {
+      getLSPDiagnosticRegistry: () => { checkForLSPDiagnostics: () => Array<{ files: DiagnosticFile[] }> };
+    };
+    return getLSPDiagnosticRegistry()
+      .checkForLSPDiagnostics()
+      .flatMap((d) => d.files);
+  },
   searchSymbols(
     cwd: string,
     symbol: string,
@@ -290,6 +304,10 @@ export const lspDiagnosticsTool: ToolDefinition = {
         type: 'boolean',
         description: 'When false, return only a count summary (and severity breakdown) instead of the full per-diagnostic listing. Defaults to true (full detail).',
       },
+      only_new: {
+        type: 'boolean',
+        description: 'Workspace scope only (no file_path). When true, return ONLY diagnostics not already surfaced this session (cross-turn deduplicated), so repeated calls do not re-report unchanged problems. Editing a file re-arms its diagnostics.',
+      },
     },
     // PARITY (additive): strict-object gating (Claude's LSP `z.strictObject`) —
     // a hallucinated/typo'd parameter (e.g. `path`, `file`, `severty`) is a hard
@@ -315,6 +333,18 @@ export const lspDiagnosticsTool: ToolDefinition = {
       return { output: 'Invalid file_path: expected a string path.', isError: true };
     }
     const filePath = input.file_path as string | undefined;
+    // PARITY (additive): `only_new` cross-turn-dedup drain is a WORKSPACE scope
+    // concept (it mirrors Claude's registry, which delivers un-shown diagnostics
+    // across the whole session). It is meaningless combined with a single
+    // `file_path` (that path already has its own pre-edit baseline delta), so reject
+    // the combination loudly instead of silently ignoring the flag.
+    if (input.only_new !== undefined && typeof input.only_new !== 'boolean') {
+      return { output: 'Invalid only_new: expected a boolean.', isError: true };
+    }
+    const onlyNew = input.only_new === true;
+    if (onlyNew && filePath) {
+      return { output: 'only_new applies to workspace scope; do not combine it with file_path.', isError: true };
+    }
     // PARITY (additive): `verbose` toggle — full per-diagnostic listing (default)
     // vs a one-line count summary. Mirrors Claude's DiagnosticsDisplay verbose prop.
     const verbose = input.verbose !== false;
@@ -405,6 +435,29 @@ export const lspDiagnosticsTool: ToolDefinition = {
           ? withNote(formatDiagnosticsDetail(capped), volumeLimitNote(removed))
           : withNote(`${fileSummary} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
         return { output: body, metadata: diagMetadata('diagnostics', capped) };
+      }
+
+      // only_new mode drains the async registry (cross-turn dedup): already-shown
+      // diagnostics are filtered, so repeated calls surface only genuinely-new ones.
+      // The registry already deduped + volume-capped its drain, so we only apply the
+      // optional severity floor here (no second cap).
+      if (onlyNew) {
+        let fresh = _lspDiagHooks.drainNewDiagnostics();
+        if (minSeverity) fresh = filterDiagnosticsBySeverity(fresh, minSeverity);
+        if (fresh.length === 0) {
+          return {
+            output: minSeverity
+              ? `No new ${minSeverity}-level (or higher) diagnostics since the last check.`
+              : 'No new diagnostics since the last check.',
+            metadata: diagMetadata('diagnostics', []),
+          };
+        }
+        const total = totalDiagnostics(fresh);
+        const breakdown = summarizeDiagnosticSeverities(fresh);
+        const breakdownSuffix = breakdown ? ` (${breakdown})` : '';
+        const header = `${total} new diagnostic issue(s) across ${fresh.length} file(s)${breakdownSuffix}`;
+        const body = verbose ? `${header}:\n${formatDiagnosticsDetail(fresh)}` : `${header} (set verbose: true for the full per-diagnostic listing)`;
+        return { output: body, metadata: diagMetadata('diagnostics', fresh) };
       }
 
       let workspace = client.getAllDiagnostics();

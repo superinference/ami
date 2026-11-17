@@ -23,10 +23,22 @@ export {
 export type { LspServerConfig } from './config';
 export { getSymbolAtPosition, MAX_READ_BYTES, MAX_SYMBOL_LENGTH } from './symbol-context';
 export {
+  LSPDiagnosticRegistry,
+  getLSPDiagnosticRegistry,
+  resetLSPDiagnosticRegistry,
+  MAX_DELIVERED_FILES,
+} from './diagnostic-registry';
+export type {
+  PendingLSPDiagnostic,
+  RegisterPendingInput,
+  DeliveredLSPDiagnostics,
+} from './diagnostic-registry';
+export {
   DiagnosticTracker,
   mapLspSeverity,
   convertPublishDiagnostics,
   areDiagnosticsEqual,
+  createDiagnosticKey,
   dedupeDiagnostics,
   normalizeDiagnosticPath,
   diagnosticPathsEqual,
