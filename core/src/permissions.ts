@@ -7,6 +7,7 @@ import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/p
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
+import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
@@ -428,6 +429,159 @@ export function createPermissionRequestMessage(reason: PermissionDecisionReason)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic permission risk explainer (RiskLevel / PermissionExplanation)
+// ---------------------------------------------------------------------------
+
+/** Risk tier of a pending tool call, ordered LOW < MEDIUM < HIGH. */
+export const RISK_LEVELS = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
+/** Numeric severity of a {@link RiskLevel} (LOW=1, MEDIUM=2, HIGH=3), for ordering
+ *  and analytics bucketing. Parity: Claude's `RISK_LEVEL_NUMERIC` map. */
+export function riskLevelRank(level: RiskLevel): number {
+  return RISK_LEVELS.indexOf(level) + 1;
+}
+
+/**
+ * A plain-language risk assessment of a pending tool call, surfaced on the
+ * permission prompt so the user can make an informed allow/deny decision and
+ * attached to denial records for later review. Parity: Claude's
+ * `PermissionExplanation` (utils/permissions/permissionExplainer.ts). Claude
+ * generates this with an LLM side-query; AMI computes it DETERMINISTICALLY from the
+ * same command-classification primitives the permission engine already uses
+ * ({@link PermissionManager.classifyBashCommand}, {@link detectHardlineCommand}),
+ * so it needs no extra model round-trip and is stable and unit-testable.
+ */
+export interface PermissionExplanation {
+  /** Overall risk: LOW (safe dev workflow), MEDIUM (recoverable change), HIGH (dangerous/irreversible). */
+  riskLevel: RiskLevel;
+  /** What the tool call does (1-2 sentences). */
+  explanation: string;
+  /** Why it is being run, model-voiced (starts with "I"). */
+  reasoning: string;
+  /** What could go wrong, concisely. */
+  risk: string;
+}
+
+/** Tool names (canonical) that only READ state and are therefore always low risk. */
+const READ_ONLY_RISK_TOOLS = new Set([
+  'file_read', 'read', 'grep', 'glob', 'ls', 'list', 'web_search', 'notebook_read',
+]);
+/** Tool names (canonical) that mutate the local workspace in a recoverable way. */
+const MUTATING_RISK_TOOLS = new Set([
+  'file_edit', 'file_write', 'notebook_edit', 'write', 'edit',
+]);
+
+/** Map a {@link BashClassification} to its {@link RiskLevel}. */
+const BASH_CLASSIFICATION_RISK: Record<BashClassification, RiskLevel> = {
+  safe: 'LOW',
+  unsafe: 'MEDIUM',
+  destructive: 'HIGH',
+};
+
+/** Lazily-created manager reused only for its static bash classifier, so
+ *  {@link classifyPermissionRisk} reuses the canonical classification (no duplicate
+ *  destructive/safe tables) without allocating per call. */
+let _riskClassifierManager: PermissionManager | undefined;
+function classifyBashForRisk(command: string): BashClassification {
+  _riskClassifierManager ??= new PermissionManager();
+  return _riskClassifierManager.classifyBashCommand(command);
+}
+
+function extractBashCommandText(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input && typeof input === 'object' && 'command' in input) {
+    const c = (input as { command?: unknown }).command;
+    if (typeof c === 'string') return c;
+  }
+  return '';
+}
+
+/**
+ * Deterministically assess the risk of a pending tool call and produce a
+ * {@link PermissionExplanation}. Pure and side-effect free: it reuses the
+ * permission engine's own classifiers (bash → {@link PermissionManager.classifyBashCommand},
+ * which folds in hardline/destructive/credential detection) and a small tool-name
+ * risk map for non-bash tools. Unknown tools default to MEDIUM (recoverable) —
+ * never silently LOW. This is the data the CLI's permission-prompt explainer and
+ * the denial log render; AMI computes it locally instead of via an LLM side-query.
+ */
+export function classifyPermissionRisk(toolName: string, input: unknown): PermissionExplanation {
+  const tool = normalizeToolName(toolName);
+
+  if (tool === 'bash') {
+    const command = extractBashCommandText(input).trim();
+    if (!command) {
+      return {
+        riskLevel: 'LOW',
+        explanation: 'Runs an empty shell command.',
+        reasoning: 'I am about to run a shell command.',
+        risk: 'No effect.',
+      };
+    }
+    const riskLevel = BASH_CLASSIFICATION_RISK[classifyBashForRisk(command)];
+    const explanation = `Runs the shell command \`${command}\`.`;
+    switch (riskLevel) {
+      case 'HIGH':
+        return {
+          riskLevel,
+          explanation,
+          reasoning: 'I need to run this command to make the requested change.',
+          risk: 'This command is destructive or irreversible and may cause data loss.',
+        };
+      case 'MEDIUM':
+        return {
+          riskLevel,
+          explanation,
+          reasoning: 'I need to run this command to make progress on the task.',
+          risk: 'This command changes local state; effects are usually recoverable.',
+        };
+      default:
+        return {
+          riskLevel,
+          explanation,
+          reasoning: 'I need to inspect the project to continue.',
+          risk: 'Read-only; no state is modified.',
+        };
+    }
+  }
+
+  if (READ_ONLY_RISK_TOOLS.has(tool)) {
+    return {
+      riskLevel: 'LOW',
+      explanation: `Uses the ${tool} tool, which only reads or searches.`,
+      reasoning: 'I need to inspect the project to continue.',
+      risk: 'Read-only; no state is modified.',
+    };
+  }
+
+  if (MUTATING_RISK_TOOLS.has(tool)) {
+    return {
+      riskLevel: 'MEDIUM',
+      explanation: `Uses the ${tool} tool to modify a file in the workspace.`,
+      reasoning: 'I need to apply this change to complete the task.',
+      risk: 'Overwrites file content; effects are usually recoverable from version control.',
+    };
+  }
+
+  if (tool === 'web_fetch') {
+    return {
+      riskLevel: 'MEDIUM',
+      explanation: 'Fetches content from a remote URL.',
+      reasoning: 'I need information from this URL to continue.',
+      risk: 'Sends a network request to an external host.',
+    };
+  }
+
+  return {
+    riskLevel: 'MEDIUM',
+    explanation: `Uses the ${tool} tool.`,
+    reasoning: 'I need to use this tool to continue the task.',
+    risk: 'Effects depend on the tool; review before approving.',
+  };
+}
+
 export interface DenyCheckResult {
   denied: boolean;
   reason?: string;
@@ -441,6 +595,10 @@ export interface RecentDenial {
   source: 'rule' | 'hardline' | 'classifier' | 'mode';
   /** Optional explanation. */
   reason?: string;
+  /** Deterministic risk tier of the denied action, so a reviewer can triage the
+   *  recent-denials list by severity. Computed from {@link classifyPermissionRisk}
+   *  when `recordDenial` is given a display string. */
+  riskLevel?: RiskLevel;
   timestamp: number;
 }
 
@@ -4370,11 +4528,36 @@ export class PermissionManager {
     this.consecutiveDenials++;
     this.totalDenials++;
     if (display !== undefined) {
-      this._recentDenials.unshift({ display, source, reason, timestamp: Date.now() });
+      // A 'mode' denial's display is a prose description, not a command; everything
+      // else is command-like, so classify it as a bash call for a best-effort risk
+      // tier. Pure + deterministic (reuses the canonical bash classifier).
+      const riskLevel =
+        source === 'mode'
+          ? undefined
+          : classifyPermissionRisk('bash', { command: display }).riskLevel;
+      this._recentDenials.unshift({ display, source, reason, riskLevel, timestamp: Date.now() });
       if (this._recentDenials.length > this.MAX_RECENT_DENIALS) {
         this._recentDenials.length = this.MAX_RECENT_DENIALS;
       }
     }
+  }
+
+  /**
+   * Report WHY an elevated "auto"/autonomy permission mode is unavailable right now,
+   * or `null` when it may be entered. Consumes this manager's live denial
+   * circuit-breaker state ({@link shouldAbort}) and the caller-supplied settings /
+   * model capability, delegating the precedence to the pure
+   * {@link classifyAutoModeUnavailableReason}. The CLI uses this to show a one-shot
+   * reason-tagged notification when the user tries to switch into auto mode.
+   */
+  autoModeUnavailableReason(
+    opts: { disabledBySettings?: boolean; modelSupportsAutoMode?: boolean } = {},
+  ): AutoModeUnavailableReason | null {
+    return classifyAutoModeUnavailableReason({
+      disabledBySettings: opts.disabledBySettings ?? false,
+      circuitBroken: this.shouldAbort(),
+      modelSupportsAutoMode: opts.modelSupportsAutoMode ?? true,
+    });
   }
 
   /**

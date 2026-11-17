@@ -142,3 +142,63 @@ export function buildAutoModeClassifierPrompt(rules: AutoModeRules): string {
 export function buildAutoModeClassifierPromptFromConfig(config?: AutoModeConfig | null): string {
   return buildAutoModeClassifierPrompt(resolveAutoModeRules(config));
 }
+
+// ---------------------------------------------------------------------------
+// Auto-mode availability gating — why an elevated autonomy mode is unavailable
+// ---------------------------------------------------------------------------
+
+/**
+ * Why an elevated "auto"/autonomy permission mode is unavailable when the user
+ * tries to switch into it (e.g. the Shift+Tab carousel wraps past the auto slot).
+ * Parity: Claude's `AutoModeUnavailableReason` (permissionSetup.ts L1045):
+ *  - `settings`        — auto mode is turned off by a (user or managed) settings flag;
+ *  - `circuit-breaker` — auto mode is suspended because too many actions were denied
+ *                        (the permission denial circuit breaker has tripped);
+ *  - `model`           — the active model does not support unattended auto mode.
+ */
+export const AUTO_MODE_UNAVAILABLE_REASONS = ['settings', 'circuit-breaker', 'model'] as const;
+export type AutoModeUnavailableReason = (typeof AUTO_MODE_UNAVAILABLE_REASONS)[number];
+
+/**
+ * The observable state that decides whether auto mode can be entered. Passed in
+ * explicitly (never read from globals) so the classifier stays pure and
+ * unit-testable; the engine/manager supplies the live values.
+ */
+export interface AutoModeAvailabilityState {
+  /** Auto mode is disabled by a settings flag (user opt-out or managed policy). */
+  disabledBySettings: boolean;
+  /** The denial circuit breaker has tripped (too many recent/consecutive denials). */
+  circuitBroken: boolean;
+  /** The active model supports unattended auto mode. */
+  modelSupportsAutoMode: boolean;
+}
+
+/**
+ * Classify WHY auto mode is unavailable for the given state, or `null` when it is
+ * available. Checks in Claude's fixed precedence (settings disable → circuit
+ * breaker → model capability), mirroring `getAutoModeUnavailableReason`.
+ */
+export function classifyAutoModeUnavailableReason(
+  state: AutoModeAvailabilityState,
+): AutoModeUnavailableReason | null {
+  if (state.disabledBySettings) return 'settings';
+  if (state.circuitBroken) return 'circuit-breaker';
+  if (!state.modelSupportsAutoMode) return 'model';
+  return null;
+}
+
+/**
+ * Human-readable, reason-tagged notification text for an unavailable auto mode,
+ * shown once when the user tries to switch into it. Parity: Claude's
+ * `getAutoModeUnavailableNotification`.
+ */
+export function getAutoModeUnavailableNotification(reason: AutoModeUnavailableReason): string {
+  switch (reason) {
+    case 'settings':
+      return 'Auto mode is disabled by settings';
+    case 'circuit-breaker':
+      return 'Auto mode paused after too many denied actions — review and resume manually';
+    case 'model':
+      return 'Auto mode is unavailable for the current model';
+  }
+}

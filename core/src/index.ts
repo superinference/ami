@@ -64,8 +64,13 @@ export { describeRule } from './permissions';
 export {
   AUTO_MODE_DEFAULT_RULES, getDefaultExternalAutoModeRules, resolveAutoModeRules,
   buildAutoModeClassifierPrompt, buildAutoModeClassifierPromptFromConfig,
+  AUTO_MODE_UNAVAILABLE_REASONS, classifyAutoModeUnavailableReason, getAutoModeUnavailableNotification,
 } from './auto-mode';
-export type { AutoModeRules } from './auto-mode';
+export type { AutoModeRules, AutoModeUnavailableReason, AutoModeAvailabilityState } from './auto-mode';
+export {
+  RISK_LEVELS, riskLevelRank, classifyPermissionRisk,
+} from './permissions';
+export type { RiskLevel, PermissionExplanation } from './permissions';
 export { detectPathExpansionHazard, pathExpansionHazardReason } from './permissions';
 export type { PathExpansionHazard } from './permissions';
 export {
