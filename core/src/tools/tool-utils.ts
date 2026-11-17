@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { ToolResult, DiffHunk } from '../types';
 import { isCredentialPath } from './bash-security';
-import { validatePathExpansionSafety, normalizeCaseForComparison } from '../utils/path';
+import { validatePathExpansionSafety, normalizeCaseForComparison, expandPath } from '../utils/path';
 import { isSpecialFileStat } from '../path-safety';
 
 /**
@@ -17,9 +17,11 @@ import { isSpecialFileStat } from '../path-safety';
 export const _toolUtilsHooks: {
   existsSync: (p: string) => boolean;
   realpathSync: (p: string) => string;
+  readlinkSync: (p: string) => string;
 } = {
   existsSync: (p) => fs.existsSync(p),
   realpathSync: (p) => fs.realpathSync(p),
+  readlinkSync: (p) => fs.readlinkSync(p),
 };
 
 // ---------------------------------------------------------------------------
@@ -572,6 +574,68 @@ export function safeLstat(
     const msg = err instanceof Error ? err.message : String(err);
     return { error: { output: `Error: cannot stat "${filePath}": ${msg}`, isError: true } };
   }
+}
+
+/**
+ * Informed-consent disclosure of a symlinked write target, surfaced at the
+ * permission prompt so the user/model is told the REAL path a mutating file op
+ * will affect before granting approval. Mirrors Claude Code's FilePermissionDialog
+ * symlink branch (FilePermissionDialog.tsx:L75-89,L162-167): it computes the
+ * resolved symlink target for non-read ops and shows one of two consent lines —
+ * an explicit "outside working directory" warning when the target escapes cwd, or
+ * a plain "Symlink target:" note when an in-cwd symlink redirects to another
+ * in-cwd file.
+ *
+ * AMI already HARD-BLOCKS out-of-workspace symlink writes at execution
+ * (resolveFilePath/safeReadFile) — that safety stays. This helper is additive: it
+ * surfaces the real target as disclosure at approval time (including for in-cwd
+ * symlink redirection, which previously executed silently with no indication the
+ * path was a symlink). It never throws and returns `null` whenever there is
+ * nothing to disclose (missing path, non-existent target, or not a symlink).
+ */
+export interface SymlinkDisclosure {
+  /** The real path the symlink resolves to (one hop for a dangling link). */
+  resolvedPath: string;
+  /** True when the resolved target is outside cwd (`relative(cwd, target)` escapes). */
+  isOutsideCwd: boolean;
+  /** The informed-consent line to render at the permission prompt. */
+  message: string;
+}
+
+export function describeSymlinkTarget(
+  filePath: string,
+  cwd: string = process.cwd(),
+): SymlinkDisclosure | null {
+  if (!filePath) return null;
+  const expanded = expandPath(filePath, cwd);
+  const absolute = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(absolute);
+  } catch {
+    // Target does not exist yet → nothing to disclose (a NEW-file write is not
+    // through a symlink; parent-symlink escapes are still blocked by resolveFilePath).
+    return null;
+  }
+  if (!stat.isSymbolicLink()) return null;
+  let resolvedPath: string;
+  try {
+    resolvedPath = _toolUtilsHooks.realpathSync(absolute);
+  } catch {
+    // Dangling symlink — resolve a single hop so the user still sees the intended
+    // target they are about to create/modify through the link.
+    try {
+      const link = _toolUtilsHooks.readlinkSync(absolute);
+      resolvedPath = path.isAbsolute(link) ? link : path.resolve(path.dirname(absolute), link);
+    } catch {
+      return null;
+    }
+  }
+  const isOutsideCwd = path.relative(cwd, resolvedPath).startsWith('..');
+  const message = isOutsideCwd
+    ? `This will modify ${resolvedPath} (outside working directory) via a symlink`
+    : `Symlink target: ${resolvedPath}`;
+  return { resolvedPath, isOutsideCwd, message };
 }
 
 export const FILE_ENCODINGS = ['utf-8', 'utf-8-bom', 'utf-16le', 'utf-16be'] as const;
