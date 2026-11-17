@@ -833,6 +833,32 @@ export function detectBlockedSleep(command: string, runInBackground: boolean, ha
   return null;
 }
 
+/**
+ * Leading tokens that must NOT be auto-moved to the background when a foreground
+ * command overruns its timeout. A `sleep` that times out is a pointless process
+ * to keep alive as a background task — the model wanted a delay, not a
+ * long-running job — so it stays in the foreground and surfaces a plain timeout
+ * error instead of lingering as a zombie background task. Parity: Claude Code
+ * BashTool `DISALLOWED_AUTO_BACKGROUND_COMMANDS` (bashCommandHelpers.ts:219-220).
+ */
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = new Set(['sleep']);
+
+/**
+ * Whether a timed-out foreground command may be AUTOMATICALLY moved to the
+ * background. False when the command's leading token is in
+ * {@link DISALLOWED_AUTO_BACKGROUND_COMMANDS} (e.g. `sleep`, `/bin/sleep`,
+ * `sleep.exe`), which must surface a timeout error rather than linger as a
+ * background task. This gate applies ONLY to automatic backgrounding on timeout;
+ * an explicit `run_in_background: true` still honours the request regardless of
+ * the command. Parity: Claude Code BashTool `isAutobackgroundingAllowed`
+ * (bashCommandHelpers.ts:307-315) gating `shouldAutoBackground`.
+ */
+export function isAutobackgroundingAllowed(command: string): boolean {
+  const leading = command.trim().split(/[\s;&|]+/).filter(Boolean)[0];
+  if (!leading) return true;
+  return !DISALLOWED_AUTO_BACKGROUND_COMMANDS.has(normalizeBaseCommand(leading));
+}
+
 export const SENSITIVE_ENV_SET = new Set([
   'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
   'AWS_SECURITY_TOKEN',
@@ -1541,7 +1567,12 @@ export const bashTool: ToolDefinition = {
           isError: true,
         };
       }
-      if (context.processManager) {
+      // Auto-move a long-running foreground command to the background so the
+      // session stays responsive — but NOT for commands that must never be
+      // auto-backgrounded (a bare `sleep` that times out is a pointless process
+      // to keep alive; it falls through to a plain timeout error below). Parity:
+      // Claude Code gates this behind isAutobackgroundingAllowed / shouldAutoBackground.
+      if (context.processManager && isAutobackgroundingAllowed(command)) {
         const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
           description: `[auto-bg] ${command.slice(0, 60)}`,
