@@ -346,7 +346,7 @@ export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn, estimateCompactionMessageTokens, dropOrphanedToolResults, selectRecentWithinBudget, buildTruncationMarker, getLanguageFromPath, categorizeToolError, responseTimeHistogram, formatDuration, formatConversationSummary } from './conversation-summary';
 export type { ConversationMeta, BudgetSelection } from './conversation-summary';
 export { computeLineDiff } from './line-diff';
-export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields } from './tools/input-sanitizer';
+export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields, expandTabs, DEFAULT_TAB_INTERVAL } from './tools/input-sanitizer';
 export {
   isProtectedLogTier,
   canModifyLog,

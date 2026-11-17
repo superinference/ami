@@ -385,14 +385,18 @@ describe('stripInvisibleUnicode', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeCommandForDisplay', () => {
-  it('replaces tabs with four spaces', () => {
-    assert.equal(normalizeCommandForDisplay('rm\t-rf'), 'rm    -rf');
+  // [FUNCTIONAL] Tab expansion is now column-aware (8-column stops) instead of a
+  // fixed 4-space run, so tab-separated command columns stay aligned — parity with
+  // Claude Code's ink/tabstops.ts. 'rm' ends at column 2, so the tab advances to
+  // the next 8-column stop: 8 - (2 % 8) = 6 spaces.
+  it('expands tabs to the next 8-column tab stop', () => {
+    assert.equal(normalizeCommandForDisplay('rm\t-rf'), 'rm      -rf');
   });
 
-  it('strips invisible Unicode AND replaces tabs', () => {
+  it('strips invisible Unicode AND expands tabs (column-aware)', () => {
     assert.equal(
       normalizeCommandForDisplay('​rm\t-rf​ /'),
-      'rm    -rf /');
+      'rm      -rf /');
   });
 
   it('preserves normal commands', () => {
@@ -710,8 +714,10 @@ describe('normalizeCommandForDisplay — control-char stripping', () => {
     assert.equal(normalizeCommandForDisplay('line1\nline2'), 'line1\nline2');
   });
 
-  it('still expands tabs to four spaces alongside control-char stripping', () => {
-    assert.equal(normalizeCommandForDisplay('a\u0008\tb'), 'a    b');
+  it('expands tabs column-aware alongside control-char stripping', () => {
+    // [FUNCTIONAL] backspace is stripped (leaving 'a\tb'); 'a' is column 1, so the
+    // tab advances to the next 8-column stop (7 spaces), not a fixed 4-space run.
+    assert.equal(normalizeCommandForDisplay('a\u0008\tb'), 'a       b');
   });
 });
 

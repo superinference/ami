@@ -60,10 +60,54 @@ export function stripInvisibleUnicode(text: string, maxIterations: number = MAX_
   );
 }
 
+/**
+ * POSIX/terminal default tab-stop interval. A hard tab advances the cursor to the
+ * NEXT multiple of this column, not a fixed run of spaces — so the visual width of
+ * a tab depends on the column it starts at. Parity: Claude Code's
+ * `DEFAULT_TAB_INTERVAL` in `ink/tabstops.ts` (8, hardcoded in terminals like
+ * Ghostty). Exported so callers/tests can pin a different interval.
+ */
+export const DEFAULT_TAB_INTERVAL = 8;
+
+/**
+ * Column-aware tab expansion — THE single canonical implementation (cli's
+ * tool-render-descriptor delegates here; AGENTS.md No-Duplication Rule). A literal
+ * tab is expanded to the number of spaces that advances the running display column
+ * to the next `tabWidth`-column stop (`tabWidth - (column % tabWidth)`), NOT a
+ * fixed run — so tab-separated columns stay aligned regardless of the terminal's
+ * own tab setting. The column counter resets to 0 at every newline so each line
+ * aligns independently. Mirrors Claude Code's `ink/tabstops.ts` `expandTabs`.
+ *
+ * Divergence note: Claude measures run width with `stringWidth` (CJK/ANSI-aware)
+ * in its ink renderer; this helper lives in core/ (no ink, no terminal), so it
+ * advances the column by one per code point — a deterministic approximation that
+ * is correct for the common ASCII case and never under-pads (same convention as
+ * `command-preview.ts`). Fast-returns unchanged when there is no tab.
+ */
+export function expandTabs(text: string, tabWidth: number = DEFAULT_TAB_INTERVAL): string {
+  if (!text.includes('\t')) return text;
+  let out = '';
+  let column = 0;
+  for (const ch of text) {
+    if (ch === '\n') {
+      out += ch;
+      column = 0;
+    } else if (ch === '\t') {
+      const pad = tabWidth - (column % tabWidth);
+      out += ' '.repeat(pad);
+      column += pad;
+    } else {
+      out += ch;
+      column += 1;
+    }
+  }
+  return out;
+}
+
 export function normalizeCommandForDisplay(command: string): string {
-  return stripInvisibleUnicode(command)
-    .replace(DISPLAY_CONTROL_RE, '')
-    .replace(/\t/g, '    ');
+  return expandTabs(
+    stripInvisibleUnicode(command).replace(DISPLAY_CONTROL_RE, ''),
+  );
 }
 
 /** Depth cap for the recursive unicode sanitizer (mirrors sanitizeToolInput). */

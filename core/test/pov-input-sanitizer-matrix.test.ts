@@ -450,8 +450,10 @@ describe('stripInvisibleUnicode & normalizeCommandForDisplay', () => {
     assert.equal(stripInvisibleUnicode('rm -rf /tmp/x'), 'rm -rf /tmp/x');
   });
 
-  it('normalizeCommandForDisplay expands tabs to four spaces after stripping', () => {
-    assert.equal(normalizeCommandForDisplay('a​\tb'), 'a    b');
+  it('normalizeCommandForDisplay expands tabs to the next 8-column stop after stripping', () => {
+    // [FUNCTIONAL] column-aware expansion: 'a' is column 1, so the tab advances to
+    // the next 8-column stop (7 spaces), not a fixed 4-space run.
+    assert.equal(normalizeCommandForDisplay('a​\tb'), 'a       b');
   });
 });
 
