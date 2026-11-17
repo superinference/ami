@@ -250,6 +250,12 @@ export const MANAGED_ONLY_KEYS = new Set([
   // egress boundary on itself, so it is managed-only. Parity: Claude Code's
   // `shouldAllowManagedSandboxDomainsOnly()` managed-policy knob.
   'allowManagedSandboxDomainsOnly',
+  // Enterprise exclusive-control switch: when set, ONLY admin-provisioned
+  // (`managedMcpServers`, enterprise scope) MCP servers may run — every user /
+  // project / local / dynamic server is blocked. Like its `allowManaged*Only`
+  // siblings this is an admin lockdown, so a lower tier must not be able to set it
+  // on itself. Parity: Claude Code's `allowManagedMcpServersOnly` policy.
+  'allowManagedMcpServersOnly',
 ]);
 
 /**
@@ -486,6 +492,7 @@ const BOOLEAN_MANAGED_KEYS: ReadonlySet<string> = new Set([
   'allowManagedPermissionRulesOnly',
   'channelsEnabled',
   'allowManagedSandboxDomainsOnly',
+  'allowManagedMcpServersOnly',
 ]);
 
 /** Managed-only keys whose value is a list of strings. */

@@ -120,6 +120,14 @@ export interface ProjectConfig {
   enabledMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
   managedMcpServers?: Record<string, unknown>;
+  /**
+   * Managed exclusive-control switch (parity: Claude Code's
+   * `allowManagedMcpServersOnly`): when true, ONLY admin-provisioned
+   * ({@link managedMcpServers}, enterprise scope) MCP servers may run — every
+   * user/project/local/dynamic server is blocked at load. A {@link MANAGED_ONLY_KEYS}
+   * entry, so only a managed/enterprise config tier can set it.
+   */
+  allowManagedMcpServersOnly?: boolean;
   /** SL1: shell command whose stdout is rendered as a custom status line. */
   statusLine?: string;
   /** Bash commands exempted from the container sandbox (audit #4: settable + consumed,

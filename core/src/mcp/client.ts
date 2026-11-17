@@ -654,7 +654,7 @@ export class McpClient extends EventEmitter {
   private readonly env: Record<string, string>;
   private readonly requestTimeout: number;
   private readonly connectTimeout: number;
-  private readonly rootPaths: string[];
+  private rootPaths: string[];
   /** Static + dynamically-resolved request headers, refreshable via {@link setHeaders}. */
   private headers: Record<string, string>;
   /** Optional OAuth 2.1 layer for the HTTP transport (bearer token + 401 re-auth). */
@@ -1405,6 +1405,20 @@ export class McpClient extends EventEmitter {
   }
 
   /**
+   * Update this client's workspace roots after connect and, when ready, push a
+   * `notifications/roots/list_changed` so the server re-requests `roots/list`
+   * (MCP spec: a client advertising `roots.listChanged` MUST notify on change).
+   * Built on the public {@link notify} outbound API. A no-op (no notification) when
+   * the roots are unchanged, so a redundant `setRoots` never spams the server.
+   */
+  async setRoots(paths: string[]): Promise<void> {
+    const changed = paths.length !== this.rootPaths.length || paths.some((p, i) => p !== this.rootPaths[i]);
+    this.rootPaths = [...paths];
+    if (!changed || this._state !== 'ready') return;
+    await this.notify('notifications/roots/list_changed');
+  }
+
+  /**
    * Revoke this server's OAuth tokens server-side (RFC 7009) and drop local
    * credential state — a user-initiated "sign out of this MCP server". Best-effort
    * and a no-op for a server without an OAuth provider. The manager calls this on
@@ -1576,8 +1590,11 @@ export class McpClient extends EventEmitter {
     return this.sendRequest(method, params, signal, timeoutMs);
   }
 
-  private async sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, retried = false, timeoutMs?: number): Promise<unknown> {
-    const isNotification = method.startsWith('notifications/');
+  private async sendHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal, retried = false, timeoutMs?: number, forceNotification = false): Promise<unknown> {
+    // A method may be sent as a JSON-RPC notification (no id, fire-and-forget) either
+    // because it is a protocol `notifications/*` message OR because a caller (the public
+    // {@link notify}) explicitly asked for notification semantics on a custom method.
+    const isNotification = method.startsWith('notifications/') || forceNotification;
     const msg: Record<string, unknown> = { jsonrpc: '2.0', method, params };
     if (!isNotification) {
       msg.id = ++this.requestId;
@@ -1632,7 +1649,7 @@ export class McpClient extends EventEmitter {
             const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
             this.oauth.onUnauthorized(www).then((ok: boolean) => {
               if (ok) {
-                this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
+                this.sendHttpRequest(method, params, signal, true, timeoutMs, forceNotification).then(resolve, reject);
               } else {
                 reject(this.flagNeedsAuth('MCP HTTP 401 Unauthorized (authorization failed)'));
               }
@@ -1650,7 +1667,7 @@ export class McpClient extends EventEmitter {
             if (is403RevokedToken(www, data)) {
               this.oauth.onUnauthorized(www).then((ok: boolean) => {
                 if (ok) {
-                  this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
+                  this.sendHttpRequest(method, params, signal, true, timeoutMs, forceNotification).then(resolve, reject);
                 } else {
                   reject(this.flagNeedsAuth('MCP HTTP 403 Forbidden (token revoked — re-authorization failed)'));
                 }
@@ -1659,7 +1676,7 @@ export class McpClient extends EventEmitter {
             }
             this.oauth.onForbidden(www).then((ok: boolean) => {
               if (ok) {
-                this.sendHttpRequest(method, params, signal, true, timeoutMs).then(resolve, reject);
+                this.sendHttpRequest(method, params, signal, true, timeoutMs, forceNotification).then(resolve, reject);
               } else {
                 reject(new Error('MCP HTTP 403 Forbidden (insufficient scope — authorization failed)'));
               }
@@ -2073,14 +2090,37 @@ export class McpClient extends EventEmitter {
     }
   }
 
-  private sendNotification(method: string, params: Record<string, unknown>): Promise<void> {
+  private async sendNotification(method: string, params: Record<string, unknown>): Promise<void> {
+    // Remote (http/sse) transports have no persistent write pipe — a notification is
+    // a POST with no id (fire-and-forget, 202 Accepted). Local (stdio/ws) transports
+    // frame it directly on the live connection.
+    if ((this.transport === 'http' || this.transport === 'sse') && this.sseUrl) {
+      await this.sendHttpRequest(method, params, undefined, false, undefined, true);
+      return;
+    }
     const notification: JsonRpcNotification = {
       jsonrpc: '2.0',
       method,
       params,
     };
     this.writeMessage(notification);
-    return Promise.resolve();
+  }
+
+  /**
+   * Public outbound-notification API (Claude-parity `client.notification({method, params})`,
+   * services/mcp/vscodeSdkMcp.ts) — push an application-level JSON-RPC notification to a
+   * connected server, e.g. `notify('file_updated', { filePath, oldContent, newContent })`
+   * or `notify('experiment_gates', { gates })`. Unlike the protocol-standard
+   * {@link sendNotification} call sites (`notifications/initialized`), this accepts an
+   * ARBITRARY method + params so a host embedding AMI can keep an MCP server informed of
+   * host-side state. Transport-agnostic (stdio/ws frame it; http/sse POST it with no id).
+   * Rejects when the client is not ready so a message is never silently dropped onto a
+   * dead connection.
+   */
+  async notify(method: string, params: Record<string, unknown> = {}): Promise<void> {
+    if (!method.trim()) throw new Error('notify() requires a non-empty method name');
+    this.assertReady();
+    await this.sendNotification(method, params);
   }
 
   private writeMessage(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {

@@ -544,14 +544,28 @@ const defaultHeadersHelperRunner: HeadersHelperRunner = (command, env) =>
  * and ignored — the static headers are still returned so a bad helper never blocks
  * the connection.
  */
+/**
+ * Introspection hooks for {@link resolveMcpServerHeaders} (Claude-parity
+ * `logMCPDebug`/`logMCPError` around header retrieval). Injected by the manager so the
+ * per-server MCP log records WHEN a helper ran and HOW MANY headers it produced — key
+ * debuggability into what a server will actually send. Both default to no-ops so the
+ * standalone function stays side-effect-free when called directly (tests/consumers).
+ */
+export interface HeadersHelperLogHooks {
+  onDebug?: (message: string) => void;
+  onError?: (error: unknown) => void;
+}
+
 export async function resolveMcpServerHeaders(
   serverName: string,
   config: McpServerConfig,
   run: HeadersHelperRunner = defaultHeadersHelperRunner,
+  logHooks?: HeadersHelperLogHooks,
 ): Promise<Record<string, string>> {
   const staticHeaders = config.headers ? resolveEnvVars(config.headers) : {};
   if (!config.headersHelper) return staticHeaders;
   try {
+    logHooks?.onDebug?.('Executing headersHelper to get dynamic headers');
     const stdout = await run(config.headersHelper, {
       ...process.env,
       AMI_MCP_SERVER_NAME: serverName,
@@ -568,9 +582,11 @@ export async function resolveMcpServerHeaders(
       if (typeof v !== 'string') throw new Error(`headersHelper returned a non-string value for "${k}"`);
       dynamic[k] = v;
     }
+    logHooks?.onDebug?.(`Successfully retrieved ${Object.keys(dynamic).length} headers from headersHelper`);
     return { ...staticHeaders, ...dynamic };
   } catch (err) {
     coreLog('mcp', `headersHelper for "${serverName}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    logHooks?.onError?.(err);
     return staticHeaders;
   }
 }
@@ -624,6 +640,10 @@ export class McpManager extends EventEmitter {
   /** Config-source scope per server (Claude-parity scope grouping). Recorded at
    *  load/add time; a programmatically-added server defaults to `'dynamic'`. */
   private _serverScopes = new Map<string, McpServerScope>();
+  /** Enterprise exclusive-control: when true only `enterprise`-scope servers load
+   *  (Claude-parity `allowManagedMcpServersOnly`). Toggled via
+   *  {@link setAllowManagedServersOnly}. */
+  private _allowManagedServersOnly = false;
   /** Absolute config-file path a server was loaded from (undefined for dynamic). */
   private _serverSources = new Map<string, string>();
   /**
@@ -809,7 +829,25 @@ export class McpManager extends EventEmitter {
   }
 
   setRootPaths(paths: string[]): void {
+    const changed = paths.length !== this.rootPaths.length || paths.some((p, i) => p !== this.rootPaths[i]);
     this.rootPaths = paths;
+    if (!changed) return;
+    // Propagate the new roots to every already-connected client and let each push a
+    // `notifications/roots/list_changed` (MCP spec, built on the client's public
+    // outbound {@link McpClient.notify} API) so a long-lived server re-requests
+    // `roots/list`. Fire-and-forget per client — a push onto a dropped/!ready
+    // connection is skipped inside `setRoots`, and a failure is logged to the
+    // per-server MCP log, never thrown (a roots update must not break the caller).
+    for (const [name, client] of this.clients) {
+      void client.setRoots(paths).catch((err) => {
+        this._logMcpError(name, err, this.mcpLogOpts());
+      });
+    }
+  }
+
+  /** The workspace roots currently advertised to MCP servers (introspection). */
+  getRootPaths(): string[] {
+    return [...this.rootPaths];
   }
 
   /**
@@ -848,6 +886,23 @@ export class McpManager extends EventEmitter {
   setAllowedServers(entries: McpPolicyEntry[]): void {
     this._allowedPolicy = compileMcpPolicy(entries);
     this._deniedServers = [];
+  }
+
+  /**
+   * Enterprise exclusive-control switch (Claude-parity `allowManagedMcpServersOnly`):
+   * when enabled, ONLY admin-provisioned (`enterprise`-scope, via
+   * {@link loadManagedServers}) MCP servers are loaded — every user/project/local/
+   * dynamic server is blocked at load with a `config-blocked` diagnostic. Set by the
+   * integrator from the trusted managed config BEFORE any {@link loadFromConfig} so a
+   * non-managed server is never registered or connected. Default off (all scopes load).
+   */
+  setAllowManagedServersOnly(enabled: boolean): void {
+    this._allowManagedServersOnly = enabled;
+  }
+
+  /** True when only enterprise-scope MCP servers are permitted to load. */
+  isManagedServersOnly(): boolean {
+    return this._allowManagedServersOnly;
   }
 
   isServerAllowed(serverName: string, config?: McpPolicyTarget): boolean {
@@ -1897,7 +1952,10 @@ export class McpManager extends EventEmitter {
         // client creation so the connect still proceeds.
         if (config?.headersHelper && (config.transport === 'http' || config.transport === 'sse')) {
           if (this.isHeadersHelperTrusted(name)) {
-            client.setHeaders(await resolveMcpServerHeaders(name, config));
+            client.setHeaders(await resolveMcpServerHeaders(name, config, undefined, {
+              onDebug: (msg) => this._logMcpDebug(name, msg, this.mcpLogOpts()),
+              onError: (err) => this._logMcpError(name, err, this.mcpLogOpts()),
+            }));
           } else {
             const warning = `headersHelper not executed: the project MCP server "${name}" must be approved before its config-supplied helper script can run (workspace-trust boundary)`;
             coreLog('mcp', warning);
@@ -2585,6 +2643,15 @@ export class McpManager extends EventEmitter {
     opts: { projectScoped?: boolean; scope: McpServerScope; sourcePath?: string },
   ): void {
       for (const [name, serverConfig] of Object.entries(servers)) {
+        // Enterprise exclusive-control (allowManagedMcpServersOnly): when the managed
+        // tier has claimed sole control of MCP, a non-enterprise server never loads —
+        // skip it with a diagnostic so the user understands why their config server is
+        // absent (Claude-parity getClaudeCodeMcpConfigs exclusive managed control).
+        if (this._allowManagedServersOnly && opts.scope !== 'enterprise') {
+          coreLog('mcp', `skipping non-managed MCP server "${name}": only admin-managed MCP servers are allowed (allowManagedMcpServersOnly)`);
+          this.emit('config-blocked', name, 'allowManagedMcpServersOnly');
+          continue;
+        }
         // Per-server isolation: one malformed/throwing entry must NOT abort the
         // rest of the file (Claude-parity) — each entry is loaded in its own guard.
         try {
@@ -2901,7 +2968,39 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
   if (c.transport !== undefined && !SUPPORTED_MCP_TRANSPORTS.has(String(c.transport))) {
     issues.push(`unsupported transport "${String(c.transport)}" (expected stdio, sse, http, ws, or wss)`);
   }
+  if (c.oauth !== undefined) {
+    if (typeof c.oauth !== 'object' || c.oauth === null || Array.isArray(c.oauth)) {
+      issues.push('`oauth` must be an object');
+    } else {
+      const o = c.oauth as Record<string, unknown>;
+      // Claude-parity McpOAuthConfigSchema: an explicit AS-metadata override must be an
+      // https URL (never plaintext — it drives token/credential exchange), and a pinned
+      // callback port must be a usable TCP port (positive integer in range).
+      if (o.authServerMetadataUrl !== undefined) {
+        if (typeof o.authServerMetadataUrl !== 'string' || !isHttpsUrl(o.authServerMetadataUrl)) {
+          issues.push('`oauth.authServerMetadataUrl` must be an https:// URL');
+        }
+      }
+      if (o.callbackPort !== undefined && !isValidCallbackPort(o.callbackPort as number)) {
+        issues.push('`oauth.callbackPort` must be a positive integer (1..65535)');
+      }
+    }
+  }
   return issues;
+}
+
+/**
+ * True when `value` parses as a URL whose protocol is exactly `https:`. Used to
+ * validate OAuth metadata-URL overrides, which (unlike loopback auth endpoints) must
+ * never be plaintext. Distinct from oauth.ts `assertSecureUrl` (which tolerates
+ * http loopback) because an AS-metadata URL has no loopback exception.
+ */
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /**
