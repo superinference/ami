@@ -384,6 +384,68 @@ export function isValidJsonRpcMessage(msg: unknown): msg is Record<string, unkno
 }
 
 /**
+ * Validate the `params` of an inbound server→client NOTIFICATION against the shape
+ * AMI actually dereferences, at the trust boundary, BEFORE any handler touches a
+ * field — a runtime schema check on untrusted MCP-server payloads. Parity with
+ * Claude Code validating inbound notification params through a zod schema in
+ * `setNotificationHandler` before dispatch (e.g. `useIdeSelection`'s
+ * `SelectionChangedSchema`, `usePromptsFromClaudeInChrome`'s notification schema);
+ * AMI mirrors zod with a plain-TS structural validator to match the no-zod-dependency
+ * convention used throughout `core/` (see `cron.ts`/`plugins.ts` "mirrors Claude's
+ * zod" validators). Where {@link isValidJsonRpcMessage} checks only the ENVELOPE,
+ * this checks the per-method `params`.
+ *
+ * Only the methods whose params AMI reads are enforced; an unrecognized method has
+ * no params contract and is accepted. Spec-required fields (a `resources/updated`
+ * `uri`, a `progress` `progressToken`, a `cancelled` `requestId`) MUST be present
+ * and correctly typed; genuinely optional fields are rejected only when present but
+ * wrong-typed, so a server omitting an optional field is still tolerated. A rejected
+ * notification is surfaced as a `notification-error` and dropped by the dispatcher
+ * instead of feeding a malformed, wrong-typed payload to a handler or an emitted
+ * event (which could propagate e.g. a non-string `uri` or an out-of-range log level
+ * to downstream consumers).
+ */
+export function validateMcpNotificationParams(
+  method: string,
+  params: unknown,
+): { ok: true } | { ok: false; error: string } {
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const isTokenId = (v: unknown): boolean => typeof v === 'string' || isNum(v);
+  switch (method) {
+    case 'notifications/resources/updated':
+      if (!isObj(params) || typeof params.uri !== 'string' || params.uri.length === 0)
+        return { ok: false, error: `${method}: params.uri must be a non-empty string` };
+      return { ok: true };
+    case 'notifications/progress':
+      if (!isObj(params) || !isTokenId(params.progressToken))
+        return { ok: false, error: `${method}: params.progressToken must be a string or number` };
+      if (params.progress !== undefined && !isNum(params.progress))
+        return { ok: false, error: `${method}: params.progress must be a number` };
+      if (params.total !== undefined && !isNum(params.total))
+        return { ok: false, error: `${method}: params.total must be a number` };
+      if (params.message !== undefined && typeof params.message !== 'string')
+        return { ok: false, error: `${method}: params.message must be a string` };
+      return { ok: true };
+    case 'notifications/message':
+      if (!isObj(params))
+        return { ok: false, error: `${method}: params must be an object` };
+      if (params.level !== undefined && !(MCP_LOG_LEVELS as readonly string[]).includes(params.level as string))
+        return { ok: false, error: `${method}: params.level must be one of ${MCP_LOG_LEVELS.join(', ')}` };
+      if (params.logger !== undefined && typeof params.logger !== 'string')
+        return { ok: false, error: `${method}: params.logger must be a string` };
+      return { ok: true };
+    case 'notifications/cancelled':
+      if (!isObj(params) || !isTokenId(params.requestId))
+        return { ok: false, error: `${method}: params.requestId must be a string or number` };
+      return { ok: true };
+    default:
+      return { ok: true };
+  }
+}
+
+/**
  * Detect a 403 that signals the bearer token was REVOKED/invalidated server-side,
  * as opposed to an `insufficient_scope` step-up. A revoked or otherwise invalid
  * token must drive a FULL re-authorization (`onUnauthorized`) — a scope step-up
@@ -2149,6 +2211,17 @@ export class McpClient extends EventEmitter {
 
   private dispatchNotification(notification: JsonRpcNotification): void {
     const id = (notification as JsonRpcNotification & { id?: number }).id;
+
+    // Trust boundary: validate the untrusted server's notification params against
+    // the shape AMI dereferences BEFORE any handler runs. A malformed/wrong-typed
+    // payload is surfaced as a `notification-error` and dropped rather than fed to a
+    // handler or re-emitted on the generic `notification` channel (parity with
+    // Claude Code's schema-validated inbound notification handlers).
+    const paramsCheck = validateMcpNotificationParams(notification.method, notification.params);
+    if (!paramsCheck.ok) {
+      this.emit('notification-error', notification.method, new Error(paramsCheck.error));
+      return;
+    }
 
     // --- Server→client REQUESTS (carry an id; MUST be answered) -------------
     if (notification.method === 'elicitation/create' || notification.method === 'notifications/elicitation') {
