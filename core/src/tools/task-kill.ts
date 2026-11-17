@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
-const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip']);
+const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip', 'shell_id']);
 
 /**
  * Bounded window (ms) a `graceful` stop waits event-driven for the agent to finish
@@ -106,6 +106,13 @@ export const taskKillTool: ToolDefinition = {
         type: 'string',
         description: 'The task ID to stop.',
       },
+      // PARITY (additive): deprecated backward-compat alias for `task_id`, mirroring
+      // Claude Code's KillShell `shell_id` parameter so an old transcript/SDK call
+      // using the former name still resolves (id = task_id ?? shell_id).
+      shell_id: {
+        type: 'string',
+        description: 'Deprecated: use task_id instead. Accepted as an alias for the task ID to stop.',
+      },
       cleanup: {
         type: 'boolean',
         description:
@@ -189,7 +196,7 @@ export const taskKillTool: ToolDefinition = {
     // Strict schema: reject unexpected/injected parameters.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
     if (unknown.length > 0) {
-      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful, retry, skip. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful, retry, skip, shell_id. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
 
     if (!context.processManager) {
@@ -200,9 +207,17 @@ export const taskKillTool: ToolDefinition = {
     // casting. An empty/whitespace or non-string task_id can never match a real
     // task; surfacing a clean [code: invalid_input] is clearer than a spurious
     // not_found and mirrors Claude Code rejecting a malformed kill request.
-    const rawId = input.task_id;
+    //
+    // PARITY (additive): coalesce `id = task_id ?? shell_id` — `shell_id` is the
+    // deprecated Claude Code KillShell alias, accepted so an old transcript/SDK call
+    // still resolves. `??` only falls back when task_id is null/undefined, so an
+    // explicit (even malformed) task_id still takes precedence, matching Claude.
+    if (input.shell_id !== undefined && typeof input.shell_id !== 'string') {
+      return { output: 'Error: "shell_id" must be a string. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
+    }
+    const rawId = input.task_id ?? input.shell_id;
     if (typeof rawId !== 'string' || rawId.trim() === '') {
-      return { output: 'Error: "task_id" must be a non-empty string. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: 'Error: "task_id" (or the deprecated "shell_id" alias) must be a non-empty string. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
     const taskId = rawId;
 
