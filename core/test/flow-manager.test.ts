@@ -75,6 +75,31 @@ describe('FlowManager', () => {
       const result = fm.addAgent('flow-nonexistent', 'agent-abc');
       assert.equal(result, false);
     });
+
+    it('rejects a non-agent-id string (teammate name / free text) without mutating the flow', () => {
+      const flowId = fm.getOrCreateActiveFlow('test');
+      // A space-containing teammate name is NOT a well-formed agent id (toAgentId → null).
+      const result = fm.addAgent(flowId, 'my teammate');
+      assert.equal(result, false, 'addAgent must reject a non-agent-id string');
+      assert.deepEqual(fm.getFlow(flowId)?.agentIds, [], 'rejected id must not be tracked');
+    });
+
+    it('rejects empty and leading-dash ids (malformed agent ids)', () => {
+      const flowId = fm.getOrCreateActiveFlow('test');
+      assert.equal(fm.addAgent(flowId, ''), false, 'empty id rejected');
+      assert.equal(fm.addAgent(flowId, '-leading-dash'), false, 'leading-dash id rejected');
+      assert.deepEqual(fm.getFlow(flowId)?.agentIds, []);
+    });
+
+    it('accepts the agent-<label>-<hex> ids real spawns produce', () => {
+      const flowId = fm.getOrCreateActiveFlow('test');
+      assert.equal(fm.addAgent(flowId, 'agent-worker-0123456789abcdef'), true);
+      assert.equal(fm.addAgent(flowId, 'bg-0123456789abcdef'), true);
+      assert.deepEqual(
+        fm.getFlow(flowId)?.agentIds,
+        ['agent-worker-0123456789abcdef', 'bg-0123456789abcdef'],
+      );
+    });
   });
 
   describe('getFlow', () => {

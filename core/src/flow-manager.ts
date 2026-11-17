@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { toAgentId } from './types';
 
 export interface FlowInfo {
   flowId: string;
@@ -88,9 +89,15 @@ export class FlowManager {
     return flowId;
   }
 
+  /** Track an agent under a flow. The `agentId` is validated via {@link toAgentId}
+   *  (parity: Claude's AgentId discriminator) so a flow only ever holds genuine agent
+   *  ids — a free-text teammate name, empty string, or otherwise malformed id is
+   *  rejected (returns false, flow untouched) rather than silently polluting the
+   *  inspector's agent list. Returns false for an unknown flow. */
   addAgent(flowId: string, agentId: string): boolean {
     const flow = this.flows.get(flowId);
     if (!flow) return false;
+    if (toAgentId(agentId) === null) return false;
     flow.agentIds.push(agentId);
     return true;
   }
