@@ -80,6 +80,11 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       autoMemoryEnabled: true, autoDreamEnabled: false, sessionMemoryEnabled: true,
       enableTitleGeneration: true, worktreeToolsEnabled: false,
       terminalProgressBarEnabled: true, showTurnDuration: false,
+      // Cosmetic / output-detail startup knobs (U010 w81): bridged to their cli env
+      // knobs by applyConfigStartupKnobs; declared/validated/merged like the above.
+      verbose: true, copyOnSelect: false, syntaxHighlightingDisabled: true,
+      showThinkingSummaries: false, messageIdleNotifThresholdMs: 60000,
+      spinnerVerbs: { mode: 'append', verbs: ['Churning'] },
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

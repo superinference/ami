@@ -462,6 +462,71 @@ export interface ProjectConfig {
    * env value still WINS. Unset/`true` keeps the default-on.
    */
   showTurnDuration?: boolean;
+  /**
+   * Persisted verbose output-detail toggle (parity: Claude Code's global-config
+   * `verbose` boolean, default false). When `true`, the render consumers that already
+   * key off the `AMI_VERBOSE` env knob (the API-error display + the tool-result
+   * descriptor's full-vs-truncated rendering, via the cli `resolveVerboseEnabled`)
+   * expand truncated transcript detail. AMI previously exposed verbose ONLY through the
+   * `--verbose` flag and the explicit `--config` file key (cli `resolveVerbose`), never
+   * through the persisted settings waterfall, so a `verbose: true` in a normal
+   * `.ami/config.json` (project/global/local) was silently dropped. Bridged to
+   * `AMI_VERBOSE` by {@link applyConfigVerbose}; an explicit `AMI_VERBOSE` env value (or
+   * the `--verbose` flag / `--config` key that seeds it) still WINS. Unset/`false` keeps
+   * the concise default.
+   */
+  verbose?: boolean;
+  /**
+   * Terminal selection auto-copy toggle (parity: Claude Code's global-config
+   * `copyOnSelect ?? true`): when a drag-select completes, the highlighted text is
+   * written to the clipboard (and the "ctrl+c copy" hint is surfaced). Defaults ON;
+   * an explicit `false` disables the drag-release clipboard write by seeding the
+   * existing `AMI_NO_COPY_ON_SELECT` opt-out that the cli `copyOnSelectEnabled` already
+   * reads, so the choice can be persisted instead of exporting the env var. An explicit
+   * `AMI_NO_COPY_ON_SELECT` env value still WINS. Bridged by {@link applyConfigCopyOnSelect}.
+   */
+  copyOnSelect?: boolean;
+  /**
+   * Disable syntax highlighting of fenced code blocks and diff lines (parity: Claude
+   * Code's `syntaxHighlightingDisabled` cosmetic config knob). When `true`, the single
+   * highlight on/off source the cli reads (`syntaxHighlightEnabled` →
+   * `AMI_SYNTAX_HIGHLIGHT`) renders plain source while the rest of the UI stays colored.
+   * AMI previously honored this only via the `--config` file key (cli
+   * `resolveSyntaxHighlightingDisabled`), never the persisted settings waterfall; bridged
+   * to `AMI_SYNTAX_HIGHLIGHT='0'` by {@link applyConfigSyntaxHighlighting}. An explicit
+   * `AMI_SYNTAX_HIGHLIGHT` env value still WINS. Unset/`false` keeps highlighting on.
+   */
+  syntaxHighlightingDisabled?: boolean;
+  /**
+   * Idle threshold (ms) before a "generation done" desktop notification fires (parity:
+   * Claude Code's numeric `messageIdleNotifThresholdMs`, default 60000). AMI already has
+   * desktop notifications with an `AMI_DESKTOP_NOTIFY_THRESHOLD_MS` env knob (cli
+   * `getNotifyThreshold`); this persists the threshold in the settings waterfall instead
+   * of requiring the env var. A positive finite value seeds the env knob via
+   * {@link applyConfigIdleNotifThreshold}; an explicit `AMI_DESKTOP_NOTIFY_THRESHOLD_MS`
+   * env value still WINS. A non-positive/non-finite value is ignored (keeps the default).
+   */
+  messageIdleNotifThresholdMs?: number;
+  /**
+   * Show model thinking summaries (parity: Claude Code's `showThinkingSummaries`
+   * settings knob, default off). When explicitly `false` (summaries OFF), the
+   * `redact-thinking` Anthropic beta token is appended to the `anthropic-beta` header
+   * (via the same `ANTHROPIC_BETAS` escape hatch as {@link redactThinking}) — trading
+   * thinking-summary display for lower latency. The inverse of {@link redactThinking}:
+   * either `showThinkingSummaries === false` OR `redactThinking === true` arms the beta.
+   * Applied by {@link applyConfigAnthropicBetas}. Unset/`true` is a no-op (summaries on).
+   */
+  showThinkingSummaries?: boolean;
+  /**
+   * Customize the playful working-spinner gerund pool (parity: Claude Code's cosmetic
+   * `spinnerVerbs` config knob). `mode: 'append'` (default) widens the built-in pool
+   * with `verbs`; `mode: 'replace'` swaps it entirely (an empty list falls back to the
+   * built-ins). Serialized to the existing `AMI_SPINNER_VERBS` JSON env knob the cli
+   * `resolveSpinnerVerbConfig` already reads, by {@link applyConfigSpinnerVerbs}, so the
+   * override can be persisted in the settings waterfall instead of exporting the env var.
+   * An explicit `AMI_SPINNER_VERBS` env value still WINS.
+   */
+  spinnerVerbs?: { mode?: 'append' | 'replace'; verbs?: string[] };
 }
 
 /**
@@ -1056,6 +1121,12 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['sessionMemoryEnabled', 'boolean'], ['enableTitleGeneration', 'boolean'],
   ['worktreeToolsEnabled', 'boolean'], ['terminalProgressBarEnabled', 'boolean'],
   ['showTurnDuration', 'boolean'],
+  // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
+  // cli env knobs by {@link applyConfigStartupKnobs} — declared here so they are
+  // recognized (no spurious unknown-key warning) + base-type validated.
+  ['verbose', 'boolean'], ['copyOnSelect', 'boolean'],
+  ['syntaxHighlightingDisabled', 'boolean'], ['showThinkingSummaries', 'boolean'],
+  ['messageIdleNotifThresholdMs', 'number'], ['spinnerVerbs', 'object'],
 ];
 
 /**
@@ -2209,6 +2280,15 @@ export function mergeConfigs(
     if (layer.worktreeToolsEnabled !== undefined) merged.worktreeToolsEnabled = layer.worktreeToolsEnabled;
     if (layer.terminalProgressBarEnabled !== undefined) merged.terminalProgressBarEnabled = layer.terminalProgressBarEnabled;
     if (layer.showTurnDuration !== undefined) merged.showTurnDuration = layer.showTurnDuration;
+    // Cosmetic / output-detail startup knobs: last-layer-wins scalars + object the
+    // applyConfigStartupKnobs env bridges below consume. Before this they would have been
+    // dropped by the merge, so a file-tier value never reached the runtime.
+    if (layer.verbose !== undefined) merged.verbose = layer.verbose;
+    if (layer.copyOnSelect !== undefined) merged.copyOnSelect = layer.copyOnSelect;
+    if (layer.syntaxHighlightingDisabled !== undefined) merged.syntaxHighlightingDisabled = layer.syntaxHighlightingDisabled;
+    if (layer.showThinkingSummaries !== undefined) merged.showThinkingSummaries = layer.showThinkingSummaries;
+    if (layer.messageIdleNotifThresholdMs !== undefined) merged.messageIdleNotifThresholdMs = layer.messageIdleNotifThresholdMs;
+    if (layer.spinnerVerbs !== undefined) merged.spinnerVerbs = layer.spinnerVerbs;
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -2542,10 +2622,12 @@ export function applyConfigPlansDirectory(
  * beta opt-ins into the existing `ANTHROPIC_BETAS` env escape hatch that
  * {@link import('./provider').getExtraAnthropicBetas} appends to the `anthropic-beta`
  * header — so a user can persist an API-beta opt-in in project/user config (parity:
- * Claude Code's `fast-mode` / `redact-thinking` beta knobs). Each enabled knob's token
- * is appended to the comma-separated list WITHOUT duplicating one already present; any
- * tokens a user set directly in `ANTHROPIC_BETAS` are preserved. A no-op when neither
- * knob is enabled.
+ * Claude Code's `fast-mode` / `redact-thinking` beta knobs). The `redact-thinking` token
+ * is armed by EITHER {@link ProjectConfig.redactThinking} `=== true` OR the inverse
+ * {@link ProjectConfig.showThinkingSummaries} `=== false` (parity: Claude gates it on
+ * `!showThinkingSummaries`). Each enabled knob's token is appended to the comma-separated
+ * list WITHOUT duplicating one already present; any tokens a user set directly in
+ * `ANTHROPIC_BETAS` are preserved. A no-op when no knob is enabled.
  */
 export function applyConfigAnthropicBetas(
   config: ProjectConfig | null | undefined,
@@ -2553,7 +2635,13 @@ export function applyConfigAnthropicBetas(
 ): void {
   const tokens: string[] = [];
   if (config?.fastMode === true) tokens.push(FAST_MODE_BETA);
-  if (config?.redactThinking === true) tokens.push(REDACT_THINKING_BETA);
+  // redact-thinking is armed by EITHER the explicit redactThinking opt-in OR the inverse
+  // showThinkingSummaries knob being turned OFF (parity: Claude Code gates
+  // REDACT_THINKING_BETA on `!showThinkingSummaries`). The token is de-duped below, so
+  // setting both never double-appends.
+  if (config?.redactThinking === true || config?.showThinkingSummaries === false) {
+    tokens.push(REDACT_THINKING_BETA);
+  }
   if (tokens.length === 0) return;
   const merged = (target.ANTHROPIC_BETAS ?? '').split(',').map(t => t.trim()).filter(Boolean);
   for (const token of tokens) {
@@ -2566,6 +2654,16 @@ export function applyConfigAnthropicBetas(
 export const NO_PROGRESS_ENV = 'AMI_NO_PROGRESS';
 /** Env knob (cli `resolveShowTurnDuration`) that suppresses the per-turn duration. */
 export const SHOW_TURN_DURATION_ENV = 'AMI_SHOW_TURN_DURATION';
+/** Env knob (cli `resolveVerboseEnabled`) that enables verbose (untruncated) rendering. */
+export const VERBOSE_ENV = 'AMI_VERBOSE';
+/** Env opt-out (cli `copyOnSelectEnabled`) disabling terminal selection auto-copy. */
+export const NO_COPY_ON_SELECT_ENV = 'AMI_NO_COPY_ON_SELECT';
+/** Env kill-switch (cli `syntaxHighlightEnabled`) disabling code/diff syntax highlighting. */
+export const SYNTAX_HIGHLIGHT_ENV = 'AMI_SYNTAX_HIGHLIGHT';
+/** Env knob (cli `getNotifyThreshold`) for the idle-before-notification threshold (ms). */
+export const NOTIFY_THRESHOLD_ENV = 'AMI_DESKTOP_NOTIFY_THRESHOLD_MS';
+/** Env knob (cli `resolveSpinnerVerbConfig`) carrying the JSON spinner-verb override. */
+export const SPINNER_VERBS_ENV = 'AMI_SPINNER_VERBS';
 
 /**
  * Bridge the persisted {@link ProjectConfig.terminalProgressBarEnabled} knob into the
@@ -2608,10 +2706,112 @@ export function applyConfigTurnDuration(
 }
 
 /**
+ * Bridge the persisted {@link ProjectConfig.verbose} knob into the existing `AMI_VERBOSE`
+ * env knob the cli `resolveVerboseEnabled` already reads (API-error display + tool-result
+ * full-vs-truncated rendering) — so a user can persist "verbose output" in the settings
+ * waterfall (`.ami/config.json`) instead of only via the `--verbose` flag / `--config`
+ * key. An explicit `AMI_VERBOSE` already in `target` WINS (so the flag/`--config` bridge
+ * that seeds it is preserved); otherwise `verbose === true` arms it. Unset/`false` is a
+ * no-op (concise default). Parity: Claude Code's persisted `verbose` global-config knob.
+ */
+export function applyConfigVerbose(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[VERBOSE_ENV] !== undefined) return;
+  if (config?.verbose === true) {
+    target[VERBOSE_ENV] = '1';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.copyOnSelect} knob into the existing
+ * `AMI_NO_COPY_ON_SELECT` opt-out the cli `copyOnSelectEnabled` already reads — so a user
+ * can persist "don't auto-copy on select" in the settings waterfall instead of exporting
+ * the env var. An explicit `AMI_NO_COPY_ON_SELECT` already in `target` WINS; otherwise
+ * `copyOnSelect === false` arms the opt-out. Unset/`true` is a no-op (auto-copy stays on
+ * — the default). Parity: Claude Code's `copyOnSelect ?? true` global-config knob.
+ */
+export function applyConfigCopyOnSelect(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[NO_COPY_ON_SELECT_ENV] !== undefined) return;
+  if (config?.copyOnSelect === false) {
+    target[NO_COPY_ON_SELECT_ENV] = '1';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.syntaxHighlightingDisabled} knob into the
+ * existing `AMI_SYNTAX_HIGHLIGHT` gate the cli `syntaxHighlightEnabled` already reads
+ * (the single highlight on/off source for both code blocks and diff lines) — so a user
+ * can persist "no syntax highlighting" in the settings waterfall instead of only via the
+ * `--config` key. An explicit `AMI_SYNTAX_HIGHLIGHT` already in `target` WINS; otherwise
+ * `syntaxHighlightingDisabled === true` arms the kill-switch (a defined-falsy `'0'`).
+ * Unset/`false` is a no-op (highlighting stays on). Parity: Claude Code's
+ * `syntaxHighlightingDisabled` cosmetic config knob.
+ */
+export function applyConfigSyntaxHighlighting(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[SYNTAX_HIGHLIGHT_ENV] !== undefined) return;
+  if (config?.syntaxHighlightingDisabled === true) {
+    target[SYNTAX_HIGHLIGHT_ENV] = '0';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.messageIdleNotifThresholdMs} knob into the
+ * existing `AMI_DESKTOP_NOTIFY_THRESHOLD_MS` env knob the cli `getNotifyThreshold` already
+ * reads (idle-before-"generation done"-notification threshold) — so a user can persist
+ * the timing in the settings waterfall instead of exporting the env var. An explicit
+ * `AMI_DESKTOP_NOTIFY_THRESHOLD_MS` already in `target` WINS; otherwise a positive finite
+ * value seeds it. A non-positive/non-finite value is ignored (keeps the built-in
+ * default). Parity: Claude Code's numeric `messageIdleNotifThresholdMs` (default 60000).
+ */
+export function applyConfigIdleNotifThreshold(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[NOTIFY_THRESHOLD_ENV] !== undefined) return;
+  const ms = config?.messageIdleNotifThresholdMs;
+  if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) {
+    target[NOTIFY_THRESHOLD_ENV] = String(Math.floor(ms));
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.spinnerVerbs} knob into the existing
+ * `AMI_SPINNER_VERBS` JSON env knob the cli `resolveSpinnerVerbConfig` already reads — so
+ * a user can persist a spinner-verb override in the settings waterfall instead of
+ * exporting the env var. Serialized to the `{ mode, verbs }` JSON shape the resolver
+ * expects. An explicit `AMI_SPINNER_VERBS` already in `target` WINS. A value whose
+ * `verbs` is not a non-empty string array is ignored (nothing to override). Parity:
+ * Claude Code's cosmetic `spinnerVerbs` config knob.
+ */
+export function applyConfigSpinnerVerbs(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[SPINNER_VERBS_ENV] !== undefined) return;
+  const sv = config?.spinnerVerbs;
+  if (!sv || typeof sv !== 'object') return;
+  const verbs = sv.verbs;
+  if (!Array.isArray(verbs) || !verbs.some(v => typeof v === 'string' && v.trim())) return;
+  const cleanVerbs = verbs.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+  const mode: 'append' | 'replace' = sv.mode === 'replace' ? 'replace' : 'append';
+  target[SPINNER_VERBS_ENV] = JSON.stringify({ mode, verbs: cleanVerbs });
+}
+
+/**
  * Apply every startup config→runtime knob bridge in one call (the env-targeting
  * ones): CA certs, glob-gitignore, auto-compaction, plans directory, Anthropic betas,
- * the OSC 9;4 progress kill-switch, and the per-turn duration suppression. Called once
- * at engine setup with the MERGED config so a value from any file tier takes effect,
+ * the OSC 9;4 progress kill-switch, the per-turn duration suppression, and the cosmetic/
+ * output-detail knobs (verbose, copy-on-select, syntax highlighting, idle-notification
+ * threshold, spinner verbs). Called once at engine setup with the MERGED config so a
+ * value from any file tier takes effect,
  * mirroring {@link applyConfigLanguage}. `{@link resolveAdditionalDirectories}` is
  * applied separately (it returns a value threaded into the PermissionManager's allowed
  * read roots rather than mutating `target`).
@@ -2627,6 +2827,11 @@ export function applyConfigStartupKnobs(
   applyConfigAnthropicBetas(config, target);
   applyConfigTerminalProgress(config, target);
   applyConfigTurnDuration(config, target);
+  applyConfigVerbose(config, target);
+  applyConfigCopyOnSelect(config, target);
+  applyConfigSyntaxHighlighting(config, target);
+  applyConfigIdleNotifThreshold(config, target);
+  applyConfigSpinnerVerbs(config, target);
 }
 
 /**
