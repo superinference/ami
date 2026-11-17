@@ -866,6 +866,42 @@ export function getLastPeerDmSummary(agentName: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Proactively push an `idle_notification` (idleReason 'available') into the team
+ * lead's mailbox when a teammate FINISHES its turn, so the lead learns a peer is
+ * now free to take new work WITHOUT polling. This is the automatic, push-based half
+ * of the idle lifecycle: the manual `idle_notification` send path (execute's
+ * structured branch) lets a teammate report idleness explicitly, but a teammate that
+ * simply stops never emits one; the lead would otherwise have to poll. Mirrors
+ * Claude Code's Stop hook writing `createIdleNotification(agentName,
+ * { idleReason: 'available', summary })` to the leader's inbox (utils/swarm/
+ * teammateInit.ts). The summary is auto-derived from the teammate's LAST peer DM
+ * ({@link getLastPeerDmSummary}) — the same source the manual idle path uses — so the
+ * lead sees what the teammate was last coordinating on without it restating. Routed
+ * through the canonical {@link enqueue} so it bumps the lead's revision and resolves
+ * any pending receiveMessage() waiter, exactly like a model-sent idle_notification.
+ *
+ * No-op (returns false) when the finishing agent IS the lead (the lead has no lead to
+ * notify) or has no resolvable identity. Returns true when a notification was queued.
+ */
+export function notifyLeadTeammateIdle(agentName: string): boolean {
+  if (!agentName || !agentName.trim()) return false;
+  if (agentName.toLowerCase() === TEAM_LEAD_NAME.toLowerCase()) return false;
+  const summary = getLastPeerDmSummary(agentName);
+  const payload: IdleNotification = {
+    type: 'idle_notification',
+    idleReason: 'available',
+    ...(summary ? { summary } : {}),
+  };
+  enqueue(TEAM_LEAD_NAME, {
+    from: agentName,
+    to: TEAM_LEAD_NAME,
+    content: JSON.stringify(payload),
+    timestamp: Date.now(),
+  });
+  return true;
+}
+
 // --- Predicate-filtered + blocking consumption (Mailbox parity) -------------
 // Mirrors Claude Code's utils/mailbox.ts Mailbox: in addition to the drain-all
 // pollMailbox and the non-destructive peek/ack, a caller can SELECT a single

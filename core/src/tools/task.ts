@@ -813,9 +813,21 @@ export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): b
 export function markTeammateIdle(context: ToolContext, taskId: string): void {
   setTeamMemberActive(taskId, false);
   const team = getCurrentTeam();
-  if (!team || !context._hookManager) return;
+  if (!team) return;
   const member = team.members.find(m => m.name === taskId || m.agentId === taskId);
   if (!member) return;
+  // Proactive 'now idle / available' push to the team lead (PARITY, additive):
+  // a teammate that simply finishes its turn automatically tells the lead it is
+  // free to take new work, so the lead never has to poll. Mirrors Claude Code's
+  // Stop hook writing createIdleNotification(agentName, { idleReason: 'available' })
+  // to the leader's inbox. Best-effort — a messaging failure must never break
+  // teardown. Lazy require avoids a static import cycle (send-message lazy-requires
+  // task). A no-op when the finishing agent IS the lead.
+  try {
+    const { notifyLeadTeammateIdle } = require('./send-message');
+    notifyLeadTeammateIdle(member.name);
+  } catch { /* best-effort — never fail teardown on an idle push */ }
+  if (!context._hookManager) return;
   context._hookManager.executeTeammateIdle({ teammateName: member.name, teamName: team.name }).catch(() => {});
 }
 
