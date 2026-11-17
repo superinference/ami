@@ -14,6 +14,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { getSymbolAtPosition } from './symbol-context';
 
 /** LSP DiagnosticSeverity enum → human-readable name (1=Error…4=Hint). */
 export const DIAGNOSTIC_SEVERITY_NAMES = ['Error', 'Warning', 'Info', 'Hint'] as const;
@@ -524,9 +525,20 @@ export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
         .map((d) => {
           const sym = diagnosticSeveritySymbol(d.severity);
           const loc = `[Line ${d.range.start.line + 1}:${d.range.start.character + 1}]`;
+          // Resolve the identifier/word at the diagnostic's position so the line
+          // shows a readable `symbol: foo` label instead of only a bare line:char
+          // (parity with Claude Code's getSymbolAtPosition tool-use affordance).
+          // Additive + best-effort: on any failure the label is simply omitted and
+          // the raw location stands, so a missing/huge/unreadable file never breaks
+          // rendering. The LSP range is 0-indexed, which getSymbolAtPosition expects.
+          const symbol =
+            name === '<unknown location>'
+              ? null
+              : getSymbolAtPosition(name, d.range.start.line, d.range.start.character);
+          const symLabel = symbol ? ` symbol: ${symbol}` : '';
           const code = d.code ? ` [${d.code}]` : '';
           const src = d.source ? ` (${d.source})` : '';
-          return `  ${sym} ${loc} ${d.message}${code}${src}`;
+          return `  ${sym} ${loc}${symLabel} ${d.message}${code}${src}`;
         })
         .join('\n');
       return `${name}:\n${lines}`;

@@ -21,6 +21,7 @@ export {
   loadLspServersFromFile,
 } from './config';
 export type { LspServerConfig } from './config';
+export { getSymbolAtPosition, MAX_READ_BYTES, MAX_SYMBOL_LENGTH } from './symbol-context';
 export {
   DiagnosticTracker,
   mapLspSeverity,

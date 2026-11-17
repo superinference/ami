@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
-import { isBinaryInstalled } from '../utils/which';
+import { isBinaryInstalled, firstAvailableBinary } from '../utils/which';
 import { retryWithBackoff } from '../mcp/oauth';
 import { log, logError } from '../logger';
 import { AMI_CLIENT_INFO } from '../version';
@@ -437,8 +437,16 @@ export class LSPClient implements DiagnosticSource {
       // Cross-platform, session-cached binary-presence check (`which` on POSIX,
       // `where.exe` on Windows). An empty/whitespace command resolves to false
       // without a filesystem probe. Shared with every other binary check in core.
-      if (!this._isBinaryInstalled(config.command)) {
-        this.recordError(language, `LSP server "${language}" command not found: ${config.command}`);
+      // Ordered-candidate fallback: try `command` then each `commandAlternatives`
+      // entry in preference order and spawn the FIRST installed one, so a server
+      // published under several interchangeable binary names still launches when
+      // the canonical one is absent (parity with Claude Code's alternate-binary
+      // fallback). The shared `firstAvailableBinary` resolver runs through this
+      // client's `_isBinaryInstalled` seam so tests drive it deterministically.
+      const candidates = [config.command, ...(config.commandAlternatives ?? [])];
+      const resolvedCommand = firstAvailableBinary(candidates, this._isBinaryInstalled);
+      if (!resolvedCommand) {
+        this.recordError(language, `LSP server "${language}" command not found: ${candidates.join(', ')}`);
         return false;
       }
 
@@ -447,9 +455,9 @@ export class LSPClient implements DiagnosticSource {
       // AMI analogue of Claude Code's per-server load logging. Pairs with the
       // `initialized` line below and the `command not found` error above so a
       // started / missing / failed server is distinguishable in the debug log.
-      log('lsp', `[LSP ${language}] starting server (command=${config.command} ${(config.args ?? []).join(' ')})`.trimEnd(), undefined, 'debug');
+      log('lsp', `[LSP ${language}] starting server (command=${resolvedCommand} ${(config.args ?? []).join(' ')})`.trimEnd(), undefined, 'debug');
 
-      const proc = this._spawn(config.command, config.args ?? [], {
+      const proc = this._spawn(resolvedCommand, config.args ?? [], {
         cwd: config.workspaceFolder ?? cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         // No console window for the child on Windows (headless subprocess).

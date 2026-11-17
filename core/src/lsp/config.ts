@@ -26,6 +26,16 @@ export type LspTransport = 'stdio' | 'socket';
 export interface LspServerConfig {
   /** Executable to spawn (required). */
   command: string;
+  /**
+   * Alternate executables tried in order when `command` is not on PATH, before
+   * giving up — an ordered-candidate fallback chain (e.g. a server published both
+   * as `pyright-langserver` and `pyright`, or `clangd` vs `clangd-18`). The first
+   * entry that resolves to an installed binary is spawned; `command` is always the
+   * first preference. Mirrors Claude Code's alternate-binary fallback (the
+   * uvx→pipx→pip→pip3 pattern) so a usable server isn't missed just because the
+   * single canonical name is absent. Resolved via {@link firstAvailableBinary}.
+   */
+  commandAlternatives?: string[];
   /** Arguments passed to the server. */
   args?: string[];
   /**
@@ -229,10 +239,18 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (r.args !== undefined && (!Array.isArray(r.args) || !r.args.every((a) => typeof a === 'string'))) {
     throw new Error(`LSP server "${name}": "args" must be an array of strings`);
   }
+  if (
+    r.commandAlternatives !== undefined &&
+    (!Array.isArray(r.commandAlternatives) ||
+      !r.commandAlternatives.every((a) => typeof a === 'string' && a.length > 0))
+  ) {
+    throw new Error(`LSP server "${name}": "commandAlternatives" must be an array of non-empty strings`);
+  }
   if (r.transport !== undefined && r.transport !== 'stdio' && r.transport !== 'socket') {
     throw new Error(`LSP server "${name}": "transport" must be "stdio" or "socket"`);
   }
   const config: LspServerConfig = { command: r.command };
+  if (r.commandAlternatives) config.commandAlternatives = r.commandAlternatives as string[];
   if (r.args) config.args = r.args as string[];
   if (r.transport === 'stdio' || r.transport === 'socket') config.transport = r.transport;
   if (r.env && typeof r.env === 'object') config.env = r.env as Record<string, string>;

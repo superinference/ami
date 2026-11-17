@@ -161,6 +161,31 @@ export function clearBinaryCache(): void {
 }
 
 /**
+ * Return the FIRST of an ordered candidate list that resolves to an installed
+ * executable, or `undefined` when none do. The canonical ordered-candidate
+ * resolver: a caller lists alternate binary names in preference order (e.g.
+ * `['uv', 'pipx', 'pip', 'pip3']`, or a language server's `['pyright-langserver',
+ * 'pyright']`) and gets back the first one actually on PATH, so a tool with
+ * several interchangeable front-ends degrades gracefully instead of hard-failing
+ * on the absence of the single hardcoded one. Mirrors Claude Code's alternate-
+ * binary fallback chains (e.g. `detectPythonPackageManager` uvx→pipx→pip→pip3).
+ * Empty/whitespace candidates are skipped. Reuses the session-cached
+ * {@link isBinaryInstalled} probe by default — it does NOT re-implement a second
+ * `which`. `isInstalled` is injectable so a caller with its own binary-presence
+ * seam (e.g. the LSP client's `_isBinaryInstalled` test hook) can share this one
+ * ordering logic instead of duplicating the loop.
+ */
+export function firstAvailableBinary(
+  candidates: readonly string[],
+  isInstalled: (command: string) => boolean = isBinaryInstalled,
+): string | undefined {
+  for (const candidate of candidates) {
+    if (isInstalled(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
  * Resolve an executable *name* to its full PATH path, returning the spawn-ready
  * `{ cmd, args }` pair (parity with Claude Code's `findExecutable`, which
  * replaced spawn-rx's `findActualExecutable`). `cmd` is the resolved absolute
