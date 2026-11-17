@@ -65,7 +65,9 @@ export const cronCreateTool: ToolDefinition = {
     properties: {
       cron: {
         type: 'string',
-        description: 'Standard 5-field cron expression in local time (e.g. "*/5 * * * *" for every 5 minutes).',
+        description:
+          'Standard 5-field cron expression in local time: minute hour day-of-month month day-of-week ' +
+          '(e.g. "*/5 * * * *" = every 5 minutes; "30 14 28 2 *" = Feb 28 at 2:30pm local, once).',
       },
       prompt: {
         type: 'string',
@@ -73,12 +75,16 @@ export const cronCreateTool: ToolDefinition = {
       },
       recurring: {
         type: 'boolean',
-        description: 'true = fire on every cron match (default). false = fire once then auto-delete.',
+        description:
+          'true = fire on every cron match (default). false = fire once then auto-delete. ' +
+          'Use false for "remind me at X" one-shot requests with pinned minute/hour/day-of-month/month.',
         default: true,
       },
       durable: {
         type: 'boolean',
-        description: 'true = persist to disk and survive session restarts. false = session-only (default).',
+        description:
+          'true = persist to disk and survive session restarts. false = session-only (default). ' +
+          'Use true only when the user asks the task to survive across sessions.',
         default: false,
       },
       permanent: {
@@ -139,7 +145,9 @@ export const cronCreateTool: ToolDefinition = {
     }
     const fieldError = validateCronExpression(cron);
     if (fieldError) {
-      return { output: `Error: invalid 5-field cron expression (${fieldError}). Layout: minute hour day-of-month month day-of-week.`, isError: true };
+      // Echo the offending expression so the model can self-correct the exact
+      // token that failed, matching the reference's actionable error text.
+      return { output: `Error: invalid cron expression "${cron}" (${fieldError}). Expected 5 fields: minute hour day-of-month month day-of-week.`, isError: true };
     }
     if (!prompt || !prompt.trim()) {
       return { output: 'Error: prompt must not be empty.', isError: true };
@@ -194,7 +202,7 @@ export const cronCreateTool: ToolDefinition = {
     const neverExpires = permanent || maxAgeDays === 0;
     const effectiveAgeDays = maxAgeDays ?? MAX_AGE_DAYS;
     const expiry = !recurring
-      ? ''
+      ? '\n  Fires once then auto-deletes.'
       : neverExpires
         ? '\n  Never auto-expires.'
         : `\n  Auto-expires in ${effectiveAgeDays} day${effectiveAgeDays === 1 ? '' : 's'} (pass permanent:true or maxAgeDays:0 to keep it).`;
