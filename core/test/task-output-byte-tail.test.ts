@@ -49,7 +49,7 @@ describe('task_output U031: byte-bounded read wiring', () => {
       getOutputSize: () => 40_000,
       get: () => ({ outputPath: '/var/tasks/t.output' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: false }, c);
     assert.ok(res.output.includes('~1234 lines total'), 'reports the extrapolated total line count');
     assert.ok(res.output.includes('earlier output omitted'), 'still quantifies the omission');
   });
@@ -61,7 +61,7 @@ describe('task_output U031: byte-bounded read wiring', () => {
       getOutputSize: () => 40_000,
       get: () => ({ outputPath: '/var/tasks/t.output' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: false }, c);
     assert.ok(res.output.includes('earlier output omitted'), 'base indicator still present');
     assert.ok(!res.output.includes('lines total'), 'no line-estimate clause without an estimate');
   });

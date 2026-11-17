@@ -58,7 +58,7 @@ describe('task_output U212: structured worker-result usage block', () => {
       getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 100, output: 'working' }),
       get: () => ({ outputPath: '/var/tasks/a.output', tokenCount: 10, toolCount: 2 }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 'a' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 'a', wait: false }, c);
     assert.ok(!res.output.includes('Usage:'), 'no final usage for a running task');
   });
 });

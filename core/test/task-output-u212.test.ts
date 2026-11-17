@@ -68,7 +68,7 @@ describe('task_output U212: truncation / total-size indicator', () => {
       getOutputSize: () => total,
       get: () => ({ outputPath: '/var/tasks/t.output' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: false }, c);
     assert.ok(res.output.includes('Showing 3 lines'), 'reports the shown line count');
     assert.ok(res.output.includes(`of ${formatSize(total)} total`), 'reports the total size');
     assert.ok(res.output.includes('earlier output omitted'), 'quantifies the omission');
@@ -92,7 +92,7 @@ describe('task_output U212: truncation / total-size indicator', () => {
       getOutputSize: () => 99_999,
       get: () => ({ outputPath: '/var/tasks/t.output' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't', filter: 'ERROR' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', filter: 'ERROR', wait: false }, c);
     assert.ok(!res.output.includes('earlier output omitted'), 'filtered subset is not a truncation');
   });
 
@@ -100,7 +100,7 @@ describe('task_output U212: truncation / total-size indicator', () => {
     const c = ctx({
       getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 5, output: 'tiny' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: false }, c);
     assert.ok(!res.output.includes('earlier output omitted'), 'no size introspection -> no indicator');
   });
 });
@@ -141,7 +141,7 @@ describe('task_output U212: failure remediation hint', () => {
     const c = ctx({
       getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 10, output: 'x' }),
     });
-    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: false }, c);
     assert.ok(!res.output.includes('Remediation:'), 'no verdict/remediation while running');
   });
 });

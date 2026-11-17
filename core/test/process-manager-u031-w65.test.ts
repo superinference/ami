@@ -184,7 +184,9 @@ describe('ProcessManager.markNotified + task_output retrieval dedup', () => {
     const id = pm.spawn('sleep 60', { cwd: tmpDir });
     await waitForStatus(pm, id, 'running');
     const ctx = { cwd: tmpDir, processManager: pm } as unknown as ToolContext;
-    const res = await taskOutputTool.execute!({ task_id: id }, ctx);
+    // wait:false — a one-shot non-blocking read of the running task (task_output
+    // blocks by default now, which would wait out the 30s timeout on `sleep 60`).
+    const res = await taskOutputTool.execute!({ task_id: id, wait: false }, ctx);
     assert.ok(!res.isError);
     assert.notEqual(pm.get(id)!.notified, true);
   });

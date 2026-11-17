@@ -42,7 +42,7 @@ describe('taskOutputTool', () => {
         }),
       },
     } as unknown as ToolContext;
-    const result = await taskOutputTool.execute!({ task_id: 'run-1' }, ctx);
+    const result = await taskOutputTool.execute!({ task_id: 'run-1', wait: false }, ctx);
     assert.ok(!result.isError);
     assert.ok(result.output.includes('running'));
     assert.ok(result.output.includes('5.0s'));
@@ -141,7 +141,7 @@ describe('taskOutputTool', () => {
         }),
       },
     } as unknown as ToolContext;
-    const result = await taskOutputTool.execute!({ task_id: 't1', tail: 100 }, ctx);
+    const result = await taskOutputTool.execute!({ task_id: 't1', tail: 100, wait: false }, ctx);
     assert.ok(result.output.includes('last 100 lines'));
   });
 });

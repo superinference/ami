@@ -5,8 +5,13 @@ import { formatSize } from './spill-output';
 import { formatUsageClause } from '../process-manager';
 import { agentResultPath } from './task';
 
-/** Default cap on how long task_output({wait:true}) blocks for a task to finish. */
-const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Default cap on how long a blocking task_output wait runs before giving up and
+ * returning the still-running status. Mirrors Claude Code's TaskOutputTool
+ * `timeout: z.number().default(30000)` — a 30s block by default (not the 10-minute
+ * ceiling), so a block-by-default poll can't park the turn for minutes.
+ */
+const DEFAULT_WAIT_TIMEOUT_MS = 30 * 1000;
 /** Hard upper bound on the blocking wait timeout (mirrors Claude's 600000 cap). */
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 const WAIT_POLL_INTERVAL_MS = 400;
@@ -123,11 +128,12 @@ export const taskOutputTool: ToolDefinition = {
   aliases: ['AgentOutputTool', 'BashOutputTool'],
   description:
     'Get status and output from a background task (task/agent/bash). Returns status, exit code (if finished), ' +
-    'elapsed time, and the tail of output. Set wait:true to BLOCK until the task finishes and return its final ' +
-    'result in a single call — prefer this over repeatedly polling (it is read-only, so several task_output(wait) ' +
-    'calls in one turn run concurrently and all return together when their tasks complete). Pass filter to keep ' +
-    'only output lines matching a regex, or since_offset to retrieve ONLY the bytes appended since the last read ' +
-    '(the response reports the next offset to pass back for a cursor-style incremental tail).',
+    'elapsed time, and the tail of output. BLOCKS by default until the task reaches a terminal state (or the ' +
+    'timeout elapses) and returns its final result in a single call — it is read-only, so several task_output ' +
+    'calls in one turn run concurrently and all return together when their tasks complete. Pass wait:false for a ' +
+    'quick, non-blocking status snapshot of a still-running task. Pass filter to keep only output lines matching a ' +
+    'regex, or since_offset to retrieve ONLY the bytes appended since the last read (the response reports the next ' +
+    'offset to pass back for a cursor-style incremental tail).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -151,7 +157,10 @@ export const taskOutputTool: ToolDefinition = {
       },
       wait: {
         type: 'boolean',
-        description: 'Block until the task reaches a terminal state (completed/failed/killed), then return its final output. Avoids a poll loop.',
+        // PARITY: mirror Claude Code's `block: z.boolean().default(true)` — a
+        // task_output call BLOCKS for completion by default. Pass false for a
+        // one-shot non-blocking status snapshot of a still-running task.
+        description: 'Block until the task reaches a terminal state (completed/failed/killed), then return its final output (default true). Pass false for a quick non-blocking status snapshot.',
       },
       timeout_ms: {
         type: 'number',
@@ -161,7 +170,7 @@ export const taskOutputTool: ToolDefinition = {
         // front instead of silently honoring an unbounded wait.
         minimum: 0,
         maximum: MAX_WAIT_TIMEOUT_MS,
-        description: 'Max time to block when wait:true (default 600000 = 10 min). Clamped to a hard ceiling of 600000ms.',
+        description: 'Max time to block while waiting (default 30000 = 30s). Clamped to a hard ceiling of 600000ms (10 min).',
       },
     },
     required: ['task_id'],
@@ -179,7 +188,13 @@ export const taskOutputTool: ToolDefinition = {
     // broken slice. coerceNumber accepts only a finite number (or numeric string),
     // floors to an int, clamps at 0, and otherwise falls back to the default.
     const tail = coerceNumber(input.tail, DEFAULT_TAIL_LINES, { integer: true, min: 0 });
-    const wait = coerceBool(input.wait);
+    // FUNCTIONAL (parity): block-by-default. Mirrors Claude Code's TaskOutputTool
+    // `block: semanticBoolean(z.boolean().default(true))` — task_output BLOCKS until
+    // the task reaches a terminal state unless the model explicitly opts out with
+    // wait:false (a quick non-blocking status poll). A missing/null wait defaults to
+    // true; an explicit value (including the provider-serialized string "true"/"false")
+    // is coerced via coerceBool as before.
+    const wait = input.wait === undefined || input.wait === null ? true : coerceBool(input.wait);
 
     // FUNCTIONAL (parity): optional regex line filter, mirroring Claude Code's
     // BashOutput `filter`. Compile in the tool so an INVALID pattern surfaces a

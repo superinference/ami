@@ -586,7 +586,10 @@ describe('taskTool – background agents stream output incrementally (regression
 
       const { taskOutputTool } = require('../src/tools/task-output');
       const outputResult = await taskOutputTool.execute(
-        { task_id: taskId },
+        // wait:false — this asserts the streamed-while-running snapshot; task_output
+        // blocks by default now, so a non-blocking read is required here (the task is
+        // deliberately held running by the barrier until after this call).
+        { task_id: taskId, wait: false },
         ctx({ processManager: pm }),
       );
 

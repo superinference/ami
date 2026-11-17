@@ -189,7 +189,7 @@ describe('U031-w74 task_output — resumed invocation marker', () => {
     const out = path.join(tmp, 'ra.output');
     fs.writeFileSync(out, 'work\n');
     pm.registerAgent('agent-ra', { command: '[agent] ra', description: 'd', outputPath: out, abortFn: () => {}, resumed: true });
-    const r = await taskOutputTool.execute({ task_id: 'agent-ra' }, ctx());
+    const r = await taskOutputTool.execute({ task_id: 'agent-ra', wait: false }, ctx());
     assert.ok(r.output.includes('Invocation: resumed'), r.output);
   });
 
@@ -197,7 +197,7 @@ describe('U031-w74 task_output — resumed invocation marker', () => {
     const out = path.join(tmp, 'fa.output');
     fs.writeFileSync(out, 'work\n');
     pm.registerAgent('agent-fa', { command: '[agent] fa', description: 'd', outputPath: out, abortFn: () => {} });
-    const r = await taskOutputTool.execute({ task_id: 'agent-fa' }, ctx());
+    const r = await taskOutputTool.execute({ task_id: 'agent-fa', wait: false }, ctx());
     assert.ok(!r.output.includes('Invocation: resumed'), r.output);
   });
 });
