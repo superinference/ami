@@ -2362,6 +2362,156 @@ export function parseFrontmatterHooks(value: unknown): HookConfigEntry[] {
 
 export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string }>; shutdown?(): void };
 
+// ---------------------------------------------------------------------------
+// Hook-driven prompt-elicitation protocol (Claude Code parity:
+// types/hooks.ts promptRequestSchema / PromptResponse + utils/hooks.ts
+// stdout line-scan → stdin answer). A command hook can pause and ask the user
+// to pick from a labelled list of options by emitting a `PromptRequest` JSON
+// line on stdout; the engine answers with a `PromptResponse` line on stdin and
+// strips the request line from the hook's captured stdout (content match, so no
+// index drift). The `prompt` key is the discriminator (mirroring the
+// `{async:true}` async-output discriminator) and carries the request id.
+// ---------------------------------------------------------------------------
+
+/** One selectable option offered by a hook prompt (Claude Code's
+ *  `{key,label,description?}`). `key` is returned to the hook; `label` is shown
+ *  to the user; `description` is an optional secondary line. */
+export interface PromptRequestOption {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+/** A hook's request for the user to choose one of `options` (Claude Code's
+ *  `PromptRequest`). `prompt` is the correlation id echoed back in the
+ *  `PromptResponse.prompt_response`. */
+export interface PromptRequest {
+  prompt: string;
+  message: string;
+  options: PromptRequestOption[];
+}
+
+/** The engine's answer to a {@link PromptRequest} (Claude Code's
+ *  `PromptResponse`): the chosen option `key` plus the originating request id. */
+export interface PromptResponse {
+  prompt_response: string;
+  selected: string;
+}
+
+/** Interactive prompt resolver: given a hook's {@link PromptRequest}, resolve to
+ *  the user's chosen option key. Rejecting (or throwing) signals the user
+ *  cancelled — the engine then closes the hook's stdin so it does not hang
+ *  (Claude Code's `requestPrompt` contract + `app:interrupt` abort). */
+export type PromptRequestHandler = (request: PromptRequest) => Promise<string>;
+
+/**
+ * Validate an arbitrary parsed value as a {@link PromptRequest} (Claude Code's
+ * `promptRequestSchema.safeParse`). Returns the typed request on success, or
+ * `undefined` when the shape does not match — so an async-output line
+ * (`{async:true}`), a plain log line, or a decision JSON is never mistaken for a
+ * prompt request. `description` is optional per option.
+ */
+export function validatePromptRequest(value: unknown): PromptRequest | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.prompt !== 'string' || v.prompt.length === 0) return undefined;
+  if (typeof v.message !== 'string') return undefined;
+  if (!Array.isArray(v.options)) return undefined;
+  const options: PromptRequestOption[] = [];
+  for (const raw of v.options) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const o = raw as Record<string, unknown>;
+    if (typeof o.key !== 'string' || typeof o.label !== 'string') return undefined;
+    if (o.description !== undefined && typeof o.description !== 'string') return undefined;
+    options.push({ key: o.key, label: o.label, ...(o.description !== undefined ? { description: o.description } : {}) });
+  }
+  return { prompt: v.prompt, message: v.message, options };
+}
+
+/**
+ * Parse a single stdout line as a {@link PromptRequest} (Claude Code's
+ * per-line scan). Blank lines, non-JSON lines, and JSON that is not a valid
+ * prompt request all return `undefined` — only a well-formed request line is
+ * recognized, leaving ordinary hook output untouched.
+ */
+export function parsePromptRequestLine(line: string): PromptRequest | undefined {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(trimmed); } catch { return undefined; }
+  return validatePromptRequest(parsed);
+}
+
+/** Whether `selected` is one of the keys the request actually offered (Claude
+ *  Code answers with a key drawn from `options`). Guards against a resolver
+ *  returning a key the hook never presented. */
+export function isValidPromptSelection(request: PromptRequest, selected: string): boolean {
+  return request.options.some(o => o.key === selected);
+}
+
+/** Build the {@link PromptResponse} for a resolved request (Claude Code's
+ *  `{prompt_response: request.prompt, selected}`). */
+export function buildPromptResponse(request: PromptRequest, selected: string): PromptResponse {
+  return { prompt_response: request.prompt, selected };
+}
+
+/** Serialize a {@link PromptResponse} for writing to the hook's stdin — JSON
+ *  plus the trailing newline the line-oriented hook reads (Claude Code writes
+ *  `jsonStringify(response) + '\n'`). */
+export function serializePromptResponse(response: PromptResponse): string {
+  return JSON.stringify(response) + '\n';
+}
+
+/** A streaming scanner over a hook's stdout (Claude Code's line-buffer +
+ *  `processedPromptLines` set). Returned by {@link createPromptLineScanner}. */
+export interface PromptLineScanner {
+  /** Feed a raw stdout chunk; complete lines are scanned for prompt requests. */
+  feed(chunk: string): void;
+  /** The exact trimmed request lines already handled — stripped from the final
+   *  captured stdout by content match (no index tracking → no index drift). */
+  readonly processedLines: ReadonlySet<string>;
+  /** Remove every handled prompt-request line from `fullStdout`, preserving all
+   *  ordinary output lines (and their order). */
+  stripProcessed(fullStdout: string): string;
+}
+
+/**
+ * Create a streaming prompt-request scanner (Claude Code's stdout line-scan).
+ * Each complete line (split on `\n`; the trailing partial line is buffered until
+ * completed) is tested with {@link parsePromptRequestLine}; a match is recorded
+ * in `processedLines` and handed to `onRequest` synchronously, in the order the
+ * hook asked. The caller serializes any async side effects (resolving +
+ * answering) so responses are written back in request order (Claude's
+ * `promptChain`).
+ */
+export function createPromptLineScanner(onRequest: (req: PromptRequest, rawLine: string) => void): PromptLineScanner {
+  const processed = new Set<string>();
+  let buffer = '';
+  return {
+    feed(chunk: string): void {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? ''; // last element is an incomplete line
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        const req = parsePromptRequestLine(trimmed);
+        if (!req) continue;
+        processed.add(trimmed);
+        onRequest(req, trimmed);
+      }
+    },
+    processedLines: processed,
+    stripProcessed(fullStdout: string): string {
+      if (processed.size === 0) return fullStdout;
+      return fullStdout
+        .split('\n')
+        .filter(l => !processed.has(l.trim()))
+        .join('\n');
+    },
+  };
+}
+
 async function runCommandHookAsync(
   command: string,
   cwd: string,
@@ -2371,6 +2521,12 @@ async function runCommandHookAsync(
   args?: string[],
   signal?: AbortSignal,
   shell?: string,
+  // Interactive prompt-elicitation resolver (Claude Code's `requestPrompt`).
+  // When provided, stdout is scanned line-by-line for `PromptRequest` JSON; each
+  // request is resolved to a key, a `PromptResponse` is written back to the
+  // hook's stdin, and the request lines are stripped from the captured stdout.
+  // Its presence also keeps stdin open for the response round-trip.
+  requestPrompt?: PromptRequestHandler,
 ): Promise<{ exitCode: number; stdout: string; stderr: string; output: string }> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Hook cancelled')); return; }
@@ -2393,8 +2549,31 @@ async function runCommandHookAsync(
     // tail is dropped and a one-time notice is appended at close.
     let stdoutTruncated = false;
     let stderrTruncated = false;
+    // Interactive prompt-elicitation scanner: only active when a resolver is
+    // supplied. It detects PromptRequest lines in the streaming stdout, resolves
+    // each to a key, and writes a PromptResponse back to the hook's stdin. A
+    // resolver rejection (user cancelled) closes stdin so the hook does not hang.
+    // Serialize prompt handling so responses are written back in request order
+    // (Claude Code's `promptChain`).
+    let promptChain: Promise<void> = Promise.resolve();
+    const scanner = requestPrompt
+      ? createPromptLineScanner((req) => {
+          promptChain = promptChain.then(async () => {
+            try {
+              const selected = await requestPrompt(req);
+              proc.stdin?.write(serializePromptResponse(buildPromptResponse(req, selected)), 'utf-8');
+            } catch {
+              // User cancelled / resolver failed — close stdin so the hook does
+              // not hang waiting for a response it will never get.
+              try { proc.stdin?.destroy(); } catch { /* already closed */ }
+            }
+          });
+        })
+      : undefined;
     proc.stdout?.on('data', (d: Buffer) => {
-      const r = boundedHookAppend(stdout, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES);
+      const chunk = d.toString();
+      scanner?.feed(chunk);
+      const r = boundedHookAppend(stdout, chunk, MAX_HOOK_COMMAND_OUTPUT_BYTES);
       stdout = r.text; if (r.truncated) stdoutTruncated = true;
     });
     proc.stderr?.on('data', (d: Buffer) => {
@@ -2406,12 +2585,19 @@ async function runCommandHookAsync(
       if (err.code !== 'EPIPE') coreLog('hooks', `Hook stdin error: ${err.message}`);
     });
 
+    // When a prompt resolver is active, stdin MUST stay open so PromptResponse
+    // lines can be written back (Claude Code parity: `requestPrompt` keeps stdin
+    // open). Otherwise close stdin once the input payload is written so a hook
+    // that reads-to-EOF does not block.
     if (stdinData) {
       try {
+        // stdinData (serializeHookEvent output) is already newline-terminated, so
+        // the hook's first line-read gets the whole event payload and a later
+        // read gets the prompt response — never a stray empty line.
         proc.stdin?.write(stdinData, 'utf-8');
-        proc.stdin?.end();
-      } catch { proc.stdin?.end(); }
-    } else {
+        if (!requestPrompt) proc.stdin?.end();
+      } catch { if (!requestPrompt) proc.stdin?.end(); }
+    } else if (!requestPrompt) {
       proc.stdin?.end();
     }
 
@@ -2439,6 +2625,9 @@ async function runCommandHookAsync(
     proc.on('close', (code) => {
       clearTimeout(timer);
       detach();
+      // Strip handled prompt-request lines from the captured stdout so the
+      // decision parser never sees the elicitation protocol chatter.
+      if (scanner) stdout = scanner.stripProcessed(stdout);
       if (stdoutTruncated) stdout += hookOutputTruncationNotice('stdout');
       if (stderrTruncated) stderr += hookOutputTruncationNotice('stderr');
       resolve({ exitCode: code ?? 1, stdout, stderr, output: stdout + stderr });
@@ -2460,6 +2649,12 @@ export class HookManager extends EventEmitter {
   private _workspaceTrusted = false;
   private _interactive = false;
   private _httpHookPolicy: HttpHookPolicy = {};
+  // Interactive prompt-elicitation resolver (Claude Code's `requestPrompt`).
+  // When set (interactive frontend), command hooks may ask the user to pick from
+  // a labelled option list mid-run. Unset in non-interactive/detached mode so a
+  // hook's PromptRequest is simply left unanswered (parity: no resolver → no
+  // interactive prompt).
+  private _promptRequestHandler: PromptRequestHandler | undefined;
   /** SSRF validator seam (defaults to the shared web-utils validateUrlSafety).
    *  Injectable so tests can exercise the HTTP-hook success/non-2xx paths against
    *  a loopback mock server that the real validator would (correctly) block. */
@@ -3931,6 +4126,21 @@ export class HookManager extends EventEmitter {
   onFileChanged(fn: FileChangeHookFn): void { this.fileChangedHooks.push(fn); }
   onElicitation(fn: ElicitationHookFn): void { this.elicitationHooks.push(fn); }
   onElicitationResult(fn: ElicitationHookFn): void { this.elicitationResultHooks.push(fn); }
+
+  /**
+   * Register (or clear, with `undefined`) the interactive prompt-elicitation
+   * resolver (Claude Code's `requestPrompt`). An interactive frontend sets this
+   * so a command hook that emits a {@link PromptRequest} line pauses and asks the
+   * user to pick an option; the chosen key is written back to the hook's stdin.
+   */
+  setPromptRequestHandler(handler: PromptRequestHandler | undefined): void {
+    this._promptRequestHandler = handler;
+  }
+
+  /** Whether an interactive prompt-elicitation resolver is currently registered. */
+  hasPromptRequestHandler(): boolean {
+    return this._promptRequestHandler !== undefined;
+  }
   onStopFailure(fn: StopFailureHookFn): void { this.stopFailureHooks.push(fn); }
 
   // ---- Concurrency-gated execution helper ----
@@ -4544,6 +4754,9 @@ export class HookManager extends EventEmitter {
       callbackHooks: Array.from(this._callbackHooks.values()).reduce((a, b) => a + b.length, 0),
       functionHooks: this._functionHooks.size,
       pendingHookEvents: this._pendingHookEvents.length,
+      // Interactive prompt-elicitation resolver presence (1 = command hooks may
+      // ask the user to pick from a labelled option list).
+      promptRequestHandler: this._promptRequestHandler ? 1 : 0,
     };
   }
 
@@ -4767,7 +4980,7 @@ export class HookManager extends EventEmitter {
         const command = substitutePluginRoot(config.command, pluginRoot);
         const args = config.args?.map(a => substitutePluginRoot(a, pluginRoot));
         try {
-          const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell);
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler);
           // Claude Code exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
