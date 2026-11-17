@@ -155,16 +155,58 @@ function recencyMs(timestamp?: string): number {
 }
 
 /**
+ * Per-message memoization of the flattened searchable text. Messages in a loaded
+ * transcript are append-only and immutable, so a flatten result keyed on the
+ * message object identity is permanently valid. Caching skips re-running the
+ * (recursive, regex-heavy) flatten for the same message across repeated searches —
+ * e.g. an interactive keystroke search re-scanning the same in-memory transcript on
+ * every character ("backspace hang"). Mirrors the reference's `searchTextCache`
+ * WeakMap (transcriptSearch.ts L16-29). Non-object messages are never cached. */
+const flattenTextCache = new WeakMap<object, string>();
+/** Companion cache for the LOWERCASED flattened text (see {@link renderableSearchText}):
+ *  the matching side lowercases once at cache time, not on every keystroke. */
+const lowerSearchTextCache = new WeakMap<object, string>();
+
+/**
  * Flatten a message's content into one searchable string. A message's `content`
  * may be a plain string OR a structured block array (text / tool_use with an
  * `input` object / tool_result with nested `content`); the assistant form also
  * carries `tool_calls`. A string-only match would miss everything a tool call or
  * tool result said — so recurse structured content, stringify tool inputs, and
  * fold in tool-call names + arguments. (H33)
+ *
+ * WeakMap-memoized per immutable message object (see {@link flattenTextCache}) so a
+ * repeated flatten of the same message is free.
  */
 export function flattenMessageText(msg: unknown): string {
   if (!msg || typeof msg !== 'object') return '';
-  const m = msg as Record<string, unknown>;
+  const cached = flattenTextCache.get(msg);
+  if (cached !== undefined) return cached;
+  const result = computeFlattenedMessageText(msg as Record<string, unknown>);
+  flattenTextCache.set(msg, result);
+  return result;
+}
+
+/**
+ * Lowercased flattened searchable text for a message, WeakMap-cached (lowercased
+ * once at cache time). Every matching path lowercases the flattened body; doing it
+ * once per immutable message — rather than re-lowering the whole transcript on each
+ * keystroke — removes the quadratic "backspace hang" on large transcripts. Mirrors
+ * the reference's `renderableSearchText` (transcriptSearch.ts L23-29). @public
+ */
+export function renderableSearchText(msg: unknown): string {
+  if (!msg || typeof msg !== 'object') return '';
+  const cached = lowerSearchTextCache.get(msg);
+  if (cached !== undefined) return cached;
+  // flattenMessageText is itself cached, so this never double-flattens a message
+  // already flattened for its display snippet.
+  const result = flattenMessageText(msg).toLowerCase();
+  lowerSearchTextCache.set(msg, result);
+  return result;
+}
+
+/** Uncached flatten core for {@link flattenMessageText}. */
+function computeFlattenedMessageText(m: Record<string, unknown>): string {
   // Engine-injected ephemeral control turns (`isMeta`) render as a component /
   // nudge, not as their literal text (or are hidden from the user entirely), so
   // indexing them produces phantom search hits for text the user never saw. A
@@ -399,7 +441,9 @@ export function searchSessions(
         const content = flattenMessageText(msg);
         if (!content) continue;
         addSubsequenceText(content);
-        const lower = content.toLowerCase();
+        // Matching uses the WeakMap-cached lowercased text (flattenMessageText is
+        // itself cached, so the message is flattened once for both snippet + match).
+        const lower = renderableSearchText(msg);
         const matchCount = terms.filter(t => lower.includes(t)).length;
         if (matchCount > 0) {
           sessionHadSubstringHit = true;

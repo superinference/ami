@@ -10,6 +10,7 @@ import {
   toolResultSearchText,
   extractRankingTranscript,
   flattenMessageText,
+  renderableSearchText,
   prSearchText,
   DATE_TIE_THRESHOLD_MS,
   MAX_RANKING_TRANSCRIPT_CHARS,
@@ -679,6 +680,55 @@ describe('searchSessionsRanked — ordering option threads to the literal pass',
     }));
     const r = await searchSessionsRanked(tmpDir, 'gamma delta', { ordering: 'recency' });
     assert.equal(r[0].sessionId, 'new');
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+});
+
+describe('renderableSearchText / flattenMessageText — WeakMap per-message cache (transcriptSearch.ts L16-29 parity)', () => {
+  it('renderableSearchText returns the lowercased flattened text', () => {
+    const msg = { role: 'user', content: 'Fix The TypeScript Error' };
+    assert.equal(renderableSearchText(msg), flattenMessageText(msg).toLowerCase());
+    assert.equal(renderableSearchText(msg), 'fix the typescript error');
+  });
+
+  it('renderableSearchText returns "" for non-object messages', () => {
+    assert.equal(renderableSearchText(undefined), '');
+    assert.equal(renderableSearchText(null), '');
+    assert.equal(renderableSearchText('a string'), '');
+  });
+
+  it('flattenMessageText memoizes per immutable message object (cache hit path)', () => {
+    const msg: { role: string; content: string } = { role: 'user', content: 'original text here' };
+    const first = flattenMessageText(msg);
+    assert.equal(first, 'original text here');
+    // Messages are append-only/immutable in a transcript; mutating the SAME object
+    // must return the cached flatten (proves identity-keyed memoization, exercises
+    // the cache-hit branch) rather than recomputing.
+    msg.content = 'mutated text now';
+    assert.equal(flattenMessageText(msg), 'original text here');
+    // A different object with the mutated content flattens fresh (no false share).
+    assert.equal(flattenMessageText({ role: 'user', content: 'mutated text now' }), 'mutated text now');
+  });
+
+  it('renderableSearchText memoizes the lowercased result per message object', () => {
+    const msg: { role: string; content: string } = { role: 'user', content: 'CACHED Lower' };
+    assert.equal(renderableSearchText(msg), 'cached lower');
+    msg.content = 'DIFFERENT';
+    // Cached lowercased value returned on the second call (hit branch).
+    assert.equal(renderableSearchText(msg), 'cached lower');
+  });
+
+  it('searchSessions matching still finds body text (cache wired, behavior preserved)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-cache-'));
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 's.json'), JSON.stringify({
+      id: 's', createdAt: new Date().toISOString(),
+      messages: [{ role: 'user', content: 'WeakMapCachedNeedle in the body' }],
+    }));
+    const r = searchSessions(tmpDir, 'weakmapcachedneedle');
+    assert.equal(r.length, 1);
+    assert.equal(r[0].sessionId, 's');
     fs.rmSync(tmpDir, { recursive: true });
   });
 });
