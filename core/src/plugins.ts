@@ -310,6 +310,32 @@ export interface PluginBundle {
    * plugin contributes no allowlisted settings.
    */
   settings?: PluginSettings;
+  /**
+   * Message channels a plugin declares (Claude parity:
+   * PluginManifestChannelsSchema — schemas.ts L656-703). Each channel binds one
+   * MCP server (by `server` name, matching a key in {@link mcpServers}) that
+   * emits `notifications/.../channel` messages to inject into the conversation
+   * (Telegram/Slack/Discord bridges), and may declare per-channel
+   * {@link PluginChannel.userConfig} to prompt the user for at enable time. The
+   * `server`↔`mcpServers` cross-check runs at LOAD time (the mcpServers field may
+   * be a not-yet-read file), so discovery keeps every entry with a non-empty
+   * `server`. `undefined` when the manifest declares none (or none survive).
+   */
+  channels?: PluginChannel[];
+}
+
+/**
+ * One message-channel declaration from a plugin manifest (Claude parity:
+ * PluginManifestChannelsSchema entry). `server` names the MCP server this channel
+ * binds to (must match a key in the plugin's {@link PluginBundle.mcpServers});
+ * `displayName` is the human-readable name shown in the config dialog (defaults to
+ * the server name); `userConfig` declares the fields to prompt for when enabling
+ * the plugin, saved values being substituted into the server's env.
+ */
+export interface PluginChannel {
+  server: string;
+  displayName?: string;
+  userConfig?: PluginOptionSchema;
 }
 
 /**
@@ -1527,14 +1553,14 @@ const USER_CONFIG_KEY_RE = /^[A-Za-z_]\w*$/;
  * optional `required`/`default`/`multiple`/`sensitive`/`min`/`max` knobs. Every
  * message carries a corrective example so an author can self-correct.
  */
-function validateUserConfig(val: unknown, errors: PluginValidationIssue[]): void {
+function validateUserConfig(val: unknown, errors: PluginValidationIssue[], labelPrefix = 'userConfig'): void {
   if (val === undefined) return;
   if (typeof val !== 'object' || val === null || Array.isArray(val)) {
-    errors.push({ path: 'userConfig', message: 'Plugin "userConfig" must be an object mapping an option key to its { type, title, description, ... } definition.' });
+    errors.push({ path: labelPrefix, message: `Plugin "${labelPrefix}" must be an object mapping an option key to its { type, title, description, ... } definition.` });
     return;
   }
   for (const [key, opt] of Object.entries(val as Record<string, unknown>)) {
-    const label = `userConfig.${key}`;
+    const label = `${labelPrefix}.${key}`;
     if (!USER_CONFIG_KEY_RE.test(key)) {
       errors.push({ path: label, message: `Option key "${key}" must be a valid identifier (letters, digits, underscore; no leading digit) — it becomes a CLAUDE_PLUGIN_OPTION_<KEY> env var in hooks.` });
     }
@@ -1573,6 +1599,70 @@ function validateUserConfig(val: unknown, errors: PluginValidationIssue[]): void
 function isValidUserConfigDefault(val: unknown): boolean {
   if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') return true;
   return Array.isArray(val) && val.every(v => typeof v === 'string');
+}
+
+/**
+ * The set of inline MCP server names a manifest declares (Claude parity: a
+ * channel's `server` must match a key in `mcpServers`). Only the INLINE record /
+ * array-of-records forms contribute names here; when `mcpServers` is just a FILE
+ * PATH string the names are unknown until the file is read, so this returns
+ * `undefined` to signal "defer the cross-check to load time" (matching Claude's
+ * schema comment that the server↔mcpServers check lives in mcpPluginIntegration).
+ */
+function inlineMcpServerNames(manifest: Record<string, unknown>): Set<string> | undefined {
+  const raw = manifest.mcpServers;
+  if (typeof raw === 'string') return undefined; // file path — names not yet known
+  const names = new Set<string>();
+  const absorb = (rec: Record<string, unknown>): void => {
+    for (const [name, cfg] of Object.entries(rec)) {
+      if (isPlainObject(cfg)) names.add(name);
+    }
+  };
+  if (isPlainObject(raw)) absorb(raw);
+  else if (Array.isArray(raw)) {
+    // An array may mix file-path strings (names unknown) with inline records.
+    if (raw.some(e => typeof e === 'string')) return undefined;
+    for (const entry of raw) if (isPlainObject(entry)) absorb(entry);
+  } else {
+    return undefined; // no inline declaration — nothing to cross-check against
+  }
+  return names;
+}
+
+/**
+ * Validate a manifest's optional `channels` — the message-channel declarations a
+ * plugin ships (Claude parity: PluginManifestChannelsSchema, utils/plugins/schemas.ts
+ * L656-703). `channels` must be an array; each entry is an object with a non-empty
+ * `server` string, an optional string `displayName`, and an optional `userConfig`
+ * validated exactly like the top-level manifest `userConfig`. When the manifest
+ * declares its MCP servers INLINE (so the names are known), each channel's `server`
+ * is cross-checked against those keys; when `mcpServers` is only a file path, that
+ * cross-check is deferred (Claude parity — resolved at load time, not parse time).
+ */
+function validatePluginChannels(val: unknown, manifest: Record<string, unknown>, errors: PluginValidationIssue[]): void {
+  if (val === undefined) return;
+  if (!Array.isArray(val)) {
+    errors.push({ path: 'channels', message: 'Plugin "channels" must be an array of channel declarations, each binding an MCP server (e.g., [{ "server": "telegram", "displayName": "Telegram" }]).' });
+    return;
+  }
+  const knownServers = inlineMcpServerNames(manifest);
+  val.forEach((entry, i) => {
+    const label = `channels[${i}]`;
+    if (!isPlainObject(entry)) {
+      errors.push({ path: label, message: 'Channel entry must be an object with a "server" (and optional "displayName"/"userConfig").' });
+      return;
+    }
+    const server = entry.server;
+    if (typeof server !== 'string' || server.trim() === '') {
+      errors.push({ path: `${label}.server`, message: 'Channel "server" must be a non-empty string naming an MCP server declared in this plugin\'s "mcpServers".' });
+    } else if (knownServers !== undefined && !knownServers.has(server)) {
+      errors.push({ path: `${label}.server`, message: `Channel "server" "${server}" must match a key in this plugin's "mcpServers" (declared: ${[...knownServers].join(', ') || 'none'}).` });
+    }
+    if (entry.displayName !== undefined && typeof entry.displayName !== 'string') {
+      errors.push({ path: `${label}.displayName`, message: 'Channel "displayName" must be a string (the human-readable name shown in the config dialog).' });
+    }
+    validateUserConfig(entry.userConfig, errors, `${label}.userConfig`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,6 +1897,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   validateManifestMetadata(obj, errors);
   validateCommandsMetadata(obj.commandsMetadata, errors);
   validateUserConfig(obj.userConfig, errors);
+  validatePluginChannels(obj.channels, obj, errors);
   validatePluginRequirements(obj.requires, errors);
   validatePluginSettings(obj.settings, errors, warnings);
 
@@ -2544,6 +2635,60 @@ function parseInlineMcpServers(manifest: Record<string, unknown>): Record<string
 }
 
 /**
+ * Parse a channel's `userConfig` into a normalized {@link PluginOptionSchema},
+ * keeping only well-formed options (an object with a valid `type`/`title`/
+ * `description`). Mirrors the manifest `userConfig` shape so the config dialog and
+ * option storage consume a channel's fields exactly like top-level ones. Returns
+ * undefined when nothing well-formed remains.
+ */
+function parseChannelUserConfig(raw: unknown): PluginOptionSchema | undefined {
+  if (!isPlainObject(raw)) return undefined;
+  const out: PluginOptionSchema = {};
+  for (const [key, opt] of Object.entries(raw)) {
+    if (!isPlainObject(opt)) continue;
+    const type = opt.type;
+    if (typeof type !== 'string' || !(USER_CONFIG_OPTION_TYPES as readonly string[]).includes(type)) continue;
+    if (typeof opt.title !== 'string' || typeof opt.description !== 'string') continue;
+    const entry: PluginUserConfigOption = { type: type as UserConfigOptionType, title: opt.title, description: opt.description };
+    if (typeof opt.required === 'boolean') entry.required = opt.required;
+    if (typeof opt.multiple === 'boolean') entry.multiple = opt.multiple;
+    if (typeof opt.sensitive === 'boolean') entry.sensitive = opt.sensitive;
+    if (typeof opt.min === 'number') entry.min = opt.min;
+    if (typeof opt.max === 'number') entry.max = opt.max;
+    if (isValidUserConfigDefault(opt.default)) entry.default = opt.default as PluginUserConfigOption['default'];
+    out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Parse the manifest `channels` array into normalized {@link PluginChannel}s,
+ * keeping only well-formed entries (Claude parity: PluginManifestChannelsSchema).
+ * An entry survives when it is an object with a non-empty `server` string; its
+ * optional `displayName` (string) and `userConfig` (parsed via
+ * {@link parseChannelUserConfig}) are carried when well-formed. Returns undefined
+ * when the field is absent or no entry survives, so the bundle records channels
+ * only when it actually contributes one. The `server`↔`mcpServers` cross-check is
+ * deferred to load time (discovery stays lenient).
+ */
+function parsePluginChannels(manifest: Record<string, unknown>): PluginChannel[] | undefined {
+  const raw = manifest.channels;
+  if (!Array.isArray(raw)) return undefined;
+  const out: PluginChannel[] = [];
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) continue;
+    const server = entry.server;
+    if (typeof server !== 'string' || server.trim() === '') continue;
+    const channel: PluginChannel = { server };
+    if (typeof entry.displayName === 'string') channel.displayName = entry.displayName;
+    const userConfig = parseChannelUserConfig(entry.userConfig);
+    if (userConfig !== undefined) channel.userConfig = userConfig;
+    out.push(channel);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
  * Parse LSP server declarations from the manifest `lspServers` field (Claude
  * parity: PluginManifestLspServerSchema — string path, inline record, or an array
  * mixing both). A string/array-string entry is resolved to a hardened `.lsp.json`
@@ -2761,6 +2906,10 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       // Allowlisted plugin-contributed settings (Claude parity: loadPluginSettings):
       // settings.json over manifest.settings, only the `agent` key survives.
       settings: loadPluginSettings(root, manifest),
+      // Message channels the plugin declares (Claude parity: channels) — each binds
+      // one of the plugin's MCP servers as a notification channel; kept only when at
+      // least one entry carries a non-empty `server`.
+      channels: parsePluginChannels(manifest),
     });
   }
   return { bundles, failures };
