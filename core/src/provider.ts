@@ -24,6 +24,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
+import { sleep } from './utils/sleep';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong, parseMockRateLimit, MOCK_RATE_LIMIT_ENV, type MockRateLimitConfig } from './error-classifier';
 import { maybeThrowFault } from './fault-injection';
@@ -3827,55 +3828,12 @@ const RETRYABLE_STATUS_CODES = new Set([408, 409, 429, 500, 502, 503, 504, 507, 
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1000;
 
-/**
- * Options bag selecting how {@link sleep} reacts to an abort. Mirrors Claude
- * Code's `utils/sleep.ts` selectable abort semantics so a backoff caller picks
- * exactly the behavior it needs instead of being forced into one.
- */
-export interface SleepOptions {
-  /** Reject on abort (so the rejection bubbles up and cancels a surrounding retry loop). */
-  throwOnAbort?: boolean;
-  /** Reject with this specific error on abort (implies {@link throwOnAbort}) — e.g. a loop catching exactly that class. */
-  abortError?: () => Error;
-  /** Unref the pending timer so a still-sleeping backoff never keeps the process alive. */
-  unref?: boolean;
-}
-
-/**
- * Abort-responsive sleep. Resolves after `ms`, or settles early when `signal`
- * aborts. By DEFAULT an abort SILENTLY RESOLVES (the caller checks
- * `signal.aborted` after the await — no try/catch needed), matching Claude Code's
- * `sleep`. Pass `{ throwOnAbort: true }` to reject instead so a deep retry loop is
- * cancelled, or `{ abortError }` to reject with a specific error class (implies
- * `throwOnAbort`). The default rejection is a DOMException `AbortError`, which
- * {@link isAbort} recognizes, so existing abort detection is preserved. Exported as
- * the shared backoff-sleep primitive (used by {@link sleepWithRetryHeartbeat}).
- */
-export function sleep(ms: number, signal?: AbortSignal, opts?: SleepOptions): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const settleAborted = () => {
-      if (opts?.throwOnAbort || opts?.abortError) {
-        reject(opts?.abortError?.() ?? new DOMException('Request aborted', 'AbortError'));
-      } else {
-        resolve();
-      }
-    };
-    if (signal?.aborted) {
-      settleAborted();
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      settleAborted();
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    if (opts?.unref) (timer as { unref?: () => void }).unref?.();
-  });
-}
+// Abort-responsive `sleep` + its `SleepOptions` now live in the canonical
+// `./utils/sleep` module (parity with Claude Code's utils/sleep.ts) so provider
+// backoff, the engine, and the control plane share ONE implementation instead of
+// divergent private copies. Re-exported here for existing importers / callers.
+export { sleep } from './utils/sleep';
+export type { SleepOptions } from './utils/sleep';
 
 /**
  * Default heartbeat slice for a long retry backoff. Mirrors Claude Code's

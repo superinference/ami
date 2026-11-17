@@ -5,6 +5,7 @@ import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { findExecutable } from '../utils/which';
+import { withTimeout } from '../utils/sleep';
 import { getMTLSConfig, getSecureTLSConnectOptions } from '../utils/mtls';
 import type { InProcessTransport } from './in-process-transport';
 
@@ -1066,16 +1067,15 @@ export class McpClient extends EventEmitter {
       this.emit('close', code, uptimeMs);
     });
 
-    const connectPromise = this.performInitialize();
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const t = setTimeout(() => {
-        reject(new Error(`MCP connection timed out after ${this.connectTimeout}ms`));
-      }, this.connectTimeout);
-      t.unref();
-    });
-
+    // Bound the initialize handshake with the shared canonical `withTimeout` guard
+    // (clears + unrefs the timer, rejects with a descriptive message) instead of an
+    // inline Promise.race copy.
     try {
-      await Promise.race([connectPromise, timeoutPromise]);
+      await withTimeout(
+        this.performInitialize(),
+        this.connectTimeout,
+        `MCP connection timed out after ${this.connectTimeout}ms`,
+      );
     } catch (err) {
       this._state = 'error';
       this.disconnect();
