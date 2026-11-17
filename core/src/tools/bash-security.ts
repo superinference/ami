@@ -3827,6 +3827,54 @@ export function detectPersistenceCommands(command: string): { blocked: boolean; 
     return { blocked: true, reason: 'loginctl enable-linger keeps user services running without an active login — potential persistence vector' };
   }
 
+  // --- Windows service registration (New-Service / sc create) ---
+  // The systemctl-enable / SysV-init guards above have a Windows equivalent: a
+  // service that runs an attacker binary at boot. `New-Service` (PowerShell) and
+  // `sc[.exe] create` (native) both register a new auto-start service. The query
+  // / delete forms are not matched here (`sc query`, `Get-Service`), only create.
+  if (/(?:^|[\s;|&(])New-Service\b/i.test(stripped)) {
+    return { blocked: true, reason: 'New-Service registers a Windows service that can auto-start an attacker binary — potential persistence vector' };
+  }
+  if (/(?:^|[\s;|&(])sc(?:\.exe)?\s+create\b/i.test(stripped)) {
+    return { blocked: true, reason: 'sc create registers a Windows service — potential persistence vector' };
+  }
+
+  // --- Windows registry Run-key persistence ---
+  // The classic Windows auto-run persistence: a value under
+  // `…\CurrentVersion\Run` / `RunOnce` launches a program at logon. Block the
+  // write primitives (`Set-ItemProperty`, `New-ItemProperty`, `reg add`) when
+  // they target a Run / RunOnce key. Reads (`Get-ItemProperty`, `reg query`) are
+  // not matched.
+  if (/(?:^|[\s;|&(])(?:Set-ItemProperty|New-ItemProperty|reg(?:\.exe)?\s+add)\b/i.test(stripped) &&
+      /CurrentVersion[\\/]+Run(?:Once|Services|ServicesOnce)?\b/i.test(stripped)) {
+    return { blocked: true, reason: 'writing a Windows registry Run/RunOnce key establishes logon persistence' };
+  }
+
+  // --- PowerShell profile write ($PROFILE) ---
+  // `$PROFILE` is the PowerShell analogue of ~/.bashrc / ~/.zshrc: it runs on
+  // every shell start, so appending to it is a persistence vector (parallel to
+  // the shell-startup-file guard). A `>`/`>>` redirect to $PROFILE is already
+  // caught by the redirection guard; this covers the cmdlet write forms
+  // (Add-Content / Set-Content / Out-File / Tee-Object and their aliases) that
+  // are not shell redirects.
+  if (/\$profile\b/i.test(stripped) &&
+      /(?:^|[\s;|&(])(?:Add-Content|Set-Content|Out-File|Tee-Object|ac|sc|oft)\b/i.test(stripped)) {
+    return { blocked: true, reason: 'writing to the PowerShell $PROFILE establishes shell-startup persistence (analogue of ~/.bashrc)' };
+  }
+
+  // --- WMI / CIM permanent event subscription ---
+  // A WMI/CIM permanent event subscription (`Register-WmiEvent`,
+  // `Register-CimIndicationEvent`, or a `Set-WmiInstance` creating an
+  // __EventFilter / CommandLineEventConsumer / __FilterToConsumerBinding) runs an
+  // action on a system trigger — a fileless persistence mechanism.
+  if (/(?:^|[\s;|&(])(?:Register-WmiEvent|Register-CimIndicationEvent)\b/i.test(stripped)) {
+    return { blocked: true, reason: 'WMI/CIM event subscription runs an action on a system trigger — fileless persistence vector' };
+  }
+  if (/(?:^|[\s;|&(])Set-WmiInstance\b/i.test(stripped) &&
+      /__EventFilter|CommandLineEventConsumer|__FilterToConsumerBinding|ActiveScriptEventConsumer/i.test(stripped)) {
+    return { blocked: true, reason: 'Set-WmiInstance creating a WMI event filter/consumer establishes fileless persistence' };
+  }
+
   return { blocked: false };
 }
 
@@ -5873,6 +5921,32 @@ export function detectPowerShellExecution(command: string): { blocked: boolean; 
   }
   if (/\bstart-bitstransfer\b/i.test(stripped)) {
     return { blocked: true, reason: 'Start-BitsTransfer can download remote payloads' };
+  }
+
+  // 4b. Execution-policy bypass. `-ExecutionPolicy Bypass|Unrestricted` (any
+  //     unambiguous abbreviation, the `-ep` alias, `-` or `/` or alt-dash prefix,
+  //     space- or colon-bound value) and the `Set-ExecutionPolicy` cmdlet form
+  //     disable PowerShell's script-signing enforcement — a security-weakening
+  //     primitive that enables running unsigned/remote scripts.
+  if (/(?:^|[\s;|&(])set-executionpolicy\b[\s:]+['"`]*(?:bypass|unrestricted)\b/i.test(stripped) ||
+      /\s[-/](?:ep|ex[a-z]*)\b[\s:]+['"`]*(?:bypass|unrestricted)\b/i.test(stripped)) {
+    return { blocked: true, reason: 'PowerShell -ExecutionPolicy Bypass/Unrestricted disables script-signing enforcement — security-weakening' };
+  }
+
+  // 4c. Microsoft Defender tampering. `Set-MpPreference -Disable…` turns off
+  //     real-time / behaviour / script scanning; `Add-MpPreference -Exclusion…`
+  //     carves an attacker path/process out of scanning; `-MAPSReporting Disabled`
+  //     silences cloud reporting. All weaken endpoint protection.
+  if (/(?:^|[\s;|&(])(?:Set|Add)-MpPreference\b/i.test(stripped) &&
+      /[-/](?:disable\w*|exclusion\w*|submitsamplesconsent\b)|mapsreporting\b[\s:]+['"`]*disabled/i.test(stripped)) {
+    return { blocked: true, reason: 'PowerShell Set/Add-MpPreference disables or excludes paths from Microsoft Defender — security-weakening' };
+  }
+
+  // 4d. AMSI bypass. References to the AMSI internals (`AmsiUtils`,
+  //     `amsiInitFailed`, `amsiContext`, `amsiSession`) are the hallmark of an
+  //     in-memory Anti-Malware-Scan-Interface bypass that blinds script scanning.
+  if (/\bamsiinitfailed\b|\bamsiutils\b|\bamsicontext\b|\bamsisession\b/i.test(stripped)) {
+    return { blocked: true, reason: 'PowerShell AMSI bypass blinds the Anti-Malware Scan Interface — security-weakening' };
   }
 
   // 5. Constrained-Language-Mode type-cast boundary. A cast / static-member

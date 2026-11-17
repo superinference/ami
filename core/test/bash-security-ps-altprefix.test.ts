@@ -70,7 +70,11 @@ describe('detectPowerShellExecution: no new false positives', () => {
     assert.equal(detectPowerShellExecution('pwsh -Command Get-Date').blocked, false);
   });
   it('GREEN: -ExecutionPolicy is not an -EncodedCommand abbreviation', () => {
-    assert.equal(detectPowerShellExecution('powershell -ExecutionPolicy Bypass -File x.ps1').blocked, false);
+    // A benign policy value (RemoteSigned) proves `-ExecutionPolicy` is not
+    // misread as the `-EncodedCommand` abbreviation. (The `Bypass`/`Unrestricted`
+    // values ARE blocked by the dedicated execution-policy-bypass check — see
+    // bash-security-u015-ps-dangerous-categories.test.ts.)
+    assert.equal(detectPowerShellExecution('powershell -ExecutionPolicy RemoteSigned -File x.ps1').blocked, false);
   });
   it('GREEN: a forward-slash path argument is not a parameter', () => {
     assert.equal(detectPowerShellExecution('pwsh -File /etc/build/run.ps1').blocked, false);
