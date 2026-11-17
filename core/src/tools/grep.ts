@@ -768,8 +768,20 @@ export function runSearch(
       }
     });
 
+    let stderrTruncated = false;
     child.stderr!.on('data', (data: Buffer) => {
+      if (stderrTruncated) return;
       stderr += data.toString();
+      if (Buffer.byteLength(stderr) > MAX_SEARCH_OUTPUT_BYTES) {
+        // Bound stderr the same way as stdout: a search that spews warnings to
+        // stderr (e.g. permission-denied noise over a huge tree) must not grow
+        // memory without limit. Keep the first MAX_SEARCH_OUTPUT_BYTES and stop
+        // accumulating. Unlike the stdout cap we do NOT kill the child — stderr
+        // is diagnostic, not the result, and the search may still complete with
+        // useful stdout. Mirrors Claude Code's dual stdout/stderr buffer cap.
+        stderr = stderr.slice(0, MAX_SEARCH_OUTPUT_BYTES);
+        stderrTruncated = true;
+      }
     });
 
     child.on('error', (err: any) => {
