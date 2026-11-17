@@ -57,6 +57,18 @@ describe('task_output U212: explicit abort signalling', () => {
     assert.ok(res.output.includes('wait timed out'), 'timeout path preserved');
     assert.ok(!res.output.includes('wait aborted'), 'not misreported as aborted');
   });
+
+  it('the timeout line points at a larger timeout_ms and task_list as next steps', async () => {
+    const c = ctx({
+      getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 10, output: 'x' }),
+    });
+    const res = await taskOutputTool.execute!({ task_id: 't', wait: true, timeout_ms: 1 }, c);
+    // Mirrors Claude Code's retrieval_status:'timeout' disambiguation — the model
+    // must be able to tell a full-wait timeout apart AND know the concrete next
+    // moves (wait longer, or enumerate tasks) instead of blindly re-polling.
+    assert.match(res.output, /larger timeout_ms/, 'suggests raising timeout_ms');
+    assert.match(res.output, /task_list/, 'points at task_list to see all tasks');
+  });
 });
 
 describe('task_output U212: truncation / total-size indicator', () => {

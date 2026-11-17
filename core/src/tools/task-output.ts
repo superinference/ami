@@ -347,7 +347,7 @@ export const taskOutputTool: ToolDefinition = {
     if (waitAborted) {
       lines.push('Retrieval: wait aborted — interrupted before the task reached a terminal state (task still running; output below is a partial snapshot).');
     } else if (wait && result.status === 'running') {
-      lines.push(`Retrieval: wait timed out after ${waitTimeoutMs}ms — task still running (call task_output again to keep waiting).`);
+      lines.push(`Retrieval: wait timed out after ${waitTimeoutMs}ms — task still running (call task_output again with a larger timeout_ms to keep waiting, or use task_list to see all tasks).`);
     }
 
     if (result.exitCode !== null) {
