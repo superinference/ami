@@ -20,11 +20,13 @@ import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
 
+// filesRead left undefined by default: these tests exercise schema validation,
+// line-ending and display behavior in the tool's non-tracked mode, where the hard
+// read-before-edit guard does not apply (tests that target the guard pass a Set).
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     cwd: tmpDir,
     abortSignal: new AbortController().signal,
-    filesRead: new Set<string>(),
     ...overrides,
   };
 }

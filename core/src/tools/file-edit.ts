@@ -115,6 +115,40 @@ function recheckStaleBeforeWrite(resolved: string, verb: string, context: ToolCo
 }
 
 /**
+ * Hard read-before-edit guard for the string-replace and multi-edit paths (parity:
+ * Claude Code's FileEditTool `validateInput` errorCode 6 — "File has not been read
+ * yet. Read it first before writing to it."). A targeted edit against an existing
+ * file the model never read still risks matching/replacing a span it cannot see, so
+ * Claude blocks it outright instead of proceeding. AMI previously AUTO-READ on this
+ * path (seeding {@link ToolContext.filesRead} itself), a leniency that let a blind
+ * edit through and silently contradicted the tool's own "You MUST file_read an
+ * existing file before changing it" contract. This replaces that auto-read with the
+ * reference's hard block so the contract is actually enforced, uniformly with the
+ * overwrite path's read-before-overwrite guard. A PARTIAL (size-capped) prior read
+ * is rejected too — the model has not seen the whole file, so an edit could still
+ * clobber an unseen region. Only enforced when filesRead tracking is active;
+ * undefined tracking (non-tracked contexts) stays lenient, matching the overwrite
+ * path. Returns an error ToolResult when the read requirement is unmet; undefined
+ * when it is safe to proceed.
+ */
+function requireReadBeforeEdit(resolved: string, context: ToolContext): ToolResult | undefined {
+  if (!context.filesRead) return undefined;
+  if (!context.filesRead.has(resolved)) {
+    return {
+      output: `Error: You must file_read "${resolved}" before editing it, to avoid replacing content you have not seen. Read the file first, then edit.`,
+      isError: true,
+    };
+  }
+  if (getFileCache(context.cwd, context.agentId).isPartialView(resolved)) {
+    return {
+      output: `Error: You have only read a PARTIAL view of "${resolved}" (the file was size-capped on read). Read the full file (file_read with allow_large:true, or offset/limit over the whole file) before editing it, to avoid clobbering content you have not seen.`,
+      isError: true,
+    };
+  }
+  return undefined;
+}
+
+/**
  * Every parameter the file_edit tool understands, including the accepted aliases
  * for the target path (`path`) and the write-mode content (`content`,
  * `file_text`, `file_content`). Any key outside this set is rejected up front —
@@ -760,10 +794,8 @@ async function applySequentialEdits(
     };
   }
 
-  if (context.filesRead && !context.filesRead.has(resolved)) {
-    context.filesRead.add(resolved);
-    getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
-  }
+  const readErr = requireReadBeforeEdit(resolved, context);
+  if (readErr) return readErr;
 
   const fileCache = getFileCache(context.cwd, context.agentId);
   const freshness = fileCache.describeChange(resolved);
@@ -1223,10 +1255,8 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    if (context.filesRead && !context.filesRead.has(resolved)) {
-      context.filesRead.add(resolved);
-      getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
-    }
+    const readErr = requireReadBeforeEdit(resolved, context);
+    if (readErr) return readErr;
 
     const fileCache = getFileCache(context.cwd, context.agentId);
     const freshness = fileCache.describeChange(resolved);

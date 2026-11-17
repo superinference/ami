@@ -239,7 +239,7 @@ describe('fileEditTool – relative paths', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – safety guards', () => {
-  it('auto-reads and allows edit when file not in filesRead', async () => {
+  it('blocks a multi-edit when the file was not read (hard read-before-edit)', async () => {
     const file = path.join(tmpDir, 'guarded.ts');
     fs.writeFileSync(file, 'content\n');
     const filesRead = new Set<string>();
@@ -249,8 +249,10 @@ describe('fileEditTool – safety guards', () => {
       edits: [{ old_string: 'content', new_string: 'changed' }],
     }, ctx({ filesRead }));
 
-    assert.ok(!result.isError, 'auto-read must allow edit without prior file_read');
-    assert.ok(filesRead.has(file), 'auto-read must track file in filesRead');
+    assert.equal(result.isError, true, 'an unread file must be blocked, not auto-read');
+    assert.match(result.output, /must file_read .* before editing it/);
+    assert.equal(fs.readFileSync(file, 'utf-8'), 'content\n');
+    assert.ok(!filesRead.has(file), 'a blocked edit must not seed filesRead');
   });
 
   it('allows edit when file is in filesRead', async () => {

@@ -1342,6 +1342,13 @@ export const fileReadTool: ToolDefinition = {
       : null;
     if (cached) {
       const lineCount = cached.content.split('\n').length;
+      // An unchanged-cache short-circuit is still a READ: the model has the full
+      // content (served from an earlier read in this conversation), so mark the
+      // file read. Without this, a cache-hit read (e.g. a clone-on-fork sub-agent
+      // re-reading an inherited entry) would NOT seed filesRead, and the hard
+      // read-before-edit guard in file_edit would then wrongly block a legitimately
+      // read file. Mirrors the range-unchanged short-circuit, which already adds.
+      context.filesRead?.add(resolved);
       return { output: `${FILE_UNCHANGED_STUB} (${resolved}, ${lineCount} lines)` };
     }
 

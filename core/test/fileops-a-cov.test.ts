@@ -30,11 +30,14 @@ import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
 
+// filesRead is left UNDEFINED by default so these coverage tests exercise the
+// edit/read success & error paths in the tool's "non-tracked" mode (the hard
+// read-before-edit guard only applies when filesRead tracking is active). The
+// few tests that specifically assert read-tracking behavior pass their own Set.
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     cwd: tmpDir,
     abortSignal: new AbortController().signal,
-    filesRead: new Set<string>(),
     ...overrides,
   };
 }
@@ -83,7 +86,7 @@ describe('fileEditTool – create / overwrite success paths', () => {
     const fp = path.join(tmpDir, 'over.txt');
     const old = Array.from({ length: 30 }, (_, i) => `old${i}`).join('\n');
     fs.writeFileSync(fp, old);
-    const context = ctx();
+    const context = ctx({ filesRead: new Set<string>() });
     // H10: an existing non-empty file must be read before it can be overwritten.
     context.filesRead!.add(fp);
     const res = await fileEditTool.execute(
@@ -117,10 +120,11 @@ describe('fileEditTool – create / overwrite success paths', () => {
 });
 
 describe('fileEditTool – single replace success paths', () => {
-  it('performs an exact replace on an existing file (reads into filesRead + cache)', async () => {
+  it('performs an exact replace on a file that was read first (stays tracked)', async () => {
     const fp = path.join(tmpDir, 'r.txt');
     fs.writeFileSync(fp, 'hello world\nsecond line\n');
-    const context = ctx();
+    // The file is read first (hard read-before-edit guard), so it is tracked.
+    const context = ctx({ filesRead: new Set<string>([fp]) });
     const res = await fileEditTool.execute(
       { file_path: fp, old_string: 'hello world', new_string: 'goodbye world' },
       context,
@@ -489,7 +493,7 @@ describe('fileReadTool – text reads', () => {
     const fp = path.join(tmpDir, 'plain.txt');
     const body = Array.from({ length: 60 }, (_, i) => `content line number ${i} with enough text to pad`).join('\n');
     fs.writeFileSync(fp, body);
-    const context = ctx();
+    const context = ctx({ filesRead: new Set<string>() });
     const res = await fileReadTool.execute({ file_path: fp }, context);
     assert.equal(res.isError, undefined);
     assert.ok(res.output.includes('[type: text'));
