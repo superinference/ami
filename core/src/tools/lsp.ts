@@ -51,7 +51,7 @@ export const _lspToolHooks = {
 interface Position { line: number; character: number }
 interface Range { start: Position; end: Position }
 interface Location { uri: string; range: Range }
-interface LocationLink { targetUri: string; targetRange: Range }
+interface LocationLink { targetUri: string; targetRange: Range; targetSelectionRange?: Range }
 interface DocumentSymbol { name: string; kind: number; detail?: string; range: Range; children?: DocumentSymbol[] }
 interface SymbolInformation { name: string; kind: number; containerName?: string; location: Location }
 interface CallHierarchyItem { name: string; kind?: number; detail?: string; uri: string; range: Range }
@@ -88,10 +88,17 @@ function linePos(range: Range | undefined): string {
   return `${line}:${char}`;
 }
 
-/** Normalize a Location | LocationLink into a Location shape. */
+/**
+ * Normalize a Location | LocationLink into a Location shape. For a LocationLink,
+ * prefer the narrower `targetSelectionRange` (the identifier span) over the full
+ * `targetRange` (the whole declaration block) so go-to-definition points at the
+ * SYMBOL, not the first line of its enclosing block — parity with Claude Code's
+ * `toLocation` (`targetSelectionRange || targetRange`).
+ */
 function toLocation(item: Location | LocationLink): Location {
   const uri = (item as Location).uri ?? (item as LocationLink).targetUri;
-  const range = (item as Location).range ?? (item as LocationLink).targetRange;
+  const link = item as LocationLink;
+  const range = (item as Location).range ?? link.targetSelectionRange ?? link.targetRange;
   return { uri, range };
 }
 
