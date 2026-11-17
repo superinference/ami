@@ -1439,6 +1439,60 @@ export function isBackgroundTasksDisabled(): boolean {
   return isEnvTruthy(process.env[DISABLE_BACKGROUND_TASKS_ENV]);
 }
 
+/**
+ * Env knob that forces EVERY spawned subagent into read-only PLAN mode by default —
+ * the agent explores and must return an implementation plan, it may NOT mutate the
+ * workspace (edit/write/bash-write are denied by the `plan` permission mode) until a
+ * human/parent has reviewed that plan. Mirrors Claude Code's `planModeRequired`
+ * teammate knob and its `CLAUDE_CODE_PLAN_MODE_REQUIRED` env default (the Claude name
+ * is honored too, matching how AMI accepts the Claude spelling for other knobs). A
+ * per-spawn `plan_mode_required` input overrides this default either way.
+ */
+export const SUBAGENT_PLAN_REQUIRED_ENV = 'AMI_SUBAGENT_PLAN_REQUIRED';
+
+/** Claude Code cross-framework alias for {@link SUBAGENT_PLAN_REQUIRED_ENV}. */
+export const CLAUDE_PLAN_MODE_REQUIRED_ENV = 'CLAUDE_CODE_PLAN_MODE_REQUIRED';
+
+/** True when spawned subagents default to plan-required via either env spelling. */
+export function isSubagentPlanRequiredByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[SUBAGENT_PLAN_REQUIRED_ENV]) || isEnvTruthy(env[CLAUDE_PLAN_MODE_REQUIRED_ENV]);
+}
+
+/**
+ * Resolve whether THIS spawn must run plan-required (read-only until a plan is
+ * reviewed). Three-tier, matching Claude Code's `isPlanModeRequired()` precedence:
+ * an explicit per-spawn `plan_mode_required` input wins; absent → the env default
+ * ({@link isSubagentPlanRequiredByEnv}). A missing/garbage input contributes nothing
+ * so the env default decides — purely additive (default off → no change).
+ */
+export function resolvePlanRequired(raw: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (raw !== undefined && raw !== null) return coerceBool(raw);
+  return isSubagentPlanRequiredByEnv(env);
+}
+
+/**
+ * Clamp a resolved permission mode to an "at least read-only plan" floor when the
+ * spawn is plan-required. The `plan` mode allows read-only tools and DENIES every
+ * mutation, so forcing it is always a DE-escalation. `deny-all` is stricter still
+ * (denies reads too) and is never loosened; everything more permissive than `plan`
+ * (ask/acceptEdits/auto-allow/bypassPermissions) is locked down to `plan`. A no-op
+ * when `planRequired` is false, so the existing resolution is unchanged by default.
+ */
+export function applyPlanRequirement(mode: string, planRequired: boolean): string {
+  if (!planRequired) return mode;
+  return mode === 'deny-all' ? mode : 'plan';
+}
+
+/**
+ * Notice prepended to a plan-required subagent's first task turn so it knows the
+ * read-only boundary is intentional: produce a concrete implementation plan and
+ * return it, do NOT attempt to write code (edits/writes/mutating bash are denied
+ * and will fail). Mirrors Claude Code's plan-mode spawn directive.
+ */
+export function buildPlanRequiredNotice(): string {
+  return 'PLAN MODE REQUIRED: You are running read-only. Investigate, then return a concrete, step-by-step implementation plan for this task. Do NOT edit files, write files, or run mutating shell commands — those tools are denied in this mode and any such attempt will fail. Hand the plan back for review; implementation happens only after it is approved.';
+}
+
 /** Valid values for the per-spawn `system_prompt_mode` knob — the single canonical
  *  list lives in core/skills.ts (shared with {@link AgentDefinition.systemPromptMode}),
  *  re-exported here so existing importers keep resolving it from the task tool. */
@@ -1602,6 +1656,10 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   allow_permission_prompts: {
     type: 'boolean',
     description: 'Whether this subagent may show interactive permission prompts for tools outside its granted scope. Default (false) auto-DENIES such calls so a detached/teammate run never blocks on a prompt no one will answer; set true to route unlisted-tool calls to the interactive "ask" handler. An explicit permission_mode overrides this.',
+  },
+  plan_mode_required: {
+    type: 'boolean',
+    description: 'Require this subagent to PLAN before implementing: run it read-only (explore + return an implementation plan; edits/writes/mutating bash are denied) so you can review the plan before any code is written. Overrides the resolved permission mode down to "plan" (a stricter deny-all is kept). Defaults to the AMI_SUBAGENT_PLAN_REQUIRED / CLAUDE_CODE_PLAN_MODE_REQUIRED env knob when omitted.',
   },
   name: {
     type: 'string',
@@ -2621,6 +2679,14 @@ export const taskTool: ToolDefinition = {
     // contribution, so the existing fallback chain is unchanged (additive opt-in).
     const promptGatePermissionMode = resolvePromptGatePermissionMode(input.allow_permission_prompts);
 
+    // Per-spawn plan-required gate (parity: Claude's planModeRequired knob +
+    // CLAUDE_CODE_PLAN_MODE_REQUIRED env default): when set, the subagent runs
+    // read-only ('plan') — it investigates and returns an implementation plan but
+    // cannot mutate the workspace until the plan is reviewed. Per-spawn input wins
+    // over the env default; see applyPlanRequirement below for how it clamps the
+    // otherwise-resolved mode.
+    const planRequired = resolvePlanRequired(input.plan_mode_required);
+
     // Permission mode priority:
     // 1. Explicit `permission_mode` input (caller sets the spawned agent's mode,
     //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above) —
@@ -2641,7 +2707,10 @@ export const taskTool: ToolDefinition = {
     //    present (detached-YOLO / auto-allow propagation) the 'ask' default is kept
     //    so the handler still decides — no regression to background YOLO workers.
     // 6. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
-    const resolvedPermissionMode =
+    // 7. Plan-required floor (applyPlanRequirement): when this spawn is plan-required,
+    //    clamp the resolved mode down to read-only 'plan' (a stricter deny-all stays),
+    //    so a delegated agent must produce a plan before it can implement.
+    const resolvedPermissionMode = applyPlanRequirement(
       (requestedPermissionMode
         ? clampPermissionMode(requestedPermissionMode, context._parentPermissionMode)
         : undefined) ||
@@ -2651,7 +2720,9 @@ export const taskTool: ToolDefinition = {
         ? 'auto-allow'
         : runInBackground && !context._permissionPromptHandler
           ? 'deny-all'
-          : 'ask');
+          : 'ask'),
+      planRequired,
+    );
 
     // ui#13: a mode-only sub-agent (no named subagent_type) runs on a dedicated LEAN
     // system prompt that REPLACES the full coding stance, so it returns its result and
@@ -2817,6 +2888,14 @@ export const taskTool: ToolDefinition = {
     // (mirrors Claude's buildWorktreeNotice).
     if ((isolation === 'worktree' || usingExistingWorktree) && effectiveCwd !== context.cwd) {
       effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
+    }
+
+    // Plan-required spawn: tell the subagent WHY its mutating tools are denied — it
+    // must explore and return an implementation plan for review, not write code. The
+    // 'plan' permission mode enforces read-only; this notice makes the boundary
+    // intentional so the agent produces a plan instead of thrashing on denials.
+    if (planRequired) {
+      effectivePrompt = `${buildPlanRequiredNotice()}\n\n---\n\n${effectivePrompt}`;
     }
 
     // Sanitize the caller-supplied name against reserved routing characters
