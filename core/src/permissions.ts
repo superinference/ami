@@ -1481,6 +1481,16 @@ export const SAFE_ENV_VARS = new Set([
   'CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'JENKINS_URL',
   'npm_config_loglevel', 'npm_config_registry',
   'CARGO_HOME', 'RUSTUP_HOME',
+  // Extended curated allowlist (parity with Claude's SAFE_ENV_VARS, bashPermissions):
+  // pytest configuration — disable plugin autoload / enable debug tracing.
+  'PYTEST_DISABLE_PLUGIN_AUTOLOAD', 'PYTEST_DEBUG',
+  // Extended locale controls beyond the base LANG/LC_ALL/LC_CTYPE set.
+  'LANGUAGE', 'LC_TIME', 'CHARSET',
+  // Color / display tooling — purely cosmetic, never a code-exec or exfil vector.
+  'LS_COLORS', 'LSCOLORS', 'GREP_COLORS', 'GCC_COLORS',
+  'TIME_STYLE', 'BLOCK_SIZE', 'BLOCKSIZE',
+  // Go build flags — select module/cgo/experiment behavior, not a secrets vector.
+  'GO111MODULE', 'CGO_ENABLED', 'GOEXPERIMENT',
 ]);
 
 export function stripSafeEnvVars(command: string): string {
@@ -2660,6 +2670,45 @@ export function isDisguisedBareGitRepo(cwd: string = process.cwd()): boolean {
 }
 
 /**
+ * Identity ("no-op") `cd` targets that resolve to the CURRENT working directory,
+ * so a leading `cd <target>` changes nothing. Models routinely prepend `cd $PWD`
+ * (or `cd .`) before the real command; that segment must not be treated as a real
+ * directory change by the cwd-desync / multiple-cd guards. Covers the portable
+ * identity forms (`.`, `$PWD`, `${PWD}`, quoted variants, `$(pwd)`, `` `pwd` ``)
+ * and the Windows `%CD%` spelling.
+ */
+const NOOP_CWD_TARGET_RE =
+  /^(?:\.|\$PWD|\$\{PWD\}|"\$PWD"|'\$PWD'|"\$\{PWD\}"|\$\(pwd\)|`pwd`|%CD%)$/;
+
+/**
+ * Strip a SINGLE leading no-op `cd <cwd>` subcommand from a (possibly compound)
+ * command, returning the remainder. A model-prepended identity cd (`cd $PWD &&
+ * real-cmd`, `cd . ; real-cmd`) is a no-op, so counting it toward the multiple-cd
+ * guard or the cd+redirect desync guard would spuriously escalate an otherwise
+ * benign command to an explicit prompt. Only an IDENTITY target is peeled — a
+ * `cd` into a real directory shifts the resolution base for later relative paths
+ * and is never stripped. Mirrors Claude's BashTool prefix normalization, which
+ * removes a leading `cd <cwd>` subcommand before counting cd commands / running
+ * per-subcommand permission evaluation.
+ */
+export function stripLeadingNoopCd(command: string): string {
+  const m = command.match(/^\s*([^\n;&|]+?)\s*(?:&&|;|\|\||\||&)\s*([\s\S]+)$/);
+  if (!m) return command;
+  const first = m[1]!.trim();
+  const rest = m[2]!;
+  const toks = first.split(/\s+/).filter(Boolean);
+  const base = (toks[0] ?? '').toLowerCase();
+  if (base !== 'cd' && base !== 'chdir' && base !== 'pushd' && base !== 'set-location') {
+    return command;
+  }
+  // The segment must be exactly `cd <single-identity-target>` (no flags, no extra
+  // operands) so `cd . file` or `cd $PWD extra` is left intact for scrutiny.
+  const operands = toks.slice(1);
+  if (operands.length !== 1 || !NOOP_CWD_TARGET_RE.test(operands[0]!)) return command;
+  return rest;
+}
+
+/**
  * Detect a compound command that changes directory (`cd`/`pushd`/`chdir`/
  * PowerShell `Set-Location`) AND then performs a file-writing output redirection
  * (`>`/`>>` to a file, not an fd-dup like `2>&1`). The validator classifies the
@@ -2669,7 +2718,9 @@ export function isDisguisedBareGitRepo(cwd: string = process.cwd()): boolean {
  * this shape (pathValidation.ts cd+write guard, PowerShell Set-Location desync).
  */
 export function commandHasCdWriteDesync(command: string): boolean {
-  const unwrapped = unwrapShellControlStructures(command);
+  // Drop a model-prepended identity `cd <cwd>` (a no-op) so it can't be mistaken
+  // for a real directory change before a redirect.
+  const unwrapped = unwrapShellControlStructures(stripLeadingNoopCd(command));
   const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
   let hasCd = false;
   let hasRedirect = false;
@@ -2696,7 +2747,9 @@ export function commandHasCdWriteDesync(command: string): boolean {
  * guard, bashCommandHelpers.ts).
  */
 export function countDirectoryChanges(command: string): number {
-  const unwrapped = unwrapShellControlStructures(command);
+  // A model-prepended identity `cd <cwd>` is a no-op and must not count toward the
+  // multiple-cd guard (which escalates any command with more than one real cd).
+  const unwrapped = unwrapShellControlStructures(stripLeadingNoopCd(command));
   const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
   let count = 0;
   for (const seg of segments) {
