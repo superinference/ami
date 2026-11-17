@@ -324,8 +324,9 @@ export {
 } from './ui-log-guard';
 export type { LogTier, LogEntry, SanitizeLogOptions } from './ui-log-guard';
 export { validateEngineConfig, sanitizeEngineConfig } from './types';
-export { TelemetryBatchSender, sendOtlpBatch, postOtlpBatch, isRetryableStatus, toOtlpLogsPayload, otlpLogsUrl } from './analytics';
-export type { OtlpSendResult, TelemetryBatchSenderOpts } from './analytics';
+export { TelemetryBatchSender, sendOtlpBatch, postOtlpBatch, isRetryableStatus, toOtlpLogsPayload, otlpLogsUrl,
+  resolveOtlpLogsEndpoint, getGitEmail } from './analytics';
+export type { OtlpSendResult, TelemetryBatchSenderOpts, OtlpLogsEndpoint } from './analytics';
 export type { TelemetryBatch } from './analytics';
 export { SessionDiffTracker } from './session';
 export type { FileChange } from './session';

@@ -1122,6 +1122,43 @@ export function getCiContext(env: NodeJS.ProcessEnv = process.env): Record<strin
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Local git identity (Claude-Code utils/user.ts getGitEmail parity): the
+// git-configured `user.email` is a purely local, vendor-neutral identity signal
+// (useful for per-user usage attribution and co-authorship checks). It is resolved
+// by spawning `git config --get user.email` (reject-free: stdout trimmed, undefined
+// on a non-zero exit / git absent / no email set) and memoized per cwd so repeated
+// reads never re-spawn. It is NEVER auto-exported — an explicit opt-in attaches only
+// a privacy-preserving HASH (see {@link AnalyticsTrackerOpts.includeGitUser}).
+// ---------------------------------------------------------------------------
+
+/** Per-cwd memo of the resolved git email (undefined is a cached "none"). */
+const _gitEmailCache = new Map<string, string | undefined>();
+
+/**
+ * Resolve the git-configured `user.email` for `cwd` via `git config --get user.email`,
+ * trimmed; undefined when git is absent, the dir is not a repo, or no email is set
+ * (reject-free, like Claude's memoized getGitEmail). Memoized per cwd. The command
+ * runner is injectable for deterministic tests; the default runs git with stderr
+ * silenced so a non-repo dir produces no console noise.
+ */
+export function getGitEmail(
+  cwd: string = process.cwd(),
+  exec: (dir: string) => string = (dir) =>
+    execSync('git config --get user.email', { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).toString(),
+): string | undefined {
+  if (_gitEmailCache.has(cwd)) return _gitEmailCache.get(cwd);
+  let email: string | undefined;
+  try {
+    const out = exec(cwd).trim();
+    email = out || undefined;
+  } catch {
+    email = undefined; // git absent / not a repo / no user.email configured
+  }
+  _gitEmailCache.set(cwd, email);
+  return email;
+}
+
 /** Filename holding the stable per-install telemetry id, co-located with the log dir. */
 export const USER_ID_FILE = 'telemetry-user-id';
 
@@ -1600,6 +1637,27 @@ export interface AnalyticsTrackerOpts {
    */
   otlpResourceAttrs?: Record<string, string>;
   /**
+   * When true the configured {@link otlpEndpoint} is a signal-specific logs endpoint
+   * (from `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) and is POSTed verbatim — `/v1/logs` is
+   * NOT appended (mirrors Claude's per-signal endpoint selection). Default false: the
+   * endpoint is treated as generic and `/v1/logs` is appended. Resolve both from
+   * {@link resolveOtlpLogsEndpoint}.
+   */
+  otlpLogsEndpointPerSignal?: boolean;
+  /**
+   * Attach a privacy-preserving HASH of the local git `user.email` as the
+   * `user.git_email` resource attribute on every OTLP export, so a self-hosted
+   * collector can attribute usage per developer WITHOUT the raw email ever leaving
+   * the machine. Off by default; also enabled by the `AMI_OTEL_INCLUDE_GIT_USER` env
+   * knob. The raw email is resolved via {@link getGitEmail} (git absent / no email →
+   * the attribute is simply omitted). Mirrors Claude's getGitEmail identity signal.
+   */
+  includeGitUser?: boolean;
+  /** Working directory whose git `user.email` is read for {@link includeGitUser}. Default process.cwd(). */
+  gitUserCwd?: string;
+  /** Injected git-email resolver for {@link includeGitUser} (deterministic tests). Default {@link getGitEmail}. */
+  gitEmailResolver?: (cwd: string) => string | undefined;
+  /**
    * Pre-resolved undici dispatcher (proxy / mTLS / custom-CA) attached to every OTLP
    * POST. When unset, one is auto-resolved from the OTLP proxy + TLS env vars (see
    * {@link resolveOtlpTransport}) against the configured endpoint. Mirrors Claude's
@@ -1908,6 +1966,10 @@ export class AnalyticsTracker {
   private _onBatchDropped: ((eventCount: number, droppedBatchCount: number) => void) | undefined;
   private _otlpHeaders: Record<string, string>;
   private _otlpResourceAttrs: Record<string, string>;
+  /** True when the OTLP endpoint is signal-specific (used verbatim, no /v1/logs appended). */
+  private _otlpPerSignal: boolean;
+  /** Privacy-preserving hash of the local git user.email (introspection); undefined when off/unresolved. */
+  private _gitEmailHash: string | undefined;
   /** Resolved undici proxy/mTLS dispatcher attached to every OTLP POST; undefined = fetch default. */
   private _otlpDispatcher: unknown;
   /** In-memory event age cap (ms); undefined disables the age sweep. */
@@ -1990,8 +2052,21 @@ export class AnalyticsTracker {
     this._onBatchDropped = opts?.onBatchDropped;
     // Headers from OTEL_EXPORTER_OTLP_HEADERS, overridden by any explicit opt.
     this._otlpHeaders = { ...parseOtelHeaders(this._env.OTEL_EXPORTER_OTLP_HEADERS), ...(opts?.otlpHeaders ?? {}) };
+    this._otlpPerSignal = opts?.otlpLogsEndpointPerSignal ?? false;
     // Resource attrs from OTEL_RESOURCE_ATTRIBUTES, overridden by any explicit opt.
     this._otlpResourceAttrs = { ...parseOtelResourceAttrs(this._env.OTEL_RESOURCE_ATTRIBUTES), ...(opts?.otlpResourceAttrs ?? {}) };
+    // Opt-in local git-identity resource attribute: stamp a privacy-preserving HASH of
+    // the git user.email (never the raw address) so a collector can attribute usage per
+    // developer. Only when telemetry is active; an explicit resource-attr of the same
+    // key still wins (merged below with _otlpResourceAttrs taking precedence).
+    if (this._otlpEndpoint && (opts?.includeGitUser || isEnvTruthy(this._env.AMI_OTEL_INCLUDE_GIT_USER))) {
+      const resolver = opts?.gitEmailResolver ?? getGitEmail;
+      const email = resolver(opts?.gitUserCwd ?? process.cwd());
+      if (email) {
+        this._gitEmailHash = hashFilePath(email);
+        this._otlpResourceAttrs = { 'user.git_email': this._gitEmailHash, ...this._otlpResourceAttrs };
+      }
+    }
     // Stamp a stable per-install id + its privacy-preserving bucket onto every
     // export, so a self-hosted collector can correlate/estimate users across
     // sessions without AMI emitting any raw identity. Only when telemetry is
@@ -2121,6 +2196,20 @@ export class AnalyticsTracker {
   /** Resolved logs export interval (ms) — introspection + batch-sender cadence. */
   getExportIntervalMs(): number {
     return this._exportIntervalMs;
+  }
+
+  /** Whether the OTLP endpoint is a signal-specific logs endpoint (used verbatim). */
+  isOtlpLogsEndpointPerSignal(): boolean {
+    return this._otlpPerSignal;
+  }
+
+  /**
+   * The privacy-preserving hash of the local git `user.email` stamped as the
+   * `user.git_email` resource attribute, or undefined when the git-user attribution
+   * opt is off / the email could not be resolved. Introspection surface.
+   */
+  getGitUserHash(): string | undefined {
+    return this._gitEmailHash;
   }
 
   /**
@@ -2660,7 +2749,7 @@ export class AnalyticsTracker {
     const headers = this._resolveHeaders();
     const resourceAttrs = this._otlpResourceAttrs;
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
-      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher });
+      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher, perSignal: this._otlpPerSignal });
       if (res.ok) return true;
       if (!res.retryable) return this._dropBatch(batch); // 4xx: permanent, drop
       if (attempt === this._maxAttempts) return this._dropBatch(batch);
@@ -2714,7 +2803,7 @@ export class AnalyticsTracker {
       const res = await postOtlpBatch(endpoint, batch, {
         fetchImpl: this._otlpFetch, env: this._env, headers,
         resourceAttrs: this._otlpResourceAttrs, timeoutMs: this._otlpTimeoutMs,
-        dispatcher: this._otlpDispatcher,
+        dispatcher: this._otlpDispatcher, perSignal: this._otlpPerSignal,
       });
       if (res.ok) {
         store.delete(file);
@@ -3084,10 +3173,44 @@ export function toOtlpLogsPayload(
   };
 }
 
-/** Resolve the OTLP logs URL: use an explicit /v1/{signal} path as-is, else append /v1/logs. */
-export function otlpLogsUrl(endpoint: string): string {
+/**
+ * Resolve the OTLP logs URL. A `perSignal` endpoint (sourced from the dedicated
+ * `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) is used VERBATIM — the OTEL spec says the
+ * exporter must not append the `/v1/logs` signal path to a signal-specific endpoint,
+ * so double-appending (e.g. `.../custom/logs/v1/logs`) is avoided. A generic endpoint
+ * gets `/v1/logs` appended unless it already ends in an explicit `/v1/{signal}` path.
+ */
+export function otlpLogsUrl(endpoint: string, perSignal = false): string {
+  if (perSignal) return endpoint; // signal-specific endpoint: used as-is (no /v1/logs)
   const trimmed = endpoint.replace(/\/+$/, '');
   return /\/v1\/(logs|traces|metrics)$/.test(trimmed) ? trimmed : `${trimmed}/v1/logs`;
+}
+
+/** A resolved OTLP logs endpoint plus whether it was sourced signal-specifically. */
+export interface OtlpLogsEndpoint {
+  /** The endpoint URL (verbatim for a per-signal source, base otherwise). */
+  url: string;
+  /**
+   * True when sourced from the dedicated `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — then
+   * the URL is used verbatim ({@link otlpLogsUrl} appends no `/v1/logs`). Mirrors
+   * Claude's per-signal endpoint selection distinct from the generic endpoint.
+   */
+  perSignal: boolean;
+}
+
+/**
+ * Resolve the OTLP LOGS endpoint honoring signal-specific selection (Claude parity):
+ * the dedicated `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` wins and is marked `perSignal`
+ * (used verbatim); otherwise the generic `OTEL_EXPORTER_OTLP_ENDPOINT` (then AMI's
+ * `SUPERINFERENCE_OTLP_ENDPOINT`) is used and gets `/v1/logs` appended. Returns null
+ * when no endpoint is configured. Blank/whitespace-only values are ignored.
+ */
+export function resolveOtlpLogsEndpoint(env: NodeJS.ProcessEnv = process.env): OtlpLogsEndpoint | null {
+  const perSignal = env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT?.trim();
+  if (perSignal) return { url: perSignal, perSignal: true };
+  const generic = (env.OTEL_EXPORTER_OTLP_ENDPOINT || env.SUPERINFERENCE_OTLP_ENDPOINT)?.trim();
+  if (generic) return { url: generic, perSignal: false };
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3278,7 +3401,7 @@ function parseRetryAfterMs(header: string | null | undefined): number | undefine
 export async function postOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown; perSignal?: boolean } = {},
 ): Promise<OtlpSendResult> {
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
   if (!fetchImpl) return { ok: false, retryable: false };
@@ -3299,7 +3422,7 @@ export async function postOtlpBatch(
       signal: controller.signal,
     };
     if (deps.dispatcher) (init as { dispatcher?: unknown }).dispatcher = deps.dispatcher;
-    const res = await fetchImpl(otlpLogsUrl(endpoint), init);
+    const res = await fetchImpl(otlpLogsUrl(endpoint, deps.perSignal), init);
     if (res.ok) return { ok: true, status: res.status, retryable: false };
     const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
     return { ok: false, status: res.status, retryable: isRetryableStatus(res.status), retryAfterMs };
@@ -3314,7 +3437,7 @@ export async function postOtlpBatch(
 export async function sendOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown; perSignal?: boolean } = {},
 ): Promise<boolean> {
   return (await postOtlpBatch(endpoint, batch, deps)).ok;
 }
