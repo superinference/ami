@@ -141,6 +141,25 @@ const ZSH_PRECOMMAND_MODIFIERS = new Set(['command', 'builtin', 'noglob', 'nocor
 
 const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbuf', 'env', 'srun']);
 
+/**
+ * Spaced-operand (value-taking) flags per safe wrapper. A flag listed here, when
+ * given in its NON-fused form (`-s KILL`, `--signal KILL` — not `-sKILL` /
+ * `--signal=KILL`), consumes the FOLLOWING token as its operand, so the wrapped
+ * command is located PAST that operand instead of the operand being mistaken for
+ * the command (e.g. `timeout -s KILL 5 sed -e 'w /evil' f`, `stdbuf -o L sed …`).
+ * SINGLE SOURCE OF TRUTH for this operand knowledge — shared by
+ * {@link stripSafeWrappers} (command extraction / classification) and
+ * {@link analyzeWrapperSegment} (fail-closed flag audit) so the two cannot drift.
+ * Mirrors Claude Code's per-wrapper command-spec option model
+ * (utils/bash/specs/{timeout,stdbuf,nice}.ts isCommand + value-option skipping).
+ */
+export const WRAPPER_VALUE_FLAGS: Record<string, RegExp> = {
+  timeout: /^(-k|--kill-after|-s|--signal)$/,
+  stdbuf: /^(-i|--input|-o|--output|-e|--error)$/,
+  nice: /^(-n|--adjustment)$/,
+  env: /^(-u|--unset)$/,
+};
+
 function stripSafeWrappers(command: string): string {
   let remaining = command.trim();
   let changed = true;
@@ -153,7 +172,21 @@ function stripSafeWrappers(command: string): string {
 
     if (first === 'env') {
       let i = 1;
-      while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i])) i++;
+      // Skip VAR=value assignments AND recognized env flags so the WRAPPED command
+      // is reached: value-less -i/--ignore-environment, -0/--null, -v/--debug, and
+      // the value-taking -u/--unset NAME (spaced) / -u=NAME (fused). Without this,
+      // `env -i sed -e 'w /evil' f` / `env -u X sed …` leave the base command as
+      // the flag token, hiding the real `sed` from the per-segment validators. Stop
+      // at an UNrecognized flag (e.g. -S/-C), which detectUnsafeWrapperFlags
+      // fail-closed rejects — mirrors analyzeWrapperSegment's env flag model.
+      while (i < tokens.length) {
+        const t = tokens[i];
+        if (/^[A-Za-z_]\w*=/.test(t)) { i++; continue; }
+        if (/^(-i|--ignore-environment|-0|--null|-v|--debug)$/.test(t)) { i++; continue; }
+        if (WRAPPER_VALUE_FLAGS.env.test(t)) { i += 2; continue; }
+        if (/^(-u|--unset)=/.test(t)) { i++; continue; }
+        break;
+      }
       if (i < tokens.length) {
         remaining = tokens.slice(i).join(' ');
         changed = true;
@@ -161,8 +194,17 @@ function stripSafeWrappers(command: string): string {
         break;
       }
     } else if (first === 'timeout' || first === 'nice' || first === 'stdbuf') {
+      // Consume the SPACED operand of value-taking flags (timeout -s/-k, stdbuf
+      // -i/-o/-e, nice -n) via the shared WRAPPER_VALUE_FLAGS table, so the operand
+      // (`KILL`, a buffer-mode `L`, an adjustment) is not mistaken for the wrapped
+      // command — closing `timeout -s KILL 5 sed -e 'w /evil' f` /
+      // `stdbuf -o L sed …` base-command evasion.
+      const valueFlag = WRAPPER_VALUE_FLAGS[first];
       let i = 1;
-      while (i < tokens.length && tokens[i].startsWith('-')) i++;
+      while (i < tokens.length && tokens[i].startsWith('-')) {
+        if (valueFlag.test(tokens[i]) && i + 1 < tokens.length) { i += 2; continue; }
+        i++;
+      }
       if (first === 'timeout' && i < tokens.length && /^\d/.test(tokens[i])) i++;
       if (first === 'nice' && i < tokens.length && /^\d+$/.test(tokens[i])) i++;
       if (i < tokens.length) {
@@ -273,7 +315,7 @@ function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string
         if (/^[A-Za-z_]\w*=/.test(t)) { i++; continue; }
         if (!t.startsWith('-')) break; // command begins
         if (/^(-i|--ignore-environment|-0|--null|-v|--debug)$/.test(t)) { i++; continue; }
-        if (/^(-u|--unset)$/.test(t)) { i += 2; continue; }
+        if (WRAPPER_VALUE_FLAGS.env.test(t)) { i += 2; continue; }
         if (/^(-u|--unset)=/.test(t)) { i++; continue; }
         const o = offense(`env flag '${t}' can hide the wrapped command (argv splitter / alt cwd / alt path)`);
         if (o) return o;
@@ -284,7 +326,7 @@ function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string
         const t = toks[i];
         if (/^(--foreground|--preserve-status|--verbose|-v)$/.test(t)) { i++; continue; }
         if (/^(-k|--kill-after|-s|--signal)=/.test(t)) { i++; continue; } // fused value
-        if (/^(-k|--kill-after|-s|--signal)$/.test(t)) { i += 2; continue; } // spaced value
+        if (WRAPPER_VALUE_FLAGS.timeout.test(t)) { i += 2; continue; } // spaced value
         if (/^-[ks]\S+$/.test(t)) { i++; continue; } // -k5 / -sKILL fused short form
         const o = offense(`unrecognised timeout flag '${t}'`);
         if (o) return o;
@@ -300,9 +342,8 @@ function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string
       while (i < toks.length && toks[i].startsWith('-')) {
         const t = toks[i];
         if (/^-[ioe]\S+$/.test(t)) { i++; continue; } // fused -oL
-        if (/^-[ioe]$/.test(t)) { i += 2; continue; } // spaced -o L
         if (/^(--input|--output|--error)=/.test(t)) { i++; continue; }
-        if (/^(--input|--output|--error)$/.test(t)) { i += 2; continue; }
+        if (WRAPPER_VALUE_FLAGS.stdbuf.test(t)) { i += 2; continue; } // spaced -o L / --output L
         const o = offense(`unrecognised stdbuf flag '${t}'`);
         if (o) return o;
         i++;
@@ -311,7 +352,7 @@ function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string
       while (i < toks.length && toks[i].startsWith('-')) {
         const t = toks[i];
         if (/^(-n|--adjustment)=/.test(t)) { i++; continue; }
-        if (/^(-n|--adjustment)$/.test(t)) { i += 2; continue; }
+        if (WRAPPER_VALUE_FLAGS.nice.test(t)) { i += 2; continue; } // spaced -n 5 / --adjustment 5
         if (/^-\d+$/.test(t)) { i++; continue; } // -5 adjustment short form
         const o = offense(`unrecognised nice flag '${t}'`);
         if (o) return o;
@@ -4906,6 +4947,28 @@ export function detectUnsafeHelpCommand(command: string): boolean {
   return false;
 }
 
+// Harness side-channel marker tags. `<system-reminder>…</system-reminder>` is the
+// ONLY tag AMI injects into the model stream as a trusted, harness-authored side
+// channel (see provider.ts / context-manager.ts). Any occurrence of it in TOOL
+// OUTPUT is therefore necessarily forged — a command that prints the tag is trying
+// to smuggle harness-privileged instructions past the model boundary. We neutralize
+// (not delete) both the open and close forms so the surrounding text is preserved
+// but the tag loses its side-channel meaning. Canonical definition — also consumed
+// by hooks.ts (hook output is the same model boundary), so the escaping lives in
+// exactly one place. Parity: Claude Code strips its `<claude-code-hint …/>`
+// harness side channel from model-visible tool output (utils/claudeCodeHints.ts).
+const HARNESS_MARKER_TAG_RE = /<\/?system-reminder>/gi;
+
+/**
+ * Neutralize harness side-channel marker tags embedded in text that crosses the
+ * model boundary (tool output, hook output), so untrusted content cannot forge a
+ * harness-authored `<system-reminder>` block. Replaces the tag with an inert
+ * `[tag-escaped]` sentinel, leaving the surrounding text intact.
+ */
+export function escapeHarnessMarkerTags(text: string): string {
+  return text.replace(HARNESS_MARKER_TAG_RE, '[tag-escaped]');
+}
+
 export function sanitizeToolOutput(output: string): string {
   if (!output) return output;
   // 1. Strip ANSI CSI escape sequences (colors, cursor, etc.)
@@ -4916,6 +4979,8 @@ export function sanitizeToolOutput(output: string): string {
   result = redactEnvVarsInOutput(result);
   // 4. Redact credential patterns (API keys, tokens, JWTs, etc.)
   result = redactCredentials(result);
+  // 5. Neutralize forged harness side-channel marker tags (prompt-injection guard)
+  result = escapeHarnessMarkerTags(result);
   return result;
 }
 

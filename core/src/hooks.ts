@@ -24,6 +24,7 @@ import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnv
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
 import type { PermissionUpdate, PermissionMode } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
+import { escapeHarnessMarkerTags } from './tools/bash-security';
 import { getSmallFastModel } from './model-capabilities';
 import { isEnvTruthy } from './privacy-level';
 import { killTree } from './utils/shell';
@@ -32,9 +33,11 @@ import { killTree } from './utils/shell';
 // Hook output sanitization — strip system-reminder tags to prevent injection
 // ---------------------------------------------------------------------------
 
-const SYSTEM_TAG_RE = /<\/?system-reminder>/gi;
+// Hook output and bash tool output cross the SAME model boundary, so the
+// harness-marker-tag neutralization is the one canonical escapeHarnessMarkerTags
+// in bash-security (single source of truth — no duplicate regex here).
 export function sanitizeHookOutput(output: string): string {
-  return output.replace(SYSTEM_TAG_RE, '[tag-escaped]');
+  return escapeHarnessMarkerTags(output);
 }
 
 // ---------------------------------------------------------------------------

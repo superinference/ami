@@ -4,7 +4,7 @@ import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -2081,6 +2081,17 @@ function extractBaseCommands(command: string): string[] {
         // option model so `srun -n 4 rm -rf /` reaches the inner `rm`.
         if (wrapper === 'srun' && /^(-n|--ntasks|-N|--nodes)$/.test(flag)
             && i < tokens.length && /^\d/.test(tokens[i]!)) {
+          i++;
+        }
+        // Value-taking wrapper flags (`timeout -s KILL`, `timeout -k 3`, `stdbuf
+        // -o L`, `nice -n 5`) consume the NEXT token as their operand. The generic
+        // flag skip above drops only the `-flag` token, so without this the operand
+        // (`KILL`/`L`/`5`) is mis-read as the wrapped command — e.g. `timeout -s
+        // KILL 5 rm -rf /` would classify as `KILL` instead of reaching `rm`.
+        // Shared WRAPPER_VALUE_FLAGS table keeps this operand knowledge in one place.
+        const wrapperValueFlag = WRAPPER_VALUE_FLAGS[wrapper];
+        if (wrapperValueFlag && wrapperValueFlag.test(flag) && i < tokens.length
+            && !tokens[i]!.startsWith('-')) {
           i++;
         }
       }
