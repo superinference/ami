@@ -128,12 +128,58 @@ export interface TurnTiming {
   cacheHitRate: number;
   /** Input (prompt) tokens per second over the API latency window. */
   inputTokensPerSec: number;
+  /** This turn's LLM request was issued speculatively (prefetch), not user-driven. */
+  isSpeculative: boolean;
+  /** Where the request originated ('user' | 'speculation' | ... ; '' when unknown). */
+  querySource: string;
+  /** Provider message id for this turn's response ('' when not reported). */
+  messageId: string;
+  /** Time spent building the request before it hit the wire (ms, >= 0). */
+  requestSetupMs: number;
+  /** Per-retry attempt start offsets (ms from turn start); empty when single-attempt. */
+  attemptStartTimes: number[];
+  /** query_started → api_request_sent overhead (ms, >= 0). */
+  queryOverheadMs: number;
+  /** Process-start → first system message (ms, >= 0; meaningful for turn 0). */
+  timeToSystemMessageMs: number;
+  /** Turn start → query_started (ms, >= 0). */
+  timeToQueryStartMs: number;
+  /** Turn start → first response headers received (ms, >= 0) for connect-vs-first-token triage. */
+  headersReceivedMs: number;
   /**
    * True when endTurn() was called with no matching beginTurn() for this index.
    * In that case startTime/endTime are equal and `duration` is 0 (not meaningful)
    * rather than silently reporting a full turn against a substituted start clock.
    */
   incomplete: boolean;
+}
+
+/** One lifecycle event emitted by {@link Profiler.timeAsync} (started/completed/failed). */
+export interface TimingLifecycleEvent {
+  label: string;
+  phase: 'started' | 'completed' | 'failed';
+  /** Elapsed ms at completion/failure (absent for the `started` event). */
+  durationMs?: number;
+  /** Extra data pulled from the result by `getData` (completed only). */
+  data?: Record<string, unknown>;
+}
+
+/** One Chrome-Trace-Event-format record for {@link Profiler.toTraceEvents}. */
+export interface TraceEvent {
+  name: string;
+  /** Comma-separated categories. */
+  cat: string;
+  /** Phase: 'X' = complete (has dur), 'i' = instant. */
+  ph: 'X' | 'i';
+  /** Timestamp in microseconds, anchored at the trace start. */
+  ts: number;
+  /** Duration in microseconds (complete events only). */
+  dur?: number;
+  pid: number;
+  tid: number;
+  args?: Record<string, unknown>;
+  /** Instant-event scope ('g' global) — only set on 'i' events. */
+  s?: 'g';
 }
 
 /**
@@ -209,6 +255,12 @@ export interface ProfilerOpts {
   maxSamples?: number;
   /** Max retained per-turn records; oldest are evicted past this (default 10000). */
   maxTurns?: number;
+  /**
+   * Max retained timeline checkpoints; oldest are evicted past this so a
+   * long-running session's `mark()` stream can't grow unbounded (mirrors
+   * Claude's perfetto MAX_EVENTS cap). Default 10000.
+   */
+  maxCheckpoints?: number;
   /** RNG injection for deterministic reservoir sampling (testability). */
   rand?: () => number;
   /**
@@ -226,6 +278,7 @@ export class Profiler {
   private turnStartTimes: Map<number, number> = new Map();
   private _maxSamples: number;
   private _maxTurns: number;
+  private _maxCheckpoints: number;
   private _rand: () => number;
 
   // --- memory-annotated timeline checkpoints ---
@@ -251,6 +304,7 @@ export class Profiler {
     this._mem = opts?.memSnapshot ?? defaultMem;
     this._maxSamples = Math.max(1, opts?.maxSamples ?? DEFAULT_RESERVOIR_SIZE);
     this._maxTurns = Math.max(1, opts?.maxTurns ?? 10_000);
+    this._maxCheckpoints = Math.max(1, opts?.maxCheckpoints ?? 10_000);
     this._rand = opts?.rand ?? Math.random;
   }
 
@@ -285,18 +339,60 @@ export class Profiler {
    * Time an async operation: records its duration whether it resolves OR throws
    * (so failure latency is still observed), then re-throws on failure. A failure
    * also bumps the `<label>.failed` counter for introspection.
+   *
+   * Optionally emits a `started → completed|failed` lifecycle (with elapsed ms and,
+   * on success, data pulled from the result via `getData`) so a caller can mirror
+   * Claude's withDiagnosticsTiming structured logging without re-implementing the
+   * timing/try-catch per call site.
    */
-  async timeAsync<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  async timeAsync<T>(
+    label: string,
+    fn: () => Promise<T>,
+    opts?: {
+      /** Extract extra fields from the result for the `completed` lifecycle event. */
+      getData?: (result: T) => Record<string, unknown>;
+      /** Receive the started/completed/failed lifecycle events. */
+      onLifecycle?: (ev: TimingLifecycleEvent) => void;
+    },
+  ): Promise<T> {
     const start = performance.now();
+    opts?.onLifecycle?.({ label, phase: 'started' });
     try {
       const result = await fn();
-      this.record(label, performance.now() - start);
+      const durationMs = performance.now() - start;
+      this.record(label, durationMs);
+      opts?.onLifecycle?.({ label, phase: 'completed', durationMs, data: opts.getData ? opts.getData(result) : {} });
       return result;
     } catch (err) {
-      this.record(label, performance.now() - start);
+      const durationMs = performance.now() - start;
+      this.record(label, durationMs);
       this.incrementCounter(`${label}.failed`);
+      opts?.onLifecycle?.({ label, phase: 'failed', durationMs });
       throw err;
     }
+  }
+
+  // --- process-start / cold-start anchor ------------------------------------
+
+  /**
+   * Milliseconds elapsed since process (context) start. `performance.now()` is
+   * measured relative to `performance.timeOrigin` (process start), so this is the
+   * same clock Claude's headlessProfiler uses for its time_to_* cold-start fields —
+   * monotonic and immune to wall-clock jumps.
+   */
+  timeSinceProcessStart(): number {
+    return performance.now();
+  }
+
+  /**
+   * Record the turn-0 cold-start latency: time from process start to the first
+   * yielded output (system/assistant message). Returns the recorded ms so the
+   * caller can also surface it directly.
+   */
+  recordColdStart(label = 'cold_start'): number {
+    const ms = performance.now();
+    this.record(label, ms);
+    return ms;
   }
 
   // --- slow-operation detection ---------------------------------------------
@@ -339,6 +435,11 @@ export class Profiler {
   mark(label: string): void {
     const m = this._mem();
     this._checkpoints.push({ label, time: Date.now(), rssBytes: m.rss, heapBytes: m.heapUsed });
+    // Bounded retention: drop the oldest checkpoints so a long session can't grow
+    // the timeline without limit (parity with the perfetto MAX_EVENTS cap).
+    if (this._checkpoints.length > this._maxCheckpoints) {
+      this._checkpoints = this._checkpoints.slice(-this._maxCheckpoints);
+    }
   }
 
   /** Chronological timeline with cumulative time, per-step delta, and memory per mark. */
@@ -447,6 +548,24 @@ export class Profiler {
     cacheReadTokens?: number;
     /** Cache-write tokens (optional; defaults to 0). */
     cacheCreationTokens?: number;
+    /** This turn's request was speculative (prefetch). Default false. */
+    isSpeculative?: boolean;
+    /** Request origin ('user' | 'speculation' | ...). Default ''. */
+    querySource?: string;
+    /** Provider message id. Default ''. */
+    messageId?: string;
+    /** Request-build time before the wire (ms). Clamped >= 0. Default 0. */
+    requestSetupMs?: number;
+    /** Per-retry attempt start offsets (ms). Default []. */
+    attemptStartTimes?: number[];
+    /** query_started → api_request_sent overhead (ms). Clamped >= 0. Default 0. */
+    queryOverheadMs?: number;
+    /** Process-start → first system message (ms). Clamped >= 0. Default 0. */
+    timeToSystemMessageMs?: number;
+    /** Turn start → query_started (ms). Clamped >= 0. Default 0. */
+    timeToQueryStartMs?: number;
+    /** Turn start → first response headers received (ms). Clamped >= 0. Default 0. */
+    headersReceivedMs?: number;
   }): void {
     const endTime = Date.now();
     // Boundary guard: a missing beginTurn() must be observable, not silently
@@ -486,6 +605,15 @@ export class Profiler {
       cacheCreationTokens,
       cacheHitRate,
       inputTokensPerSec,
+      isSpeculative: metrics.isSpeculative ?? false,
+      querySource: metrics.querySource ?? '',
+      messageId: metrics.messageId ?? '',
+      requestSetupMs: Math.max(0, metrics.requestSetupMs ?? 0),
+      attemptStartTimes: metrics.attemptStartTimes ? [...metrics.attemptStartTimes] : [],
+      queryOverheadMs: Math.max(0, metrics.queryOverheadMs ?? 0),
+      timeToSystemMessageMs: Math.max(0, metrics.timeToSystemMessageMs ?? 0),
+      timeToQueryStartMs: Math.max(0, metrics.timeToQueryStartMs ?? 0),
+      headersReceivedMs: Math.max(0, metrics.headersReceivedMs ?? 0),
       incomplete,
     });
     this._evictOldTurns();
@@ -529,6 +657,15 @@ export class Profiler {
         cacheCreationTokens: 0,
         cacheHitRate: 0,
         inputTokensPerSec: 0,
+        isSpeculative: false,
+        querySource: '',
+        messageId: '',
+        requestSetupMs: 0,
+        attemptStartTimes: [],
+        queryOverheadMs: 0,
+        timeToSystemMessageMs: 0,
+        timeToQueryStartMs: 0,
+        headersReceivedMs: 0,
         incomplete: true,
       });
       closed++;
@@ -536,6 +673,28 @@ export class Profiler {
     this.turnStartTimes.clear();
     this._evictOldTurns();
     return closed;
+  }
+
+  /**
+   * TTL safety-net: evict started-but-never-ended turn records older than
+   * `maxAgeMs` so an aborted/exception run can't leak `turnStartTimes` entries
+   * until reset() (mirrors Claude's sessionTracing orphaned-span cleanup sweep).
+   * Unlike closeOpenTurns() this DROPS the start without recording a turn — use
+   * it for periodic background cleanup. A start that already ended normally is
+   * never touched; a negative `maxAgeMs` is a no-op. Returns the count evicted.
+   */
+  sweepStaleTurns(maxAgeMs: number): number {
+    if (!(maxAgeMs >= 0)) return 0;
+    const cutoff = Date.now() - maxAgeMs;
+    let evicted = 0;
+    for (const [turnIndex, startTime] of this.turnStartTimes) {
+      if (this.turns.has(turnIndex)) continue; // ended normally — keep
+      if (startTime < cutoff) {
+        this.turnStartTimes.delete(turnIndex);
+        evicted++;
+      }
+    }
+    return evicted;
   }
 
   /** Get a summary of all recorded timings. */
@@ -597,6 +756,61 @@ export class Profiler {
   /** Get a specific turn's timing data. */
   getTurn(turnIndex: number): TurnTiming | undefined {
     return this.turns.get(turnIndex);
+  }
+
+  /**
+   * Export recorded checkpoints + turns as Chrome-Trace-Event-format records
+   * (viewable in ui.perfetto.dev / chrome://tracing). Checkpoints become instant
+   * ('i') events on a "timeline" track; each turn becomes a complete ('X') event
+   * on a "turns" track carrying its per-request span params (speculative flag,
+   * query source, message id, cache hit rate, token throughput). Timestamps are
+   * microseconds anchored at the earliest recorded event. Returns [] when nothing
+   * was recorded. Mirrors Claude's perfettoTracing exporter (UI-agnostic core).
+   */
+  toTraceEvents(opts?: { pid?: number }): TraceEvent[] {
+    const times: number[] = this._checkpoints.map(c => c.time);
+    for (const t of this.turns.values()) times.push(t.startTime);
+    if (times.length === 0) return [];
+    const base = Math.min(...times);
+    const pid = opts?.pid ?? 1;
+    const events: TraceEvent[] = [];
+    for (const cp of this._checkpoints) {
+      events.push({
+        name: cp.label, cat: 'timeline', ph: 'i', s: 'g',
+        ts: (cp.time - base) * 1000, pid, tid: 0,
+        args: { rss_bytes: cp.rssBytes, heap_bytes: cp.heapBytes },
+      });
+    }
+    for (const t of this.getTurns()) {
+      events.push({
+        name: `turn ${t.turnIndex}`, cat: 'turn', ph: 'X',
+        ts: (t.startTime - base) * 1000, dur: t.duration * 1000, pid, tid: 1,
+        args: {
+          api_latency_ms: t.apiLatency,
+          ttft_ms: t.ttftMs,
+          tokens_produced: t.tokensProduced,
+          tokens_consumed: t.tokensConsumed,
+          output_tps: t.outputTokensPerSec,
+          input_tps: t.inputTokensPerSec,
+          cache_hit_rate: t.cacheHitRate,
+          cache_read_tokens: t.cacheReadTokens,
+          cache_creation_tokens: t.cacheCreationTokens,
+          request_setup_ms: t.requestSetupMs,
+          query_overhead_ms: t.queryOverheadMs,
+          headers_received_ms: t.headersReceivedMs,
+          is_speculative: t.isSpeculative,
+          query_source: t.querySource,
+          message_id: t.messageId,
+          incomplete: t.incomplete,
+        },
+      });
+    }
+    return events;
+  }
+
+  /** Serialize {@link toTraceEvents} as a Chrome-Trace JSON string for a .json trace file. */
+  toTraceJson(opts?: { pid?: number }): string {
+    return JSON.stringify({ traceEvents: this.toTraceEvents(opts), displayTimeUnit: 'ms' });
   }
 
   /** Clear all recorded timings. */

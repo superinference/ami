@@ -96,7 +96,7 @@ export type { FileState } from './file-cache';
 export { seedFileCacheFromTranscript, collectReadFileStatesFromTranscript, stripLineNumberPrefix } from './file-cache-seed';
 export type { SeededFileState } from './file-cache-seed';
 export { Profiler, FpsTracker, slowWarning } from './profiler';
-export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, FormatTimelineOpts, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts } from './profiler';
+export type { ProfilerOpts, ProfilerCheckpoint, TimelineEntry, FormatTimelineOpts, SlowOperation, FpsMetrics, TimingStatistics, TurnTiming, SlowWarning, SlowSeverity, SlowWarningOpts, TimingLifecycleEvent, TraceEvent } from './profiler';
 export { WorkspaceIndexer, findProjectRoot } from './workspace-indexer';
 export { isGeneratedFile, filterGeneratedFiles } from './generated-files';
 export { ProviderCoordinator } from './provider-coordinator';
