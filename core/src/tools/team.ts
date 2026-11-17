@@ -518,6 +518,24 @@ export interface SelfIdentity {
 }
 
 /**
+ * Whether THIS session should see the persistent, shared task-list panel (parity:
+ * Claude Code's `useTasksV2` visibility gate `!teamContext || isTeamLead(teamContext)`
+ * in hooks/useTasksV2.ts). Inside a team ONLY the LEAD's UI surfaces the shared
+ * task list — the lead coordinates the list while a non-lead teammate acts on its
+ * own assignments and should not have the whole roster's task panel pinned in its
+ * view. A standalone (non-team) session always sees it. This is the model-facing
+ * `task_tracker` tool's own `list`/`get` output being deliberately left untouched —
+ * a teammate can still QUERY tasks; only the passive always-on panel is role-gated.
+ *
+ * Reuses the single resolved role ({@link getSelfRole}) so it never drifts from
+ * {@link isLeader}/{@link isTeammate} (no duplicate role resolution): visible for
+ * `'lead'` and `'none'`, hidden only for `'teammate'`.
+ */
+export function isTaskListVisibleForSelf(): boolean {
+  return getSelfRole() !== 'teammate';
+}
+
+/**
  * Resolve this session's full swarm identity through the precedence chain — the
  * single cohesive introspection surface (parity: Claude Code's inspection aggregate).
  * Reuses the per-field accessors (no duplicated resolution logic) so it never drifts
