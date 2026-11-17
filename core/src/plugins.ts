@@ -416,6 +416,31 @@ export interface CommandDefinition {
    * unless the file opts out with `supports-non-interactive = false`.
    */
   supportsNonInteractive?: boolean;
+  /**
+   * Declarative enablement gate (Claude parity: CommandBase.isEnabled, a
+   * `() => boolean` defaulting to true — set ONLY for conditional enablement such
+   * as feature flags / env checks). AMI commands are data, so the dynamic predicate
+   * reduces to a declared boolean: a command file sets `enabled = false` (or
+   * `is-enabled = false`) to ship DISABLED — omitted from the user-facing command
+   * list and never dispatched. Evaluated via {@link isCommandEnabled}; omitted
+   * (treated as enabled) when the file declares nothing.
+   */
+  isEnabled?: boolean;
+  /**
+   * Hide this command from the typeahead/help catalog while keeping it invocable by
+   * exact name (Claude parity: CommandBase.isHidden, defaults to false). A command
+   * file opts in with `hidden = true` (or `is-hidden = true`). Evaluated via
+   * {@link isCommandHidden}; omitted (treated as visible) otherwise.
+   */
+  isHidden?: boolean;
+  /**
+   * When true, this command's invocation ARGUMENTS are redacted from the persisted
+   * conversation history (Claude parity: CommandBase.isSensitive — "args are
+   * redacted from the conversation history"). A command file opts in with
+   * `sensitive = true` (or `is-sensitive = true`). Applied via
+   * {@link redactSensitiveCommandArgs}; omitted (treated as non-sensitive) otherwise.
+   */
+  isSensitive?: boolean;
 }
 
 /**
@@ -457,6 +482,78 @@ export type CommandSource = (typeof COMMAND_SOURCES)[number];
 /** Behavior discriminator of a command (Claude parity: Command.type). */
 export const COMMAND_TYPES = ['prompt', 'local', 'local-jsx'] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
+
+/**
+ * Whether a command is enabled (Claude parity: isCommandEnabled, types/command.ts
+ * L213-216 — `cmd.isEnabled?.() ?? true`). AMI's declarative analogue: a command is
+ * enabled unless its file explicitly declared `enabled = false`. Disabled commands
+ * are dropped from the user-facing command list and never dispatched.
+ */
+export function isCommandEnabled(cmd: Pick<CommandDefinition, 'isEnabled'>): boolean {
+  return cmd.isEnabled !== false;
+}
+
+/**
+ * Whether a command is hidden from the typeahead/help catalog (Claude parity:
+ * CommandBase.isHidden, defaults to false). A hidden command stays invocable by
+ * exact name but is omitted from suggestion/help listings.
+ */
+export function isCommandHidden(cmd: Pick<CommandDefinition, 'isHidden'>): boolean {
+  return cmd.isHidden === true;
+}
+
+/**
+ * Resolve a command's user-facing display name (Claude parity: getCommandName /
+ * userFacingName, types/command.ts L208-211 — `cmd.userFacingName?.() ?? cmd.name`).
+ * AMI carries the override as the declared {@link CommandDefinition.displayName};
+ * falls back to the (possibly namespaced) lookup `name`.
+ */
+export function getCommandDisplayName(cmd: Pick<CommandDefinition, 'name' | 'displayName'>): string {
+  const display = cmd.displayName;
+  return typeof display === 'string' && display.trim() !== '' ? display : cmd.name;
+}
+
+/** Placeholder written in place of a sensitive command's arguments in history. */
+export const REDACTED_COMMAND_ARGS = '[redacted]';
+
+/**
+ * Redact a sensitive command's invocation arguments before they are persisted to
+ * conversation history (Claude parity: CommandBase.isSensitive — "args are redacted
+ * from the conversation history"). Returns `argString` unchanged for a
+ * non-sensitive command (or when there are no args to redact); otherwise replaces
+ * the whole argument payload with {@link REDACTED_COMMAND_ARGS} so a secret passed
+ * to e.g. `/login <token>` never lands in the transcript. The SINGLE canonical
+ * redactor for the history-recording path.
+ */
+export function redactSensitiveCommandArgs(cmd: Pick<CommandDefinition, 'isSensitive'>, argString: string): string {
+  if (cmd.isSensitive !== true) return argString;
+  return argString.trim() === '' ? argString : REDACTED_COMMAND_ARGS;
+}
+
+/**
+ * Register a command's declared {@link CommandDefinition.aliases} into `index`
+ * with COLLISION AVOIDANCE (Claude parity: the conditional-alias pattern in
+ * commands/branch/index.ts — an alias like `fork` is registered only when it would
+ * not shadow an existing name). An alias is added only when it is a non-empty
+ * string that does NOT already resolve to a primary command name or a previously
+ * claimed alias, so the first claimant of a name always wins and a later plugin's
+ * alias can never silently clobber it. Mutates and returns `index`; `primaryNames`
+ * is the set of already-registered canonical command names to protect.
+ */
+export function registerCommandAliases(
+  cmd: CommandDefinition,
+  index: Map<string, CommandDefinition>,
+  primaryNames: ReadonlySet<string>,
+): Map<string, CommandDefinition> {
+  for (const raw of cmd.aliases ?? []) {
+    if (typeof raw !== 'string') continue;
+    const alias = raw.trim();
+    if (alias === '' || alias === cmd.name) continue; // empty / self-alias — nothing to add
+    if (primaryNames.has(alias) || index.has(alias)) continue; // collision — keep the first claimant
+    index.set(alias, cmd);
+  }
+  return index;
+}
 
 /**
  * Resolve a component path within a plugin root, rejecting any path that escapes
@@ -669,6 +766,15 @@ function applyCommandKnobs(
   if (aliases) cmd.aliases = aliases;
   const supportsNonInteractive = getBool('supports-non-interactive') ?? getBool('supportsNonInteractive');
   if (supportsNonInteractive !== undefined) cmd.supportsNonInteractive = supportsNonInteractive;
+  // Enablement / visibility / sensitivity gates (Claude parity: CommandBase
+  // isEnabled/isHidden/isSensitive). Declarative booleans an author sets to ship a
+  // command disabled, hidden from the catalog, or with its args redacted from history.
+  const isEnabled = getBool('enabled') ?? getBool('is-enabled');
+  if (isEnabled !== undefined) cmd.isEnabled = isEnabled;
+  const isHidden = getBool('hidden') ?? getBool('is-hidden');
+  if (isHidden !== undefined) cmd.isHidden = isHidden;
+  const isSensitive = getBool('sensitive') ?? getBool('is-sensitive');
+  if (isSensitive !== undefined) cmd.isSensitive = isSensitive;
   // Provenance/type discriminators: honor a declared value only when it is a
   // recognized enum member (an unknown string is ignored rather than written
   // through, so a consumer can trust the field's type).
@@ -777,6 +883,36 @@ function commandBaseName(fileName: string): string | null {
 }
 
 /**
+ * Diagnostics for a command-directory scan (Claude parity: walkPluginMarkdown's
+ * `logLabel` option + swallowed-with-a-debug-log readdir failure). Lets a caller
+ * trace a bad/unreadable plugin directory instead of the load silently contributing
+ * zero commands — core stays logger-free by surfacing the failure through a
+ * callback the consumer (skill-manager / plugin-installer) wires to its logger.
+ */
+export interface CommandScanDiagnostics {
+  /** Context label for scan-failure messages (Claude parity: logLabel, default `'plugin'`). */
+  logLabel?: string;
+  /**
+   * Invoked once per directory that cannot be scanned (readdir/stat failure).
+   * Receives a ready-to-log `message` plus the structured `dir`/`error`/`label` so
+   * a consumer can either log the message verbatim or build its own.
+   */
+  onScanError?: (info: { dir: string; error: unknown; label: string; message: string }) => void;
+}
+
+/**
+ * Surface a command-directory scan failure through the caller's
+ * {@link CommandScanDiagnostics} (Claude parity: the `Failed to scan ${label}
+ * directory ${dir}` debug log). A no-op when no `onScanError` sink is wired, so the
+ * default (diagnostics-less) load stays silent exactly as before.
+ */
+function reportScanError(dir: string, error: unknown, diag: CommandScanDiagnostics | undefined): void {
+  if (!diag?.onScanError) return;
+  const label = diag.logLabel ?? 'plugin';
+  diag.onScanError({ dir, error, label, message: `Failed to scan ${label} directory ${dir}: ${errMessage(error)}` });
+}
+
+/**
  * Recursively walk a commands directory, collecting every `.toml` or `.md`
  * command file. The `namespace` accumulates the sub-path from the commands root
  * to the file (Claude parity: `getCommandNameFromFile`), and `pluginName` — when
@@ -791,17 +927,21 @@ function commandBaseName(fileName: string): string | null {
  * contained to the plugin's own tree — consistent with the realpath hardening
  * used everywhere else in this module.
  */
-function walkCommandDir(dir: string, subPath: string[], pluginName: string | undefined, out: CommandDefinition[]): void {
+function walkCommandDir(dir: string, subPath: string[], pluginName: string | undefined, out: CommandDefinition[], diag?: CommandScanDiagnostics): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return; // missing/unreadable dir — nothing to add
+  } catch (err) {
+    // Missing/unreadable dir — nothing to add. Emit a diagnostic (Claude parity:
+    // walkPluginMarkdown's debug log) so one bad directory is traceable instead of
+    // a silent no-op, then continue the load.
+    reportScanError(dir, err, diag);
+    return;
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkCommandDir(full, [...subPath, entry.name], pluginName, out);
+      walkCommandDir(full, [...subPath, entry.name], pluginName, out, diag);
       continue;
     }
     if (!entry.isFile()) continue;
@@ -839,20 +979,26 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
  * (walked recursively) or a single command file (`.toml`/`.md`), discovered under
  * the same namespacing rules. They are loaded AFTER `dir` so a duplicate name from
  * an extra path does not shadow the canonical command (callers dedup by name).
+ *
+ * `diagnostics` (Claude parity: walkPluginMarkdown's `logLabel` + swallowed-with-a-
+ * debug-log scan failure) lets a caller trace a bad/unreadable command directory —
+ * a readdir/stat failure is reported through `onScanError` (labelled by `logLabel`,
+ * default `'plugin'`) instead of silently contributing zero commands.
  */
-export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[], metadata?: PluginCommandsMetadataContext): CommandDefinition[] {
+export function loadCommands(dir: string, pluginName?: string, extraPaths?: string[], metadata?: PluginCommandsMetadataContext, diagnostics?: CommandScanDiagnostics): CommandDefinition[] {
   const commands: CommandDefinition[] = [];
   const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
-  walkCommandDir(dir, [], plugin, commands);
+  walkCommandDir(dir, [], plugin, commands, diagnostics);
   for (const extra of extraPaths ?? []) {
     let stat: fs.Stats;
     try {
       stat = fs.statSync(extra);
-    } catch {
-      continue; // missing/unreadable extra path — skip (Claude parity: logged + skipped)
+    } catch (err) {
+      reportScanError(extra, err, diagnostics); // missing/unreadable extra path — trace + skip (Claude parity)
+      continue;
     }
     if (stat.isDirectory()) {
-      walkCommandDir(extra, [], plugin, commands);
+      walkCommandDir(extra, [], plugin, commands, diagnostics);
     } else if (stat.isFile() && commandBaseName(path.basename(extra)) !== null) {
       const base = commandBaseName(path.basename(extra))!;
       const name = [...(plugin ? [plugin] : []), base].join(':');
