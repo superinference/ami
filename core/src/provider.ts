@@ -21,7 +21,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES } from './error-classifier';
+import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic } from './error-classifier';
 import { getMTLSConfig, getTLSConnectOptions, MTLS_ENV } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
@@ -2972,6 +2972,11 @@ export async function* streamChatCompletionWithRetry(
         throw new Error(formatSslError(original));
       } else if (!contentStarted && attempt < maxRetries && isNetworkError(err)) {
         networkRetry = true;
+        // Record the root errno + SSL flag for the dropped connection so a
+        // code-less "Connection error." is diagnosable from the debug log
+        // (the SDK buries the real ETIMEDOUT/ECONNRESET under nested `.cause`).
+        const diagnostic = connectionErrorDiagnostic(err);
+        if (diagnostic) log('api', diagnostic, undefined, 'error');
         // A STALE pooled keep-alive socket (ECONNRESET/EPIPE) must be dropped, not
         // reused, or the retry grabs the same dead socket — flag the next attempt
         // to open a fresh connection with keep-alive disabled.

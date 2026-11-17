@@ -24,15 +24,28 @@ import { API_PDF_MAX_PAGES, PDF_TARGET_RAW_SIZE } from './media-limits';
  * extractConnectionErrorDetails cause walk. `maxDepth` bounds the descent and a
  * visited set guards against self-referential / cyclic causes.
  */
-export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
+/**
+ * Shared, depth-limited, loop-guarded traversal of an error's `.cause` chain,
+ * yielding each object node in order (self/outermost first). The SINGLE canonical
+ * cause-walk — `findErrorCode` and `extractConnectionErrorDetails` both consume it
+ * so there is no parallel traversal that can drift. `maxDepth` bounds the descent
+ * and a visited set guards against self-referential / cyclic causes.
+ */
+function* walkCauseChain(err: unknown, maxDepth = 5): Generator<object> {
   const seen = new Set<unknown>();
   let current: unknown = err;
   for (let depth = 0; depth <= maxDepth; depth++) {
     if (current === null || typeof current !== 'object' || seen.has(current)) break;
     seen.add(current);
-    const code = (current as { code?: unknown }).code;
-    if (typeof code === 'string' && code.length > 0) return code;
+    yield current as object;
     current = (current as { cause?: unknown }).cause;
+  }
+}
+
+export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
+  for (const node of walkCauseChain(err, maxDepth)) {
+    const code = (node as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
   }
   return undefined;
 }
@@ -91,6 +104,52 @@ const SSL_ERROR_CODES_LOWER: readonly string[] = [...SSL_ERROR_CODES].map(c => c
  */
 export function matchesSslErrorCode(lowerMessage: string): boolean {
   return SSL_ERROR_CODES_LOWER.some(code => lowerMessage.includes(code));
+}
+
+/**
+ * Structured root-cause details for a connection failure: the first string `.code`
+ * found walking the error's `.cause` chain, the message carried at that same node,
+ * and whether the code is a known OpenSSL/TLS failure. The undici/SDK wrappers
+ * bury the real errno (ETIMEDOUT, CERT_HAS_EXPIRED, …) under nested `.cause`
+ * beneath a generic code-less "Connection error.", so the structured view must
+ * walk the chain. Built on the SAME `walkCauseChain` as `findErrorCode` (no
+ * parallel traversal) and the SAME canonical `SSL_ERROR_CODES` set as the ssl
+ * classification branch. Mirrors Claude's extractConnectionErrorDetails.
+ */
+export interface ConnectionErrorDetails {
+  code: string;
+  message: string;
+  isSSLError: boolean;
+}
+
+export function extractConnectionErrorDetails(err: unknown): ConnectionErrorDetails | null {
+  for (const node of walkCauseChain(err)) {
+    const code = (node as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) {
+      const rawMsg = (node as { message?: unknown }).message;
+      return {
+        code,
+        message: typeof rawMsg === 'string' ? rawMsg : '',
+        isSSLError: SSL_ERROR_CODES.has(code),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * One-line connection-error diagnostic for the debug log:
+ * `Connection error details: code=<code> (SSL error), message=<message>`.
+ * Returns null when no structured `.code` is present (nothing useful to record).
+ * Mirrors Claude's logging.ts connection-error diagnostic so a dropped connection
+ * records its root errno + an explicit SSL flag — diagnosable with debug logging
+ * on — instead of leaving only a code-less "Connection error.".
+ */
+export function connectionErrorDiagnostic(err: unknown): string | null {
+  const details = extractConnectionErrorDetails(err);
+  if (!details) return null;
+  const sslLabel = details.isSSLError ? ' (SSL error)' : '';
+  return `Connection error details: code=${details.code}${sslLabel}, message=${details.message}`;
 }
 
 export function isAbortError(err: unknown): boolean {
@@ -946,6 +1005,17 @@ export function friendlyErrorMessage(
   if (classified.category === 'context_overflow' &&
       classified.actualTokens !== undefined && classified.limitTokens !== undefined) {
     return `Context limit reached (${classified.actualTokens} > ${classified.limitTokens} tokens) — compacting conversation. Run /compact or /clear to continue.`;
+  }
+  // Rate limited on a model that has a lighter sibling (per-model limits are
+  // common — a premium tier can be throttled while its previous generation is
+  // not): name the concrete model to drop to so the user has a one-command
+  // recovery instead of only waiting. Reuses the single `suggestFallbackModel`
+  // family map. Mirrors Claude's model-tier-aware rate-limit fallback.
+  if (classified.category === 'rate_limited') {
+    const suggestion = opts?.model ? suggestFallbackModel(opts.model) : undefined;
+    if (suggestion) {
+      return `${FRIENDLY_MESSAGES.rate_limited} If the limit persists, run /model ${suggestion} to switch to a model with separate limits.`;
+    }
   }
   const friendly = FRIENDLY_MESSAGES[classified.category];
   return friendly ?? classified.message;
