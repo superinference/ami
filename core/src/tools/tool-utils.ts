@@ -487,6 +487,20 @@ export function resolveFilePath(
     if (!isWithinWorkspaceRoots(real, cwd, allowedRoots)) {
       return { resolved, error: { output: `Error: path "${filePath}" resolves outside the workspace via symlink.`, isError: true } };
     }
+    // Special-file guard on the SYMLINK TARGET. The lstat pre-guard above only
+    // inspects the link entry itself (lstat does not follow the final symlink),
+    // so a symlink (or symlink chain) that points at an in-workspace FIFO/socket/
+    // char/block device slips past it — and a later readFileSync would follow the
+    // link and block INDEFINITELY on the FIFO (a DoS a crafted link could trigger
+    // just by being validated). statSync follows the WHOLE symlink chain to its
+    // terminal target but — unlike open()/read() — never blocks on a FIFO, so it
+    // is safe to classify the target here and refuse before any consumer reads.
+    // Reuses the single shared isSpecialFileStat predicate (path-safety), no re-impl.
+    try {
+      if (isSpecialFileStat(fs.statSync(resolved))) {
+        return { resolved, error: { output: `Error: path "${filePath}" is a symlink targeting a special file (FIFO/socket/device) — refused.`, isError: true } };
+      }
+    } catch { /* target vanished between realpath and stat — treat as absent */ }
   } catch (err) {
     const code = getErrnoCode(err);
     if (code === 'ELOOP') {
