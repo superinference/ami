@@ -76,6 +76,7 @@ const CHECK_IDS = {
   WRAPPER_FLAG_EVASION: 71,
   DANGEROUS_DECLARE: 72,
   VALIDATOR_EXCEPTION: 73,
+  TILDE_EXPANSION_VARIANT: 74,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -1698,6 +1699,17 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
   result = validateUncPath(command, platform);
   if (!result.safe) return result;
 
+  // Tilde-expansion-variant TOCTOU — a path operand that begins with ~user/~+/
+  // ~-/~N expands (at exec time) to a directory different from the one static
+  // validation resolves, so it can never be silently auto-run. Runs early,
+  // before any read-only auto-allow classification downstream.
+  {
+    const tildeVariant = detectTildeExpansionVariant(command);
+    if (tildeVariant.blocked) {
+      return fail(CHECK_IDS.TILDE_EXPANSION_VARIANT, tildeVariant.reason!);
+    }
+  }
+
   // Pre-validators (run before any content extraction)
   result = validateShellQuoteBug(command);
   if (!result.safe) return result;
@@ -2133,6 +2145,87 @@ function extractJqPaths(args: string[]): string[] {
   return paths.filter(Boolean);
 }
 
+/**
+ * grep/egrep/fgrep file-operand extractor with recursive-default parity. When a
+ * recursive grep (`-r`/`-R`/`--recursive`) is given no explicit path operand it
+ * searches the CURRENT directory, so its effective read target is `.` — surface
+ * that so downstream path validation still sees a target. Parity: Claude Code
+ * BashTool/pathValidation PATH_EXTRACTORS.grep recursive-default branch.
+ */
+function extractGrepPaths(args: string[]): string[] {
+  const paths = extractPatternCommandPaths(args);
+  if (paths.length === 0 && args.some(a => a === '-r' || a === '-R' || a === '--recursive')) {
+    return ['.'];
+  }
+  return paths;
+}
+
+/**
+ * ripgrep file-operand extractor. Unlike grep, rg recurses the CURRENT directory
+ * by DEFAULT (no `-r` needed), so a bare `rg pattern` reads `.`; surface it as
+ * the effective target. Parity: Claude Code PATH_EXTRACTORS.rg `defaults=['.']`.
+ */
+function extractRgPaths(args: string[]): string[] {
+  const paths = extractPatternCommandPaths(args);
+  return paths.length > 0 ? paths : ['.'];
+}
+
+/**
+ * `tr` SET-skipping extractor. `tr SET1 SET2` and `tr -d SET1` take character
+ * SETs as operands, NOT file paths (tr only ever reads stdin). Skip SET1 (and
+ * SET2 unless `-d`/`--delete` is present, which takes a single SET) so a literal
+ * set like `A-Za-z` or `/` is never mistaken for a filesystem path. Parity:
+ * Claude Code PATH_EXTRACTORS.tr. tr has no file operands, so the result is
+ * always empty — the skip prevents false positives, not path recovery.
+ */
+function extractTrPaths(args: string[]): string[] {
+  const hasDelete = args.some(
+    a => a === '-d' || a === '--delete' || (a.startsWith('-') && a.length > 1 && a.includes('d')),
+  );
+  const nonFlags = args.filter(x => !x.startsWith('-'));
+  return nonFlags.slice(hasDelete ? 1 : 2);
+}
+
+/**
+ * `sed` file-operand extractor (script-vs-file aware). sed's grammar is
+ * `sed [flags] SCRIPT [files...]` unless the script is supplied via `-e`/`-f`,
+ * after which EVERY non-flag operand is a file. Specifically:
+ *   - `-f`/`--file SCRIPT_FILE` — the next token is a SCRIPT FILE that is itself
+ *     read, so it IS surfaced as a path to validate, and marks the script found;
+ *   - `-e`/`--expression EXPR` — the next token is an inline expression (skip it,
+ *     never a path), and marks the script found;
+ *   - any other combined short flag containing `e`/`f` (e.g. `-ne`, `-nf`) also
+ *     marks the script found so the first positional is treated as a FILE;
+ *   - once the script is found, all remaining non-flag operands (incl. globs like
+ *     `*.log`) are file paths.
+ * Replaces the prior naive `!/^s[/|]/` filter which mis-read a `'/addr/p'`-style
+ * script as a path. Parity: Claude Code PATH_EXTRACTORS.sed. (`--` end-of-options
+ * is handled upstream by {@link extractCommandPaths}, so it never reaches here.)
+ */
+function extractSedPaths(args: string[]): string[] {
+  const paths: string[] = [];
+  let scriptFound = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('-') && arg.length > 1) {
+      if (arg === '-f' || arg === '--file') {
+        const scriptFile = args[i + 1];
+        if (scriptFile) { paths.push(scriptFile); i++; }
+        scriptFound = true;
+      } else if (arg === '-e' || arg === '--expression') {
+        i++; // next token is an inline expression, never a file
+        scriptFound = true;
+      } else if (arg.includes('e') || arg.includes('f')) {
+        scriptFound = true; // combined short flag carrying e/f (e.g. -ne)
+      }
+      continue;
+    }
+    if (!scriptFound) { scriptFound = true; continue; } // first bare operand is the script
+    paths.push(arg); // every operand after the script is a file (incl. globs)
+  }
+  return paths;
+}
+
 const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   cd: (a) => a.filter(x => !x.startsWith('-')),
   ls: (a) => a.filter(x => !x.startsWith('-')),
@@ -2179,10 +2272,11 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   diff: (a) => a.filter(x => !x.startsWith('-')),
   file: (a) => a.filter(x => !x.startsWith('-')),
   strings: (a) => a.filter(x => !x.startsWith('-')),
-  grep: extractPatternCommandPaths,
-  rg: extractPatternCommandPaths,
+  grep: extractGrepPaths,
+  rg: extractRgPaths,
   jq: extractJqPaths,
-  sed: (a) => a.filter(x => !x.startsWith('-') && !/^s[/|]/.test(x)),
+  sed: extractSedPaths,
+  tr: extractTrPaths,
   awk: (a) => a.filter(x => !x.startsWith('-') && !x.startsWith("'")),
   git: (a) => a.slice(1).filter(x => !x.startsWith('-')),
   tac: (a) => a.filter(x => !x.startsWith('-')),
@@ -2197,8 +2291,8 @@ const PATH_COMMANDS: Record<string, (args: string[]) => string[]> = {
   more: (a) => a.filter(x => !x.startsWith('-')),
   fmt: (a) => a.filter(x => !x.startsWith('-')),
   column: (a) => a.filter(x => !x.startsWith('-')),
-  egrep: extractPatternCommandPaths,
-  fgrep: extractPatternCommandPaths,
+  egrep: extractGrepPaths,
+  fgrep: extractGrepPaths,
 };
 
 const FILE_TAKING_FLAGS: Record<string, Set<string>> = {
@@ -4714,6 +4808,43 @@ export function expandHomeDirReferences(command: string, homeDir?: string): stri
   result = expandOutsideQuotes(result, /(?<=^|[\s;|&(=])~(?=\/)/g, home);
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Tilde-expansion-variant TOCTOU guard — parity with Claude Code's validatePath
+// tilde-variant rejection (utils/permissions/pathValidation.ts L394-411).
+//
+// `expandHomeDirReferences` (and Claude's expandTilde) resolve ONLY `~` and
+// `~/…` to $HOME. The other tilde forms the shell still expands —
+//   ~user  → that user's home (e.g. ~root → /var/root or /root),
+//   ~+     → $PWD,
+//   ~-     → $OLDPWD,
+//   ~N     → the N-th `dirs`/pushd stack entry,
+// are left as LITERAL text by the validator and therefore resolve as relative
+// paths (e.g. `/cwd/~root/.ssh/id_rsa`). The shell, however, expands them to a
+// DIFFERENT absolute path at execution time — a TOCTOU gap where we validate one
+// path but bash reads another. Such a command must never be silently auto-run.
+//
+// Scoped to the path-TRAVERSAL form (a tilde variant immediately followed by a
+// `/`, e.g. `~root/.ssh/…`, `~+/x`, `~-/x`, `~2/x`): this is the exfil/escape
+// vector and keeps the guard free of false positives on arithmetic bitwise-NOT
+// (`$((~5))`) and bare directory references (`~root` with no path). Bare `~` and
+// `~/…` (already resolved to an absolute path) are intentionally NOT flagged.
+// Only UNQUOTED occurrences count — a quoted `'~root/x'` is literal to bash and
+// is removed by `extractQuotedContent`, mirroring the shell's own semantics.
+// eslint-disable-next-line security/detect-unsafe-regex -- alternation arms ([A-Za-z_]… | [+-] | \d+) are disjoint on the first char and each is followed by a literal `/`; anchored at a word boundary, linear
+const TILDE_VARIANT_RE = /(?:^|[\s;|&(=])~(?:[A-Za-z_][\w-]*|[+-]|\d+)\//;
+
+export function detectTildeExpansionVariant(command: string): { blocked: boolean; reason?: string } {
+  if (!command.includes('~')) return { blocked: false };
+  const { fullyUnquoted } = extractQuotedContent(command);
+  const m = fullyUnquoted.match(TILDE_VARIANT_RE);
+  if (!m) return { blocked: false };
+  return {
+    blocked: true,
+    reason:
+      'Tilde-expansion variant (~user, ~+, ~-, ~N) in a path requires manual approval — the shell expands it to a different directory than static validation sees (TOCTOU)',
+  };
 }
 
 // ---------------------------------------------------------------------------

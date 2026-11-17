@@ -164,9 +164,12 @@ describe('extractCommandPaths', () => {
     assert.ok(paths.includes('lib/'));
   });
 
-  it('grep returns empty when no non-flag arg', () => {
+  it('recursive grep with no path defaults to the current dir (parity)', () => {
+    // U015-w79: a recursive grep (`-r`/`-R`/`--recursive`) given no explicit
+    // path operand searches the current directory, so its effective read target
+    // is `.` — surfaced for path validation (Claude PATH_EXTRACTORS.grep).
     const paths = extractCommandPaths('grep -r -l');
-    assert.deepEqual(paths, []);
+    assert.deepEqual(paths, ['.']);
   });
 
   it('extracts paths for rg (files after pattern)', () => {
@@ -174,9 +177,11 @@ describe('extractCommandPaths', () => {
     assert.ok(paths.includes('file.ts'));
   });
 
-  it('rg returns empty when no non-flag arg', () => {
+  it('bare rg defaults to the current dir (recurses cwd by default — parity)', () => {
+    // U015-w79: ripgrep recurses the current directory by DEFAULT (no `-r`), so a
+    // pathless `rg` reads `.` (Claude PATH_EXTRACTORS.rg `defaults=['.']`).
     const paths = extractCommandPaths('rg -i');
-    assert.deepEqual(paths, []);
+    assert.deepEqual(paths, ['.']);
   });
 
   it('extracts paths for sed (filters flags and expressions)', () => {
