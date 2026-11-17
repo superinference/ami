@@ -893,13 +893,29 @@ function stripSedSubCommands(expr: string): string {
   return out;
 }
 
-/** Extract inline sed script expressions (quoted strings + `-e=`/`--expression=`). */
+/**
+ * Extract inline sed script expressions: quoted strings, the fused `-e=`/
+ * `--expression=` forms, AND the space-separated `-e EXPR` / `--expression EXPR`
+ * forms. The shell splits the expression into its own token, so an UNQUOTED
+ * expression such as `sed -e e file` (the `e` command executes the pattern space
+ * as a shell command) must be pulled out and inspected — otherwise it hides from
+ * the address-anchored write/exec detectors behind the leading `-e ` flag.
+ * Parity with Claude Code sedValidation.ts `extractSedExpressions` `-e` /
+ * `--expression` token handling.
+ */
 function extractSedExpressions(seg: string): string[] {
   const exprs: string[] = [];
   const quoted = /'([^']*)'|"([^"]*)"/g;
   let m: RegExpExecArray | null;
   while ((m = quoted.exec(seg)) !== null) exprs.push(m[1] ?? m[2]);
   for (const mm of seg.matchAll(/(?:--expression=|(?:^|\s)-e=)([^\s'"]+)/g)) {
+    exprs.push(mm[1]);
+  }
+  // Space-separated script flag with an unquoted expression. The first char is
+  // restricted to a non-quote, non-`=`, non-`-` token so quoted expressions
+  // (already captured above) and the fused `=`/following-flag forms are not
+  // re-captured or mis-read.
+  for (const mm of seg.matchAll(/(?:--expression|(?:^|\s)-e)\s+([^\s'"=-]\S*)/g)) {
     exprs.push(mm[1]);
   }
   return exprs;

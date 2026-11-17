@@ -635,6 +635,41 @@ describe('validateSedDangerous', () => {
     assert.ok(!result.safe);
     assert.equal(result.checkId, CHECK_IDS.SED_DANGEROUS);
   });
+
+  // Space-separated script flags: `-e EXPR` / `--expression EXPR` with an
+  // UNQUOTED expression. The `e` command executes the pattern space as a shell
+  // command — previously the leading `-e ` flag hid it from the address-anchored
+  // exec detector because the expression was never extracted as its own script.
+  it('blocks the e (execute) command passed via a space-separated -e flag', () => {
+    const result = validateSedDangerous('sed -e e file.txt');
+    assert.ok(!result.safe);
+    assert.equal(result.checkId, CHECK_IDS.SED_DANGEROUS);
+    assert.ok(result.message.includes("'e' command"));
+  });
+
+  it('blocks the e (execute) command passed via a space-separated --expression flag', () => {
+    const result = validateSedDangerous('sed --expression e input');
+    assert.ok(!result.safe);
+    assert.equal(result.checkId, CHECK_IDS.SED_DANGEROUS);
+  });
+
+  it('blocks the e command via space-separated -e even inside a compound command', () => {
+    const result = validateBashSecurity("echo hi && sed -e e data.txt");
+    assert.ok(!result.safe);
+    assert.equal(result.checkId, CHECK_IDS.SED_DANGEROUS);
+  });
+
+  it('still allows benign single-letter scripts passed via a space-separated -e flag', () => {
+    assert.ok(validateSedDangerous('sed -e d file.txt').safe);
+    assert.ok(validateSedDangerous('sed -e p file.txt').safe);
+    assert.ok(validateSedDangerous('sed --expression d file.txt').safe);
+  });
+
+  it('does not re-capture a quoted -e expression as an unquoted token (no false positive)', () => {
+    // The quoted substitution is benign; the space-separated unquoted extractor
+    // must not mangle it into a spurious block.
+    assert.ok(validateSedDangerous("sed -e 's/a/b/g' file.txt").safe);
+  });
 });
 
 // ---------------------------------------------------------------------------
