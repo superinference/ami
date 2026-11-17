@@ -1,7 +1,9 @@
 import { ToolDefinition, ToolResult, ToolContext, ImageContent } from '../types';
 import { spillToolText, getFormatDescription, isAlreadySpilled, formatSize } from './spill-output';
-import { boundMcpResponse, getMaxMcpOutputChars, getMaxMcpOutputTokens } from '../mcp/client';
+import { boundMcpResponse, getMaxMcpOutputChars, getMaxMcpOutputTokens, MCP_CHARS_PER_TOKEN } from '../mcp/client';
 import type { McpToolAnnotations } from '../mcp/client';
+import { estimateTokens, estimateTokensForFileType } from '../utils/tokens';
+import { logError } from '../logger';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from './input-sanitizer';
 import { persistBinaryContent, getBinaryBlobSavedMessage } from './mcp-output-storage';
 import {
@@ -39,6 +41,56 @@ export const MAX_MCP_TOOL_NAME_LEN = 128;
  *  `IMAGE_TOKEN_ESTIMATE` (utils/mcpValidation.ts:L15 — 1600 tokens per image),
  *  so a result with many images cannot blow the configured output-token budget. */
 export const IMAGE_TOKEN_ESTIMATE = 1600;
+
+/** Cheap-heuristic gate fraction of the output-token budget: if even the rough
+ *  (generic) token estimate of an MCP result is at or below this fraction of the
+ *  budget, the result is assumed NOT to need truncation and the more accurate
+ *  (and potentially expensive) second-stage count is skipped entirely. Mirrors
+ *  Claude Code's `MCP_TOKEN_COUNT_THRESHOLD_FACTOR` (utils/mcpValidation.ts:L14 — 0.5). */
+export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5;
+
+/** Rough, cheap token estimate of an MCP result's text, used as the first stage
+ *  of the truncation gate. Mirrors Claude Code's `getContentSizeEstimate`
+ *  (utils/mcpValidation.ts:L59 → `roughTokenCountEstimation`, ~4 chars/token). */
+export function getMcpContentSizeEstimate(text: string): number {
+  return estimateTokens(text);
+}
+
+/** Decide whether an MCP tool result's text must be truncated to fit the
+ *  model-visible output-token budget, using Claude Code's TWO-STAGE design
+ *  (utils/mcpValidation.ts:L151-L178 `mcpContentNeedsTruncation`):
+ *
+ *   1. CHEAP GATE — a rough generic estimate ({@link getMcpContentSizeEstimate}).
+ *      If it is at/below `maxTokens × `{@link MCP_TOKEN_COUNT_THRESHOLD_FACTOR}
+ *      the result is comfortably within budget, so we return `false` WITHOUT the
+ *      second, more expensive measurement (avoids needless work on small results).
+ *   2. ACCURATE COUNT — only reached when the cheap gate is exceeded. When an
+ *      `accurateCount` seam is supplied (e.g. a density-aware or future API-backed
+ *      counter) it is used; otherwise we fall back to a tighter file-type-aware
+ *      estimate so a dense structured payload is not UNDER-counted by the generic
+ *      ratio. The accurate stage is wrapped so a transient failure degrades to
+ *      "assume no truncation" (`false`) rather than over-truncating — parity with
+ *      the reference's `catch { return false }` fail-open on a token-count error.
+ *
+ *  Ties the model-visible cap to the configured `MAX_MCP_OUTPUT_TOKENS` budget
+ *  (not merely a raw byte ceiling). Exported so the decision is unit-testable in
+ *  isolation from a live MCP server. */
+export function mcpContentNeedsTruncation(
+  text: string,
+  maxTokens: number = getMaxMcpOutputTokens(),
+  accurateCount?: (text: string) => number,
+): boolean {
+  const estimate = getMcpContentSizeEstimate(text);
+  if (estimate <= maxTokens * MCP_TOKEN_COUNT_THRESHOLD_FACTOR) return false;
+  try {
+    const count = accurateCount ? accurateCount(text) : estimateTokensForFileType(text, 'json');
+    return count > maxTokens;
+  } catch {
+    // A token-count failure must not cause over-truncation — assume the result
+    // fits (parity: the reference logs and returns false on a count error).
+    return false;
+  }
+}
 
 /** Width of the inline MCP progress bar rendered from a server's
  *  `notifications/progress` percentage. Mirrors Claude Code's 20-wide ProgressBar
@@ -255,7 +307,21 @@ export function createMcpTool(
     ...(alwaysLoad ? { alwaysLoad: true } : {}),
     async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
       const mcpManager = context._mcpManager;
-      if (!mcpManager) return { output: 'Error: MCP not initialized', isError: true };
+      if (!mcpManager) {
+        // Diagnostic surface for a called-before-init ordering bug: an MCP tool is
+        // only ever advertised once its manager exists, so reaching here means the
+        // manager was dropped from the tool context — record it on the in-memory
+        // error ring (retrievable via getInMemoryErrors for diagnostics) instead of
+        // failing silently. Unlike Claude Code's teammate-mode snapshot accessor,
+        // no lazy recovery/safe-default is viable here — without a manager the tool
+        // genuinely cannot run — so we still return the hard error after logging.
+        logError(
+          'mcp-tool',
+          `MCP tool '${serverName}:${toolName}' invoked before its MCP manager was initialized (context._mcpManager missing)`,
+          { serverName, toolName },
+        );
+        return { output: 'Error: MCP not initialized', isError: true };
+      }
 
       if (mcpManager.isDisabled?.(serverName)) {
         return { output: `MCP server '${serverName}' is disabled. Re-enable it from the /mcp panel before connecting.`, isError: true };
@@ -342,7 +408,19 @@ export function createMcpTool(
         // token-budget-derived default (MAX_MCP_OUTPUT_TOKENS × 4 chars) so every
         // MCP result is bounded by the token cap instead of the 10 MB byte ceiling.
         const maxResultChars = extractMaxResultSizeChars(result) ?? getMaxMcpOutputChars();
-        const bounded = boundMcpResponse(raw, maxResultChars);
+        // Two-stage, token-aware truncation gate (parity: mcpContentNeedsTruncation,
+        // utils/mcpValidation.ts:L151-L178). A result comfortably within the
+        // output-token budget skips the byte-walk entirely; only one over the
+        // cheap gate is bounded to the token-budget-derived char cap. The accurate
+        // second stage is density-aware — structured (non-string) MCP results are
+        // counted at the JSON ratio (~2 chars/token) so a dense payload is not
+        // under-counted, while plain-text results use the generic ratio.
+        const maxTokens = Math.max(1, Math.floor(maxResultChars / MCP_CHARS_PER_TOKEN));
+        const isStructured = typeof result !== 'string';
+        const accurateCount = (t: string) => estimateTokensForFileType(t, isStructured ? 'json' : 'txt');
+        const bounded = mcpContentNeedsTruncation(raw, maxTokens, accurateCount)
+          ? boundMcpResponse(raw, maxResultChars)
+          : { content: raw, truncated: false, originalBytes: Buffer.byteLength(raw, 'utf-8') };
         const spillCap = Math.min(maxResultChars, 500_000);
         // Image blocks from the result are now first-class multimodal content:
         // compressed to fit the provider's size/dimension limits and charged against
