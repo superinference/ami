@@ -450,8 +450,11 @@ export const MAX_ENTRYPOINT_LINES = 200;
 export const MAX_ENTRYPOINT_BYTES = 25_000;
 
 /** The MEMORY.md index is a table of contents, not a memory body — it is loaded
- *  separately (readMemoryIndex) and must be excluded from the memory-body scan. */
-const MEMORY_INDEX_FILENAME = 'MEMORY.md';
+ *  separately (readMemoryIndex) and must be excluded from the memory-body scan.
+ *  Exported so the single-source entrypoint filename is reused by the
+ *  consolidation-prompt builder ({@link ./memory-consolidation}) rather than
+ *  re-literalling `'MEMORY.md'`. */
+export const MEMORY_INDEX_FILENAME = 'MEMORY.md';
 
 /**
  * Two-step save guidance teaching the MEMORY.md index pattern (Claude Code

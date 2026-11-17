@@ -8,6 +8,10 @@ export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CH
 export type { SkillResolution } from './tools/skill';
 export { MemoryManager, matchesPaths, sanitizeMemoryContent, MEMORY_TYPES, MEMORY_SOURCE_LEVELS, truncateEntrypointContent, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES } from './memory';
 export type { MemoryEntry, MemoryType, MemorySourceLevel, InstructionSource, MemoryPathScope } from './memory';
+export { AUTO_DREAM_DEFAULTS, resolveAutoDreamConfig, consolidationLockPath, readLastConsolidatedAt, tryAcquireConsolidationLock, rollbackConsolidationLock, recordConsolidation, isConsolidationDue, buildConsolidationPrompt } from './memory-consolidation';
+export type { AutoDreamConfig, ConsolidationGate } from './memory-consolidation';
+export { SNAPSHOT_META_FILENAME, SYNCED_META_FILENAME, validateSnapshotMeta, validateSyncedMeta, readJsonFile, getSnapshotDirForAgent, checkAgentMemorySnapshot, writeAgentSnapshotMeta, saveAgentSyncedMeta } from './agent-memory-snapshot';
+export type { SnapshotMeta, SyncedMeta, SnapshotAction, SnapshotCheck } from './agent-memory-snapshot';
 export { discoverPlugins, discoverPluginsDetailed, loadCommands, validateGitSource, parseGitRef, buildGitCloneArgs, assertPathWithinBase, resolvePluginDir, validatePluginManifest, GIT_NO_PROMPT_ENV, VALID_INSTALL_SCOPES, isENOENT, sanitizePluginIdSegment, generatePluginId, COMMAND_SOURCES, COMMAND_TYPES, isPluginAvailable, parsePluginSettings, isCommandEnabled, isCommandHidden, getCommandDisplayName, redactSensitiveCommandArgs, registerCommandAliases, REDACTED_COMMAND_ARGS, normalizePluginSubdirPath, hashPluginSubdirPath } from './plugins';
 export type { PluginBundle, CommandDefinition, CommandMetadata, PluginCommandsMetadataContext, GitSourceValidation, PluginValidationResult, PluginValidationIssue, PluginLoadFailure, CommandSource, CommandType, PluginIdPrefix, PluginRequirements, PluginSettings, PluginAvailabilityContext, CommandScanDiagnostics } from './plugins';
 // Skill/agent TYPES + arg-safety live in core (bare building blocks). The
