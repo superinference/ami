@@ -60,7 +60,10 @@ test('withFileLock gives up after retries when lock stays held and fresh', async
   const dir = tmp();
   const target = path.join(dir, 'state.json');
   const lockFile = `${target}.lock`;
-  fs.writeFileSync(lockFile, '1'); // fresh (now), never released
+  // A fresh lock held by a genuinely LIVE pid (our own) that is never released.
+  // (A sentinel pid <= 1 would be judged dead by the canonical liveness probe and
+  // stolen — see the pid<=1 guard in utils/file-lock isPidAlive.)
+  fs.writeFileSync(lockFile, String(process.pid)); // fresh (now), never released
   await assert.rejects(
     withFileLock(target, () => 'never', { retries: 2, minTimeout: 1, maxTimeout: 2, staleMs: 10_000 }),
     /Could not acquire lock/,

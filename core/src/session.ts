@@ -13,6 +13,7 @@ import { stripDisplayTags } from './utils/display-tags';
 import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
 import { isWSL } from './utils/env';
+import { isPidAlive as sharedIsPidAlive } from './utils/file-lock';
 import { normalizePermissionMode } from './permissions';
 export { assertPathWithin } from './path-safety';
 
@@ -3280,21 +3281,13 @@ export interface SessionLockDeps {
   isWsl: () => boolean;
 }
 
+/** PID-liveness probe for the session lock — the primary staleness signal (a
+ *  crashed holder's PID goes dead, so its lock is reclaimed immediately). Delegates
+ *  to the ONE canonical probe in `utils/file-lock` (same `pid <= 1` sentinel guard,
+ *  ESRCH→dead, EPERM→alive semantics) rather than hand-rolling a second copy (dedup
+ *  rule). Re-exported here as part of the session API its callers and tests use. */
 export function isPidAlive(pid: number): boolean {
-  // PID 0 targets the caller's own process group (process.kill(0,0) would
-  // spuriously succeed) and PID 1 is init/systemd (always alive, never a
-  // legitimate lock holder) — a corrupt/sentinel value must never be read as a
-  // live holder, or the lock could never be reclaimed.
-  if (pid <= 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: any) {
-    if (err?.code === 'ESRCH') return false;
-    // EPERM means the process exists but we can't signal it
-    if (err?.code === 'EPERM') return true;
-    return false;
-  }
+  return sharedIsPidAlive(pid);
 }
 
 /** Best-effort read of the command line for a live PID — used to detect PID

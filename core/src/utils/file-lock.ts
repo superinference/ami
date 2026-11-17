@@ -76,18 +76,30 @@ function syncSleep(ms: number): void {
 }
 
 /**
- * Whether `pid` refers to a live process. `process.kill(pid, 0)` sends no signal
- * but validates the target: it succeeds for a live process, raises ESRCH when no
- * such process exists (dead), and EPERM when the process exists but is owned by
- * another user (still alive). Anything that is not an explicit ESRCH is treated
- * as alive so we never steal a lock from a holder that is merely unowned by us.
+ * Whether `pid` refers to a live process — the ONE canonical PID-liveness probe
+ * for the whole AMI tree (consolidates the formerly hand-rolled copies in
+ * `session.ts` `isPidAlive` and `cron.ts` `isProcessRunning`; dedup rule). It is
+ * the strongest staleness signal every file lock shares: a crashed holder's PID
+ * goes dead, so its lock is reclaimed immediately rather than wedging the resource.
+ *
+ * `process.kill(pid, 0)` sends no signal but validates the target: it succeeds for
+ * a live process, raises ESRCH when no such process exists (dead), and EPERM when
+ * the process exists but is owned by another user (still ALIVE — never steal a lock
+ * from a holder merely unowned by us). A non-integer, zero, negative, or sentinel
+ * PID (`<= 1`: 0 targets the caller's own process group, 1 is init/systemd) can
+ * never be a legitimate holder and is treated as dead so a corrupt/planted value
+ * cannot make the lock un-reclaimable (parity: Claude's pidLock `pid <= 1` guard).
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    return false;
   }
 }
 
@@ -147,15 +159,40 @@ function tryAcquire(lockFile: string, staleMs: number): boolean {
 }
 
 /**
- * Acquire `${target}.lock`, run `fn`, and release the lock no matter how `fn`
- * settles. The lock file lives next to the target so callers never collide on a
- * shared global lock. Returns whatever `fn` resolves to.
+ * A held lock returned by {@link acquireFileLock} — the acquire-and-HOLD handle
+ * form of the lock primitive (parity: proper-lockfile's `lock()` returning a
+ * release fn, as opposed to the scoped `withFileLock(fn)` wrapper). Use it when
+ * the critical section is NOT a single callback — the lock is acquired at one
+ * point and released much later (a different call / lifecycle stage), e.g. a
+ * session or scheduler that owns a resource for its whole run.
  */
-export async function withFileLock<T>(
+export interface FileLockHandle {
+  /** Release the lock and stop its heartbeat. Idempotent — calling it more than
+   *  once is a no-op (parity: proper-lockfile's release fn). */
+  release(): Promise<void>;
+  /** True once the heartbeat has detected the lock was lost or taken over by
+   *  another process while still held (the same condition that fires
+   *  `onCompromised`). Lets a long-lived holder poll liveness without a callback. */
+  readonly compromised: boolean;
+}
+
+/**
+ * Acquire `${target}.lock` and RETURN A HANDLE to release it later, instead of
+ * wrapping a callback. This is the acquire-and-hold form of the one lock
+ * primitive (parity: proper-lockfile `lock()`): same exclusive-create, bounded
+ * retry/backoff, PID + mtime stale-stealing, mtime-refresh heartbeat, and
+ * `onCompromised` surfacing as {@link withFileLock} — {@link withFileLock} is now
+ * a thin scoped wrapper over this (acquire → run fn → release), so there is ONE
+ * acquire/heartbeat/release implementation, not two (dedup rule).
+ *
+ * Throws if the lock cannot be acquired within the retry budget. Always pair a
+ * successful acquire with {@link FileLockHandle.release} (use try/finally) so the
+ * lock and its heartbeat timer are cleaned up.
+ */
+export async function acquireFileLock(
   target: string,
-  fn: () => Promise<T> | T,
   options: FileLockOptions = {},
-): Promise<T> {
+): Promise<FileLockHandle> {
   const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
   const lockFile = `${target}.lock`;
   let backoff = opts.minTimeout;
@@ -169,14 +206,14 @@ export async function withFileLock<T>(
     throw new Error(`Could not acquire lock ${lockFile} after ${opts.retries} retries`);
   }
 
-  // Heartbeat: keep the lock's mtime fresh while fn runs so a concurrent waiter
-  // never judges this still-alive holder stale and steals the lock. If the lock
-  // is removed or re-created by another process underneath us, surface it.
+  // Heartbeat: keep the lock's mtime fresh while the lock is held so a concurrent
+  // waiter never judges this still-alive holder stale and steals the lock. If the
+  // lock is removed or re-created by another process underneath us, surface it.
   const refreshMs = options.refreshMs ?? Math.max(1, Math.floor(opts.staleMs / 2));
-  let compromisedFired = false;
+  let compromised = false;
   const fireCompromised = (msg: string) => {
-    if (compromisedFired) return;
-    compromisedFired = true;
+    if (compromised) return;
+    compromised = true;
     try { options.onCompromised?.(new Error(msg)); } catch { /* ignore handler errors */ }
   };
   let timer: NodeJS.Timeout | undefined;
@@ -197,11 +234,34 @@ export async function withFileLock<T>(
     timer.unref();
   }
 
+  let released = false;
+  return {
+    get compromised() { return compromised; },
+    async release() {
+      if (released) return;
+      released = true;
+      if (timer) clearInterval(timer);
+      try { await fsp.unlink(lockFile); } catch { /* already gone */ }
+    },
+  };
+}
+
+/**
+ * Acquire `${target}.lock`, run `fn`, and release the lock no matter how `fn`
+ * settles. The lock file lives next to the target so callers never collide on a
+ * shared global lock. Returns whatever `fn` resolves to. A thin scoped wrapper
+ * over {@link acquireFileLock}.
+ */
+export async function withFileLock<T>(
+  target: string,
+  fn: () => Promise<T> | T,
+  options: FileLockOptions = {},
+): Promise<T> {
+  const handle = await acquireFileLock(target, options);
   try {
     return await fn();
   } finally {
-    if (timer) clearInterval(timer);
-    try { await fsp.unlink(lockFile); } catch { /* already gone */ }
+    await handle.release();
   }
 }
 
@@ -241,11 +301,40 @@ export interface FileLockSyncOptions {
  * lock stolen. That exact case is detected on release and reported via `onCompromised`
  * (parity: Claude's stolen-lock → log, not throw). Returns whatever `fn` returns.
  */
-export function withFileLockSync<T>(
+/**
+ * A held synchronous lock returned by {@link acquireFileLockSync} — the
+ * acquire-and-HOLD handle form of the sync lock (parity: proper-lockfile
+ * `lockSync()` returning a release fn). Like its async sibling but with no
+ * mid-section heartbeat (the sync path blocks the thread), so a hold that outlives
+ * `staleMs` can be stolen; that is detected on {@link release} and reported via
+ * `onCompromised`.
+ */
+export interface FileLockHandleSync {
+  /** Release the lock. Idempotent. If the lock was stolen while held (its PID no
+   *  longer matches ours, or it vanished) it is NOT deleted — it belongs to the
+   *  thief now — and `onCompromised` fires instead. */
+  release(): void;
+  /** True once {@link release} found the lock had been lost or taken over. */
+  readonly compromised: boolean;
+}
+
+/**
+ * Acquire `${target}.lock` synchronously and RETURN A HANDLE to release it later
+ * (parity: proper-lockfile `lockSync()`). The acquire-and-hold form of
+ * {@link withFileLockSync}, which is now a thin scoped wrapper over this — ONE
+ * sync acquire/release implementation (dedup rule). Shares the exact lockfile
+ * format, PID-based stale-stealing, and `${target}.lock` naming of the async path,
+ * so sync and async holders of the same target serialize against each other.
+ *
+ * Because the thread is not blocked between acquire and release, this handle form
+ * (unlike {@link withFileLockSync}) may be held across work that yields to the
+ * event loop — but with NO heartbeat the hold must stay under `staleMs` or a
+ * waiter may judge it stale and steal it (surfaced via `onCompromised` on release).
+ */
+export function acquireFileLockSync(
   target: string,
-  fn: () => T,
   options: FileLockSyncOptions = {},
-): T {
+): FileLockHandleSync {
   const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
   const lockFile = `${target}.lock`;
   let backoff = opts.minTimeout;
@@ -259,23 +348,42 @@ export function withFileLockSync<T>(
     throw new Error(`Could not acquire lock ${lockFile} after ${opts.retries} retries`);
   }
 
+  let released = false;
+  let compromised = false;
+  return {
+    get compromised() { return compromised; },
+    release() {
+      if (released) return;
+      released = true;
+      // Stale-write detection: if the lock no longer records our PID (stolen by a
+      // waiter after we overran staleMs, or vanished), the section was not mutually
+      // exclusive. Report it and do NOT delete the file — it now belongs to the thief.
+      let comp = false;
+      try {
+        const pid = readLockPid(lockFile);
+        if (pid === null || pid !== process.pid) comp = true;
+      } catch {
+        comp = true;
+      }
+      if (comp) {
+        compromised = true;
+        try { options.onCompromised?.(new Error(`Lock ${lockFile} was lost or taken over during the critical section`)); } catch { /* ignore handler errors */ }
+      } else {
+        try { fs.unlinkSync(lockFile); } catch { /* already gone */ }
+      }
+    },
+  };
+}
+
+export function withFileLockSync<T>(
+  target: string,
+  fn: () => T,
+  options: FileLockSyncOptions = {},
+): T {
+  const handle = acquireFileLockSync(target, options);
   try {
     return fn();
   } finally {
-    // Stale-write detection: if the lock no longer records our PID (stolen by a
-    // waiter after we overran staleMs, or vanished), the section was not mutually
-    // exclusive. Report it and do NOT delete the file — it now belongs to the thief.
-    let compromised = false;
-    try {
-      const pid = readLockPid(lockFile);
-      if (pid === null || pid !== process.pid) compromised = true;
-    } catch {
-      compromised = true;
-    }
-    if (compromised) {
-      try { options.onCompromised?.(new Error(`Lock ${lockFile} was lost or taken over during the critical section`)); } catch { /* ignore handler errors */ }
-    } else {
-      try { fs.unlinkSync(lockFile); } catch { /* already gone */ }
-    }
+    handle.release();
   }
 }
