@@ -623,6 +623,21 @@ export interface StopHookInfo {
   durationMs: number;
   /** Error text if this Stop hook threw/failed; undefined on success. */
   error?: string;
+  /** The shell command backing a command-type Stop hook (Claude Code's
+   *  StopHookInfo.command) — present when the hook was registered from a
+   *  command-hook config / with a display descriptor, so the summary can attribute
+   *  a slow/failing hook to its config instead of a bare ordinal. */
+  command?: string;
+  /** The prompt text backing a prompt/agent-type Stop hook (Claude Code's
+   *  StopHookInfo.promptText) — the identifier for a non-command Stop hook. */
+  promptText?: string;
+}
+
+/** Display descriptor identifying a registered Stop hook in the run summary
+ *  (Claude Code's per-hook command / promptText). Either/both may be set. */
+export interface StopHookDisplay {
+  command?: string;
+  promptText?: string;
 }
 
 /**
@@ -666,18 +681,30 @@ export interface StopHookSummary {
  * surfacing ({@link StopHookSummary.hasOutput} false AND the chain ran under the
  * display threshold). Pure; consumed by {@link HookManager.getLastStopHookSummaryMessage}.
  */
+/** Collapse a Stop hook's command/promptText to a compact single-line identifier
+ *  for a summary row: whitespace-folded and length-capped so a multi-line prompt
+ *  does not blow out the operator summary. Pure. */
+function stopHookInfoLabel(id: string): string {
+  const flat = id.replace(/\s+/g, ' ').trim();
+  return flat.length > 60 ? `${flat.slice(0, 57)}...` : flat;
+}
+
 export function formatStopHookSummaryMessage(summary: StopHookSummary): string {
   const slow = summary.totalDurationMs >= HOOK_TIMING_DISPLAY_THRESHOLD_MS;
   if (!summary.hasOutput && !slow) return '';
   const plural = summary.count === 1 ? '' : 's';
   const lines: string[] = [`Ran ${summary.count} stop hook${plural} in ${summary.totalDurationMs}ms`];
   summary.hookInfos.forEach((info, i) => {
+    // Attribute the row to its backing config when known (Claude Code's StopHookInfo
+    // command / promptText) so a slow/failing hook is named, not just numbered.
+    const id = info.command ?? info.promptText;
+    const label = id ? ` [${stopHookInfoLabel(id)}]` : '';
     // Only surface a per-hook row when it is interesting: it errored, or it was
     // individually slow. A fast, clean hook adds no noise.
     if (info.error) {
-      lines.push(`  • hook ${i + 1} (${info.durationMs}ms): ${info.error}`);
+      lines.push(`  • hook ${i + 1}${label} (${info.durationMs}ms): ${info.error}`);
     } else if (info.durationMs >= HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
-      lines.push(`  • hook ${i + 1}: ${info.durationMs}ms`);
+      lines.push(`  • hook ${i + 1}${label}: ${info.durationMs}ms`);
     }
   });
   if (summary.preventContinuation) {
@@ -1260,6 +1287,14 @@ export const HOOK_JSON_SCHEMA_HINT = JSON.stringify({
   permissionDecision: '"allow" | "deny" | "ask" (optional)',
   additionalContext: 'string (optional)',
   updatedInput: 'object (optional)',
+  updatedPermissions: 'array (optional)',
+  // Abort the whole turn on a deny rather than skipping this one tool call.
+  interrupt: 'boolean (optional)',
+  // async OUTPUT response (Claude Code's { async: true, asyncTimeout }): a hook
+  // may self-declare that it should keep running in the background, bounded by its
+  // own asyncTimeout (milliseconds) instead of the synchronous hook deadline.
+  async: 'boolean (optional)',
+  asyncTimeout: 'number (optional, milliseconds — only with async:true)',
   hookSpecificOutput: 'object (optional)',
 }, null, 2);
 
@@ -2484,6 +2519,24 @@ function describeHookContent(
   }
 }
 
+/** Derive the Stop-hook run-summary display descriptor (command / promptText) from
+ *  a hook config, so a Stop hook can be attributed to its backing config in the
+ *  per-hook summary (Claude Code's StopHookInfo.command / promptText). Command and
+ *  HTTP hooks surface a `command` identifier (the shell command / URL); prompt and
+ *  agent hooks surface `promptText`. Content is sanitized of secret-looking tokens
+ *  (reusing {@link describeHookContent}) before it is retained for display. */
+function stopHookDisplayFromConfig(
+  hook: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+): StopHookDisplay {
+  const content = describeHookContent(hook);
+  switch (hook.type) {
+    case 'command':
+    case 'http': return { command: content };
+    case 'prompt':
+    case 'agent': return { promptText: content };
+  }
+}
+
 /**
  * Translate Claude Code's map-keyed hooks.json into AMI's flat entry array:
  *   { "PreToolUse": [{ matcher?, hooks: [{ type, command, ... }] }] }
@@ -2909,6 +2962,11 @@ export class HookManager extends EventEmitter {
    *  pruned/reloaded ({@link pruneRemovedPluginHooks}/{@link reloadPluginHooks},
    *  gh-36995). A WeakMap so a removed hook's entry is GC'd with the fn. */
   private _hookProvenance = new WeakMap<Function, { source: string; pluginName?: string; pluginRoot?: string }>();
+  /** Per-Stop-hook display descriptor (command / promptText), keyed by the registered
+   *  Stop-hook fn, so {@link executeStop} can attribute each per-hook timing/error row
+   *  in the run summary to its backing config (Claude Code's StopHookInfo.command /
+   *  promptText). A WeakMap so a removed/cleared Stop hook's entry is GC'd with the fn. */
+  private _stopHookDisplay = new WeakMap<StopHookFn, StopHookDisplay>();
   private _denyRulesHold = false;
   private _concurrency = new EventConcurrencyLimiter();
   private _effortLevel: string = 'high';
@@ -4184,7 +4242,7 @@ export class HookManager extends EventEmitter {
             if (blockingError) return { blockingError };
             return undefined;
           };
-          this.onStop(fn);
+          this.onStop(fn, stopHookDisplayFromConfig(hookConfig));
           break;
         }
         case 'error': {
@@ -4583,8 +4641,15 @@ export class HookManager extends EventEmitter {
     this.postSamplingHooks.push(fn);
   }
 
-  onStop(fn: StopHookFn): void {
+  /** Register a Stop hook. An optional {@link StopHookDisplay} descriptor
+   *  (command / promptText) identifies the hook in the end-of-chain run summary
+   *  (Claude Code's StopHookInfo attribution) — config-registered command/prompt
+   *  Stop hooks pass it so a slow/failing hook is named, not just numbered. */
+  onStop(fn: StopHookFn, display?: StopHookDisplay): void {
     this.stopHooks.push(fn);
+    if (display && (display.command || display.promptText)) {
+      this._stopHookDisplay.set(fn, display);
+    }
   }
 
   onError(fn: HookFn): void {
@@ -4707,16 +4772,19 @@ export class HookManager extends EventEmitter {
             break;
           }
           const hookStart = Date.now();
+          // Attribute this per-hook row to its backing config (command/promptText)
+          // when a display descriptor was registered (Claude Code's StopHookInfo).
+          const display = this._stopHookDisplay.get(this.stopHooks[i]);
           try {
             const r = await this.stopHooks[i](ctx);
-            hookInfos.push({ durationMs: Date.now() - hookStart });
+            hookInfos.push({ durationMs: Date.now() - hookStart, ...display });
             if (r) {
               if (r.blockingError) blockingErrors.push(r.blockingError);
               if (r.preventContinuation) { preventContinuation = true; if (r.stopReason) stopReason = r.stopReason; }
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            hookInfos.push({ durationMs: Date.now() - hookStart, error: message });
+            hookInfos.push({ durationMs: Date.now() - hookStart, error: message, ...display });
             hookErrors.push(message);
             coreLog('hooks', 'Hook error', { error: message });
             // Classify the raw failure into the matchable StopFailure taxonomy so a
