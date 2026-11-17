@@ -22,8 +22,8 @@ export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_AR
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult, SkillSourcePolicy } from './skill-catalog';
 export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256, isValidCatalogName, isValidGitRef, isSkillSourceAllowed, validateInstalledSkillManifest, INSTALLED_MANIFEST_SCHEMA_VERSION, compareSemver, isAmiVersionCompatible, formatSkillSourceSuffix } from './skill-catalog';
 export { CostTracker, CacheMissDiagnostics, fingerprint, CACHE_MISS_CAUSES, estimateUsageCost, diffToolHashes, WEB_SEARCH_COST_PER_REQUEST, MIN_CACHE_MISS_TOKENS, PARTIAL_CACHE_BREAK_RATIO, formatPrice, formatModelPricing, getModelPricingString } from './cost-tracker';
-export { diffStringLists } from './cost-tracker';
-export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause } from './cost-tracker';
+export { diffStringLists, buildDiffableContent, createUnifiedPatch, writeCacheBreakDiff } from './cost-tracker';
+export type { ExtendedUsageStats, CacheMissCause, CacheDiagRequest, ModelCostUsage, ToolSchemaDelta, CacheBreakCause, DiffableTool } from './cost-tracker';
 export {
   resolveConfigDir, migrateLegacyDataDir, migrateDeprecatedModelAlias, runStartupMigrations, formatStartupMigrationNotices, CURRENT_MIGRATION_VERSION, projectStateDir, projectSlug, MAX_SLUG_LENGTH, MAX_SESSION_ID_LENGTH, journalPathFor, subagentJournalPathFor,
   canonicalizePath, canonicalGitRoot,

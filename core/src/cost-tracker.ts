@@ -6,6 +6,9 @@
  * a hardcoded fallback table for offline / timeout scenarios.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { UsageStats } from './types';
 import { isEssentialTrafficOnly } from './analytics';
 
@@ -514,6 +517,14 @@ export interface CacheDiagRequest {
   fastMode?: boolean;
   /** Global cache strategy label (e.g. none / tool_based). */
   globalCacheStrategy?: string;
+  /**
+   * Lazy thunk returning this request's canonical diffable prompt-state string (model +
+   * system prompt + sorted per-tool schema, via buildDiffableContent). Deferred so it is
+   * only materialized when a break is actually scored — zero overhead on cache hits.
+   * When both the previous and current requests supply one, a unified diff of the two is
+   * written to a temp file on break and its path surfaced via getLastDiffPath().
+   */
+  buildDiffableContent?: () => string;
 }
 
 /** One concurrent cache-break cause with a human-readable magnitude/detail. */
@@ -591,6 +602,221 @@ export function fingerprint(input: string): string {
   return `${len}:${hash >>> 0}`;
 }
 
+// ---------------------------------------------------------------------------
+// Prompt-state diff artifact (cache-break debugging affordance)
+//
+// On a prompt-cache break Claude Code serializes the full before/after prompt
+// state (model + joined system prompt + sorted per-tool name/description/schema)
+// and writes a unified diff to a temp file, embedding the path in the break
+// warning so the exact byte that busted the cache is inspectable. AMI mirrors
+// this: buildDiffableContent() renders the canonical state string, and on a break
+// CacheMissDiagnostics writes createUnifiedPatch() of the prev→current state to a
+// temp file whose path is surfaced through getLastDiffPath() (→ /usage + inspector).
+// ---------------------------------------------------------------------------
+
+/** Minimal tool shape needed to render a diffable prompt-state representation. */
+export interface DiffableTool {
+  name?: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
+/**
+ * Render the canonical, order-stable "prompt state" string diffed on a cache break:
+ * the model, the joined system prompt, and every tool's name/description/input-schema
+ * sorted by name (so a stable tool set with a reordered advertise list does NOT look
+ * like a change). Mirrors Claude's buildDiffableContent (promptCacheBreakDetection.ts).
+ */
+export function buildDiffableContent(
+  model: string,
+  systemText: string,
+  tools: readonly DiffableTool[],
+): string {
+  const toolDetails = tools
+    .map(t => {
+      const name = t.name ?? 'unknown';
+      const desc = t.description ?? '';
+      let schema = '';
+      if (t.inputSchema !== undefined) {
+        try { schema = JSON.stringify(t.inputSchema); } catch { schema = '[unserializable]'; }
+      }
+      return `${name}\n  description: ${desc}\n  input_schema: ${schema}`;
+    })
+    .sort()
+    .join('\n\n');
+  return `Model: ${model}\n\n=== System Prompt ===\n\n${systemText}\n\n=== Tools (${tools.length}) ===\n\n${toolDetails}\n`;
+}
+
+type DiffOp = { t: '=' | '-' | '+'; line: string };
+
+/** Split into lines, dropping a single trailing empty element from a trailing newline. */
+function splitDiffLines(s: string): string[] {
+  const lines = s.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/** Guard: beyond this LCS cell count fall back to a coarse remove-all/add-all diff. */
+const MAX_LCS_CELLS = 4_000_000;
+
+/** LCS-based line diff of two already prefix/suffix-trimmed segments. */
+function lcsDiff(a: string[], b: string[]): DiffOp[] {
+  const n = a.length;
+  const m = b.length;
+  // dp[i][j] = LCS length of a[i:] and b[j:].
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ t: '=', line: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ t: '-', line: a[i] }); i++; }
+    else { out.push({ t: '+', line: b[j] }); j++; }
+  }
+  while (i < n) out.push({ t: '-', line: a[i++] });
+  while (j < m) out.push({ t: '+', line: b[j++] });
+  return out;
+}
+
+/** Diff two line arrays into ops, trimming common prefix/suffix first (cheap for a small change). */
+function diffOps(a: string[], b: string[]): DiffOp[] {
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+  const midA = a.slice(start, endA);
+  const midB = b.slice(start, endB);
+  const ops: DiffOp[] = [];
+  for (let k = 0; k < start; k++) ops.push({ t: '=', line: a[k] });
+  if (midA.length * midB.length > MAX_LCS_CELLS) {
+    // Too large for an O(n·m) LCS — emit a coarse (correct, if noisy) diff.
+    for (const line of midA) ops.push({ t: '-', line });
+    for (const line of midB) ops.push({ t: '+', line });
+  } else {
+    ops.push(...lcsDiff(midA, midB));
+  }
+  for (let k = endA; k < a.length; k++) ops.push({ t: '=', line: a[k] });
+  return ops;
+}
+
+/** Number of unchanged context lines kept around each change hunk. */
+const DIFF_CONTEXT = 3;
+
+/**
+ * Produce a standard unified diff (`--- / +++` header, `@@ -a,b +c,d @@` hunks with
+ * {@link DIFF_CONTEXT} lines of context) of `oldStr`→`newStr`. A self-contained
+ * replacement for the `diff` package's createPatch (no third-party dependency), used
+ * to serialize a prompt-cache-break's before/after state. Returns '' when identical.
+ */
+export function createUnifiedPatch(
+  fileName: string,
+  oldStr: string,
+  newStr: string,
+  oldHeader = 'before',
+  newHeader = 'after',
+): string {
+  const ops = diffOps(splitDiffLines(oldStr), splitDiffLines(newStr));
+  if (!ops.some(o => o.t !== '=')) return '';
+
+  // Group ops into hunks separated by runs of > 2·context unchanged lines.
+  type Hunk = { oldStart: number; oldLines: number; newStart: number; newLines: number; rows: string[] };
+  const hunks: Hunk[] = [];
+  let oldLine = 1;
+  let newLine = 1;
+  let current: Hunk | null = null;
+  let trailingContext = 0;
+
+  const flush = (): void => { if (current) { hunks.push(current); current = null; trailingContext = 0; } };
+
+  for (let idx = 0; idx < ops.length; idx++) {
+    const op = ops[idx];
+    if (op.t === '=') {
+      if (current) {
+        // Look ahead: is another change within 2·context lines? If so keep the gap as context.
+        let nextChange = -1;
+        for (let k = idx; k < ops.length; k++) { if (ops[k].t !== '=') { nextChange = k; break; } }
+        const gap = nextChange === -1 ? Infinity : nextChange - idx;
+        if (gap > DIFF_CONTEXT * 2) {
+          // Close the hunk with up to DIFF_CONTEXT trailing context lines.
+          for (let c = 0; c < DIFF_CONTEXT && idx + c < ops.length && ops[idx + c].t === '='; c++) {
+            current.rows.push(` ${ops[idx + c].line}`);
+            current.oldLines++; current.newLines++;
+          }
+          oldLine += gap;
+          newLine += gap;
+          flush();
+          idx += gap - 1;
+          continue;
+        }
+        current.rows.push(` ${op.line}`);
+        current.oldLines++; current.newLines++;
+        trailingContext++;
+      }
+      oldLine++; newLine++;
+    } else {
+      if (!current) {
+        // Open a hunk with up to DIFF_CONTEXT leading context lines from just before idx.
+        const lead: string[] = [];
+        let li = idx - 1;
+        while (li >= 0 && ops[li].t === '=' && lead.length < DIFF_CONTEXT) { lead.unshift(` ${ops[li].line}`); li--; }
+        current = {
+          oldStart: oldLine - lead.length,
+          newStart: newLine - lead.length,
+          oldLines: lead.length,
+          newLines: lead.length,
+          rows: lead,
+        };
+      }
+      trailingContext = 0;
+      if (op.t === '-') { current.rows.push(`-${op.line}`); current.oldLines++; oldLine++; }
+      else { current.rows.push(`+${op.line}`); current.newLines++; newLine++; }
+    }
+  }
+  if (current) {
+    // Drop excess trailing context beyond DIFF_CONTEXT accumulated at the tail.
+    const extra = Math.max(0, trailingContext - DIFF_CONTEXT);
+    if (extra > 0) {
+      current.rows.splice(current.rows.length - extra, extra);
+      current.oldLines -= extra; current.newLines -= extra;
+    }
+    flush();
+  }
+
+  const headerLines = [`--- ${fileName}\t${oldHeader}`, `+++ ${fileName}\t${newHeader}`];
+  const body = hunks.map(h => {
+    const head = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
+    return [head, ...h.rows].join('\n');
+  });
+  return `${headerLines.join('\n')}\n${body.join('\n')}\n`;
+}
+
+let _diffArtifactCounter = 0;
+
+/**
+ * Write a unified diff of the prev→current prompt-state to a temp file and return its
+ * path (undefined on any failure). Mirrors Claude's writeCacheBreakDiff — the path is
+ * surfaced in the cache-break warning so the exact prompt change is inspectable.
+ */
+export function writeCacheBreakDiff(prevContent: string, newContent: string): string | undefined {
+  try {
+    const patch = createUnifiedPatch('prompt-state', prevContent, newContent, 'before', 'after');
+    if (!patch) return undefined;
+    const dir = join(tmpdir(), 'ami-cache-break-diffs');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `cache-break-${Date.now()}-${process.pid}-${_diffArtifactCounter++}.diff`);
+    writeFileSync(path, patch);
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
 export class CacheMissDiagnostics {
   private causes = new Map<CacheMissCause, number>();
   private lastCause: CacheMissCause | null = null;
@@ -606,6 +832,8 @@ export class CacheMissDiagnostics {
   /** When true, the NEXT cache-read drop is EXPECTED (compaction/cache-deletion) and not flagged. */
   private _expectNextDrop = false;
   private _expectedDrops = 0;
+  /** Temp-file path of the prev→current prompt-state unified diff for the most recent break. */
+  private _lastDiffPath: string | undefined;
 
   constructor(cacheTtlMs?: number) {
     this.cacheTtlMs = cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -631,6 +859,7 @@ export class CacheMissDiagnostics {
     if (isExcludedModel(req.model)) {
       this._lastDelta = { added: [], removed: [], changed: [] };
       this._lastCauses = [];
+      this._lastDiffPath = undefined;
       this._advanceBaseline(req, cacheReadTokens);
       return;
     }
@@ -642,6 +871,7 @@ export class CacheMissDiagnostics {
       this._expectedDrops++;
       this._lastDelta = { added: [], removed: [], changed: [] };
       this._lastCauses = [];
+      this._lastDiffPath = undefined;
       this._advanceBaseline(req, cacheReadTokens);
       return;
     }
@@ -661,9 +891,18 @@ export class CacheMissDiagnostics {
       this.causes.set(cause, (this.causes.get(cause) ?? 0) + 1);
       if (partialBreak) this._partialBreaks++;
       this._lastDelta = diffToolHashes(this.prev?.perToolHashes, req.perToolHashes);
+      // Write a before/after prompt-state unified diff so the exact change that busted
+      // the cache is inspectable (path surfaced via getLastDiffPath). Only when BOTH the
+      // previous and current requests supplied a diffable-content thunk.
+      const prevThunk = this.prev?.buildDiffableContent;
+      const curThunk = req.buildDiffableContent;
+      this._lastDiffPath = (prevThunk && curThunk)
+        ? writeCacheBreakDiff(prevThunk(), curThunk())
+        : undefined;
     } else {
       this._lastDelta = { added: [], removed: [], changed: [] };
       this._lastCauses = [];
+      this._lastDiffPath = undefined;
     }
 
     this._advanceBaseline(req, cacheReadTokens);
@@ -796,6 +1035,16 @@ export class CacheMissDiagnostics {
     return this._lastCauses.map(c => c.detail).join('; ');
   }
 
+  /**
+   * Temp-file path of the unified diff of the prev→current prompt state for the most
+   * recent break (undefined when no break, no diffable content was supplied, the states
+   * were identical, or the write failed). Surfaced in the /usage break warning and the
+   * inspector Cache view as a debugging affordance — the exact prompt change inspectable.
+   */
+  getLastDiffPath(): string | undefined {
+    return this._lastDiffPath;
+  }
+
   getLastMissCause(): CacheMissCause | null {
     return this.lastCause;
   }
@@ -827,6 +1076,7 @@ export class CacheMissDiagnostics {
     this._partialBreaks = 0;
     this._lastDelta = { added: [], removed: [], changed: [] };
     this._lastCauses = [];
+    this._lastDiffPath = undefined;
     this._expectNextDrop = false;
     this._expectedDrops = 0;
   }
