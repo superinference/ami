@@ -7,6 +7,7 @@ import { areFileEditsEquivalent } from './file-edit-equivalence';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
+import { extractContextWindow, renderContextWindow, DEFAULT_EDIT_CONTEXT_LINES } from './read-edit-context';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { filterInvalidPermissionRules } from '../permissions';
 import { coerceBool } from '../utils/coerce';
@@ -56,6 +57,27 @@ const EDIT_DIFF_MAX_BYTES = 16_384;
  * this bounds the diff work for everything under it.
  */
 const EDIT_DIFF_SCAN_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
+
+/**
+ * True when either side of a before/after edit exceeds {@link EDIT_DIFF_SCAN_MAX_BYTES},
+ * past which splitting BOTH whole contents into per-line arrays for a unified /
+ * structured diff is wasteful O(file) work on a diff nobody can read. Shared by
+ * every success path (overwrite, single-replace, replace_all, multi-edit) so the
+ * degrade-to-size-only behavior is applied UNIFORMLY, not only on the overwrite
+ * path (parity with Claude Code's MAX_SCAN_BYTES diff fallback across edit modes).
+ */
+function exceedsDiffScanCap(oldContent: string, newContent: string): boolean {
+  return Buffer.byteLength(oldContent) > EDIT_DIFF_SCAN_MAX_BYTES ||
+    Buffer.byteLength(newContent) > EDIT_DIFF_SCAN_MAX_BYTES;
+}
+
+/**
+ * The size-only success body used when {@link exceedsDiffScanCap} holds: report the
+ * line count and that the diff was omitted for cost, with no per-line diff work.
+ */
+function diffOmittedSummary(resolved: string, lineCount: number): string {
+  return `Successfully wrote ${resolved} (${lineCount} lines)\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing size only)`;
+}
 
 /**
  * Indirection seam for the pre-write file-history backup, matching the
@@ -587,11 +609,8 @@ export async function writeEntireFile(
   // into per-line arrays for a diff is wasteful work on a diff nobody can read.
   // Degrade to a size-only summary (parity: Claude's MAX_SCAN_BYTES fallback to
   // the plain "create" view instead of diffing a multi-GB file).
-  if (Buffer.byteLength(oldContent) > EDIT_DIFF_SCAN_MAX_BYTES || Buffer.byteLength(content) > EDIT_DIFF_SCAN_MAX_BYTES) {
-    return {
-      output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing size only)`,
-      structuredPatch: [],
-    };
+  if (exceedsDiffScanCap(oldContent, content)) {
+    return { output: diffOmittedSummary(resolved, lineCount), structuredPatch: [] };
   }
 
   // Minimal structured diff: emit only the changed hunks (+ surrounding context)
@@ -757,6 +776,21 @@ async function applySequentialEdits(
   if (staleErr) return staleErr;
   const writeErr = commitWrite(resolved, finalContent, content, context);
   if (writeErr) return { output: writeErr, isError: true };
+
+  // OOM/cost guard: past the diff-scan cap, computing counts + a structured/unified
+  // diff splits both whole contents per line — wasteful work on a diff nobody can
+  // read. Degrade to a size-only summary, uniformly with the overwrite path.
+  if (exceedsDiffScanCap(rawContent, content)) {
+    const summary = [
+      `[edit: ${path.basename(resolved)}]`,
+      `Successfully edited ${resolved}`,
+      `${applied.length}/${edits.length} edits applied.`,
+      `\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
+    ];
+    if (skipped.length > 0) summary.push(`\nSkipped edits:\n${skipped.join('\n')}`);
+    if (failed.length > 0) summary.push(`\nFailed edits:\n${failed.join('\n')}`);
+    return { output: summary.join('\n'), isError: false, structuredPatch: [] };
+  }
 
   const { additions, removals } = countLinesChanged(normalizeToLf(rawContent), content);
   // Compute the structured patch once and reuse it for both the location tag and
@@ -1079,11 +1113,24 @@ export const fileEditTool: ToolDefinition = {
           hintText = '\n\nDid you mean one of these lines?\n' +
             hints.map(h => `  Line ${h.lineNumber}: ${h.line}`).join('\n');
         }
-        const lines = content.split('\n');
-        const preview = lines.slice(0, 30).map((l, i) => `${i + 1}: ${l}`).join('\n');
-        const truncNote = lines.length > 30 ? `\n... (${lines.length - 30} more lines)` : '';
+        // When a close match exists, show a bounded context WINDOW around it with
+        // true 1-based line numbers and omission markers (parity: Claude Code's
+        // scanForContext/sliceContext, which show the match's surroundings re-based
+        // to its real file position with a truncation signal) — far more useful on
+        // a large file than always dumping the first 30 lines from the top. With no
+        // close match, fall back to the from-the-top preview.
+        let previewBlock: string;
+        if (hints.length > 0) {
+          const window = extractContextWindow(content, hints[0].lineNumber, DEFAULT_EDIT_CONTEXT_LINES * 3);
+          previewBlock = `\n\nFile content around the closest match (lines ${window.lines[0].lineNumber}-${window.lines[window.lines.length - 1].lineNumber}):\n${renderContextWindow(window)}`;
+        } else {
+          const lines = content.split('\n');
+          const preview = lines.slice(0, 30).map((l, i) => `${i + 1}: ${l}`).join('\n');
+          const truncNote = lines.length > 30 ? `\n... (${lines.length - 30} more lines)` : '';
+          previewBlock = `\n\nCurrent file content (first 30 lines):\n${preview}${truncNote}`;
+        }
         return {
-          output: `Error: old_string not found in ${resolved}. The string must match the file content EXACTLY. Re-read the file with file_read before retrying.${hintText}\n\nCurrent file content (first 30 lines):\n${preview}${truncNote}`,
+          output: `Error: old_string not found in ${resolved}. The string must match the file content EXACTLY. Re-read the file with file_read before retrying.${hintText}${previewBlock}`,
           isError: true,
         };
       }
@@ -1101,6 +1148,14 @@ export const fileEditTool: ToolDefinition = {
         if (staleErr) return staleErr;
         const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
         if (writeErr) return { output: writeErr, isError: true };
+        // Diff-cost cap: skip the O(file) unified + structured diff past the cap,
+        // uniformly with the overwrite and multi-edit paths.
+        if (exceedsDiffScanCap(content, replaced)) {
+          return {
+            output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
+            structuredPatch: [],
+          };
+        }
         const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
         return {
           output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n${diff}`,
@@ -1130,9 +1185,20 @@ export const fileEditTool: ToolDefinition = {
     const writeErr = commitWrite(resolved, newContent, normalizeToLf(newContent), context);
     if (writeErr) return { output: writeErr, isError: true };
 
+    const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
+
+    // Diff-cost cap: skip the O(file) unified + structured diff and the per-line
+    // count past the cap, uniformly with the overwrite, replace_all and multi-edit
+    // paths (parity: Claude's MAX_SCAN_BYTES diff fallback).
+    if (exceedsDiffScanCap(content, normalizeToLf(newContent))) {
+      return {
+        output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
+        structuredPatch: [],
+      };
+    }
+
     const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
 
-    const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
     const { additions, removals } = countLinesChanged(content, normalizeToLf(newContent));
     // Surface the TRUE 1-based line where the edit landed (the first hunk's
     // oldStart), so the model/UI can locate the change in the file without
