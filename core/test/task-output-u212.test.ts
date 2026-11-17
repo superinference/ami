@@ -105,6 +105,47 @@ describe('task_output U212: truncation / total-size indicator', () => {
   });
 });
 
+describe('task_output U212: failure remediation hint', () => {
+  it('appends an actionable remediation pointing at the output file on non-zero exit', async () => {
+    const c = ctx({
+      getOutput: () => ({ status: 'failed', exitCode: 2, elapsedMs: 1000, output: 'boom' }),
+      get: () => ({ outputPath: '/var/tasks/t.output' }),
+    });
+    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    assert.ok(res.output.includes('Result: failure (exit code 2)'), 'keeps the failure verdict');
+    assert.ok(res.output.includes('Remediation:'), 'carries a remediation hint');
+    assert.ok(res.output.includes('/var/tasks/t.output'), 'points at the full output file');
+    assert.ok(/re-run/i.test(res.output), 'suggests re-running');
+  });
+
+  it('gives a generic remediation when the output path is unknown', async () => {
+    const c = ctx({
+      getOutput: () => ({ status: 'failed', exitCode: 1, elapsedMs: 10, output: 'x' }),
+    });
+    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    assert.ok(res.output.includes('Remediation:'), 'still offers remediation without a path');
+    assert.ok(!res.output.includes('inspect the full output at'), 'no bogus file pointer');
+    assert.ok(/re-run/i.test(res.output), 'suggests re-running');
+  });
+
+  it('a successful (exit 0) task gets no remediation hint', async () => {
+    const c = ctx({
+      getOutput: () => ({ status: 'completed', exitCode: 0, elapsedMs: 10, output: 'ok' }),
+    });
+    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    assert.ok(res.output.includes('Result: success'), 'success verdict present');
+    assert.ok(!res.output.includes('Remediation:'), 'success needs no remediation');
+  });
+
+  it('a still-running task gets no remediation hint', async () => {
+    const c = ctx({
+      getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 10, output: 'x' }),
+    });
+    const res = await taskOutputTool.execute!({ task_id: 't' }, c);
+    assert.ok(!res.output.includes('Remediation:'), 'no verdict/remediation while running');
+  });
+});
+
 describe('getAgentOutputTaskId (parity: Claude Code FileReadTool/UI getAgentOutputTaskId)', () => {
   it('extracts the task id from a …/tasks/<id>.output path', () => {
     assert.equal(getAgentOutputTaskId('/home/u/.ami/projects/p/tasks/bg-123.output'), 'bg-123');

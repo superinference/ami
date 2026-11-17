@@ -283,7 +283,22 @@ export const taskOutputTool: ToolDefinition = {
     // a non-zero exit reads as a failure signal rather than just a bare number the
     // model has to interpret. Only emitted once the task has actually finished.
     if (result.status !== 'running' && result.exitCode !== null) {
-      lines.push(result.exitCode === 0 ? 'Result: success' : `Result: failure (exit code ${result.exitCode})`);
+      if (result.exitCode === 0) {
+        lines.push('Result: success');
+      } else {
+        lines.push(`Result: failure (exit code ${result.exitCode})`);
+        // FUNCTIONAL (parity): actionable remediation hint on a failed task
+        // (mirrors Claude Code's failed-task notifications, which point the user at
+        // a fallback / retry instead of just reporting the failure). A bare exit
+        // code leaves the model to guess the next step; attach a concrete one —
+        // point at the full on-disk log when its path is known so the model/user
+        // can inspect the whole output, and always suggest re-running.
+        lines.push(
+          taskMeta?.outputPath
+            ? `Remediation: inspect the full output at ${taskMeta.outputPath}, fix the cause, then re-run the command.`
+            : 'Remediation: review the output above, fix the cause, then re-run the command.',
+        );
+      }
     }
 
     // Dedup (parity with Claude Code's TaskOutputTool flipping `task.notified` on a
