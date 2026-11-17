@@ -22,6 +22,37 @@ export const MAX_MESSAGES_TO_SCAN = 5000;                 // per-session message
 export const MAX_SNIPPET_CHARS = 300;                     // result snippet budget (incl. ellipses)
 
 /**
+ * Boundary caps on the transcript payload handed to an (optional) LLM reranker —
+ * mirrors the reference's agentic-search budgets (agenticSessionSearch.ts L10-13).
+ * A ranking model must not be fed an unbounded session body: sample messages from
+ * both ends, collapse whitespace, and hard-cap the char count with an ellipsis.
+ */
+export const MAX_RANKING_TRANSCRIPT_CHARS = 2000; // per-session transcript chars sent to the ranker
+export const MAX_RANKING_MESSAGES_TO_SCAN = 100;  // messages sampled from both ends of a session
+export const MAX_RANKING_CANDIDATES = 100;        // sessions sent to the ranker in one call
+
+/**
+ * Tool-use input fields that RENDER as the visible argument of a tool call
+ * ("⏺ Bash(command)", "Grep(pattern)", "Read(file_path)", "Agent(prompt)"), and
+ * therefore are what a user expects a search to match. Mirrors the reference's
+ * `toolUseSearchText` allowlist (transcriptSearch.ts L134-164). Indexing the WHOLE
+ * input object (a blind `JSON.stringify`) leaks non-rendered bookkeeping fields
+ * (`backgroundTaskId`, `rawOutputPath`, internal flags) into the index and yields
+ * phantom matches — under-count beats phantom, so allowlist the rendered fields. */
+const TOOL_USE_STRING_FIELDS = [
+  'command', 'pattern', 'file_path', 'path', 'prompt', 'description', 'query', 'url', 'skill',
+] as const;
+/** Array-valued tool-use fields rendered as a joined string (Tmux `args[]`,
+ *  SendUserFile `files[]`). */
+const TOOL_USE_ARRAY_FIELDS = ['args', 'files'] as const;
+
+/** Tool-result string fields a tool actually renders (Bash `stdout`/`stderr`,
+ *  Read `file.content`, generic `content`/`output`/`result`/`text`/`message`). */
+const TOOL_RESULT_STRING_FIELDS = ['content', 'output', 'result', 'text', 'message'] as const;
+/** Array-valued tool-result fields (Grep/Glob `filenames`, match `lines`/`results`). */
+const TOOL_RESULT_ARRAY_FIELDS = ['filenames', 'lines', 'results'] as const;
+
+/**
  * Subsequence (fuzzy) fallback tier. When a short single-token query matches no
  * session by substring, try a subsequence match ("tststp" ⊂ "test stop") so a
  * typo/abbreviation still surfaces — ranked STRICTLY below every substring hit.
@@ -99,7 +130,15 @@ export function flattenMessageText(msg: unknown): string {
       if (fn && typeof fn === 'object') {
         const f = fn as Record<string, unknown>;
         if (typeof f.name === 'string') parts.push(f.name);
-        if (typeof f.arguments === 'string') parts.push(f.arguments);
+        // `arguments` is a JSON string (OpenAI shape). Parse it and index only
+        // the allowlisted rendered fields — indexing the raw JSON would leak
+        // non-rendered bookkeeping keys and produce phantom matches. Non-JSON
+        // arguments (non-standard) fall back to the raw string so nothing is lost.
+        if (typeof f.arguments === 'string') {
+          let parsed: unknown;
+          try { parsed = JSON.parse(f.arguments); } catch { parsed = undefined; }
+          parts.push(parsed !== undefined ? toolUseSearchText(parsed) : f.arguments);
+        }
       }
     }
   }
@@ -144,6 +183,62 @@ export function matchSnippet(text: string, terms: string[], phrase: string, max 
   return prefix + snip + suffix;
 }
 
+/**
+ * Allowlisted searchable text for a tool-use `input` object. Only the fields a
+ * tool renders as its visible argument are indexed — a blind stringify of the
+ * whole input would index non-rendered bookkeeping fields and produce phantom
+ * matches. Unknown shapes index empty (under-count > phantom). Mirrors the
+ * reference's `toolUseSearchText` (transcriptSearch.ts L134-164). @public
+ */
+export function toolUseSearchText(input: unknown): string {
+  if (!input || typeof input !== 'object') return typeof input === 'string' ? input : '';
+  const o = input as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const k of TOOL_USE_STRING_FIELDS) {
+    const v = o[k];
+    if (typeof v === 'string') parts.push(v);
+  }
+  for (const k of TOOL_USE_ARRAY_FIELDS) {
+    const v = o[k];
+    if (Array.isArray(v) && v.every(x => typeof x === 'string')) parts.push((v as string[]).join(' '));
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Allowlisted searchable text for a tool's native result (`Out`) shape. Known
+ * shapes first (Bash `{stdout,stderr}`, Read `{file:{content}}`), then an
+ * allowlist of rendered output fields. Indexing the model-facing serialization
+ * (reminders, `<persisted-output>` wrappers, internal id strings) would yield
+ * phantom matches, so only the fields the UI renders are indexed; unknown shapes
+ * index empty. Mirrors the reference's `toolResultSearchText`
+ * (transcriptSearch.ts L171-202). @public
+ */
+export function toolResultSearchText(r: unknown): string {
+  if (typeof r === 'string') return r;
+  if (!r || typeof r !== 'object') return '';
+  const o = r as Record<string, unknown>;
+  // Known shapes first.
+  if (typeof o.stdout === 'string') {
+    const err = typeof o.stderr === 'string' ? o.stderr : '';
+    return o.stdout + (err ? '\n' + err : '');
+  }
+  const file = o.file;
+  if (file && typeof file === 'object' && typeof (file as { content?: unknown }).content === 'string') {
+    return (file as { content: string }).content;
+  }
+  const parts: string[] = [];
+  for (const k of TOOL_RESULT_STRING_FIELDS) {
+    const v = o[k];
+    if (typeof v === 'string') parts.push(v);
+  }
+  for (const k of TOOL_RESULT_ARRAY_FIELDS) {
+    const v = o[k];
+    if (Array.isArray(v) && v.every(x => typeof x === 'string')) parts.push((v as string[]).join('\n'));
+  }
+  return parts.join('\n');
+}
+
 /** Recursively flatten string | block-array content into searchable text. */
 function flattenContent(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -155,14 +250,18 @@ function flattenContent(content: unknown): string {
     const b = block as Record<string, unknown>;
     if (typeof b.text === 'string') out.push(b.text);
     if (typeof b.thinking === 'string') out.push(b.thinking);
-    // tool_use carries a structured `input`; tool_result carries nested content.
-    if (b.input !== undefined) {
-      try { out.push(typeof b.input === 'string' ? b.input : JSON.stringify(b.input)); } catch { /* unserializable */ }
-    }
-    if (b.content !== undefined) out.push(flattenContent(b.content));
     if (typeof b.name === 'string') out.push(b.name);
+    // tool_result carries the tool's native Out — duck-type its rendered fields.
+    if (b.type === 'tool_result') {
+      out.push(toolResultSearchText(b.content));
+    } else if (b.input !== undefined) {
+      // tool_use carries a structured `input` — allowlist its rendered args only.
+      out.push(toolUseSearchText(b.input));
+    } else if (b.content !== undefined) {
+      out.push(flattenContent(b.content));
+    }
   }
-  return out.join(' ');
+  return out.filter(Boolean).join(' ');
 }
 
 /**
@@ -325,6 +424,34 @@ export interface RankedSearchOptions {
 }
 
 /**
+ * Scalable transcript extraction for the (optional) ranking payload: sample
+ * messages from BOTH ends of a long session (so the ranker sees the opening ask
+ * and the latest state, not just a truncated head), flatten each to searchable
+ * text, collapse whitespace, and hard-cap the total with a trailing ellipsis.
+ * Mirrors the reference's `extractTranscript` (agenticSessionSearch.ts L83-108)
+ * and its MAX_* boundary caps (L10-13). @public
+ */
+export function extractRankingTranscript(
+  messages: unknown[],
+  maxChars: number = MAX_RANKING_TRANSCRIPT_CHARS,
+  maxMessages: number = MAX_RANKING_MESSAGES_TO_SCAN,
+): string {
+  if (!Array.isArray(messages) || messages.length === 0) return '';
+  const half = Math.floor(maxMessages / 2);
+  const sampled =
+    messages.length <= maxMessages
+      ? messages
+      : [...messages.slice(0, half), ...messages.slice(-half)];
+  const text = sampled
+    .map(flattenMessageText)
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > maxChars ? text.slice(0, maxChars) + '…' : text;
+}
+
+/**
  * Build context-only {@link SearchResult} entries for the most-recent sessions
  * (newest `createdAt` first), excluding any `excludeIds`. These carry score 0 —
  * they rank below every literal/fuzzy hit and exist solely to widen a semantic
@@ -342,22 +469,22 @@ function recentSessionResults(cwd: string, count: number, excludeIds: Set<string
       const session = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       const sessionId = session.id ?? file.replace('.json', '');
       if (excludeIds.has(sessionId)) continue;
-      // A lightweight context snippet: title/tag/branch, else the first non-empty
-      // flattened message — enough for a reranker to judge relevance.
-      let snippet = [session.customTitle, session.aiTitle, session.tag, session.gitBranch]
+      // A context snippet for the reranker: title/tag/branch PLUS a bounded
+      // head+tail transcript sample (so a semantic ranker sees the opening ask
+      // and the latest state of a long session, char-capped for the payload).
+      const metaPrefix = [session.customTitle, session.aiTitle, session.tag, session.gitBranch]
         .filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
         .join(' ');
-      if (!snippet) {
-        const messages = Array.isArray(session.messages) ? session.messages : [];
-        for (const msg of messages) {
-          const t = flattenMessageText(msg);
-          if (t) { snippet = t; break; }
-        }
-      }
+      const body = extractRankingTranscript(
+        Array.isArray(session.messages) ? session.messages : [],
+      );
+      const snippet = [metaPrefix, body].filter(Boolean).join(' ');
       out.push({
         sessionId,
         role: 'recent',
-        content: matchSnippet(snippet, [], ''),
+        // Keep the richer head+tail transcript (bounded by extractRankingTranscript)
+        // so a semantic reranker has real context — not just a 300-char head.
+        content: matchSnippet(snippet, [], '', MAX_RANKING_TRANSCRIPT_CHARS),
         score: 0,
         timestamp: session.createdAt,
       });
@@ -416,6 +543,9 @@ export async function searchSessionsRanked(
     const have = new Set(candidates.map(c => c.sessionId));
     pool = [...candidates, ...recentSessionResults(cwd, limit - candidates.length, have)];
   }
+  // Boundary cap on the payload sent to the ranking model: never hand a reranker
+  // more than MAX_RANKING_CANDIDATES sessions in one call (reference L12).
+  if (pool.length > MAX_RANKING_CANDIDATES) pool = pool.slice(0, MAX_RANKING_CANDIDATES);
   if (pool.length === 0) return pool;
   // Already-cancelled search: skip the (potentially networked) rerank entirely
   // and hand back the fast local order.

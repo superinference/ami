@@ -3,7 +3,15 @@ import * as assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { searchSessions, searchSessionsRanked } from '../src/session-search';
+import {
+  searchSessions,
+  searchSessionsRanked,
+  toolUseSearchText,
+  toolResultSearchText,
+  extractRankingTranscript,
+  MAX_RANKING_TRANSCRIPT_CHARS,
+  MAX_RANKING_MESSAGES_TO_SCAN,
+} from '../src/session-search';
 import { projectStateDir } from '../src/reference-journal';
 
 describe('searchSessions', () => {
@@ -287,5 +295,242 @@ describe('searchSessionsRanked (optional LLM-ranking tier)', () => {
     });
     assert.equal(ranked.length, 0);
     assert.equal(called, false);
+  });
+
+  it('caps the candidate pool handed to the ranker (boundary cap)', async () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    // Seed well over MAX_RANKING_CANDIDATES recent sessions so recent-fill would
+    // overflow the pool without the cap.
+    for (let i = 0; i < 130; i++) {
+      fs.writeFileSync(path.join(sessDir, `cap-${i}.json`), JSON.stringify({
+        id: `cap-${i}`,
+        createdAt: `2024-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`,
+        messages: [{ role: 'user', content: `filler ${i}` }],
+      }));
+    }
+    let seen = 0;
+    await searchSessionsRanked(tmpDir, 'ranktoken', {
+      limit: 200,
+      recentFill: true,
+      rankFn: async (_q, candidates) => { seen = candidates.length; return candidates.map(c => c.sessionId); },
+    });
+    assert.ok(seen <= 100, `pool must be capped at 100, saw ${seen}`);
+  });
+
+  it('recent-fill candidates carry a head+tail transcript, not just a 300-char head', async () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    // A long session lacking the literal query term, so it only enters via recentFill.
+    fs.writeFileSync(path.join(sessDir, 'rich.json'), JSON.stringify({
+      id: 'rich',
+      createdAt: '2025-06-01T00:00:00.000Z',
+      messages: [
+        { role: 'user', content: 'OPENINGMARKER ' + 'x'.repeat(500) },
+        { role: 'assistant', content: 'y'.repeat(500) },
+        { role: 'user', content: 'z'.repeat(500) + ' CLOSINGMARKER' },
+      ],
+    }));
+    let poolContent = '';
+    await searchSessionsRanked(tmpDir, 'nomatchzzz', {
+      limit: 5,
+      recentFill: true,
+      rankFn: async (_q, candidates) => {
+        const hit = candidates.find(c => c.sessionId === 'rich');
+        poolContent = hit ? hit.content : '';
+        return candidates.map(c => c.sessionId);
+      },
+    });
+    // Both the opening and closing markers must survive (head+tail sampling),
+    // which a flat 300-char head could never contain together.
+    assert.ok(poolContent.includes('OPENINGMARKER'), 'head sample missing');
+    assert.ok(poolContent.includes('CLOSINGMARKER'), 'tail sample missing');
+  });
+});
+
+describe('tool-use / tool-result allowlisted extraction (phantom-match guard)', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-allow-'));
+    fs.mkdirSync(projectStateDir(tmpDir, 'sessions'), { recursive: true });
+  });
+
+  it('indexes rendered tool_use fields but NOT non-rendered bookkeeping keys', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'tu.json'), JSON.stringify({
+      id: 'tu',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', name: 'bash', input: { command: 'realcmdtoken', backgroundTaskId: 'phantomzzz' } }] },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'realcmdtoken').some(r => r.sessionId === 'tu'), 'rendered command must be searchable');
+    assert.equal(searchSessions(tmpDir, 'phantomzzz').length, 0, 'bookkeeping field must NOT be indexed');
+  });
+
+  it('parses tool_call arguments and indexes only allowlisted keys', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'tc.json'), JSON.stringify({
+      id: 'tc',
+      messages: [
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_edit', arguments: '{"file_path":"realpathtoken","rawOutputPath":"phantomyyy"}' } }] },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'realpathtoken').some(r => r.sessionId === 'tc'), 'rendered file_path must be searchable');
+    assert.equal(searchSessions(tmpDir, 'phantomyyy').length, 0, 'bookkeeping argument key must NOT be indexed');
+  });
+
+  it('falls back to the raw string for non-JSON tool_call arguments', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'bad-args.json'), JSON.stringify({
+      id: 'bad-args',
+      messages: [
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'x', arguments: 'rawargstoken not json' } }] },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'rawargstoken').some(r => r.sessionId === 'bad-args'));
+  });
+
+  it('indexes native tool_result output fields but NOT non-rendered keys', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'tr.json'), JSON.stringify({
+      id: 'tr',
+      messages: [
+        { role: 'user', content: [{ type: 'tool_result', content: { stdout: 'realstdouttoken', rawOutputPath: 'phantomqqq' } }] },
+        { role: 'user', content: [{ type: 'tool_result', content: { file: { content: 'filecontenttoken' } } }] },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'realstdouttoken').some(r => r.sessionId === 'tr'), 'stdout must be searchable');
+    assert.ok(searchSessions(tmpDir, 'filecontenttoken').some(r => r.sessionId === 'tr'), 'file.content must be searchable');
+    assert.equal(searchSessions(tmpDir, 'phantomqqq').length, 0, 'non-rendered result key must NOT be indexed');
+  });
+
+  it('toolUseSearchText: allowlist, arrays, and non-object inputs', () => {
+    assert.equal(toolUseSearchText({ command: 'ls', secret: 'hidden' }), 'ls');
+    assert.equal(toolUseSearchText({ args: ['a', 'b'], files: ['c'] }), 'a b c');
+    assert.equal(toolUseSearchText({ args: ['a', 2] }), '', 'mixed-type arrays are skipped');
+    assert.equal(toolUseSearchText('plain'), 'plain');
+    assert.equal(toolUseSearchText(null), '');
+    assert.equal(toolUseSearchText(42), '');
+  });
+
+  it('toolResultSearchText: known shapes, allowlist, and fallbacks', () => {
+    assert.equal(toolResultSearchText({ stdout: 'out', stderr: 'err' }), 'out\nerr');
+    assert.equal(toolResultSearchText({ stdout: 'out' }), 'out');
+    assert.equal(toolResultSearchText({ file: { content: 'fc' } }), 'fc');
+    assert.equal(toolResultSearchText({ output: 'o', durationMs: 5 }), 'o');
+    assert.equal(toolResultSearchText({ filenames: ['f1', 'f2'] }), 'f1\nf2');
+    assert.equal(toolResultSearchText('str'), 'str');
+    assert.equal(toolResultSearchText(null), '');
+    assert.equal(toolResultSearchText(7), '');
+    assert.equal(toolResultSearchText({ file: { content: 5 } }), '', 'non-string file.content falls through to allowlist');
+  });
+});
+
+describe('subsequence (fuzzy) fallback tier', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-fuzzy-'));
+    fs.mkdirSync(projectStateDir(tmpDir, 'sessions'), { recursive: true });
+  });
+
+  it('surfaces a short single-token query via subsequence when no substring matches', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'fz.json'), JSON.stringify({
+      id: 'fz',
+      messages: [{ role: 'user', content: 'test stop button' }],
+    }));
+    // 'tststp' is not a substring but IS a subsequence of 'test stop'.
+    const results = searchSessions(tmpDir, 'tststp');
+    const hit = results.find(r => r.sessionId === 'fz');
+    assert.ok(hit, 'fuzzy subsequence must surface the session');
+    assert.equal(hit!.role, 'fuzzy');
+  });
+
+  it('ranks every exact substring hit strictly above a fuzzy hit', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'exact.json'), JSON.stringify({
+      id: 'exact',
+      messages: [{ role: 'user', content: 'abcd exact match' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'fuzzy.json'), JSON.stringify({
+      id: 'fuzzy',
+      messages: [{ role: 'user', content: 'a b c d spread out' }],
+    }));
+    const results = searchSessions(tmpDir, 'abcd');
+    assert.equal(results[0].sessionId, 'exact', 'exact substring hit must outrank fuzzy');
+  });
+
+  it('does not fuzzy-match multi-token queries', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'multi.json'), JSON.stringify({
+      id: 'multi',
+      messages: [{ role: 'user', content: 'test stop button' }],
+    }));
+    assert.equal(searchSessions(tmpDir, 'tst stp').length, 0, 'multi-token fuzzy must not fire');
+  });
+});
+
+describe('render-replaced sentinel exclusion (phantom-match guard)', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-sentinel-'));
+    fs.mkdirSync(projectStateDir(tmpDir, 'sessions'), { recursive: true });
+  });
+
+  it('excludes interrupt-sentinel text so it cannot produce phantom matches', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'sent.json'), JSON.stringify({
+      id: 'sent',
+      messages: [
+        { role: 'assistant', content: '[Response interrupted by server error]' },
+        { role: 'user', content: '[Tool call interrupted by the user]' },
+      ],
+    }));
+    // The literal word "interrupted" renders as a component, never as text — a
+    // search for it must NOT match these sentinel messages.
+    assert.equal(searchSessions(tmpDir, 'interrupted').length, 0, 'sentinel text must be excluded');
+  });
+
+  it('excludes model-only system-reminder spans from the index', () => {
+    const sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.writeFileSync(path.join(sessDir, 'rem.json'), JSON.stringify({
+      id: 'rem',
+      messages: [
+        { role: 'user', content: 'visible text <system-reminder>hiddenremindertoken</system-reminder> more' },
+      ],
+    }));
+    assert.ok(searchSessions(tmpDir, 'visible').some(r => r.sessionId === 'rem'), 'visible text still searchable');
+    assert.equal(searchSessions(tmpDir, 'hiddenremindertoken').length, 0, 'reminder text must be excluded');
+  });
+});
+
+describe('extractRankingTranscript (bounded head+tail sampling)', () => {
+  it('returns empty for empty / non-array input', () => {
+    assert.equal(extractRankingTranscript([]), '');
+    assert.equal(extractRankingTranscript(undefined as unknown as unknown[]), '');
+  });
+
+  it('collapses whitespace across flattened messages', () => {
+    const out = extractRankingTranscript([
+      { role: 'user', content: 'alpha   \n\t beta' },
+      { role: 'assistant', content: 'gamma' },
+    ]);
+    assert.equal(out, 'alpha beta gamma');
+  });
+
+  it('samples from both ends and drops the middle when over the message cap', () => {
+    const messages = [];
+    for (let i = 0; i < MAX_RANKING_MESSAGES_TO_SCAN + 20; i++) {
+      messages.push({ role: 'user', content: `m${i}` });
+    }
+    const out = extractRankingTranscript(messages);
+    assert.ok(out.includes('m0'), 'head must be present');
+    assert.ok(out.includes(`m${MAX_RANKING_MESSAGES_TO_SCAN + 19}`), 'tail must be present');
+    const mid = Math.floor((MAX_RANKING_MESSAGES_TO_SCAN + 20) / 2);
+    assert.ok(!out.includes(` m${mid} `), 'middle messages must be dropped');
+  });
+
+  it('hard-caps the char count with a trailing ellipsis', () => {
+    const out = extractRankingTranscript([{ role: 'user', content: 'q'.repeat(MAX_RANKING_TRANSCRIPT_CHARS + 500) }]);
+    assert.equal(out.length, MAX_RANKING_TRANSCRIPT_CHARS + 1); // + ellipsis char
+    assert.ok(out.endsWith('…'));
   });
 });
