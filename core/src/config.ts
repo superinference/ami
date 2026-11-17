@@ -615,12 +615,26 @@ export interface ProjectConfig {
  * `settings.statusLine`): the shell `command` whose stdout is rendered, plus an
  * optional horizontal `padding` (spaces per side, CC's `<Box paddingX>`). The bare
  * string form of `statusLine` is equivalent to `{ command }` with no padding.
+ *
+ * `type` is Claude Code's status-line TYPE discriminator (`{ "type": "command",
+ * "command": "..." }`): the ONLY shape CC's own `statuslineSetup` tool writes. AMI
+ * renders the `command` directly, so `type` is accepted-and-ignored (forward-compat —
+ * an unrecognized future type never rejects the block), which makes a `settings.json`
+ * copied verbatim from Claude Code parse unchanged rather than being lost. Declaring it
+ * here (rather than letting it fall through as an untyped extra key) documents the
+ * supported CC drop-in shape and keeps the typed contract honest.
  */
 export interface StatusLineConfig {
   /** Shell command whose stdout is rendered as the status line. */
   command: string;
   /** Horizontal padding (spaces per side) applied to each rendered line. */
   padding?: number;
+  /**
+   * Claude-Code status-line kind discriminator (CC only ever emits `'command'`).
+   * Accepted for drop-in compatibility and otherwise ignored — AMI always renders the
+   * `command`'s stdout. A non-string value is surfaced by {@link validateProjectConfigValues}.
+   */
+  type?: string;
 }
 
 /**
@@ -1561,6 +1575,13 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       if (sl.padding !== undefined && !matchesConfigFieldType(sl.padding, 'number')) {
         issues.push({ field: 'statusLine.padding', message: `must be a number (got ${describeJsonType(sl.padding)})`, value: sl.padding, tip: getConfigValidationTip('statusLine.padding', { kind: 'type', type: 'number' }) });
       }
+      // Claude-Code's `{ type: 'command', command }` drop-in shape: `type` is accepted
+      // and ignored, but a non-string `type` is a malformed block — surface it (the
+      // valid `command` still loads; a bad `type` is dropped by salvage) rather than
+      // silently tolerating `type: 123`.
+      if (sl.type !== undefined && typeof sl.type !== 'string') {
+        issues.push({ field: 'statusLine.type', message: `must be a string (got ${describeJsonType(sl.type)})`, value: sl.type, tip: getConfigValidationTip('statusLine.type', { kind: 'type', type: 'string' }) });
+      }
     }
   }
   // 7. `strictPluginOnlyCustomization` union: `true`/`false` OR an array of the known
@@ -2361,22 +2382,41 @@ export class ConfigService {
     return changed;
   }
 
-  stop(): void {
+  /**
+   * Tear the service down and RESOLVE only once every live `fs.FSWatcher` has emitted its
+   * `'close'` event. The synchronous teardown — clear every timer, close both watchers,
+   * drop the watcher handles, mark stopped — runs BEFORE this returns, so an immediate
+   * post-`stop()` assertion (a cleared `retryTimer`, a nulled `watcher`) still holds; the
+   * returned promise is the AWAIT-able boundary a test or shutdown uses to confirm the
+   * watcher is FULLY stopped before deleting the watched directory, closing the documented
+   * teardown ENOENT race (a still-settling `fs.watch` callback firing on a just-removed
+   * dir). Fire-and-forget callers that ignore the promise behave exactly as before. Safe
+   * to call repeatedly — a second call has no watchers left to close and resolves at once.
+   * Parity: Claude Code's `changeDetector.dispose()` returning the watcher `close()`
+   * promise so teardown can await the watcher fully stopping (ENOENT race #25253).
+   */
+  stop(): Promise<void> {
     if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
     if (this.stabilityTimer) { clearTimeout(this.stabilityTimer); this.stabilityTimer = null; }
     if (this.deletionTimer) { clearTimeout(this.deletionTimer); this.deletionTimer = null; }
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.globalDebounceTimer) { clearTimeout(this.globalDebounceTimer); this.globalDebounceTimer = null; }
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
+    const closing: Array<Promise<void>> = [];
+    for (const w of [this.watcher, this.globalWatcher]) {
+      if (!w) continue;
+      // A real FSWatcher is an EventEmitter and signals completion via a 'close' event;
+      // await it so teardown can know the watcher has fully stopped. (A minimal test
+      // fake without `once` simply resolves synchronously — nothing to await.)
+      if (typeof w.once === 'function') {
+        closing.push(new Promise<void>(resolve => { w.once('close', () => resolve()); }));
+      }
+      w.close();
     }
-    if (this.globalWatcher) {
-      this.globalWatcher.close();
-      this.globalWatcher = null;
-    }
+    this.watcher = null;
+    this.globalWatcher = null;
     this.started = false;
+    return Promise.all(closing).then(() => undefined);
   }
 }
 
