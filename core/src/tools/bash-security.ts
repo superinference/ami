@@ -73,6 +73,7 @@ const CHECK_IDS = {
   UNC_PATH: 70,
   WRAPPER_FLAG_EVASION: 71,
   DANGEROUS_DECLARE: 72,
+  VALIDATOR_EXCEPTION: 73,
 } as const;
 
 // eslint-disable-next-line no-control-regex
