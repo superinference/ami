@@ -2,6 +2,7 @@ import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { resolveRipgrepConfig, type RipgrepConfig } from '../tools/ripgrep-config';
 
 /**
  * Mockable seam (ESM-safe). Tests replace these via
@@ -744,6 +745,88 @@ function snapshotConfigFile(shellPath: string): string {
 }
 
 /**
+ * Build a shell function that invokes `binaryPath` with an explicit `argv[0]`
+ * (`argv0`), prepending `prependArgs` before the caller's `"$@"`. This is the
+ * ARGV0-dispatch trick for multi-call / busybox-style binaries (one executable
+ * that dispatches on `argv[0]`): to behave as ripgrep, such a binary must see
+ * `argv[0] === 'rg'` even when spawned from a wrapper path. The four ordered
+ * branches mirror Claude Code's `createArgv0ShellFunction` (ShellSnapshot.ts):
+ *   1. zsh sets `argv[0]` via the `ARGV0` env var;
+ *   2. Windows/msys/cygwin bash where `exec -a` is unavailable → `ARGV0` env var;
+ *   3. a subshell (`$BASHPID != $$`) can `exec -a` directly;
+ *   4. otherwise wrap `exec -a` in its own subshell so the parent shell survives.
+ * `binaryPath` is POSIX-quoted; each `prependArgs` element must already be a safe
+ * shell word (no spaces/metacharacters) — it is injected literally.
+ */
+function createArgv0ShellFunction(
+  funcName: string,
+  argv0: string,
+  binaryPath: string,
+  prependArgs: string[] = [],
+): string {
+  const quotedPath = shQuote(binaryPath);
+  const argSuffix = prependArgs.length > 0 ? `${prependArgs.join(' ')} "$@"` : '"$@"';
+  return [
+    `function ${funcName} {`,
+    '  if [[ -n $ZSH_VERSION ]]; then',
+    `    ARGV0=${argv0} ${quotedPath} ${argSuffix}`,
+    '  elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then',
+    `    ARGV0=${argv0} ${quotedPath} ${argSuffix}`,
+    '  elif [[ $BASHPID != $$ ]]; then',
+    `    exec -a ${argv0} ${quotedPath} ${argSuffix}`,
+    '  else',
+    `    (exec -a ${argv0} ${quotedPath} ${argSuffix})`,
+    '  fi',
+    '}',
+  ].join('\n');
+}
+
+/**
+ * Build the shell snippet that makes a model-typed `rg` in a bash/zsh command
+ * dispatch to the SAME ripgrep binary AMI's grep/glob tools use, so interactive
+ * `rg` and tool `rg` behave identically. Parity with Claude Code's
+ * `createRipgrepShellIntegration` (ShellSnapshot.ts), adapted to AMI:
+ *
+ * - **system mode** (bare PATH `rg`, the default) → `null`: the model's typed
+ *   `rg` already resolves the same PATH binary, so there is nothing to dispatch
+ *   and no snippet is emitted (Claude likewise only integrates when it has its
+ *   own binary / ARGV0 dispatch).
+ * - **config/builtin mode with `argv0`** (a multi-call ripgrep binary) → an
+ *   {@link createArgv0ShellFunction} ARGV0-dispatch function.
+ * - **config/builtin mode without `argv0`** → a plain function that execs the
+ *   configured path (plus any config-level `args`), each component POSIX-quoted.
+ *
+ * The definition is guarded by a `command -v rg` probe (run in a subshell after
+ * `unalias rg` so a user alias cannot shadow the probe — parity with Claude's
+ * `(unalias rg 2>/dev/null; command -v rg)`): a real system `rg` on PATH wins,
+ * matching the user's interactive shell. AMI emits a function (not an alias) for
+ * both cases so dispatch works without relying on `expand_aliases` ordering —
+ * an intentional, more-robust superset of Claude's alias form.
+ *
+ * Returns `null` when no integration is needed (system mode), so callers can
+ * skip embedding it. Consumed by {@link buildSnapshotScript}, which appends the
+ * snippet to the sourceable snapshot file.
+ */
+export function buildRipgrepShellIntegration(config: RipgrepConfig = resolveRipgrepConfig()): string | null {
+  if (config.mode === 'system') return null;
+  const definition = config.argv0
+    ? createArgv0ShellFunction('rg', config.argv0, config.command, config.args ?? [])
+    : (() => {
+        const target = config.args && config.args.length
+          ? `${shQuote(config.command)} ${config.args.map(shQuote).join(' ')}`
+          : shQuote(config.command);
+        return `function rg {\n  ${target} "$@"\n}`;
+      })();
+  const indented = definition.split('\n').map((line) => (line ? `  ${line}` : line)).join('\n');
+  return [
+    '# AMI ripgrep shell integration',
+    'if ! (unalias rg 2>/dev/null; command -v rg) >/dev/null 2>&1; then',
+    indented,
+    'fi',
+  ].join('\n');
+}
+
+/**
  * The capture script that, when run by the user's shell as a login shell, writes
  * a sourceable snapshot of their functions, shell options, aliases and PATH to
  * `$SNAPSHOT_FILE`. Faithful to Claude Code's `getSnapshotScript` /
@@ -776,12 +859,23 @@ alias | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_F
       ? '# No user config file to source'
       : 'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"';
   const configFile = snapshotConfigFile(shellPath);
+  // Append the ripgrep shell integration (when AMI has a non-system ripgrep
+  // configured) so a model-typed `rg` in the sourced snapshot dispatches to the
+  // same binary the grep/glob tools use. A quoted heredoc delimiter keeps the
+  // snippet (which contains `$@`, `$$`, `$BASHPID`) literal in the capture pass.
+  const ripgrepIntegration = buildRipgrepShellIntegration();
+  const ripgrepBlock = ripgrepIntegration
+    ? `cat >> "$SNAPSHOT_FILE" <<'AMI_RG_SNIPPET_EOF'
+${ripgrepIntegration}
+AMI_RG_SNIPPET_EOF`
+    : '# No ripgrep shell integration (system ripgrep)';
   return `SNAPSHOT_FILE="$AMI_SNAPSHOT_FILE"
 ${configFileExists ? `source ${shQuote(configFile)} < /dev/null` : '# No user config file to source'}
 echo "# Snapshot file" >| "$SNAPSHOT_FILE"
 echo "unalias -a 2>/dev/null || true" >> "$SNAPSHOT_FILE"
 ${userContent}
 echo "export PATH=${shQuote(process.env.PATH || '')}" >> "$SNAPSHOT_FILE"
+${ripgrepBlock}
 if [ ! -f "$SNAPSHOT_FILE" ]; then echo "snapshot not created" >&2; exit 1; fi`;
 }
 
