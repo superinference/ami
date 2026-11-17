@@ -13,6 +13,7 @@ import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } fro
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
 import { isCaseInsensitiveFs } from './tools/tool-utils';
+import { log as logDebug } from './logger';
 import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
@@ -3762,6 +3763,20 @@ export class PermissionManager {
   }
 
   /**
+   * Emit a human-readable debug trace of a permission-state mutation. This is the
+   * introspection surface for the permission layer — EVERY rule/mode/directory
+   * change (add, remove, mode switch, persist) routes one descriptive line through
+   * the core logger, so an operator can see exactly what the permission layer
+   * changed and why. Routed through {@link logDebug} so it honors the debug-mode
+   * gate, credential redaction, and the on-disk/stderr routing the logger already
+   * owns (no separate sink). Mirrors Claude Code's `logForDebugging` calls in
+   * applyPermissionUpdate / persistPermissionUpdate (utils/permissions/PermissionUpdate.ts).
+   */
+  private traceMutation(message: string, data?: Record<string, unknown>): void {
+    logDebug('permissions', message, data);
+  }
+
+  /**
    * Grant read access to an absolute path (file or directory) that lies OUTSIDE the
    * launch cwd. Sources: `/add-dir`, `--context-file`/`--image` launch flags, and
    * user-approved out-of-workspace read prompts. Stored resolved + normalized so the
@@ -3771,7 +3786,12 @@ export class PermissionManager {
     if (!p || typeof p !== 'string') return;
     try {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
-      this.allowedReadRoots.add(path.normalize(abs));
+      const norm = path.normalize(abs);
+      const before = this.allowedReadRoots.size;
+      this.allowedReadRoots.add(norm);
+      // Only trace a real widening of the read boundary (idempotent re-grants are
+      // silent), mirroring Claude's "Adding N director(y/ies)" trace.
+      if (this.allowedReadRoots.size > before) this.traceMutation(`Adding read directory: ${norm}`);
     } catch { /* non-fatal: a bad path just isn't granted */ }
   }
 
@@ -3786,7 +3806,12 @@ export class PermissionManager {
     if (!p || typeof p !== 'string') return false;
     try {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
-      return this.allowedReadRoots.delete(path.normalize(abs));
+      const norm = path.normalize(abs);
+      const removed = this.allowedReadRoots.delete(norm);
+      // Trace only an actual boundary shrink, mirroring Claude's "Removing N
+      // director(y/ies)" trace.
+      if (removed) this.traceMutation(`Removing read directory: ${norm}`);
+      return removed;
     } catch {
       return false;
     }
@@ -5020,6 +5045,7 @@ export class PermissionManager {
    */
   setMode(mode: PermissionMode): boolean {
     if (this._disableBypass && (mode === 'bypassPermissions' || mode === 'auto-allow')) {
+      this.traceMutation(`Refused mode change to '${mode}' (blocked by managed policy)`);
       return false; // blocked by managed policy
     }
     // Entering plan mode from a non-plan mode: remember the prior mode so a later
@@ -5030,7 +5056,9 @@ export class PermissionManager {
     } else {
       this._prePlanMode = undefined;
     }
+    const prev = this.mode;
     this.mode = mode;
+    this.traceMutation(`Setting mode to '${mode}' (was '${prev}')`);
     return true;
   }
 
@@ -5088,7 +5116,10 @@ export class PermissionManager {
    * (a runtime session/CLI grant cannot bypass managed policy).
    */
   addRule(rule: PermissionRule): void {
-    if (this._managedRulesOnly && !isManagedPermissionSource(rule.source)) return;
+    if (this._managedRulesOnly && !isManagedPermissionSource(rule.source)) {
+      this.traceMutation(`Refused ${rule.action} rule (managed-rules-only lockdown): ${describeRule(rule)}`);
+      return;
+    }
     // Dedup: skip a rule already present under a normalized identity (so a legacy/
     // alias tool name — e.g. `Bash` — is recognized as the same rule as `bash`),
     // mirroring Claude's normalized-Set dedup in addPermissionRulesToSettings
@@ -5097,6 +5128,7 @@ export class PermissionManager {
     const key = this.ruleDedupKey(rule);
     if (this.rules.some(r => this.ruleDedupKey(r) === key)) return;
     this.rules.unshift(rule);
+    this.traceMutation(`Adding ${rule.action} rule: ${describeRule(rule)}`);
   }
 
   /**
@@ -5326,7 +5358,11 @@ export class PermissionManager {
   removeRule(predicate: (rule: PermissionRule) => boolean): number {
     const before = this.rules.length;
     this.rules = this.rules.filter(r => isManagedPermissionSource(r.source) || !predicate(r));
-    return before - this.rules.length;
+    const removed = before - this.rules.length;
+    // Trace only when a rule was actually dropped, mirroring Claude's "Removing N
+    // rule(s)" trace.
+    if (removed > 0) this.traceMutation(`Removing ${removed} rule(s)`);
+    return removed;
   }
 
   /**
@@ -5749,6 +5785,7 @@ export class PermissionManager {
       // and the file (which can hold deny patterns describing the project) is not
       // world-readable. Mirrors Claude's writeFileSyncAndFlush_DEPRECATED + 0o600.
       atomicWriteFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
+      this.traceMutation(`Persisting ${rules.length} rule(s) to destination '${destination}': ${filePath}`);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -5777,6 +5814,7 @@ export class PermissionManager {
       // world-readable. Uses the ONE canonical atomic writer (utils/fs-atomic),
       // which also creates `.ami/` 0o700 — no separate mkdir needed.
       atomicWriteFileSync(filePath, JSON.stringify(data, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
+      this.traceMutation(`Persisting ${this.rules.length} rule(s) + mode '${this.mode}' to ${filePath}`);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
