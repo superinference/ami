@@ -1349,6 +1349,75 @@ export function markTeammateIdle(
 }
 
 /**
+ * Max attempts to construct a background sub-agent's engine before pruning it as a
+ * dead child. Parity: Claude Code's bounded prune-and-retry for a teammate-spawn
+ * resource (utils/swarm/backends/ITermBackend.ts:L131-208 — a momentarily-dead
+ * target is retried a bounded number of times, and only a PERSISTENT failure is
+ * treated as systemic). One retry (two attempts) distinguishes a transient
+ * construction failure from a hard systemic one without unbounded looping.
+ */
+export const BACKGROUND_SPAWN_MAX_ATTEMPTS = 2;
+
+/**
+ * Construct a sub-agent engine with a BOUNDED retry so a transient factory failure
+ * (a momentarily-dead resource) does not immediately abort the spawn, while a
+ * persistent failure still surfaces after {@link BACKGROUND_SPAWN_MAX_ATTEMPTS}
+ * attempts (a systemic error). Rethrows the LAST error when every attempt fails.
+ * Mirrors Claude's dead-target detection: retry a bounded number of times, then
+ * give up so the caller can prune the roster rather than hang on a dead child.
+ */
+export function buildSubEngineWithRetry(
+  factory: NonNullable<ToolContext['_engineFactory']>,
+  subConfig: EngineConfig,
+  maxAttempts: number = BACKGROUND_SPAWN_MAX_ATTEMPTS,
+): ReturnType<NonNullable<ToolContext['_engineFactory']>> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return factory(subConfig);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+/** Inputs for {@link pruneDeadBackgroundAgent}. */
+export interface PruneDeadAgentParams {
+  context: ToolContext;
+  taskId: string;
+  agentName?: string;
+  effectiveCwd: string;
+  unlinkParentAbort?: () => void;
+}
+
+/**
+ * Tear down a background sub-agent whose engine FAILED TO CONSTRUCT (a dead child),
+ * reversing the roster/registry bookkeeping already recorded at spawn time so no
+ * phantom `'running'` agent is left behind in the process-manager roster or the
+ * resumable-agent registry. Parity: Claude's dead-target prune — a spawn whose
+ * backend resource is dead is removed from the running-agent map rather than left
+ * dangling. Steps: unlink the parent->child abort cascade, mark the process-manager
+ * entry `failed`, fire the teammate-terminated notice + TeammateIdle hook, release
+ * the agent's isolated file cache, drop its name->id / session / cwd / meta registry
+ * entries (a never-started agent is not resumable), and re-persist the snapshot so
+ * the on-disk store matches. Every step is best-effort — a cleanup failure must
+ * never mask the original construction error.
+ */
+export function pruneDeadBackgroundAgent(p: PruneDeadAgentParams): void {
+  const { context, taskId, agentName, effectiveCwd, unlinkParentAbort } = p;
+  try { unlinkParentAbort?.(); } catch { /* best-effort — never mask the spawn error */ }
+  try { context.processManager?.updateEntry(taskId, { status: 'failed', exitCode: 1 }); } catch { /* best-effort */ }
+  markTeammateIdle(context, taskId, 'failed');
+  try { releaseFileCache(effectiveCwd, taskId); } catch { /* best-effort */ }
+  if (agentName) agentNameRegistry.delete(agentName);
+  agentSessionRegistry.delete(taskId);
+  agentCwdRegistry.delete(taskId);
+  agentMetaRegistry.delete(taskId);
+  try { persistAgentRegistry(context.cwd); } catch { /* best-effort */ }
+}
+
+/**
  * Notice prepended to a subagent that runs in an isolated git worktree (mirrors
  * Claude Code's buildWorktreeNotice). It tells the child three concrete things:
  * (1) paths in any inherited/parent context refer to the PARENT's cwd and must be
@@ -3285,7 +3354,20 @@ export const taskTool: ToolDefinition = {
         }
       }
 
-      const subEngine = context._engineFactory(subConfig);
+      // Construct the sub-engine with a bounded retry. A background spawn registers
+      // its process-manager roster entry + resumable-agent registry BEFORE the engine
+      // exists, so a factory that throws (a DEAD CHILD) would otherwise orphan a
+      // phantom 'running' agent that never drains. On persistent construction failure
+      // we prune those entries and return a classified error instead of rejecting out
+      // of the tool (parity: Claude's dead-target detection + bounded prune-and-retry).
+      let subEngine: ReturnType<NonNullable<ToolContext['_engineFactory']>>;
+      try {
+        subEngine = buildSubEngineWithRetry(context._engineFactory, subConfig);
+      } catch (err) {
+        pruneDeadBackgroundAgent({ context, taskId, agentName, effectiveCwd, unlinkParentAbort });
+        const msg = err instanceof Error ? err.message : String(err);
+        return { output: `Error: failed to start background agent ${taskId}: ${msg}`, isError: true };
+      }
       runBackgroundAgentDrain({
         context, subEngine, effectivePrompt, taskId, outputPath, label,
         effectiveCwd, isolation, subAbort, unlinkParentAbort, tools,
