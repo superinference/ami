@@ -79,13 +79,47 @@ const STATIC_MODEL_PROVIDERS = new Set([
   'cerebras', 'alibaba', 'luma', 'huggingface',
 ]);
 
+/**
+ * Abort error for a cancelled model-list / connectivity request. Carries a
+ * recognizable `code` ('ABORT_ERR') so {@link isTransientModelListError} never
+ * treats a deliberate cancellation as a transient (retryable) failure — a user
+ * who aborts `/model` listing must not trigger the retry loop.
+ */
+function makeAbortError(): Error {
+  const e = new Error('Aborted') as Error & { code?: string };
+  e.code = 'ABORT_ERR';
+  return e;
+}
+
+/**
+ * Low-level JSON GET for model discovery / connectivity probing.
+ *
+ * FUNCTIONAL (additive): accepts an optional {@link AbortSignal}. When supplied,
+ * the in-flight request is torn down the instant the signal fires (and an already
+ * -aborted signal rejects synchronously before any socket is opened) so a cancelled
+ * `/model` listing / `/doctor connectivity` probe stops immediately instead of
+ * running to the 10s timeout. Mirrors Claude Code's signal-threaded network waits
+ * (services/api/withRetry.ts). A single `settled` latch + listener teardown ensures
+ * the promise never double-settles when abort races the response/timeout.
+ */
 function httpGetJSON(
   url: string,
   headers: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(makeAbortError()); return; }
     const parsed = new URL(url);
     const requester = parsed.protocol === 'https:' ? https : http;
+
+    let settled = false;
+    let onAbort: (() => void) | undefined;
+    const finish = (apply: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      apply();
+    };
 
     const req = requester.get(url, {
       headers: { ...headers, Accept: 'application/json' },
@@ -114,20 +148,28 @@ function httpGetJSON(
             Array.isArray(retryAfterRaw) ? retryAfterRaw[0] : retryAfterRaw,
           );
           if (retryAfterMs !== null) httpErr.retryAfterMs = retryAfterMs;
-          reject(httpErr);
+          finish(() => reject(httpErr));
           return;
         }
+        let payload: unknown;
         try {
-          resolve(JSON.parse(bodyText));
+          payload = JSON.parse(bodyText);
         } catch {
-          reject(new Error('Invalid JSON response'));
+          finish(() => reject(new Error('Invalid JSON response')));
+          return;
         }
+        finish(() => resolve(payload));
       });
-      res.on('error', reject);
+      res.on('error', (e) => finish(() => reject(e)));
     });
 
-    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
-    req.on('error', reject);
+    if (signal) {
+      onAbort = () => { req.destroy(); finish(() => reject(makeAbortError())); };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    req.on('timeout', () => { req.destroy(); finish(() => reject(new Error('Timeout'))); });
+    req.on('error', (e) => finish(() => reject(e)));
   });
 }
 
@@ -183,11 +225,12 @@ function isTransientModelListError(err: unknown): boolean {
 async function httpGetJSONRetrying(
   url: string,
   headers: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < MODEL_LIST_MAX_ATTEMPTS; attempt++) {
     try {
-      return await httpGetJSON(url, headers);
+      return await httpGetJSON(url, headers, signal);
     } catch (err) {
       lastErr = err;
       if (attempt === MODEL_LIST_MAX_ATTEMPTS - 1 || !isTransientModelListError(err)) {
@@ -271,7 +314,7 @@ function staticModelList(provider: string): ModelInfo[] {
   return (MODEL_PREFERENCE[provider] || []).map(id => ({ id, name: id }));
 }
 
-export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
+export async function listModels(config: ProviderConfig, signal?: AbortSignal): Promise<ModelInfo[]> {
   const provider = detectProvider(config);
 
   // Warm the in-memory context-window / output-cap tables from the persisted
@@ -297,7 +340,7 @@ export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
 
   try {
     // Coalesced: concurrent callers for the same endpoint share one /models walk.
-    return await fetchProviderModels(provider, config);
+    return await fetchProviderModels(provider, config, signal);
   } catch (err) {
     // Fallback to static list if API call fails
     log('modelCapabilities', `[modelCapabilities] fetch failed: ${diagnoseModelDiscovery(err, provider)}`);
@@ -380,6 +423,7 @@ export function diagnoseModelDiscovery(err: unknown, provider: string): string {
  */
 export async function listModelsDiagnostic(
   config: ProviderConfig,
+  signal?: AbortSignal,
 ): Promise<{ models: ModelInfo[]; diagnostic: string | null }> {
   const provider = detectProvider(config);
 
@@ -406,7 +450,7 @@ export async function listModelsDiagnostic(
 
   try {
     // Coalesced: concurrent callers for the same endpoint share one /models walk.
-    const models = await fetchProviderModels(provider, config);
+    const models = await fetchProviderModels(provider, config, signal);
     return {
       models,
       diagnostic: models.length > 0
@@ -420,14 +464,14 @@ export async function listModelsDiagnostic(
   }
 }
 
-async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
+async function listOpenAIModels(config: ProviderConfig, signal?: AbortSignal): Promise<ModelInfo[]> {
   if (!config.baseUrl) throw new Error('baseUrl is required for OpenAI-compatible model listing');
   const baseUrl = config.baseUrl.replace(/\/+$/, '');
   const url = `${baseUrl}/models`;
   const headers: Record<string, string> = {};
   if (config.apiKey) headers['Authorization'] = `Bearer ${sanitizeHeaderValue(config.apiKey)}`;
 
-  const data = await httpGetJSONRetrying(url, headers) as { data?: Array<Record<string, unknown>> };
+  const data = await httpGetJSONRetrying(url, headers, signal) as { data?: Array<Record<string, unknown>> };
   const raw = data.data || [];
   const models: ModelInfo[] = raw.map(m => ({
     id: String(m.id ?? ''),
@@ -469,11 +513,11 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
   return models;
 }
 
-async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
+async function listGeminiModels(config: ProviderConfig, signal?: AbortSignal): Promise<ModelInfo[]> {
   // Default to the public Gemini endpoint; overridable via env (e.g. an offline
   // mirror, or a test server) without changing the default behavior.
   const url = process.env.SI_GEMINI_MODELS_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
-  const data = await httpGetJSONRetrying(url, { 'x-goog-api-key': sanitizeHeaderValue(config.apiKey) }) as { models?: Array<{ name: string; displayName: string }> };
+  const data = await httpGetJSONRetrying(url, { 'x-goog-api-key': sanitizeHeaderValue(config.apiKey) }, signal) as { models?: Array<{ name: string; displayName: string }> };
   return (data.models || []).map(m => ({
     id: m.name.replace('models/', ''),
     name: m.displayName,
@@ -494,16 +538,19 @@ async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
 // ---------------------------------------------------------------------------
 const inFlightListings = new Map<string, Promise<ModelInfo[]>>();
 
-function fetchProviderModels(provider: string, config: ProviderConfig): Promise<ModelInfo[]> {
+function fetchProviderModels(provider: string, config: ProviderConfig, signal?: AbortSignal): Promise<ModelInfo[]> {
+  const run = (): Promise<ModelInfo[]> =>
+    provider === 'google' ? listGeminiModels(config, signal) : listOpenAIModels(config, signal);
+  // A cancellable listing runs on its OWN request (never coalesced): aborting it
+  // must tear down only that caller's socket, never a listing shared with other
+  // concurrent (non-cancellable) callers. Uncancellable calls still coalesce.
+  if (signal) return run();
   // Key on the full credential+endpoint tuple so different providers, base URLs,
   // or keys never share a listing (correctness over aggressiveness).
   const key = `${provider}:::${config.baseUrl ?? ''}:::${config.apiKey ?? ''}`;
   const existing = inFlightListings.get(key);
   if (existing) return existing;
-  const pending = (provider === 'google'
-    ? listGeminiModels(config)
-    : listOpenAIModels(config)
-  ).finally(() => { inFlightListings.delete(key); });
+  const pending = run().finally(() => { inFlightListings.delete(key); });
   inFlightListings.set(key, pending);
   return pending;
 }
@@ -609,6 +656,7 @@ function connectivityProbeTarget(
  */
 export async function probeProviderConnectivity(
   config: ProviderConfig,
+  signal?: AbortSignal,
 ): Promise<ProviderConnectivityResult> {
   const provider = detectProvider(config);
 
@@ -635,7 +683,7 @@ export async function probeProviderConnectivity(
 
   const started = Date.now();
   try {
-    await httpGetJSON(target.url, target.headers);
+    await httpGetJSON(target.url, target.headers, signal);
     const latencyMs = Date.now() - started;
     return {
       provider,
@@ -1004,6 +1052,48 @@ export function getDefaultSubagentModel(config: ProviderConfig): string {
 }
 
 /**
+ * One row of the per-provider model-string table: a logical short key, its
+ * canonical first-party model id, and the concrete wire id to SEND on the active
+ * provider.
+ */
+export interface ProviderModelString {
+  /** Logical, typeable short key (e.g. `opus46`) — stable across providers. */
+  key: string;
+  /** The canonical first-party model id the key resolves to (`claude-opus-4-6`). */
+  firstParty: string;
+  /** The provider-specific wire id to invoke on the detected provider (e.g. a
+   *  Bedrock region-scoped inference profile), or the canonical id unchanged for a
+   *  first-party / Vertex / Foundry endpoint. */
+  wireId: string;
+}
+
+/**
+ * Per-provider canonical model-id table: for every logical short key in
+ * {@link MODEL_SHORT_KEYS}, the canonical first-party id AND the concrete wire id
+ * to invoke on the provider `config` detects. Mirrors Claude Code's
+ * ALL_MODEL_CONFIGS / getBuiltinModelStrings(provider) — one logical ModelKey
+ * mapped to a provider-specific id string — so the same logical model (`opus46`)
+ * resolves to the right per-provider id without the user retyping it when they
+ * switch providers.
+ *
+ * AMI realizes this through its SINGLE central send-path remap rather than N
+ * hardcoded per-provider id tables: `wireId` is produced by the one canonical
+ * {@link toProviderModelId} (which routes Bedrock ids through
+ * {@link resolveBedrockModelId} against the account's inference profiles / region
+ * prefix, and passes first-party / Vertex / Foundry ids through unchanged). No
+ * parallel per-provider id table is introduced — this is the aggregated VIEW of the
+ * existing resolution across every logical key, surfaced for selection UIs and
+ * `ami --introspect`.
+ */
+export function getBuiltinModelStrings(config: ProviderConfig): ProviderModelString[] {
+  return Object.entries(MODEL_SHORT_KEYS).map(([key, firstParty]) => ({
+    key,
+    firstParty,
+    wireId: toProviderModelId(firstParty, config),
+  }));
+}
+
+/**
  * True when `modelName` begins with `prefix` at a SEGMENT BOUNDARY — the match
  * must reach the end of the name or a '-' separator. So "claude-opus-4-5"
  * matches "claude-opus-4-5-20251101" but NOT "claude-opus-4-50". Mirrors Claude
@@ -1031,9 +1121,30 @@ export function modelMatchesVersionPrefix(model: string, entry: string): boolean
   return false;
 }
 
+/**
+ * Order candidate model ids by CLOSENESS to `target`, closest first. Closeness is
+ * the absolute length delta (|id.length − target.length|) — the tightest
+ * super/substring of the requested id — tie-broken by shorter id, then
+ * case-insensitive lexicographic order for stable, deterministic output. Returns a
+ * NEW array (never mutates the input). Used by {@link validateModel} to pick the
+ * best "did you mean" suggestion from a match tier instead of the provider's
+ * arbitrary list order.
+ */
+export function rankClosestMatches(candidates: string[], target: string): string[] {
+  const t = target.length;
+  return [...candidates].sort((a, b) => {
+    const da = Math.abs(a.length - t);
+    const db = Math.abs(b.length - t);
+    if (da !== db) return da - db;
+    if (a.length !== b.length) return a.length - b.length;
+    return a.toLowerCase().localeCompare(b.toLowerCase());
+  });
+}
+
 export async function validateModel(
   config: ProviderConfig,
   modelId: string,
+  signal?: AbortSignal,
 ): Promise<ValidateModelResult> {
   // Normalize the argument up front so leading/trailing whitespace does not
   // silently defeat exact matching, and an empty/whitespace id gets a clear,
@@ -1060,7 +1171,7 @@ export async function validateModel(
   const cacheKey = `${detectProvider(config)}:::${config.baseUrl ?? ''}:::${effective}`;
   if (validModelCache.has(cacheKey)) return { valid: true, available: [] };
 
-  const { models, diagnostic } = await listModelsDiagnostic(config);
+  const { models, diagnostic } = await listModelsDiagnostic(config, signal);
 
   if (models.length === 0) {
     const errorKind = classifyDiscoveryDiagnostic(diagnostic);
@@ -1095,6 +1206,13 @@ export async function validateModel(
   const partial = boundary.length > 0
     ? boundary
     : ids.filter(id => id.includes(effective) || effective.includes(id));
+  // FUNCTIONAL (additive): within the chosen match tier, rank the candidates so the
+  // CLOSEST id wins instead of the provider's arbitrary list order (the old
+  // `partial[0]`). "Closest" = smallest length delta from the requested id (the
+  // tightest super/substring), tie-broken by shorter id then lexicographically for
+  // determinism. So `gpt-4` against `[gpt-4o, gpt-4o-mini]` suggests `gpt-4o`, not
+  // whichever the endpoint happened to return first.
+  const ranked = rankClosestMatches(partial, effective);
   // Ranking of the "did you mean" suggestion when there is no match:
   //  1. a boundary/substring partial (handled above),
   //  2. a RETIRED-id successor (suggestDeprecatedReplacement maps old → new),
@@ -1105,8 +1223,8 @@ export async function validateModel(
   //     which self-gates on isFirstPartyProvider): on a first-party endpoint a
   //     too-new id has no "prior generation the gateway likely carries" rationale,
   //     so we leave the suggestion undefined rather than nudge a downgrade.
-  const suggestion = partial.length > 0
-    ? partial[0]
+  const suggestion = ranked.length > 0
+    ? ranked[0]
     : (suggestDeprecatedReplacement(effective, ids)
         ?? (isFirstPartyProvider() ? undefined : suggestFamilyVersionFallback(effective, ids)));
 
