@@ -1114,6 +1114,182 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
 }
 
 // ---------------------------------------------------------------------------
+// PowerShell read-only cmdlet allowlist (auto-allow).
+//
+// Mirrors Claude Code's PowerShellTool/readOnlyValidation.ts CMDLET_ALLOWLIST /
+// isReadOnlyCommand: the Windows counterpart of the POSIX read-only SAFE_COMMANDS
+// set in permissions.ts. A command composed solely of these side-effect-free
+// cmdlets (Get-ChildItem, Get-Content, Select-String, …) is auto-allowed in
+// `ask` mode so a user is not prompted for a plain read on Windows (where
+// PowerShell is AMI's default shell).
+//
+// Only the hyphenated Verb-Noun cmdlet names are listed — never a bare alias
+// (`cat`, `ls`, `sort`, `echo`, `cd`): those collide with POSIX commands already
+// classified by SAFE_COMMANDS, and resolving them here could auto-allow a bash
+// command that the bash classifier would gate. Hyphenated cmdlet names cannot
+// collide with a POSIX command, so this set is PowerShell-only by construction.
+//
+// Every listed cmdlet is a pure reader/formatter/transformer with no filesystem
+// or state write: Get-* (read), Format-*/Out-*/ConvertTo-*/ConvertFrom-*/
+// Join-*/Split-*/Measure-*/Group-*/Sort-*/Select-*/Compare-* (pipeline shaping,
+// output only), Test-Path/Resolve-Path/Convert-Path (path probes), and the cwd
+// movers (Set/Push/Pop-Location — a bare cwd change is inert; the cd+write and
+// multi-cd desync guards in the classifier run BEFORE this check). Writers
+// (Set-/Add-/Out-File/Export-/Tee-Object/New-/Remove-Item, Invoke-*) are
+// deliberately absent.
+// ---------------------------------------------------------------------------
+
+export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set([
+  // Filesystem / item inspection (read).
+  'get-childitem',
+  'get-content',
+  'get-item',
+  'get-itemproperty',
+  'get-itempropertyvalue',
+  'get-acl',
+  'get-filehash',
+  // Navigation (cwd change only — inert; compound write/multi-cd caught earlier).
+  'get-location',
+  'set-location',
+  'push-location',
+  'pop-location',
+  // Text searching / filtering (read).
+  'select-string',
+  'compare-object',
+  // Object inspection / pipeline shaping (output only).
+  'select-object',
+  'sort-object',
+  'group-object',
+  'where-object',
+  'measure-object',
+  'get-member',
+  'get-unique',
+  'get-random',
+  // Formatters / output (pipeline → host/string, no write).
+  'format-table',
+  'format-list',
+  'format-wide',
+  'format-custom',
+  'format-hex',
+  'out-string',
+  'out-host',
+  'write-output',
+  'write-host',
+  // Converters (pipeline → object/string, no file write).
+  'convertfrom-csv',
+  'convertto-csv',
+  'convertfrom-json',
+  'convertto-json',
+  'convertto-html',
+  'convertto-xml',
+  // Path utilities (read / compute).
+  'join-path',
+  'join-string',
+  'split-path',
+  'resolve-path',
+  'convert-path',
+  'test-path',
+  // System / environment info (read).
+  'get-date',
+  'get-alias',
+  'get-help',
+  'get-history',
+  'get-host',
+  'get-culture',
+  'get-uiculture',
+  'get-timezone',
+  'get-uptime',
+  'get-computerinfo',
+  'get-hotfix',
+  'get-process',
+  'get-service',
+  'get-module',
+  'get-psdrive',
+  'get-psprovider',
+  'get-cimclass',
+  // Network info (read).
+  'get-netadapter',
+  'get-netipaddress',
+  'get-netipconfiguration',
+  'get-netroute',
+  'get-dnsclient',
+  'get-dnsclientcache',
+  // Event log (read).
+  'get-eventlog',
+  'get-winevent',
+  // Timing (inert).
+  'start-sleep',
+]);
+
+// Constructs that make a command un-analyzable as a pure read, so their presence
+// fails the read-only classification closed (never auto-allow): variables /
+// subexpressions / env leaks (`$`), script blocks (`{ }`), grouping /
+// subexpressions (`(`), splatting / arrays / hashtables (`@`), the call operator
+// (`&`), backtick escapes, and output redirection (`>` — a file write). Mirrors
+// readOnlyValidation.ts's fail-closed posture (argLeaksValue + the
+// SAFE_PATH_ELEMENT_TYPES whitelist) without needing the native AST: rejecting
+// these wholesale is strictly more conservative than the per-arg element-type
+// whitelist and keeps this a cheap synchronous check for the classifier.
+const PS_READONLY_DISQUALIFY_RE = /[$`{}()@&>]/;
+
+/**
+ * True if `command` is a PowerShell command composed solely of allowlisted
+ * read-only cmdlets with no dangerous construct — safe to auto-allow in `ask`
+ * mode, the Windows counterpart of the POSIX read-only SAFE_COMMANDS set.
+ *
+ * Fail-closed: it returns true ONLY when EVERY pipeline segment's command-position
+ * name is in {@link POWERSHELL_READONLY_CMDLETS}, the command carries none of the
+ * {@link PS_READONLY_DISQUALIFY_RE} constructs, and the defense-in-depth textual
+ * detectors ({@link detectDangerousPowerShellCommand} / {@link detectUnsafeTypeCast})
+ * find no hazard. Anything it cannot prove read-only returns false (→ the caller
+ * falls through to a prompt). Mirrors Claude's isReadOnlyCommand contract.
+ */
+export function isReadOnlyPowerShellCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  // Reject any un-analyzable construct up front (fail-closed).
+  if (PS_READONLY_DISQUALIFY_RE.test(trimmed)) {
+    return false;
+  }
+  // Statement separators (`;`) and newlines are not auto-allowed — one prompt for
+  // a multi-statement command is the conservative choice.
+  if (/[;\n\r]/.test(trimmed)) {
+    return false;
+  }
+  // Every pipeline segment must START with an allowlisted read-only cmdlet.
+  const segments = trimmed.split('|');
+  for (const segment of segments) {
+    const tokens = segment.trim().match(/\S+/g);
+    if (tokens === undefined || tokens === null || tokens.length === 0) {
+      return false; // empty segment (e.g. `Get-Process ||` or leading `|`)
+    }
+    const first = tokens[0]!;
+    // A segment that leads with a flag/switch is malformed for a read classify.
+    if (first.startsWith('-') || first.startsWith('/')) {
+      return false;
+    }
+    // Strip an optional module qualifier (`Microsoft.PowerShell.Management\Get-…`)
+    // and a Windows executable extension, then normalize case.
+    const name = (first.split(/[\\/]/).pop() ?? first)
+      .toLowerCase()
+      .replace(/\.(exe|cmd|bat|com|ps1)$/, '');
+    if (!POWERSHELL_READONLY_CMDLETS.has(name)) {
+      return false;
+    }
+  }
+  // Defense in depth: never auto-allow something the hazard detectors flag.
+  if (detectDangerousPowerShellCommand(trimmed).blocked) {
+    return false;
+  }
+  if (detectUnsafeTypeCast(trimmed).blocked) {
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // AST-based PowerShell security validator.
 //
 // Mirrors Claude Code's PowerShellTool/powershellSecurity.ts

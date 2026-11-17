@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand } from './tools/bash-security';
-import { isPowerShellNeverSuggest } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
@@ -3383,6 +3383,14 @@ export class PermissionManager {
         }
       }
     }
+
+    // PowerShell read-only cmdlets (Get-ChildItem, Get-Content, Select-String, …)
+    // are the Windows equivalents of the POSIX SAFE_COMMANDS reads above. A
+    // command composed solely of allowlisted read-only cmdlets with no dangerous
+    // construct is auto-allowed, mirroring Claude's CMDLET_ALLOWLIST /
+    // isReadOnlyCommand. Placed last so every destructive/unsafe guard above
+    // (incl. the system-directory and credential-path nets) wins first.
+    if (isReadOnlyPowerShellCommand(trimmed)) return 'safe';
 
     // Unknown commands default to unsafe
     return 'unsafe';
