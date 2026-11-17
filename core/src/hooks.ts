@@ -22,6 +22,7 @@ import type { PermissionUpdate, PermissionMode } from './permissions';
 import { validateUrlSafety, pinnedDnsLookup } from './tools/web-utils';
 import { getSmallFastModel } from './model-capabilities';
 import { isEnvTruthy } from './privacy-level';
+import { killTree } from './utils/shell';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -1976,6 +1977,25 @@ export function getHookDisplayText(d: { statusMessage?: string; content: string 
 }
 
 /**
+ * Payload for the `hookProgress` / `hookResolved` events a {@link HookManager}
+ * emits around every config-registered command/prompt/http/agent hook run
+ * (Claude Code's hook_progress affordance). `hookProgress` fires when the hook
+ * starts; `hookResolved` adds `success` when it settles. A frontend subscribes
+ * to render a live "Running <event> hook…" indicator so a long-running hook does
+ * not look like a hang; it is also an operator-facing introspection signal.
+ */
+export interface HookProgressEvent {
+  /** The lifecycle event the hook fired for (e.g. 'preToolUse'). */
+  event: string;
+  /** The hook's type — command | prompt | http | agent. */
+  hookType: HookConfigType;
+  /** Human-readable label: statusMessage when set, else the hook's content. */
+  label: string;
+  /** Present only on `hookResolved`: whether the hook ran successfully. */
+  success?: boolean;
+}
+
+/**
  * Human-readable provenance string for a hook's source tier, with Claude Code's
  * plugin special-case: a plugin-contributed hook appends `(pluginName)` so the
  * user sees WHICH plugin installed it (SelectHookMode /
@@ -2214,15 +2234,21 @@ async function runCommandHookAsync(
       proc.stdin?.end();
     }
 
+    // On timeout/abort, reap the WHOLE process tree (killTree), not just the
+    // direct `bash -c` child: a hook that backgrounded a `sleep 30 &`, started a
+    // server, or spawned a `docker`/`curl` grandchild would otherwise leak those
+    // descendants after the hook is declared timed-out. killTree enumerates the
+    // child's process tree (+ a process-group sweep) and SIGKILLs every member
+    // (Claude Code's treeKill parity).
     const timer = setTimeout(() => {
-      proc.kill('SIGKILL');
+      killTree(proc);
       reject(new Error(`Hook timed out after ${timeout}ms`));
     }, timeout);
 
-    // Parent/user cancellation: kill the child and surface a distinct "cancelled"
-    // outcome (vs timeout) so callers can tell them apart.
+    // Parent/user cancellation: kill the child tree and surface a distinct
+    // "cancelled" outcome (vs timeout) so callers can tell them apart.
     const onAbort = () => {
-      proc.kill('SIGKILL');
+      killTree(proc);
       clearTimeout(timer);
       reject(new Error('Hook cancelled'));
     };
@@ -2457,6 +2483,9 @@ export class HookManager extends EventEmitter {
     onSuccess?: () => void,
     // Per-hook env-file hint forwarded to runHookByType (CLAUDE_ENV_FILE parity).
     envFileHint?: { event: string; index: number },
+    // Fired once the background hook settles (success or failure), so the running
+    // -hook progress indicator can be cleared for async hooks too.
+    onSettled?: (success: boolean) => void,
   ): void {
     const ac = new AbortController();
     const onAbort = () => ac.abort();
@@ -2483,6 +2512,7 @@ export class HookManager extends EventEmitter {
         this._asyncAbort.signal.removeEventListener('abort', onAbort);
         parentSignal?.removeEventListener('abort', onAbort);
         this._pendingAsync.delete(p);
+        onSettled?.(outcome.success);
       });
     this._pendingAsync.set(p, { event, startedAt: Date.now() });
   }
@@ -2509,18 +2539,44 @@ export class HookManager extends EventEmitter {
     // so two hooks on the same event export into distinct, deterministic fragments.
     const idx = arr.indexOf(fn);
     const envFileHint = idx >= 0 ? { event, index: idx } : undefined;
+    // Running-hook progress affordance (Claude Code's hook_progress /
+    // getHookDisplayText): announce a command/prompt/http/agent hook is about to
+    // run and, when it settles, that it resolved — so a frontend can render a
+    // "Running <event> hook…" indicator instead of a silent multi-second hang.
+    const progress = this.hookProgressPayload(config, event);
+    this.emit('hookProgress', progress);
     if (config.async) {
       this.fireAsyncHook(
         config, cwd, eventData, event, signal,
         config.once ? () => this.removeHookOnce(arr, fn, event) : undefined,
         envFileHint,
+        (success) => this.emit('hookResolved', { ...progress, success }),
       );
       return '';
     }
     const outcome = { success: true };
-    const result = await this.runHookByType(config, cwd, eventData, signal, outcome, envFileHint);
-    if (config.once && outcome.success) this.removeHookOnce(arr, fn, event);
-    return result;
+    try {
+      const result = await this.runHookByType(config, cwd, eventData, signal, outcome, envFileHint);
+      if (config.once && outcome.success) this.removeHookOnce(arr, fn, event);
+      return result;
+    } finally {
+      this.emit('hookResolved', { ...progress, success: outcome.success });
+    }
+  }
+
+  /** Build the {@link HookProgressEvent} payload for a hook about to run: the
+   *  firing event name, the hook type, and the author-facing display label
+   *  (statusMessage when set, else the hook's sanitized content) — the same
+   *  getHookDisplayText the audit view uses, so progress + audit stay in sync. */
+  private hookProgressPayload(
+    config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
+    event: string,
+  ): HookProgressEvent {
+    return {
+      event,
+      hookType: config.type,
+      label: getHookDisplayText({ statusMessage: config.statusMessage, content: describeHookContent(config) }),
+    };
   }
 
   /** Await every in-flight async hook to settle (graceful shutdown). */
