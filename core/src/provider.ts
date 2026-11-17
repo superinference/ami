@@ -37,7 +37,7 @@ import {
   SYSTEM_CA_NODE_OPTIONS,
 } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
-import { assertValidStsEnvCredentials } from './utils/aws';
+import { assertValidStsEnvCredentials, readAwsIniCredentials } from './utils/aws';
 import { isEnvTruthy } from './analytics';
 import { log, logError, recordDiagnostic } from './logger';
 import { partitionAndSortTools } from './tools/tool-utils';
@@ -161,7 +161,8 @@ type ProviderName =
   | 'amazon-bedrock' | 'togetherai' | 'cohere' | 'fireworks'
   | 'perplexity' | 'deepinfra' | 'deepseek' | 'cerebras'
   | 'openrouter' | 'ollama' | 'luma' | 'alibaba' | 'nvidia'
-  | 'google-vertex' | 'anthropic-vertex' | 'ai-gateway' | 'huggingface';
+  | 'google-vertex' | 'anthropic-vertex' | 'ai-gateway' | 'huggingface'
+  | 'azure-foundry';
 
 interface InferredProvider {
   provider: ProviderName;
@@ -201,6 +202,10 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
     'claude-haiku-4-5-20251001',
   ],
   'amazon-bedrock': ['anthropic.claude-sonnet-4-6-20250514', 'anthropic.claude-haiku-4-5-20251001'],
+  // Azure AI Foundry serves Claude models over an OpenAI-compatible endpoint
+  // (`https://<resource>.services.ai.azure.com/models`). The ids are Foundry's
+  // own Claude wire strings (Claude Code's per-ModelConfig `foundry` field).
+  'azure-foundry': ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // Fast + cheap first: a tool-capable default that stays affordable per request
   // (claude-sonnet-4.6 kept only as a last-resort quality fallback).
   openrouter: [
@@ -246,6 +251,7 @@ const URL_PATTERNS: Array<{ pattern: string; provider: ProviderName }> = [
   { pattern: 'generativelanguage.googleapis.com', provider: 'google' },
   { pattern: 'aiplatform.googleapis.com', provider: 'google-vertex' },
   { pattern: 'anthropic.com', provider: 'anthropic' },
+  { pattern: 'services.ai.azure.com', provider: 'azure-foundry' },
   { pattern: 'openai.azure.com', provider: 'azure-openai' },
   { pattern: 'api.luma.ai', provider: 'luma' },
   { pattern: 'huggingface.co', provider: 'huggingface' },
@@ -280,6 +286,7 @@ const ENV_KEYS: Array<{ env: string; provider: ProviderName }> = [
   { env: 'AWS_ACCESS_KEY_ID', provider: 'amazon-bedrock' },
   { env: 'ANTHROPIC_VERTEX_PROJECT_ID', provider: 'anthropic-vertex' },
   { env: 'GOOGLE_APPLICATION_CREDENTIALS', provider: 'google-vertex' },
+  { env: 'AZURE_AI_FOUNDRY_API_KEY', provider: 'azure-foundry' },
 ];
 
 // Default base URLs for providers that use OpenAI-compatible endpoints
@@ -450,6 +457,91 @@ export function describeProviders(): ProviderDescriptor[] {
 }
 
 export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK_PROVIDERS, inferProviderFromBaseUrl, inferProviderFromEnv };
+
+// ---------------------------------------------------------------------------
+// Cross-provider canonical model-ID equivalence / translation table.
+//
+// Claude Code's configs.ts binds ONE logical model to its provider-specific id
+// across every provider (firstParty / bedrock / vertex / foundry), with a
+// `satisfies ModelConfig` compile-time guarantee that EVERY model resolves under
+// EVERY provider, plus a CANONICAL_ID_TO_KEY reverse map. AMI's per-provider
+// MODEL_PREFERENCE lists were independent, opaque strings with no equivalence, so
+// a model chosen under one provider had no translation to the active provider and
+// could surface as an invalid-model error after a provider switch. This table +
+// {@link resolveModelForProvider} supply that single source of truth and the
+// per-provider translation, consumed by {@link resolveModel}.
+// ---------------------------------------------------------------------------
+
+/**
+ * The providers a canonical Claude model is addressable under. Every field is
+ * REQUIRED (the comprehensiveness invariant — see the `provider-u020-w87` test),
+ * mirroring Claude Code's `satisfies ModelConfig`.
+ */
+export interface CanonicalModelConfig {
+  anthropic: string;
+  'anthropic-vertex': string;
+  'amazon-bedrock': string;
+  'azure-foundry': string;
+}
+
+/** Canonical logical model key → its per-provider wire ids. */
+export const CANONICAL_MODEL_EQUIVALENTS: Record<string, CanonicalModelConfig> = {
+  'claude-opus-4-6': {
+    anthropic: 'claude-opus-4-6',
+    'anthropic-vertex': 'claude-opus-4-6',
+    'amazon-bedrock': 'anthropic.claude-opus-4-6-20250514',
+    'azure-foundry': 'claude-opus-4-6',
+  },
+  'claude-sonnet-4-6': {
+    anthropic: 'claude-sonnet-4-6',
+    'anthropic-vertex': 'claude-sonnet-4-6',
+    'amazon-bedrock': 'anthropic.claude-sonnet-4-6-20250514',
+    'azure-foundry': 'claude-sonnet-4-6',
+  },
+  'claude-haiku-4-5': {
+    anthropic: 'claude-haiku-4-5-20251001',
+    'anthropic-vertex': 'claude-haiku-4-5-20251001',
+    'amazon-bedrock': 'anthropic.claude-haiku-4-5-20251001',
+    'azure-foundry': 'claude-haiku-4-5',
+  },
+};
+
+/**
+ * Reverse index: any provider-specific model id → its canonical logical key. Built
+ * once from {@link CANONICAL_MODEL_EQUIVALENTS} so a configured/overridden id (in
+ * ANY provider's naming) resolves back to the logical model. Mirrors Claude Code's
+ * `CANONICAL_ID_TO_KEY`.
+ */
+export const CANONICAL_ID_TO_KEY: Record<string, string> = (() => {
+  const index: Record<string, string> = {};
+  for (const [key, config] of Object.entries(CANONICAL_MODEL_EQUIVALENTS)) {
+    index[key] = key;
+    for (const wireId of Object.values(config)) index[wireId] = key;
+  }
+  return index;
+})();
+
+/**
+ * Translate `modelId` (expressed in ANY provider's naming) to the wire string the
+ * ACTIVE `provider` requires. Returns `modelId` unchanged when it is not a known
+ * canonical id, when `provider` is undefined, or when the provider has no mapping
+ * in {@link CanonicalModelConfig} (e.g. a non-Claude provider) — so non-Claude and
+ * unknown models always pass through untouched. Idempotent: a model already in the
+ * target provider's naming maps to itself.
+ */
+export function resolveModelForProvider(
+  modelId: string,
+  provider: ProviderName | string | undefined,
+): string {
+  if (!provider) return modelId;
+  const key = CANONICAL_ID_TO_KEY[modelId];
+  if (!key) return modelId;
+  const config = CANONICAL_MODEL_EQUIVALENTS[key];
+  if (provider in config) {
+    return config[provider as keyof CanonicalModelConfig];
+  }
+  return modelId;
+}
 
 /**
  * Shared TTL + single-flight memoizer for the provider `/models` list. Concurrent
@@ -685,6 +777,12 @@ export function getAWSRegion(env: NodeJS.ProcessEnv = process.env): string {
  *     `baseUrl`, construct Bedrock's OpenAI-compatible endpoint for the resolved
  *     region ({@link getAWSRegion}) instead of an empty base URL, so IAM-role /
  *     `AWS_DEFAULT_REGION` setups reach the correct regional endpoint.
+ *  3. **`~/.aws/credentials` fallback** — when neither a bearer token nor an
+ *     explicit/env `apiKey` is present, fall back to the access key id from the
+ *     AWS shared-credentials file ({@link readAwsIniCredentials}), so an ini-only
+ *     setup authenticates and a mid-session credential rotation is picked up once
+ *     the cache is invalidated ({@link clearAwsIniCache}). Mirrors Claude Code's
+ *     `fromIni` credential source.
  *
  * An explicit `config.baseUrl` (trailing slashes trimmed) always wins over the
  * derived default so a user's custom gateway is never overridden.
@@ -694,7 +792,10 @@ export function resolveBedrockGateway(
   env: NodeJS.ProcessEnv = process.env,
 ): { apiKey: string; baseURL: string } {
   const bearer = (env[AWS_BEARER_TOKEN_BEDROCK_ENV] ?? '').trim();
-  const apiKey = bearer || config.apiKey || '';
+  const apiKey = bearer
+    || config.apiKey
+    || readAwsIniCredentials({ env }).accessKeyId
+    || '';
   const explicit = (config.baseUrl || '').replace(/\/+$/, '');
   const baseURL = explicit
     || `https://bedrock-runtime.${getAWSRegion(env)}.amazonaws.com/openai/v1`;
@@ -1479,6 +1580,52 @@ export const PROMPT_CACHING_SCOPE_BETA = 'prompt-caching-scope-2026-01-05';
 export const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 
 /**
+ * Anthropic beta token identifying the Claude Code client surface
+ * (Claude Code's `CLAUDE_CODE_20250219_BETA_HEADER`). Retained as a named
+ * constant so the Vertex countTokens allowlist can reference the exact token
+ * Claude's own allowlist permits.
+ */
+export const CLAUDE_CODE_BETA = 'claude-code-20250219';
+
+/**
+ * Anthropic beta token enabling provider-native (server-side) context editing
+ * (`context_management.edits`). Mirrors Claude Code's
+ * `CONTEXT_MANAGEMENT_BETA_HEADER` and must accompany a request that carries a
+ * `context_management` body (see {@link buildAnthropicContextManagement}).
+ */
+export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
+
+/**
+ * The ONLY `anthropic-beta` tokens the Vertex `countTokens` endpoint accepts —
+ * any other beta 400s there. Faithful port of Claude Code's
+ * `VERTEX_COUNT_TOKENS_ALLOWED_BETAS` (constants/betas.ts). Used by
+ * {@link filterCountTokensBetas} to PROACTIVELY strip incompatible betas before a
+ * Vertex count request, rather than relying on a reactive 400-and-retry.
+ */
+export const VERTEX_COUNT_TOKENS_ALLOWED_BETAS: ReadonlySet<string> = new Set([
+  CLAUDE_CODE_BETA,
+  INTERLEAVED_THINKING_BETA,
+  CONTEXT_MANAGEMENT_BETA,
+]);
+
+/**
+ * Filter `betas` to those accepted on the token-counting endpoint for `provider`.
+ * On a Vertex path (`anthropic-vertex` / `google-vertex`) only
+ * {@link VERTEX_COUNT_TOKENS_ALLOWED_BETAS} survive (every other beta 400s on
+ * Vertex `countTokens`); every other provider passes the full set through. This is
+ * the proactive endpoint-scoped allowlist Claude Code applies before dispatch.
+ */
+export function filterCountTokensBetas(
+  betas: string[],
+  provider: ProviderName | string | undefined,
+): string[] {
+  if (provider === 'anthropic-vertex' || provider === 'google-vertex') {
+    return betas.filter((b) => VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(b));
+  }
+  return betas;
+}
+
+/**
  * Anthropic beta token for token-efficient tool-call encoding — a cost knob that
  * reduces input/output tokens spent on tool calls. Mirrors Claude Code's
  * `TOKEN_EFFICIENT_TOOLS_BETA_HEADER`. Opt-in (experimental).
@@ -1672,6 +1819,154 @@ export function withAnthropicBetaHeader(
     headers.set('anthropic-beta', mergeBetaTokens(headers.get('anthropic-beta'), betaToken));
     return baseFetch(input, { ...init, headers });
   }) as typeof globalThis.fetch;
+}
+
+// ---------------------------------------------------------------------------
+// Accurate provider token-count path (Claude parity: countMessagesTokensWithAPI).
+//
+// AMI's context accounting is otherwise a char-based heuristic (estimateTokens).
+// This adds an OPTIONAL authoritative count via Anthropic's
+// `/v1/messages/count_tokens` endpoint, governed by the same tunable knobs Claude
+// uses, and the proactive Vertex beta allowlist. It is consumed as the injectable
+// `TokenCounter` (common `ContextManager.setTokenCounter`) so the compaction
+// waterfall prefers a real count and only falls back to the heuristic when this
+// path is absent / returns null / throws.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal `thinking.budget_tokens` used for a count request when the transcript
+ * contains thinking blocks. Claude parity: `TOKEN_COUNT_THINKING_BUDGET` — the API
+ * requires `max_tokens > thinking.budget_tokens`, so this is kept small.
+ */
+export const TOKEN_COUNT_THINKING_BUDGET = 1024;
+
+/**
+ * Companion ceiling to {@link TOKEN_COUNT_THINKING_BUDGET} (Claude parity:
+ * `TOKEN_COUNT_MAX_TOKENS`). The `count_tokens` endpoint does not consume
+ * `max_tokens`, but the constant documents the API constraint
+ * (`max_tokens > thinking.budget_tokens`) the budget is sized against.
+ */
+export const TOKEN_COUNT_MAX_TOKENS = 2048;
+
+/** Inputs for an accurate provider token count. */
+export interface CountTokensRequest {
+  /** Anthropic Messages-format messages whose input tokens to count. */
+  messages: Array<Record<string, unknown>>;
+  /** Tool definitions (Anthropic wire shape); included in the count when present. */
+  tools?: Array<Record<string, unknown>>;
+  /** True when the transcript contains thinking blocks (enables the thinking budget). */
+  thinking?: boolean;
+  /** Abort signal for the request. */
+  signal?: AbortSignal;
+  /** Injectable fetch (tests); defaults to the global fetch. */
+  fetchImpl?: typeof globalThis.fetch;
+}
+
+/**
+ * Count the exact input tokens for a request via Anthropic's `count_tokens`
+ * endpoint, or `null` when the count is unavailable (non-OK response, missing
+ * `input_tokens`, or a transport error) so the caller can fall back to the
+ * heuristic. The outgoing `anthropic-beta` set comes from the single canonical
+ * {@link computeAnthropicBetas} source, then is narrowed by
+ * {@link filterCountTokensBetas} so a Vertex count never carries a beta that would
+ * 400. Mirrors Claude Code's `countMessagesTokensWithAPI` (thinking budget,
+ * dummy-message-when-empty, and `input_tokens` extraction).
+ */
+export async function countTokensWithAPI(
+  config: Pick<ProviderConfig, 'apiKey' | 'baseUrl' | 'model' | 'provider' | 'disableBetas'>,
+  req: CountTokensRequest,
+): Promise<number | null> {
+  const model = normalizeModelStringForAPI(stripOpenRouterPrefix(config.model || ''));
+  if (!model) return null;
+  const betas = filterCountTokensBetas(
+    computeAnthropicBetas(model, { includeCacheTtlBeta: false, disableBetas: config.disableBetas }),
+    config.provider,
+  );
+  const base = (config.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const url = `${base}/v1/messages/count_tokens`;
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'x-api-key': config.apiKey,
+    'anthropic-version': '2023-06-01',
+  };
+  if (betas.length > 0) headers['anthropic-beta'] = betas.join(',');
+  // An empty message list with tools still needs a dummy user message for an
+  // accurate tool token count (Claude parity).
+  const messages = req.messages.length > 0 ? req.messages : [{ role: 'user', content: 'foo' }];
+  const body: Record<string, unknown> = { model, messages };
+  if (req.tools && req.tools.length > 0) body.tools = req.tools;
+  if (req.thinking) body.thinking = { type: 'enabled', budget_tokens: TOKEN_COUNT_THINKING_BUDGET };
+  const fetchImpl = req.fetchImpl ?? globalThis.fetch;
+  try {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      ...(req.signal ? { signal: req.signal } : {}),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { input_tokens?: unknown };
+    return typeof data.input_tokens === 'number' ? data.input_tokens : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Provider-native (server-side) context editing — cache-preserving compaction.
+//
+// Every client-side compaction rewrites the message array, which changes the
+// request prefix and busts the prompt cache on the next call. Anthropic's
+// `context_management.edits` lets the PROVIDER clear old tool uses/inputs
+// server-side while the cached prefix stays intact. This builds that edit (gated
+// by an opt-in env knob) computing `clear_at_least = trigger - keepTarget`, and it
+// rides every request via {@link withExtraBody}; {@link CONTEXT_MANAGEMENT_BETA}
+// is added to the header by {@link resolveModel}. Mirrors Claude Code's
+// `getAPIContextManagement` (services/compact/apiMicrocompact.ts).
+// ---------------------------------------------------------------------------
+
+/** Default server-side context-edit trigger (Claude parity: `DEFAULT_MAX_INPUT_TOKENS`). */
+export const DEFAULT_CONTEXT_EDIT_MAX_INPUT_TOKENS = 180_000;
+/** Default tokens to keep after a server-side edit (Claude parity: `DEFAULT_TARGET_INPUT_TOKENS`). */
+export const DEFAULT_CONTEXT_EDIT_TARGET_INPUT_TOKENS = 40_000;
+/** Opt-in knob enabling provider-native `context_management` server-side edits. */
+export const API_CONTEXT_EDIT_ENV = 'AMI_API_CONTEXT_EDIT';
+/** Overrides the server-side edit trigger (input-token threshold). */
+export const API_CONTEXT_EDIT_MAX_INPUT_TOKENS_ENV = 'AMI_API_CONTEXT_EDIT_MAX_INPUT_TOKENS';
+/** Overrides the server-side edit keep-target (tokens retained). */
+export const API_CONTEXT_EDIT_TARGET_INPUT_TOKENS_ENV = 'AMI_API_CONTEXT_EDIT_TARGET_INPUT_TOKENS';
+
+/** Parse a positive-integer env value, else the fallback. */
+function positiveIntEnv(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Build the Anthropic `context_management` config (a `clear_tool_uses_20250919`
+ * edit) when {@link API_CONTEXT_EDIT_ENV} is truthy, else `undefined` (feature
+ * OFF — client-side compaction unchanged). `clear_at_least` is computed as
+ * `trigger - keepTarget` (clamped at 0), exactly as Claude Code computes it, so
+ * the server clears down to roughly `keepTarget` input tokens. `env` is injectable
+ * for testing.
+ */
+export function buildAnthropicContextManagement(
+  env: NodeJS.ProcessEnv = process.env,
+): { edits: Array<Record<string, unknown>> } | undefined {
+  if (!isEnvTruthy(env[API_CONTEXT_EDIT_ENV])) return undefined;
+  const trigger = positiveIntEnv(env[API_CONTEXT_EDIT_MAX_INPUT_TOKENS_ENV], DEFAULT_CONTEXT_EDIT_MAX_INPUT_TOKENS);
+  const keepTarget = positiveIntEnv(env[API_CONTEXT_EDIT_TARGET_INPUT_TOKENS_ENV], DEFAULT_CONTEXT_EDIT_TARGET_INPUT_TOKENS);
+  const clearAtLeast = Math.max(0, trigger - keepTarget);
+  return {
+    edits: [
+      {
+        type: 'clear_tool_uses_20250919',
+        trigger: { type: 'input_tokens', value: trigger },
+        clear_at_least: { type: 'input_tokens', value: clearAtLeast },
+        clear_tool_inputs: true,
+      },
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2219,7 +2514,14 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // beta selection via supportsOneMillionContextBeta which is family-based, not
   // marker-based) and the endpoint rejects a model id carrying it. Mirrors Claude
   // Code's normalizeModelStringForAPI applied right before the request.
-  const model = normalizeModelStringForAPI(stripOpenRouterPrefix(rawModel));
+  // Cross-provider model-ID translation: a model selected/overridden under one
+  // provider (e.g. the native `claude-opus-4-6`) is translated to the ACTIVE
+  // provider's required wire string (e.g. bedrock `anthropic.claude-opus-4-6-…`)
+  // via the canonical equivalence table, instead of being sent verbatim and
+  // 400'ing as an invalid model. A model that is not a known canonical id, or a
+  // provider the model has no mapping for, passes through unchanged.
+  const translatedModel = resolveModelForProvider(rawModel, provider);
+  const model = normalizeModelStringForAPI(stripOpenRouterPrefix(translatedModel));
   const baseUrl = config.baseUrl || (isOpenRouterModel ? PROVIDER_BASE_URLS.openrouter! : inferred?.defaultBaseUrl || '');
   // Proxy routing (HTTPS_PROXY/HTTP_PROXY/NO_PROXY). A no-op when no proxy env
   // is set, so proxyFetch === globalThis.fetch and behavior is unchanged.
@@ -2261,6 +2563,16 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // request-id) can still be correlated with server logs. Gated by the shared
   // logger's level/component filter — a no-op on disk when debug logging is off.
   const fetch = withRequestIdDebugTrace(strippedFetch, provider ?? 'inferred');
+
+  // Azure AI Foundry — Claude (and other) models over Azure's OpenAI-compatible
+  // Foundry endpoint. The explicit provider check is placed BEFORE the
+  // claude/anthropic auto-route so a Foundry-hosted `claude-*` model is routed to
+  // the Foundry resource rather than api.anthropic.com. The Foundry base URL is
+  // per-resource, so it must come from config.baseUrl (or AZURE_AI_FOUNDRY_BASE_URL).
+  if (provider === 'azure-foundry') {
+    const foundryBase = baseUrl || process.env.AZURE_AI_FOUNDRY_BASE_URL || '';
+    return createOpenAI({ apiKey, baseURL: foundryBase || undefined, fetch })(model);
+  }
 
   // Anthropic via Google Vertex AI
   if (provider === 'anthropic-vertex' || (model.startsWith('claude') && isVertexAIConfigured())) {
@@ -2308,14 +2620,24 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
     // global knob is off. First-party path only (proxies/Bedrock/Vertex 400 on it).
     const globalEager = fineGrainedToolStreamingEnabled();
     const perToolEager = tools?.filter((t) => t.eagerInputStreaming).map((t) => t.name) ?? [];
-    const nativeFetch = (firstPartyAnthropic && (globalEager || perToolEager.length > 0))
+    const eagerFetch = (firstPartyAnthropic && (globalEager || perToolEager.length > 0))
       ? withEagerToolStreaming(nativeBase, globalEager ? undefined : new Set(perToolEager))
       : nativeBase;
+    // Provider-native (server-side) context editing: when opted in, inject the
+    // `context_management` edit into every request body (cache-preserving) and add
+    // the accompanying beta header. No-op when the knob is off.
+    const contextManagement = buildAnthropicContextManagement();
+    const nativeFetch = contextManagement
+      ? (withExtraBody({ context_management: contextManagement }, eagerFetch) ?? eagerFetch)
+      : eagerFetch;
+    const nativeBetas = contextManagement
+      ? [...new Set([...uniqueBetas, CONTEXT_MANAGEMENT_BETA])]
+      : uniqueBetas;
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
       fetch: nativeFetch,
-      ...(uniqueBetas.length > 0 ? { headers: { 'anthropic-beta': uniqueBetas.join(',') } } : {}),
+      ...(nativeBetas.length > 0 ? { headers: { 'anthropic-beta': nativeBetas.join(',') } } : {}),
     })(model);
   }
 
