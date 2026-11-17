@@ -995,7 +995,8 @@ export const ENGINE_EVENT_TYPES = [
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
-  'mcp_resource_update', 'mcp_connection_changed', 'done',
+  'mcp_resource_update', 'mcp_connection_changed',
+  'external_import_blocked', 'peer_message', 'background_task_complete', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1165,6 +1166,31 @@ export type EngineEvent =
    *  surfaced proactively instead of silently vanishing. Parity: Claude's IDE/MCP
    *  connection status indicator (`useIDEStatusIndicator`). */
   | { type: 'mcp_connection_changed'; server: string; state: 'lost' | 'recovered' | 'failed'; detail?: string }
+  /** A project instruction file (CLAUDE.md / AGENTS.md) `@import`ed a file OUTSIDE
+   *  the workspace trust boundary, so its content was stripped and replaced with an
+   *  inline `[import blocked …]` placeholder. The engine detects this silently via the
+   *  `instructionsLoaded` hook with `loadReason:'import-blocked-outside-workspace'`.
+   *  This event surfaces it so an interactive user sees WHICH external paths were
+   *  dropped instead of acting on instruction files that were quietly truncated.
+   *  `paths` lists every blocked import drained together. Parity: Claude Code's
+   *  `ClaudeMdExternalIncludesDialog` (enumerated external-import warning). */
+  | { type: 'external_import_blocked'; paths: string[] }
+  /** An inbound peer/teammate message arrived on this session's mailbox and was
+   *  relayed into the conversation. The engine already injects it as a fenced
+   *  `<peer-message>` user turn for the model, but the TUI renders from EngineEvents,
+   *  not the message list — so without this event the human never sees that a peer
+   *  spoke. Carries the sender (`from`), the relayed `body`, and the optional
+   *  per-message `summary`/roster `color` the sender stamped. Parity: Claude Code's
+   *  dedicated `UserTeammateMessage` transcript renderer. */
+  | { type: 'peer_message'; from: string; body: string; summary?: string; color?: string }
+  /** A backgrounded task (bash/agent/monitor) reached a terminal state. The engine
+   *  already injects a collapsed completion note for the model, and this event surfaces
+   *  each completion distinctly to the TUI/detached frontend with its status-aware
+   *  `summary` phrase (`completed (exit code: 0)` / `failed with exit code 1` /
+   *  `was stopped`) so a finished/failed/killed background task is visible inline
+   *  instead of only in the model's context. Parity: Claude Code's shell/local-agent
+   *  completion notification. */
+  | { type: 'background_task_complete'; taskId: string; status: string; summary: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**
