@@ -1266,6 +1266,85 @@ const SYSTEM_DIRECTORIES = [
   '/opt', '/Volumes', '/mnt', '/media', '/run/media',
 ];
 
+const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
+const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
+
+/**
+ * Is an ALREADY-RESOLVED path a catastrophic target for a removal (`rm`/`rmdir`)?
+ * Generalizes the enumerated system-directory HARDLINE list to EVERY direct child
+ * of the filesystem root (so `/srv`, `/root`, `/run` — not just the hardcoded
+ * `/etc`/`/usr`/… — are caught) plus the whole-directory wildcard, the root
+ * itself, the home directory, and Windows drive roots / their direct children.
+ * Pure string predicate (no fs access) so it can run on an unvalidated path.
+ *
+ * Dangerous when the resolved path is:
+ * - the bare wildcard `*` or any path ending in `/*` (wipes a whole directory);
+ * - the filesystem root `/`;
+ * - a Windows drive root (`C:\`, `D:/`);
+ * - the user's home directory;
+ * - a direct child of root (`/usr`, `/tmp`, `/opt`, `/srv`, …) — but NOT a
+ *   grandchild (`/usr/local` is left to the normal flow);
+ * - a direct child of a Windows drive root (`C:\Windows`, `C:\Users`).
+ *
+ * Mirrors Claude's `isDangerousRemovalPath` (utils/permissions/pathValidation.ts).
+ */
+export function isDangerousRemovalPath(resolvedPath: string): boolean {
+  // Collapse mixed/duplicated separators so `C:\\Windows` (valid in PowerShell)
+  // and `//srv` don't slip past the drive-child / root-child checks.
+  const forwardSlashed = resolvedPath.replace(/[\\/]+/g, '/');
+
+  if (forwardSlashed === '*' || forwardSlashed.endsWith('/*')) return true;
+
+  const normalizedPath =
+    forwardSlashed === '/' ? forwardSlashed : forwardSlashed.replace(/\/$/, '');
+
+  if (normalizedPath === '/') return true;
+  if (WINDOWS_DRIVE_ROOT_REGEX.test(normalizedPath)) return true;
+
+  const normalizedHome = os.homedir().replace(/[\\/]+/g, '/');
+  if (normalizedPath === normalizedHome) return true;
+
+  // Direct children of root: /usr, /tmp, /etc (but not /usr/local).
+  if (path.posix.dirname(normalizedPath) === '/') return true;
+  if (WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)) return true;
+
+  return false;
+}
+
+/**
+ * True when `command` contains an `rm`/`rmdir` invocation whose target resolves
+ * to a catastrophic path ({@link isDangerousRemovalPath}). Such a removal must
+ * ALWAYS confirm explicitly — it can never be silently auto-allowed by a wildcard
+ * allow rule or by a blanket auto-allow mode. Compound-command aware (each
+ * `&&`/`||`/`;`/`|` segment is inspected independently) and tilde-aware (`~`
+ * expands to the home directory; relative operands resolve against `cwd`), so
+ * `rm -rf ~`, `rm -rf /srv`, `rm -rf *` and `rm -rf C:\` are all caught even
+ * where the enumerated system-directory hardline list is not. Mirrors Claude's
+ * BashTool `checkDangerousRemovalPaths` (tools/BashTool/pathValidation.ts).
+ */
+export function commandHasDangerousRemoval(command: string, cwd: string = process.cwd()): boolean {
+  for (const segment of splitCompoundCommand(command)) {
+    const trimmed = stripEnvVarPrefix(segment, /* safeEnvOnly */ false).trim();
+    const base = trimmed.split(/\s+/)[0];
+    if (base !== 'rm' && base !== 'rmdir') continue;
+    for (const rawPath of extractCommandPaths(trimmed)) {
+      // Strip surrounding quotes, then expand a leading `~` / resolve relatives —
+      // mirroring Claude's expandTilde + resolve(cwd, …) before the predicate.
+      const cleaned = rawPath.replace(/^['"]|['"]$/g, '');
+      let resolved: string;
+      if (cleaned === '~' || cleaned.startsWith('~/')) {
+        resolved = path.join(os.homedir(), cleaned.slice(1));
+      } else if (path.isAbsolute(cleaned) || WINDOWS_DRIVE_ROOT_REGEX.test(cleaned.replace(/\\/g, '/'))) {
+        resolved = cleaned;
+      } else {
+        resolved = path.resolve(cwd, cleaned);
+      }
+      if (isDangerousRemovalPath(resolved)) return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -2166,8 +2245,51 @@ export function stripOutputRedirections(command: string): string {
  * guards in one place. Output redirections are stripped first so a redirect
  * target filename never becomes the suggested rule prefix.
  */
+/**
+ * Is `command` a plain `--help` invocation (`python --help`, `git commit --help`)
+ * that is read-only and safe to allow AS-IS? Such a command should be allowed by
+ * its FULL text rather than collapsed to a broad prefix (`python:*`), which would
+ * grant arbitrary code execution through the interpreter. True only when:
+ * - the command ends with `--help`;
+ * - it carries no quotes (a quote could smuggle an argument past the check);
+ * - `--help` is the ONLY flag; and
+ * - every non-flag token is a bare alphanumeric identifier (no paths, operators,
+ *   substitutions or redirections).
+ *
+ * `--help` forms that route through an unsafe help backend (`man -l`,
+ * `git help --web`, …) are excluded — those are not simple `--help` at all and
+ * are caught here via {@link detectUnsafeHelpCommand}. Mirrors Claude's
+ * `isHelpCommand` (utils/bash/commands.ts), which bypasses prefix extraction so a
+ * help command is allowed in full instead of as a too-broad prefix.
+ */
+export function isHelpCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed.endsWith('--help')) return false;
+  // Quotes could hide an injected argument — reject outright.
+  if (trimmed.includes('"') || trimmed.includes("'")) return false;
+  // A help form that reaches an unsafe backend is never a "simple" help command.
+  if (detectUnsafeHelpCommand(trimmed)) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  let foundHelp = false;
+  const alphanumeric = /^[a-zA-Z0-9]+$/;
+  for (const word of words) {
+    if (word.startsWith('-')) {
+      if (word === '--help') foundHelp = true;
+      else return false; // any other flag disqualifies it
+    } else if (!alphanumeric.test(word)) {
+      return false; // paths, operators, substitutions, etc.
+    }
+  }
+  return foundHelp;
+}
+
 export function suggestAllowPrefix(command: string): string | null {
   const cleaned = stripOutputRedirections(command);
+  // A simple `--help` command is read-only and safe: offer the FULL command as
+  // the allow rule rather than a broad `cmd:*` prefix that would grant arbitrary
+  // execution through the same interpreter. Mirrors Claude's isHelpCommand
+  // bypass of prefix extraction (utils/bash/commands.ts).
+  if (isHelpCommand(cleaned)) return cleaned.trim();
   const two = getSimpleCommandPrefix(cleaned);
   // Guard the two-word path too: `start-process notepad*` would match
   // `start-process notepad.exe & evil`, so a dangerous PowerShell spawner as
@@ -2823,6 +2945,9 @@ export class PermissionManager {
     if (toolName === 'bash' && typeof input.command === 'string') {
       if (commandTargetsCredentialPath(input.command)) return true;
       if (commandTargetsSystemDir(input.command)) return true;
+      // A catastrophic rm/rmdir target (root, home, any direct child of root, a
+      // drive root, a `/*` wildcard) must confirm even under a blanket auto-allow.
+      if (commandHasDangerousRemoval(input.command)) return true;
     }
     if (toolName === 'bash' || toolName === 'file_edit' || toolName === 'file_write') {
       const pathArg = (input.file_path || input.command || '');
@@ -2976,6 +3101,16 @@ export class PermissionManager {
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
         toolName === 'bash' && typeof input.command === 'string' &&
         commandTargetsSystemDir(input.command)) {
+      return 'ask';
+    }
+    // Dangerous-removal guard — an rm/rmdir targeting a catastrophic path (root,
+    // home, any direct child of root, a drive root, a `/*` wildcard) ALWAYS
+    // confirms explicitly and can never be auto-approved by a wildcard allow rule.
+    // An explicit deny rule still wins (resolved below), so it is excluded here.
+    // Mirrors Claude's checkDangerousRemovalPaths (tools/BashTool/pathValidation.ts).
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        commandHasDangerousRemoval(input.command) && !this.hasExplicitDeny(toolName, input)) {
       return 'ask';
     }
 
