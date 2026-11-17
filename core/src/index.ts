@@ -104,6 +104,15 @@ export type {
   ParsePermissionPromptToolResult,
   PermissionPromptToolInput,
 } from './permission-prompt-tool';
+// Shared extract-tool-call + schema-validate-or-null primitives for LLM-driven permission
+// classifiers (parity: utils/permissions/classifierShared.ts). Consumed by a future semantic
+// Bash/YOLO classifier in common/; re-exported here so the building block is part of the public
+// core surface and reachable in the core import graph.
+export {
+  extractToolCallBlock,
+  parseClassifierResponse,
+  extractAndParseClassifierResponse,
+} from './permissions/classifier-shared';
 export {
   SessionMemoryExtractor,
   selectIncrementalWindow,
