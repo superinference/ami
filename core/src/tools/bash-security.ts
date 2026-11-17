@@ -77,6 +77,7 @@ const CHECK_IDS = {
   DANGEROUS_DECLARE: 72,
   VALIDATOR_EXCEPTION: 73,
   TILDE_EXPANSION_VARIANT: 74,
+  DANGEROUS_REDIRECT_TARGET: 75,
 } as const;
 
 // eslint-disable-next-line no-control-regex
@@ -237,14 +238,24 @@ export function detectUnsafeWrapperFlags(command: string): { blocked: boolean; r
   return { blocked: false };
 }
 
+// Bounded-recursion safety cap on nested safe-wrapper prefixes (parity with
+// Claude Code's prefix.ts wrapperCount/recursionDepth caps). A legitimate chain
+// nests at most a handful of wrappers (`nohup timeout 5 nice -n5 stdbuf -oL cmd`
+// = 4); a prefix that stacks far more is a pathological obfuscation / DoS attempt
+// to blow past the per-wrapper flag parsers, so it fails closed and must be
+// approved manually rather than auto-verified.
+const MAX_WRAPPER_NESTING = 10;
+
 function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string } {
   const toks = tokenizeSegmentArgs(seg);
   let i = 0;
+  let wrapperCount = 0;
   const bareName = (t: string): string => t.replace(/^.*\//, '');
 
   while (i < toks.length && SAFE_WRAPPERS.has(bareName(toks[i]))) {
     const w = bareName(toks[i]);
     i++;
+    wrapperCount++;
     // `i` points at the offending token when `offense` is called; a hidden
     // command (what fail-closed protects) can only exist at `i + 1` or later.
     // A bare `timeout inf` / `env -S` with nothing after it hides nothing.
@@ -310,6 +321,15 @@ function analyzeWrapperSegment(seg: string): { blocked: boolean; reason?: string
       // best-effort stripper; do not fail-closed here (avoid false positives).
       break;
     }
+  }
+  // Fail closed on an absurd wrapper nest (anti-obfuscation / anti-DoS) — only
+  // when a real (non-wrapper) command still follows the stack (i < toks.length),
+  // since a bare trailing wrapper run (`env env env`, nothing after) hides nothing.
+  if (wrapperCount > MAX_WRAPPER_NESTING && i < toks.length) {
+    return {
+      blocked: true,
+      reason: `excessive safe-wrapper nesting (>${MAX_WRAPPER_NESTING}) hides the wrapped command from verification`,
+    };
   }
   return { blocked: false };
 }
@@ -1433,6 +1453,61 @@ function validateDevTcpUdpRedirects(command: string): SecurityCheckResult {
   return PASS;
 }
 
+/**
+ * A redirect target is "dangerous" when it is NOT a simple static path — i.e. it
+ * carries a shell expansion the validator cannot resolve but bash will:
+ *   - `$VAR` / `$(…)` / `${…}` (parameter / command / arithmetic expansion),
+ *   - a backtick command substitution,
+ *   - a leading `~` (tilde home / `~user` expansion),
+ *   - a filename-glob metachar (`*`, `?`, `[`) or brace expansion (`{…}`).
+ * Such a target resolves at execution time to a path static analysis never saw,
+ * so `echo x > $DEST`, `> ~/.config/foo`, or `> *.conf` could land on an
+ * arbitrary (possibly sensitive) file. Parity: Claude Code's redirect handling
+ * flags a non-static target via hasDangerousExpansion (utils/bash/commands.ts).
+ */
+function redirectTargetIsDangerousExpansion(target: string): boolean {
+  if (!target) return false;
+  if (target.startsWith('~')) return true;
+  return /[$`*?[{]/.test(target);
+}
+
+/**
+ * Validate every `>`/`>>`/`<` redirect TARGET for a dangerous (non-static)
+ * expansion. Unlike {@link validateRedirections} (which blocks ANY redirect and
+ * is skipped in opt-in `relaxDetachedValidators` mode), this guard runs in EVERY
+ * mode: it is a strict subset of validateRedirections (plain static-path
+ * redirects like `> report.txt` stay allowed — essential to detached
+ * test-output / report workflows), so it never changes interactive behavior, but
+ * it closes the hole where a relaxed-detached run would otherwise let
+ * `echo x > $HOME_LIKE_VAR`, `> ~/.ssh/authorized_keys`, or `cat < $SECRET` write
+ * to / read from an unvalidated expanded path.
+ */
+function validateDangerousRedirectTargets(command: string): SecurityCheckResult {
+  let outputs: { target: string }[];
+  try {
+    outputs = getOutputRedirections(command);
+  } catch {
+    outputs = [];
+  }
+  for (const { target } of outputs) {
+    if (redirectTargetIsDangerousExpansion(target)) {
+      return fail(
+        CHECK_IDS.DANGEROUS_REDIRECT_TARGET,
+        `Blocked: output redirection target "${target}" uses a shell expansion (variable/glob/tilde/substitution) that resolves to a path static validation cannot verify`,
+      );
+    }
+  }
+  for (const target of extractInputRedirectionPaths(command)) {
+    if (redirectTargetIsDangerousExpansion(target)) {
+      return fail(
+        CHECK_IDS.DANGEROUS_REDIRECT_TARGET,
+        `Blocked: input redirection target "${target}" uses a shell expansion (variable/glob/tilde/substitution) that resolves to a path static validation cannot verify`,
+      );
+    }
+  }
+  return PASS;
+}
+
 function validateBackslashEscapedWhitespace(command: string, extracted: { fullyUnquoted: string }): SecurityCheckResult {
   const content = extracted.fullyUnquoted;
   if (/\\[ \t]/.test(content)) {
@@ -1999,6 +2074,15 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
     result = validateRedirections(command, extracted);
     if (!result.safe) return result;
   }
+
+  // Runs in EVERY mode (incl. opt-in relaxed-detached, where the coarse
+  // all-redirects block above is skipped): a redirect target that is NOT a
+  // simple static path — `> $VAR`, `> ~/.ssh/x`, `> *.conf`, `< $SECRET` — still
+  // requires approval, since the shell resolves it to a path static validation
+  // never saw. A plain `> report.txt` stays allowed so detached report/test-output
+  // workflows are unaffected.
+  result = validateDangerousRedirectTargets(command);
+  if (!result.safe) return result;
 
   result = validateBackslashEscapedWhitespace(command, extracted);
   if (!result.safe) return result;
@@ -4641,6 +4725,7 @@ export {
   validateShellQuoteBug,
   validateCommandSubstitution,
   validateRedirections,
+  validateDangerousRedirectTargets,
   validateDevTcpUdpRedirects,
   validateDanglingOperator,
   validateBackslashEscapedWhitespace,
