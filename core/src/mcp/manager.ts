@@ -193,7 +193,17 @@ export type McpPolicyEntry =
   | string
   | { serverName: string }
   | { serverCommand: string[] }
-  | { serverUrl: string };
+  | { serverUrl: string }
+  /**
+   * Provenance-scoped entry (Claude-parity channelAllowlist): approval keyed to the
+   * plugin bundle that produced a server rather than its arbitrary local name.
+   * `pluginSource` matches {@link McpServerConfig.pluginSource} exactly (or as a
+   * `*`-wildcard family). The Claude-shaped `{ marketplace, plugin }` form compiles
+   * to the `<plugin>@<marketplace>` provenance convention {@link scopePluginMcpServers}
+   * stamps, and also admits the marketplace-agnostic bare `<plugin>`.
+   */
+  | { pluginSource: string }
+  | { marketplace: string; plugin: string };
 
 /**
  * Resolve the set of server names a user has toggled OFF via the persisted
@@ -255,16 +265,24 @@ interface CompiledMcpPolicy {
   urls: Set<string>;         // exact, normalized upstream URLs
   urlPatterns: RegExp[];     // URL wildcard patterns (matched against raw url)
   commands: string[][];      // full stdio command arrays (exact match)
+  pluginSources: Set<string>;     // exact provenance tags (lower-cased iff ci)
+  pluginSourcePatterns: RegExp[]; // provenance wildcard patterns (lower-cased iff ci)
 }
 
 function compileMcpPolicy(entries: readonly McpPolicyEntry[], opts?: { caseInsensitiveNames?: boolean }): CompiledMcpPolicy {
   const ci = opts?.caseInsensitiveNames === true;
   const foldName = (n: string): string => (ci ? n.toLowerCase() : n);
-  const p: CompiledMcpPolicy = { ci, names: new Set(), namePatterns: [], urls: new Set(), urlPatterns: [], commands: [] };
+  const p: CompiledMcpPolicy = { ci, names: new Set(), namePatterns: [], urls: new Set(), urlPatterns: [], commands: [], pluginSources: new Set(), pluginSourcePatterns: [] };
   const addName = (n: string): void => {
     const trimmed = n.trim();
     if (trimmed.includes('*')) p.namePatterns.push(wildcardToRegExp(foldName(trimmed)));
     else p.names.add(foldName(trimmed));
+  };
+  const addPluginSource = (s: string): void => {
+    const trimmed = s.trim();
+    if (!trimmed) return;
+    if (trimmed.includes('*')) p.pluginSourcePatterns.push(wildcardToRegExp(foldName(trimmed)));
+    else p.pluginSources.add(foldName(trimmed));
   };
   for (const e of entries || []) {
     if (!e) continue;
@@ -288,13 +306,21 @@ function compileMcpPolicy(entries: readonly McpPolicyEntry[], opts?: { caseInsen
     } else if ('serverUrl' in e && typeof e.serverUrl === 'string' && e.serverUrl) {
       if (e.serverUrl.includes('*')) p.urlPatterns.push(wildcardToRegExp(e.serverUrl));
       else { const norm = normalizeMcpUrl(e.serverUrl); if (norm) p.urls.add(norm); }
+    } else if ('pluginSource' in e && typeof e.pluginSource === 'string' && e.pluginSource) {
+      addPluginSource(e.pluginSource);
+    } else if ('marketplace' in e && 'plugin' in e && typeof e.marketplace === 'string' && typeof e.plugin === 'string' && e.plugin) {
+      // Claude's {marketplace, plugin} provenance maps onto AMI's single
+      // `pluginSource` tag: scopePluginMcpServers stamps `<plugin>@<marketplace>`,
+      // so admit that composed form AND the marketplace-agnostic bare plugin name.
+      addPluginSource(`${e.plugin}@${e.marketplace}`);
+      addPluginSource(e.plugin);
     }
   }
   return p;
 }
 
 /** Config fields a policy can match against (name is passed separately). */
-interface McpPolicyTarget { url?: string; command?: string; args?: string[] }
+interface McpPolicyTarget { url?: string; command?: string; args?: string[]; pluginSource?: string }
 
 /** True when `name`/`config` matches any entry in the compiled policy. */
 function matchMcpPolicy(policy: CompiledMcpPolicy, name: string, config?: McpPolicyTarget): boolean {
@@ -310,6 +336,11 @@ function matchMcpPolicy(policy: CompiledMcpPolicy, name: string, config?: McpPol
   if (config?.command && policy.commands.length > 0) {
     const actual = [config.command, ...(config.args ?? [])];
     if (policy.commands.some((c) => c.length === actual.length && c.every((x, i) => x === actual[i]))) return true;
+  }
+  if (config?.pluginSource) {
+    const src = policy.ci ? config.pluginSource.trim().toLowerCase() : config.pluginSource.trim();
+    if (policy.pluginSources.has(src)) return true;
+    if (policy.pluginSourcePatterns.some((re) => re.test(src))) return true;
   }
   return false;
 }

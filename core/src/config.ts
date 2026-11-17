@@ -9,6 +9,30 @@ import { levenshteinDistance } from './tools/path-suggest';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 
 /**
+ * One entry of the MCP allowlist ({@link ProjectConfig.allowedMcpServers}). A plain
+ * string is a server NAME or upstream URL (with optional `*`-wildcards). A
+ * provenance-scoped object trusts a server by the plugin that produced it rather
+ * than its arbitrary local name (Claude-parity channelAllowlist): `{ pluginSource }`
+ * matches {@link McpServerConfig.pluginSource}, and `{ marketplace, plugin }` matches
+ * the `<plugin>@<marketplace>` provenance convention. Structurally a subset of the
+ * manager's `McpPolicyEntry`, so it threads straight into `setAllowedServers`.
+ */
+export type McpAllowedServerEntry =
+  | string
+  | { pluginSource: string }
+  | { marketplace: string; plugin: string };
+
+/** True when `v` is a valid {@link McpAllowedServerEntry} (string or provenance object). */
+export function isMcpAllowedServerEntry(v: unknown): v is McpAllowedServerEntry {
+  if (typeof v === 'string') return true;
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.pluginSource === 'string') return true;
+  if (typeof o.marketplace === 'string' && typeof o.plugin === 'string') return true;
+  return false;
+}
+
+/**
  * Project-level configuration that can be stored in
  * `.ami/config.json` (project) or `~/.ami/config.json`
  * (global).  The file format is JSONC — single-line (//) and block comments
@@ -116,8 +140,16 @@ export interface ProjectConfig {
    * only a managed/enterprise config tier can set it.
    */
   strictPluginOnlyCustomization?: boolean | ('skills' | 'agents' | 'hooks' | 'mcp')[];
-  /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
-  allowedMcpServers?: string[];
+  /**
+   * MCP allowlist: when non-empty, only these MCP servers may be connected. An entry
+   * is a server NAME or upstream URL (string, `*`-wildcards allowed) OR a
+   * PROVENANCE-scoped entry (Claude-parity channelAllowlist): `{ pluginSource }` to
+   * approve every server a given plugin bundle produced, or the Claude-shaped
+   * `{ marketplace, plugin }` which matches the `<plugin>@<marketplace>` provenance
+   * tag. Provenance keying trusts "servers from this plugin" regardless of each
+   * server's arbitrary local name. Enforced by {@link McpManager} via setAllowedServers.
+   */
+  allowedMcpServers?: McpAllowedServerEntry[];
   /**
    * MCP denylist: servers named here (by name, case-insensitive, or normalized
    * upstream URL) are blocked across every scope. The denylist takes PRECEDENCE
@@ -1098,7 +1130,7 @@ const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonl
 ];
 
 /** The expected runtime base-type of each typed ProjectConfig field. */
-type ConfigFieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'object';
+type ConfigFieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'object' | 'mcpAllowlist';
 
 /**
  * Expected runtime base-type of each typed ProjectConfig field. Enum fields live in
@@ -1123,7 +1155,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['composerHintsEnabled', 'boolean'], ['disableBypassPermissionsMode', 'boolean'],
   ['disableAllHooks', 'boolean'], ['allowManagedHooksOnly', 'boolean'],
   ['allowManagedModsOnly', 'boolean'], ['allowManagedSandboxDomainsOnly', 'boolean'],
-  ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'string[]'],
+  ['enforceAvailableModels', 'string[]'], ['allowedMcpServers', 'mcpAllowlist'],
   ['deniedMcpServers', 'string[]'],
   ['disabledMcpServers', 'string[]'], ['enabledMcpServers', 'string[]'],
   ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
@@ -1232,6 +1264,20 @@ function matchesConfigFieldType(value: unknown, type: ConfigFieldType): boolean 
     case 'boolean': return typeof value === 'boolean';
     case 'string[]': return Array.isArray(value) && value.every(v => typeof v === 'string');
     case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
+    case 'mcpAllowlist': return Array.isArray(value) && value.every(isMcpAllowedServerEntry);
+  }
+}
+
+/**
+ * Human-readable phrase (including its article) for a {@link ConfigFieldType}, used
+ * in a type-mismatch message (`must be <label> (got <actual>)`). The base scalar/array
+ * types keep their original wording; the richer `mcpAllowlist` union renders a
+ * descriptive phrase rather than the opaque internal tag.
+ */
+function configFieldTypeLabel(type: ConfigFieldType): string {
+  switch (type) {
+    case 'mcpAllowlist': return 'an array of server names/URLs or provenance entries';
+    default: return `a ${type}`;
   }
 }
 
@@ -1265,6 +1311,7 @@ export function getConfigValidationTip(field: string, ctx: ConfigTipKind): strin
         case 'string[]': return 'Must be an array of strings, e.g. ["a", "b"].';
         case 'object': return 'Must be a JSON object, e.g. { "key": "value" }.';
         case 'string': return 'Must be a quoted string, e.g. "value".';
+        case 'mcpAllowlist': return 'Must be an array of server names/URLs or provenance objects, e.g. ["my-server", { "pluginSource": "acme" }, { "marketplace": "official", "plugin": "acme" }].';
       }
   }
 }
@@ -1327,7 +1374,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     const value = config[field];
     if (value === undefined) continue;
     if (!matchesConfigFieldType(value, type)) {
-      issues.push({ field: field as string, message: `must be a ${type} (got ${describeJsonType(value)})`, value, tip: getConfigValidationTip(field as string, { kind: 'type', type }) });
+      issues.push({ field: field as string, message: `must be ${configFieldTypeLabel(type)} (got ${describeJsonType(value)})`, value, tip: getConfigValidationTip(field as string, { kind: 'type', type }) });
       typeInvalid.add(field as string);
     }
   }
@@ -1736,6 +1783,30 @@ export function consumeInternalWrite(
  */
 function mergeConfigArray(existing: string[] | undefined, incoming: string[]): string[] {
   return [...new Set([...(existing ?? []), ...incoming])];
+}
+
+/**
+ * Accumulate the MCP allowlist across config layers like {@link mergeConfigArray},
+ * but over the richer {@link McpAllowedServerEntry} union — string entries dedupe by
+ * value, provenance objects dedupe by their canonical JSON so a lower layer's
+ * `{ pluginSource }` / `{ marketplace, plugin }` trust is never dropped by a higher
+ * layer, only appended to. First-seen order is preserved.
+ */
+function mergeMcpAllowlist(
+  existing: McpAllowedServerEntry[] | undefined,
+  incoming: McpAllowedServerEntry[],
+): McpAllowedServerEntry[] {
+  const out: McpAllowedServerEntry[] = [];
+  const seen = new Set<string>();
+  const keyOf = (e: McpAllowedServerEntry): string =>
+    typeof e === 'string' ? `s:${e}` : `o:${JSON.stringify(e)}`;
+  for (const e of [...(existing ?? []), ...incoming]) {
+    const k = keyOf(e);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  return out;
 }
 
 /** A plain (non-null, non-array) object — the shape a nested config block always has. */
@@ -2246,7 +2317,7 @@ export function mergeConfigs(
     // still replaced wholesale by the managed override below (AMI superset).
     if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = mergeConfigArray(merged.alwaysLoadTools, layer.alwaysLoadTools);
     if (layer.fallbackModels !== undefined) merged.fallbackModels = mergeConfigArray(merged.fallbackModels, layer.fallbackModels);
-    if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = mergeConfigArray(merged.allowedMcpServers, layer.allowedMcpServers);
+    if (layer.allowedMcpServers !== undefined) merged.allowedMcpServers = mergeMcpAllowlist(merged.allowedMcpServers, layer.allowedMcpServers);
     // Denylist ACCUMULATES across layers like the allowlist — a lower layer's
     // deny can never be removed by a higher one, only added to (deny-wins).
     if (layer.deniedMcpServers !== undefined) merged.deniedMcpServers = mergeConfigArray(merged.deniedMcpServers, layer.deniedMcpServers);

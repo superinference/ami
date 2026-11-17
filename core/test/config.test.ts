@@ -944,11 +944,13 @@ describe('validateProjectConfigValues', () => {
     assert.match(issues[0]!.message, /must be a boolean \(got string\)/);
   });
 
-  it('flags a non-array where a string[] is expected', () => {
+  it('flags a non-array where an mcp allowlist is expected', () => {
+    // allowedMcpServers accepts strings OR provenance objects (U018 w82), so a bare
+    // string (non-array) is flagged with the allowlist-specific message.
     const issues = validateProjectConfigValues({ allowedMcpServers: 'srv' as unknown as string[] });
     assert.equal(issues.length, 1);
     assert.equal(issues[0]!.field, 'allowedMcpServers');
-    assert.match(issues[0]!.message, /must be a string\[\] \(got string\)/);
+    assert.match(issues[0]!.message, /must be an array of server names\/URLs or provenance entries \(got string\)/);
   });
 
   it('flags an array that is not homogeneously string[]', () => {
