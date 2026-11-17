@@ -865,7 +865,18 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string
   if (!policy) return cfg;
   const net = policy.network;
   if (net) {
-    if (net.allowedHosts) cfg.allowedDomains = net.allowedHosts;
+    // PARITY (enterprise managed-domains lockdown — Claude's
+    // shouldAllowManagedSandboxDomainsOnly): when the managed policy forces
+    // domains-only egress, the effective outbound allowlist is the managed list
+    // ALONE — user `allowedHosts` (incl. web_fetch-allow rules folded in by
+    // getEffectiveSandboxPolicy) is ignored, and an empty/absent managed list
+    // blocks ALL outbound (the secure default-deny). The denylist below still
+    // applies (deny wins). Otherwise the normal allowlist flows through.
+    if (net.allowManagedDomainsOnly) {
+      cfg.allowedDomains = net.managedAllowedHosts ? [...net.managedAllowedHosts] : [];
+    } else if (net.allowedHosts) {
+      cfg.allowedDomains = net.allowedHosts;
+    }
     if (net.deniedHosts) cfg.deniedDomains = net.deniedHosts;
     if (net.allowUnixSockets) cfg.allowedUnixSockets = net.allowUnixSockets;
     if (net.allowAllUnixSockets !== undefined) cfg.allowUnixSockets = net.allowAllUnixSockets;
@@ -882,7 +893,15 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string
     const norm = (list: string[]): string[] => list.map((p) => normalizeSandboxFsPath(p, cwd));
     if (fs.denyRead) cfg.denyReadPaths = norm(fs.denyRead);
     if (fs.denyWrite) cfg.denyWritePaths = norm(fs.denyWrite);
-    if (fs.allowRead) cfg.allowReadPaths = norm(fs.allowRead);
+    // PARITY (enterprise managed read-paths lockdown — Claude's
+    // allowManagedReadPathsOnly): under the managed lockdown the read RE-allow set
+    // is the managed list ALONE — user `allowRead` is ignored so a lower tier
+    // cannot re-open a managed-denied read region. denyRead above still applies.
+    if (fs.allowManagedReadPathsOnly) {
+      cfg.allowReadPaths = fs.managedAllowRead ? norm(fs.managedAllowRead) : [];
+    } else if (fs.allowRead) {
+      cfg.allowReadPaths = norm(fs.allowRead);
+    }
     if (fs.allowWrite) cfg.allowWritePaths = norm(fs.allowWrite);
   }
   // Security-weakening escape hatches (nested-userns / network-isolation relax).

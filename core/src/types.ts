@@ -409,6 +409,19 @@ export interface SandboxNetworkConfig {
   httpProxyPort?: number;
   /** Host port the sandbox routes outbound traffic through (SOCKS). 1..65535. */
   socksProxyPort?: number;
+  /** ENTERPRISE managed-policy lockdown: when true the sandbox outbound allowlist
+   *  is forced to {@link managedAllowedHosts} ONLY — any `allowedHosts` derived
+   *  from user settings or folded-in `web_fetch` allow rules is IGNORED, so a
+   *  lower tier can never widen managed egress. `deniedHosts` still applies (deny
+   *  wins), and an empty/absent managed list means NO outbound host is allowed
+   *  (full egress block). Mirrors Claude's
+   *  `shouldAllowManagedSandboxDomainsOnly()` / `allowManagedDomainsOnly`.
+   *  Additive: undefined/false leaves the normal allowlist behavior unchanged. */
+  allowManagedDomainsOnly?: boolean;
+  /** The admin/managed-provided outbound allowlist honored (and used EXCLUSIVELY)
+   *  when {@link allowManagedDomainsOnly} is set. Ignored otherwise. Mirrors the
+   *  policy-tier `sandbox.network.allowedDomains` Claude uses under managed-only. */
+  managedAllowedHosts?: string[];
 }
 
 /** Granular filesystem carve-outs layered on top of the project-only writable
@@ -423,6 +436,16 @@ export interface SandboxFilesystemConfig {
   denyRead?: string[];
   /** Paths re-allowed for reading within a denyRead region (precedence over denyRead). */
   allowRead?: string[];
+  /** ENTERPRISE managed-policy lockdown: when true the read RE-allow carve-outs are
+   *  forced to {@link managedAllowRead} ONLY — any `allowRead` from user settings is
+   *  IGNORED, so a lower tier cannot re-open a managed-denied read path. `denyRead`
+   *  still applies. Mirrors Claude's `allowManagedReadPathsOnly`
+   *  (sandbox-adapter's `shouldAllowManagedReadPathsOnly()` gate on non-policy
+   *  `allowRead`). Additive: undefined/false leaves `allowRead` behavior unchanged. */
+  allowManagedReadPathsOnly?: boolean;
+  /** The admin/managed-provided read RE-allow paths honored (and used EXCLUSIVELY)
+   *  when {@link allowManagedReadPathsOnly} is set. Ignored otherwise. */
+  managedAllowRead?: string[];
 }
 
 /** Custom seccomp syscall-filter configuration for the sandbox backend.
@@ -1772,7 +1795,7 @@ function validateSandboxPolicy(sandbox: SandboxPolicy, warnings: string[]): bool
         valid = false;
       }
     }
-    for (const [field, list] of [['allowedHosts', net.allowedHosts], ['deniedHosts', net.deniedHosts]] as const) {
+    for (const [field, list] of [['allowedHosts', net.allowedHosts], ['deniedHosts', net.deniedHosts], ['managedAllowedHosts', net.managedAllowedHosts]] as const) {
       if (list && list.some((h) => typeof h !== 'string' || h.trim() === '')) {
         warnings.push(`sandbox.network.${field} entries must be non-empty strings`);
         valid = false;
@@ -1781,7 +1804,7 @@ function validateSandboxPolicy(sandbox: SandboxPolicy, warnings: string[]): bool
   }
   const fs = sandbox.filesystem;
   if (fs) {
-    for (const [field, list] of [['allowWrite', fs.allowWrite], ['denyWrite', fs.denyWrite], ['denyRead', fs.denyRead], ['allowRead', fs.allowRead]] as const) {
+    for (const [field, list] of [['allowWrite', fs.allowWrite], ['denyWrite', fs.denyWrite], ['denyRead', fs.denyRead], ['allowRead', fs.allowRead], ['managedAllowRead', fs.managedAllowRead]] as const) {
       if (list && list.some((p) => typeof p !== 'string' || p.trim() === '')) {
         warnings.push(`sandbox.filesystem.${field} entries must be non-empty paths`);
         valid = false;
@@ -1899,6 +1922,7 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
     net.allowedHosts = cleanList(net.allowedHosts);
     net.deniedHosts = cleanList(net.deniedHosts);
     net.allowUnixSockets = cleanList(net.allowUnixSockets);
+    net.managedAllowedHosts = cleanList(net.managedAllowedHosts);
     out.network = net;
   }
   if (sandbox.filesystem) {
@@ -1907,6 +1931,7 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
     fsc.denyWrite = cleanList(fsc.denyWrite);
     fsc.denyRead = cleanList(fsc.denyRead);
     fsc.allowRead = cleanList(fsc.allowRead);
+    fsc.managedAllowRead = cleanList(fsc.managedAllowRead);
     out.filesystem = fsc;
   }
   if (sandbox.seccomp) {
