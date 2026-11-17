@@ -2964,16 +2964,35 @@ export interface PermissionRuleValue {
 }
 
 /**
+ * Canonical Claude-Code wire name for the subagent/delegation tool (its current
+ * tool name is `Agent`). AMI's own tool is `task`; a permission rule, hook, or
+ * imported Claude settings file that names `Agent(...)` must therefore resolve to
+ * AMI's `task` tool. Mirrors Claude Code's `AGENT_TOOL_NAME` (AgentTool/constants.ts).
+ */
+export const AGENT_TOOL_NAME = 'Agent';
+/**
+ * Legacy Claude-Code wire name for the same tool, kept so a rule written against
+ * the OLD spelling still matches (parity: Claude's `LEGACY_AGENT_TOOL_NAME = 'Task'`,
+ * retained "for backward compat (permission rules, hooks, resumed sessions)").
+ */
+export const LEGACY_AGENT_TOOL_NAME = 'Task';
+
+/**
  * Legacy / cross-framework tool-name aliases → AMI canonical tool names. A
  * permission rule written with a Claude-Code capitalized name (`Bash`, `Edit`)
  * or an AMI legacy name resolves to the same canonical AMI tool, so rules keep
  * matching after a rename or when imported from a Claude settings file.
+ *
+ * Both the CURRENT Claude agent-tool name ({@link AGENT_TOOL_NAME} = `Agent`) and
+ * its LEGACY spelling ({@link LEGACY_AGENT_TOOL_NAME} = `Task`) map to AMI's `task`
+ * tool, so a rule like `Agent(researcher)` imported from a Claude settings file
+ * gates AMI's subagent spawns exactly as `task(researcher)` does.
  */
 export const PERMISSION_TOOL_ALIASES: Record<string, string> = {
   Bash: 'bash', Read: 'file_read', Edit: 'file_edit', Write: 'file_edit',
   MultiEdit: 'file_edit', Glob: 'glob', Grep: 'grep', LS: 'list_dir',
   WebFetch: 'web_fetch', WebSearch: 'web_search', NotebookEdit: 'notebook_edit',
-  Task: 'task', TodoWrite: 'todo_write', Skill: 'skill',
+  [AGENT_TOOL_NAME]: 'task', [LEGACY_AGENT_TOOL_NAME]: 'task', TodoWrite: 'todo_write', Skill: 'skill',
   // AMI legacy aliases
   KillShell: 'task_stop', BashOutputTool: 'task_output', AgentOutputTool: 'task_output',
 };

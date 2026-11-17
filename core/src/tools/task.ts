@@ -28,6 +28,7 @@ import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent } from '../skills';
 import { buildAgentMemoryPrompt } from '../memory';
+import { log } from '../logger';
 
 /**
  * Open flags for a sub-agent's output-capture file. `O_NOFOLLOW` refuses to open
@@ -2017,7 +2018,10 @@ export const taskTool: ToolDefinition = {
     'several task calls in one turn. The result is not shown to the user automatically — summarize it back. ' +
     'With run_in_background:true the agent runs detached and you collect it with task_output. Set ' +
     'isolation:"worktree" to give the agent an isolated copy of the repo (auto-removed if it makes no changes). ' +
-    'Use resume with an agent id/name to continue a prior agent with its context preserved.\n' +
+    'Use resume with an agent id/name to continue a prior agent with its context preserved. Before spawning a ' +
+    'NEW agent for a follow-up, check whether a running or recently-completed agent of the same kind already ' +
+    'exists and CONTINUE it (via resume, or send_message to a named teammate) instead of spawning a duplicate — ' +
+    'a continued agent keeps its accumulated context, so it is both cheaper and better-informed than a fresh spawn.\n' +
     '\n' +
     'Example usage:\n' +
     '\n' +
@@ -2609,8 +2613,19 @@ export const taskTool: ToolDefinition = {
         const now = new Date();
         fs.utimesSync(resumeCwd, now, now);
         effectiveCwd = resumeCwd;
-      } catch {
+      } catch (err) {
         cwdFallbackNote = `Note: the resumed agent's worktree (${resumeCwd}) no longer exists — continuing in ${effectiveCwd} instead.\n\n`;
+        // Introspection parity (resumeAgent.ts:L80-92): besides the user-visible
+        // header note above, emit a debug-log hint so a developer tracing a resume
+        // can see WHY the agent's recorded worktree/cwd was not restored (it was
+        // cleaned up) and which fallback cwd it continued in. Best-effort / behind
+        // the debug-log verbosity gate — never affects the spawn outcome.
+        log('task', 'resume: recorded worktree/cwd missing — falling back to parent cwd', {
+          resumeTarget,
+          missingCwd: resumeCwd,
+          fallbackCwd: effectiveCwd,
+          reason: err instanceof Error ? err.message : String(err),
+        }, 'debug');
       }
     }
     if (isolation === 'worktree') {
