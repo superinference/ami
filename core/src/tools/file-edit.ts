@@ -382,6 +382,41 @@ export function captureLspBaseline(resolved: string, context: ToolContext): void
   } catch {}
 }
 
+/**
+ * Boundary-transparency disclosure for a BLOCKED symlink write target (parity:
+ * Claude Code's ShowInIDEPrompt symlink-target surfacing). AMI takes a STRONGER
+ * posture than Claude — {@link validateFileWritePath} blocks EVERY symlink write
+ * target rather than disclosing-and-allowing an in-workspace one — but the bare
+ * "is a symlink — write blocked" error never told the user WHERE the link
+ * redirects, so the boundary crossing it protected against was invisible at the
+ * approval/result surface. This returns a suffix naming the symlink's resolved
+ * target and whether it points inside or outside the workspace, appended to the
+ * block error so the user sees the redirection they were protected from. A live
+ * link uses its realpath; a DANGLING link falls back to its declared destination
+ * (readlink). Best-effort: a non-symlink path, or any lstat/readlink/realpath
+ * failure, yields '' (the base block error still stands) — so it contributes
+ * nothing to a non-symlink validation failure (null byte, glob metachar, …).
+ */
+export function disclaimSymlinkTarget(resolved: string, cwd: string): string {
+  try {
+    const st = fs.lstatSync(resolved);
+    if (!st.isSymbolicLink()) return '';
+    const cwdAbs = path.resolve(cwd);
+    let target: string;
+    try {
+      target = fs.realpathSync(resolved);
+    } catch {
+      // Dangling link (target does not exist yet) — disclose the DECLARED
+      // destination it would create/redirect to, resolved relative to the link.
+      target = path.resolve(path.dirname(resolved), fs.readlinkSync(resolved));
+    }
+    const inside = target === cwdAbs || target.startsWith(cwdAbs + path.sep);
+    return ` It points to "${target}" (${inside ? 'inside' : 'outside'} the workspace); edit the target path directly instead.`;
+  } catch {
+    return '';
+  }
+}
+
 export function verifyWriteTarget(resolved: string, cwd: string): string | undefined {
   const cwdAbs = path.resolve(cwd);
 
@@ -948,10 +983,14 @@ export const fileEditTool: ToolDefinition = {
       return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
     }
 
-    // Symlink guard: block writes to symlinks to prevent redirect attacks
+    // Symlink guard: block writes to symlinks to prevent redirect attacks. When the
+    // block fired on a symlink, disclose WHERE it redirects (resolved target +
+    // inside/outside-workspace) so the blocked boundary crossing is visible to the
+    // user (parity: Claude Code's symlink-target surfacing, adapted to AMI's
+    // stronger block-all-symlinks posture). A non-symlink failure gets no suffix.
     const writePathCheck = validateFileWritePath(resolved);
     if (!writePathCheck.valid) {
-      return { output: writePathCheck.error!, isError: true };
+      return { output: writePathCheck.error! + disclaimSymlinkTarget(resolved, context.cwd), isError: true };
     }
 
     try {
