@@ -616,6 +616,31 @@ export function formatHookStoppedContinuation(stopReason?: string): string {
   return r ? r : DEFAULT_STOP_HOOK_PREVENT_REASON;
 }
 
+/**
+ * User-facing message when a UserPromptSubmit hook BLOCKS a submitted prompt via
+ * `blockingError` (Claude Code's `getUserPromptSubmitHookBlockingMessage`,
+ * utils/hooks.ts:L1936-L1939 → processUserInput.ts:L193-L209). The engine surfaces
+ * this and erases the user's input, so a policy/guardrail hook can refuse a prompt
+ * outright with a displayable reason. Pure. The caller appends `Original prompt: …`
+ * so the erased input is still visible to the user (Claude Code parity).
+ */
+export function formatUserPromptSubmitBlockedMessage(blockingError: string): string {
+  return `UserPromptSubmit operation blocked by hook:\n${blockingError}`;
+}
+
+/**
+ * User-facing message when a UserPromptSubmit hook STOPS a prompt via
+ * `preventContinuation` (Claude Code processUserInput.ts:L213-L224): the prompt is
+ * kept in context but the turn halts. With a non-empty `stopReason` the message is
+ * `Operation stopped by hook: <reason>`, otherwise the bare `Operation stopped by
+ * hook`. Pure. This intentionally differs from {@link formatHookStoppedContinuation}
+ * (the Stop-hook default wording), matching Claude Code's two distinct messages.
+ */
+export function formatUserPromptStoppedMessage(stopReason?: string): string {
+  const r = stopReason?.trim();
+  return r ? `Operation stopped by hook: ${r}` : 'Operation stopped by hook';
+}
+
 /** Per-hook timing + error record from a Stop-hook run (Claude Code's hookInfos
  *  in createStopHookSummaryMessage). One entry per Stop hook that actually ran. */
 export interface StopHookInfo {
@@ -5300,7 +5325,7 @@ export class HookManager extends EventEmitter {
     invalidateSessionEnvCache();
     return this.withConcurrencyGate('cwdChanged', async () => {
       for (const hook of this.cwdChangedHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try { await hook(ctx); } catch (err) { this.emitWatcherHookError('CwdChanged hook', err); }
       }
     });
   }
@@ -5308,9 +5333,25 @@ export class HookManager extends EventEmitter {
   async executeFileChanged(ctx: FileChangeContext): Promise<void> {
     return this.withConcurrencyGate('fileChanged', async () => {
       for (const hook of this.fileChangedHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
+        try { await hook(ctx); } catch (err) { this.emitWatcherHookError('FileChanged hook', err); }
       }
     });
+  }
+
+  /**
+   * Surface a failed FileChanged / CwdChanged watcher hook on the same visible
+   * `hookError` channel every other hook failure uses, instead of only
+   * `coreLog`-ing it internally. These hooks fire from fire-and-forget fs-watch /
+   * cwd-change call sites (no generator to yield from), so a misconfigured watcher
+   * hook would otherwise fail silently forever (Claude Code's fileChangedWatcher.ts
+   * routes each failed hook's error to the notify callback — L99-L105). Operator-
+   * facing (debug log + analytics via the engine's `hookError` listener); never fed
+   * to the model.
+   */
+  private emitWatcherHookError(hook: string, err: unknown): void {
+    const error = err instanceof Error ? err.message : String(err);
+    coreLog('hooks', 'Hook error', { error });
+    this.emit('hookError', { hookType: 'command', hook, error });
   }
 
   /**
