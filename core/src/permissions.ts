@@ -1587,6 +1587,17 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f|(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]/, warning: 'Note: may recursively force-remove files' },
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]/, warning: 'Note: may recursively remove files' },
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f/, warning: 'Note: may force-remove files' },
+  { pattern: /(^|[;&|\n]\s*)rmdir\b/, warning: 'Note: may remove directories' },
+  // Secure-deletion / truncation. `shred` is DETERMINISTIC (it always overwrites
+  // then removes), so its note uses "will"; `truncate` is conditional ("may",
+  // e.g. only shrinks when `-s` reduces the size) — mirrors Claude's will/may
+  // certainty distinction in destructiveCommandWarning.ts.
+  { pattern: /(^|[;&|\n]\s*)shred\b/, warning: 'Note: will permanently overwrite and delete the target files' },
+  { pattern: /(^|[;&|\n]\s*)truncate\b/, warning: 'Note: may shrink or empty the target file' },
+  // Process control.
+  { pattern: /(^|[;&|\n]\s*)(pkill|killall)\b/, warning: 'Note: may terminate matching processes by name' },
+  { pattern: /(^|[;&|\n]\s*)kill\s+-[a-zA-Z]*9\b/, warning: 'Note: may forcibly terminate a process' },
+  { pattern: /(^|[;&|\n]\s*)kill\b/, warning: 'Note: may terminate a running process' },
   // Database.
   { pattern: /\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b/i, warning: 'Note: may drop or truncate database objects' },
   { pattern: /\bDELETE\s+FROM\s+\w+[ \t]*(;|"|'|\n|$)/i, warning: 'Note: may delete all rows from a database table' },
@@ -3415,6 +3426,67 @@ export function filterInvalidPermissionRules(
     warnings.push(`Invalid permission rule "${entry}" was skipped: ${result.error}${suffix}`);
   }
   return { kept, warnings };
+}
+
+/**
+ * Upper bound on the length of a model-supplied plan-mode `allowedPrompts` entry.
+ * A legitimate scoped action description / command prefix is short; anything far
+ * longer is either junk or an attempt to smuggle a huge rule, so it is refused.
+ */
+export const MAX_ALLOWED_PROMPT_LENGTH = 1000;
+
+/**
+ * Validate a single MODEL-supplied plan-mode `allowedPrompts` entry before it is
+ * persisted as an `allow` permission rule on plan-mode exit.
+ *
+ * Claude's ExitPlanMode tool treats `allowedPrompts` as SCOPED action
+ * descriptions (`tool: z.enum(['Bash'])`, e.g. "run tests") — never a match-all
+ * glob. AMI stores each entry's text directly as a rule pattern
+ * (`addRule({ tool, pattern: prompt, action: 'allow' })`), so without this guard
+ * a crafted or prompt-injected entry such as `*`, ``, or `**` would become a
+ * blanket `bash(*)` allow-EVERYTHING rule — a privilege-escalation vector that
+ * silently auto-approves every subsequent command.
+ *
+ * Returns `{ safe:false, reason }` for a non-string, an empty/whitespace-only
+ * value, a pattern that collapses to "match everything" (only glob
+ * metacharacters: `*`, `**`, `.*`, `*:*`, a lone `:*`, `?*`, …), or a value
+ * longer than {@link MAX_ALLOWED_PROMPT_LENGTH}; otherwise `{ safe:true }`.
+ */
+export function validateAllowedPromptRule(prompt: unknown): { safe: boolean; reason?: string } {
+  if (typeof prompt !== 'string') return { safe: false, reason: 'prompt must be a string' };
+  const trimmed = prompt.trim();
+  if (!trimmed) return { safe: false, reason: 'prompt is empty' };
+  if (trimmed.length > MAX_ALLOWED_PROMPT_LENGTH) {
+    return { safe: false, reason: `prompt exceeds ${MAX_ALLOWED_PROMPT_LENGTH} characters` };
+  }
+  // A pattern made up ONLY of glob/wildcard metacharacters matches every command
+  // (the glob matcher treats `*`/`?`/`.*`/`:*` as "anything"), so it is too broad
+  // to auto-allow. Whitespace is irrelevant to the match, so collapse it first.
+  const stripped = trimmed.replace(/\s+/g, '');
+  if (/^[*?.:]+$/.test(stripped)) {
+    return { safe: false, reason: 'pattern matches all commands (too broad to auto-allow)' };
+  }
+  return { safe: true };
+}
+
+/**
+ * Partition an array of model-supplied plan-mode `allowedPrompts` entries into the
+ * ones safe to persist as `allow` rules and the ones refused by
+ * {@link validateAllowedPromptRule}, preserving each entry's full shape (so the
+ * caller keeps its `tool`). The rejected list carries the refusal reason so the
+ * caller can surface WHICH prompts were dropped and WHY (introspection).
+ */
+export function partitionAllowedPromptRules<T extends { prompt?: unknown }>(
+  entries: readonly T[],
+): { valid: T[]; rejected: Array<{ entry: T; reason: string }> } {
+  const valid: T[] = [];
+  const rejected: Array<{ entry: T; reason: string }> = [];
+  for (const entry of entries) {
+    const result = validateAllowedPromptRule(entry.prompt);
+    if (result.safe) valid.push(entry);
+    else rejected.push({ entry, reason: result.reason ?? 'invalid prompt' });
+  }
+  return { valid, rejected };
 }
 
 /**

@@ -98,8 +98,10 @@ test('checkWithReason surfaces the specific destructive warning for a destructiv
 
 test('checkWithReason falls back to a generic destructive message when no specific pattern matches', async () => {
   const pm = new PermissionManager('ask');
-  // `shred` is in the destructive command set but has no DestructivePattern warning.
-  const r = await pm.checkWithReason('bash', { command: 'shred secret.txt' });
+  // `git reset --merge` classifies destructive but has no DestructivePattern
+  // warning, so the decision reason uses the generic destructive line. (shred,
+  // truncate and the process-control commands gained specific warnings in w82.)
+  const r = await pm.checkWithReason('bash', { command: 'git reset --merge' });
   assert.ok(r.reason && r.reason.type === 'safetyCheck' && r.reason.check === 'destructive');
   assert.match(r.message ?? '', /destructive/i);
 });
