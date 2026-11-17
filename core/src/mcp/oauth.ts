@@ -274,7 +274,7 @@ export interface OAuthLogEvent {
   /** Which leg of the flow emitted this. */
   step:
     | 'cache-hit' | 'discover-prm' | 'discover-as' | 'register-client'
-    | 'authorize' | 'exchange-code' | 'refresh' | 'revoke' | 'cancelled' | 'token-stored';
+    | 'authorize' | 'exchange-code' | 'xaa-exchange' | 'refresh' | 'revoke' | 'cancelled' | 'token-stored';
   /** Human-readable, already-redacted message (URLs via {@link redactOAuthUrl}). */
   message: string;
   /** The MCP server URL this flow is for. */
@@ -755,7 +755,7 @@ export function coerceExpiresIn(raw: unknown): number | undefined {
   return undefined;
 }
 
-function toTokens(doc: Record<string, unknown>, now: number): OAuthTokens {
+export function toTokens(doc: Record<string, unknown>, now: number): OAuthTokens {
   if (typeof doc.access_token !== 'string') throw new Error('token response missing access_token');
   // Tolerate a numeric-string `expires_in` (common from PHP-backed IdPs) the same
   // way z.coerce.number() would: a bare number is used as-is, a finite numeric
@@ -922,6 +922,372 @@ export async function revokeToken(
     return bearer.ok;
   }
   return false;
+}
+
+// ─── Cross-App Access (XAA / SEP-990) — browserless enterprise SSO ───────────
+//
+// Obtains an MCP access token WITHOUT an interactive browser consent screen by
+// chaining two OAuth grants, for enterprise/headless environments where the user
+// already holds an OIDC id_token from a shared corporate IdP:
+//   1. RFC 8693 Token Exchange at the IdP:  id_token → ID-JAG assertion
+//   2. RFC 7523 JWT-Bearer Grant at the AS: ID-JAG   → access_token
+// (ID-JAG = Identity Assertion Authorization Grant; MCP ext-auth / SEP-990.)
+// This is the browserless alternative to McpOAuthSession's interactive consent
+// leg — it reuses the SAME RFC 9728/8414 discovery + token helpers above, so there
+// is one canonical discovery/token path, not a parallel one.
+
+/** RFC 8693 token-exchange grant type (id_token → ID-JAG at the IdP). */
+export const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange';
+/** RFC 7523 JWT-bearer grant type (ID-JAG → access_token at the AS). */
+export const JWT_BEARER_GRANT = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
+/** ID-JAG token type (the assertion minted by the IdP token-exchange). */
+export const ID_JAG_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id-jag';
+/** OIDC id_token token type (the subject token fed into the token-exchange). */
+export const ID_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id_token';
+
+/**
+ * Env var gating the Cross-App Access (XAA / SEP-990) browserless SSO flow. XAA is
+ * an ENTERPRISE feature that bypasses the interactive consent screen using a shared
+ * corporate IdP, so — matching Claude Code's `CLAUDE_CODE_ENABLE_XAA` gate — it is
+ * OFF unless an operator explicitly opts in. Unlike Claude, AMI uses a vendor-neutral
+ * name.
+ */
+export const MCP_ENABLE_XAA_ENV = 'MCP_ENABLE_XAA';
+
+/** Truthy values accepted by {@link isXaaEnabled} (parity with Claude's env-truthy check). */
+function isEnvTruthy(v: string | undefined): boolean {
+  if (!v) return false;
+  const s = v.trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+}
+
+/**
+ * Whether the browserless Cross-App Access flow is enabled for this process
+ * ({@link MCP_ENABLE_XAA_ENV} is set to a truthy value). A session configured with
+ * an {@link XaaConfig} still only takes the XAA path when this gate is on, so the
+ * enterprise flow never activates for a normal user who merely has stale config.
+ */
+export function isXaaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[MCP_ENABLE_XAA_ENV]);
+}
+
+/**
+ * Input shape for the browserless Cross-App Access (XAA / SEP-990) token exchange.
+ * Mirrors Claude Code's `XaaConfig`: the credentials registered at the MCP server's
+ * authorization server (`clientId`/`clientSecret`) PLUS the credentials + pre-obtained
+ * OIDC id_token for the shared enterprise IdP the token-exchange runs against.
+ */
+export interface XaaConfig {
+  /** Client ID registered at the MCP server's authorization server (AS). */
+  clientId: string;
+  /** Client secret for the MCP server's authorization server (AS). */
+  clientSecret: string;
+  /** Client ID registered at the enterprise IdP (for the token-exchange request). */
+  idpClientId: string;
+  /** Optional IdP client secret (`client_secret_post`) — some IdPs require it even for `none`. */
+  idpClientSecret?: string;
+  /** The user's pre-obtained OIDC id_token from the IdP login (direct injection — no browser). */
+  idpIdToken: string;
+  /** The enterprise IdP token endpoint the RFC 8693 token-exchange is POSTed to. */
+  idpTokenEndpoint: string;
+  /** Optional scope requested on both exchange legs (RFC 8693 / RFC 7523). */
+  scope?: string;
+}
+
+/** Result of a successful {@link requestJwtAuthorizationGrant} (RFC 8693 token exchange). */
+export interface JwtAuthGrantResult {
+  /** The ID-JAG (Identity Assertion Authorization Grant) assertion. */
+  jwtAuthGrant: string;
+  expiresIn?: number;
+  scope?: string;
+}
+
+/**
+ * RFC 8693 Token Exchange at the enterprise IdP: `id_token` → ID-JAG. The IdP mints
+ * an assertion scoped to the MCP resource server (`audience`/`resource`) that the AS
+ * then trades for an access token via {@link exchangeJwtAuthGrant}. A `clientSecret`
+ * is sent via `client_secret_post` when present. Validates the returned
+ * `issued_token_type` is the ID-JAG type so a mis-issued token is never forwarded.
+ * Error bodies are surfaced via {@link extractOAuthErrorBody} and redacted.
+ */
+export async function requestJwtAuthorizationGrant(
+  fetchImpl: FetchLike,
+  opts: {
+    tokenEndpoint: string;
+    audience: string;
+    resource: string;
+    idToken: string;
+    clientId: string;
+    clientSecret?: string;
+    scope?: string;
+  },
+): Promise<JwtAuthGrantResult> {
+  assertSecureUrl(opts.tokenEndpoint, 'IdP token endpoint');
+  const form: Record<string, string> = {
+    grant_type: TOKEN_EXCHANGE_GRANT,
+    requested_token_type: ID_JAG_TOKEN_TYPE,
+    audience: opts.audience,
+    resource: opts.resource,
+    subject_token: opts.idToken,
+    subject_token_type: ID_TOKEN_TYPE,
+    client_id: opts.clientId,
+  };
+  if (opts.clientSecret) form.client_secret = opts.clientSecret;
+  if (opts.scope) form.scope = opts.scope;
+  const res = await fetchImpl(opts.tokenEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams(form).toString(),
+  });
+  let doc: Record<string, unknown> = {};
+  let parseFailed = false;
+  try { doc = (await res.json()) as Record<string, unknown>; } catch { parseFailed = true; }
+  if (!res.ok || typeof doc.error === 'string') throw normalizeTokenError(res.status, doc);
+  if (parseFailed) {
+    throw new Error(`XAA token exchange returned a non-JSON response from ${opts.tokenEndpoint} (captive portal or proxy?)`);
+  }
+  if (typeof doc.access_token !== 'string') {
+    throw new Error('XAA token-exchange response missing access_token (ID-JAG)');
+  }
+  if (doc.issued_token_type !== ID_JAG_TOKEN_TYPE) {
+    throw new Error(`XAA token-exchange returned unexpected issued_token_type: ${String(doc.issued_token_type)}`);
+  }
+  return {
+    jwtAuthGrant: doc.access_token,
+    expiresIn: coerceExpiresIn(doc.expires_in),
+    scope: typeof doc.scope === 'string' ? doc.scope : undefined,
+  };
+}
+
+/**
+ * RFC 7523 JWT-Bearer Grant at the MCP server's authorization server: ID-JAG →
+ * access token. `authMethod` defaults to `client_secret_basic` (credentials in an
+ * `Authorization: Basic` header, per the SEP-990 conformance profile); pass
+ * `client_secret_post` only when the AS requires body credentials. Returns the same
+ * {@link OAuthTokens} shape the browser flow produces, so downstream handling is identical.
+ */
+export async function exchangeJwtAuthGrant(
+  fetchImpl: FetchLike,
+  opts: {
+    tokenEndpoint: string;
+    assertion: string;
+    clientId: string;
+    clientSecret: string;
+    authMethod?: 'client_secret_basic' | 'client_secret_post';
+    scope?: string;
+  },
+  now: number,
+): Promise<OAuthTokens> {
+  assertSecureUrl(opts.tokenEndpoint, 'token endpoint');
+  const authMethod = opts.authMethod ?? 'client_secret_basic';
+  const form: Record<string, string> = { grant_type: JWT_BEARER_GRANT, assertion: opts.assertion };
+  if (opts.scope) form.scope = opts.scope;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    Accept: 'application/json',
+  };
+  if (authMethod === 'client_secret_basic') {
+    headers.Authorization = `Basic ${Buffer.from(`${encodeURIComponent(opts.clientId)}:${encodeURIComponent(opts.clientSecret)}`).toString('base64')}`;
+  } else {
+    form.client_id = opts.clientId;
+    form.client_secret = opts.clientSecret;
+  }
+  const res = await fetchImpl(opts.tokenEndpoint, {
+    method: 'POST', headers, body: new URLSearchParams(form).toString(),
+  });
+  let doc: Record<string, unknown> = {};
+  let parseFailed = false;
+  try { doc = (await res.json()) as Record<string, unknown>; } catch { parseFailed = true; }
+  if (!res.ok || typeof doc.error === 'string') throw normalizeTokenError(res.status, doc);
+  if (parseFailed) {
+    throw new Error(`XAA jwt-bearer grant returned a non-JSON response from ${opts.tokenEndpoint} (captive portal or proxy?)`);
+  }
+  return toTokens(doc, now);
+}
+
+/** Result of a full {@link performCrossAppAccess} flow. */
+export interface XaaResult {
+  tokens: OAuthTokens;
+  /** The RFC 8707 resource (MCP server) the tokens are bound to. */
+  resource: string;
+  /** The AS issuer the tokens were minted at (persist for refresh/revocation). */
+  authorizationServerUrl: string;
+  /** The discovered AS metadata — carried so a later silent refresh/revocation can reuse it. */
+  authServer: AuthServerMetadata;
+}
+
+/**
+ * Full browserless XAA flow for one MCP server: RFC 9728 PRM discovery → RFC 8414 AS
+ * metadata → RFC 8693 token-exchange at the IdP → RFC 7523 jwt-bearer at the AS →
+ * access token. Reuses {@link discoverProtectedResource}/{@link discoverAuthServer}
+ * (the same discovery the interactive flow uses) and tries each advertised AS in
+ * order, skipping one whose metadata discovery fails or that explicitly omits the
+ * jwt-bearer grant — so a down/incapable primary AS does not sink the flow when a
+ * usable alternative is listed.
+ */
+export async function performCrossAppAccess(
+  fetchImpl: FetchLike,
+  serverUrl: string,
+  config: XaaConfig,
+  now: number,
+): Promise<XaaResult> {
+  const prm = await discoverProtectedResource(fetchImpl, wellKnown(serverUrl, 'oauth-protected-resource'));
+  assertResourceMatch(prm.resource, serverUrl);
+  const resource = prm.resource;
+  let asMeta: AuthServerMetadata | undefined;
+  const asErrors: string[] = [];
+  for (const issuer of prm.authorizationServers) {
+    try {
+      assertSecureUrl(issuer, 'authorization server issuer');
+      const meta = await discoverAuthServer(fetchImpl, issuer);
+      // RFC 8414 §2: grant_types_supported is OPTIONAL — only skip an AS that
+      // EXPLICITLY advertises a list omitting jwt-bearer; otherwise let the token
+      // endpoint decide.
+      if (meta.grantTypesSupported && !meta.grantTypesSupported.includes(JWT_BEARER_GRANT)) {
+        asErrors.push(`${issuer}: does not advertise the jwt-bearer grant`);
+        continue;
+      }
+      asMeta = meta;
+      break;
+    } catch (e) {
+      asErrors.push(`${issuer}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (!asMeta) {
+    throw new Error(`XAA: no authorization server supports jwt-bearer (tried: ${asErrors.join('; ')})`);
+  }
+  // 1) IdP token-exchange: id_token → ID-JAG (audience/resource = the MCP server).
+  const grant = await requestJwtAuthorizationGrant(fetchImpl, {
+    tokenEndpoint: config.idpTokenEndpoint,
+    audience: asMeta.issuer,
+    resource,
+    idToken: config.idpIdToken,
+    clientId: config.idpClientId,
+    clientSecret: config.idpClientSecret,
+    scope: config.scope,
+  });
+  // 2) AS jwt-bearer grant: ID-JAG → access token. Honour the AS's advertised
+  // token_endpoint_auth_methods when picking basic vs post.
+  const authMethod = asMeta.tokenEndpointAuthMethodsSupported?.includes('client_secret_post')
+    && !asMeta.tokenEndpointAuthMethodsSupported.includes('client_secret_basic')
+    ? 'client_secret_post' : 'client_secret_basic';
+  const tokens = await exchangeJwtAuthGrant(fetchImpl, {
+    tokenEndpoint: asMeta.tokenEndpoint,
+    assertion: grant.jwtAuthGrant,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    authMethod,
+    scope: grant.scope ?? config.scope,
+  }, now);
+  return { tokens, resource, authorizationServerUrl: asMeta.issuer, authServer: asMeta };
+}
+
+// ─── Proactive pre-expiry token-refresh scheduler ────────────────────────────
+
+/** Default pre-expiry window: refresh 5 min before a token's real expiry. */
+export const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+/** Follow-up refresh cadence when a token's own expiry is unknown/already past. */
+export const FALLBACK_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+/** Delay before retrying a refresh that produced no usable token. */
+export const REFRESH_RETRY_DELAY_MS = 60 * 1000;
+/** Max consecutive failed refreshes before the scheduler stops retrying. */
+export const MAX_REFRESH_FAILURES = 5;
+/** Floor for any scheduled delay so a near-expiry token never tight-loops. */
+const MIN_REFRESH_DELAY_MS = 1000;
+
+/** Injectable timer seams for {@link OAuthRefreshScheduler} (deterministic tests). */
+export interface RefreshSchedulerTimers {
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+  now?: () => number;
+}
+
+/**
+ * Single-target proactive token-refresh scheduler (parity with Claude Code's
+ * `createTokenRefreshScheduler`, scoped to one MCP server). It fires an injected
+ * `onRefresh` shortly BEFORE a token expires so a long-running session never
+ * presents an expired token mid-request, rather than relying only on a reactive 401.
+ *
+ * Carries the three properties the reference calls out:
+ *   - a GENERATION COUNTER bumped on every `schedule`/`cancel`, captured before the
+ *     async `onRefresh` so a reschedule/cancel that lands mid-flight supersedes a
+ *     stale result instead of letting it set an orphaned follow-up timer;
+ *   - FAILURE-COUNT BACKOFF: a refresh that yields no usable token schedules a retry
+ *     after {@link REFRESH_RETRY_DELAY_MS}, up to {@link MAX_REFRESH_FAILURES}, then stops;
+ *   - a FALLBACK REFRESH INTERVAL ({@link FALLBACK_REFRESH_INTERVAL_MS}) used to
+ *     keep the chain alive when a refreshed token's own expiry is unknown.
+ *
+ * `onRefresh` resolves to the next absolute expiry (epoch-ms) on success — used to
+ * schedule the follow-up — or `undefined` on failure.
+ */
+export class OAuthRefreshScheduler {
+  private timer: unknown = null;
+  private generation = 0;
+  private failures = 0;
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (handle: unknown) => void;
+  private readonly clock: () => number;
+
+  constructor(
+    private readonly onRefresh: () => Promise<number | undefined>,
+    private readonly bufferMs: number = TOKEN_REFRESH_BUFFER_MS,
+    timers: RefreshSchedulerTimers = {},
+  ) {
+    this.setTimer = timers.setTimer ?? ((fn, ms) => {
+      const t = setTimeout(fn, ms);
+      if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref();
+      return t;
+    });
+    this.clearTimer = timers.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+    this.clock = timers.now ?? (() => Date.now());
+  }
+
+  /**
+   * (Re)arm a proactive refresh for a token expiring at `expiresAtMs`. Replaces any
+   * pending timer and bumps the generation so an in-flight refresh is invalidated.
+   * A delay at or below the floor fires as soon as possible (clamped, never a busy loop).
+   */
+  schedule(expiresAtMs: number | undefined): void {
+    this.clearPending();
+    const gen = ++this.generation;
+    const delay = expiresAtMs === undefined
+      ? FALLBACK_REFRESH_INTERVAL_MS
+      : Math.max(expiresAtMs - this.bufferMs - this.clock(), MIN_REFRESH_DELAY_MS);
+    this.timer = this.setTimer(() => { void this.fire(gen); }, delay);
+  }
+
+  /** Cancel any pending refresh and invalidate in-flight ones; resets the failure count. */
+  cancel(): void {
+    this.clearPending();
+    this.generation++;
+    this.failures = 0;
+  }
+
+  private clearPending(): void {
+    if (this.timer !== null) { this.clearTimer(this.timer); this.timer = null; }
+  }
+
+  private async fire(gen: number): Promise<void> {
+    let nextExpiry: number | undefined;
+    try {
+      nextExpiry = await this.onRefresh();
+    } catch {
+      nextExpiry = undefined;
+    }
+    // Superseded by a reschedule/cancel while awaiting — do not set a follow-up timer.
+    if (gen !== this.generation) return;
+    if (nextExpiry === undefined) {
+      this.failures++;
+      if (this.failures < MAX_REFRESH_FAILURES) {
+        this.timer = this.setTimer(() => { void this.fire(gen); }, REFRESH_RETRY_DELAY_MS);
+      } else {
+        this.timer = null; // give up after repeated failures — a 401 will recover
+      }
+      return;
+    }
+    this.failures = 0;
+    this.schedule(nextExpiry);
+  }
 }
 
 /** Holds the current tokens and answers "is the access token still usable?". */
@@ -1138,6 +1504,29 @@ export interface McpOAuthSessionOptions {
   authServerMetadataUrl?: string;
   /** Optional OIDC `login_hint` pre-filled on the provider consent screen. */
   loginHint?: string;
+  /**
+   * Browserless Cross-App Access config (XAA / SEP-990). When set AND the XAA env
+   * gate ({@link isXaaEnabled}) is on, authorization uses the enterprise token-exchange
+   * flow ({@link performCrossAppAccess}) with the pre-obtained `idpIdToken` instead of
+   * opening a browser — the headless/enterprise path. When the gate is off, this is
+   * ignored and the normal interactive consent flow runs.
+   */
+  xaa?: XaaConfig;
+  /**
+   * Process env used to evaluate the XAA gate ({@link isXaaEnabled}). Defaults to
+   * process.env; a seam for tests so the gate can be toggled deterministically.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Enable the proactive pre-expiry refresh scheduler ({@link OAuthRefreshScheduler}):
+   * after a token is obtained/refreshed AND a silent refresh is possible, a background
+   * timer refreshes it shortly before expiry so a long-running session never presents an
+   * expired token mid-request. The scheduler is cancelled when `signal` aborts, on
+   * revoke, and on token invalidation. Off by default (reactive-only).
+   */
+  autoRefresh?: boolean;
+  /** Injectable timer seams for the proactive refresh scheduler (deterministic tests). */
+  refreshTimers?: RefreshSchedulerTimers;
   /** Clock seam (epoch ms). Defaults to Date.now. */
   now?: () => number;
   /**
@@ -1187,6 +1576,8 @@ export class McpOAuthSession implements McpOAuthProvider {
   private resolvedRedirectUri: string | undefined;
   /** Shared in-flight refresh so concurrent callers coalesce onto one POST. */
   private refreshInFlight: Promise<string | null> | null = null;
+  /** Proactive pre-expiry refresh scheduler (null when `autoRefresh` is off). */
+  private readonly refreshScheduler: OAuthRefreshScheduler | null;
 
   /** Resolve the redirect URI once (dynamic port discovery when configured), then cache it. */
   private async getRedirectUri(): Promise<string> {
@@ -1222,6 +1613,24 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (opts.clientId && stored?.clientId && stored.clientId !== opts.clientId) {
       this.store.clear();
     }
+    // Proactive refresh scheduler (opt-in): fires a silent refresh shortly before
+    // expiry. onRefresh returns the fresh token's expiry so the next proactive
+    // refresh can be armed, or undefined so the scheduler's failure-backoff applies.
+    this.refreshScheduler = opts.autoRefresh
+      ? new OAuthRefreshScheduler(
+        async () => {
+          if (!this.canSilentRefresh()) return undefined;
+          const header = await this.refreshAccessToken();
+          if (!header) return undefined;
+          return this.store.get()?.expiresAt;
+        },
+        opts.refreshBufferMs ?? TOKEN_REFRESH_BUFFER_MS,
+        opts.refreshTimers,
+      )
+      : null;
+    // Stop all background timers when the caller cancels (server stop/remove), so a
+    // torn-down session never leaves a refresh timer armed.
+    this.opts.signal?.addEventListener('abort', () => this.refreshScheduler?.cancel(), { once: true });
   }
 
   /** Emit a redacted diagnostic event to the optional observer (best-effort). */
@@ -1343,7 +1752,11 @@ export class McpOAuthSession implements McpOAuthProvider {
     // known (a prior auth happened) and a refresh token exists.
     if (this.canSilentRefresh()) {
       const header = await this.refreshAccessToken();
-      if (header) return true;
+      if (header) {
+        // Re-arm the proactive refresh against the freshly-minted expiry.
+        this.refreshScheduler?.schedule(this.store.get()?.expiresAt);
+        return true;
+      }
     }
     return this.performAuthorization(wwwAuthenticate);
   }
@@ -1395,6 +1808,7 @@ export class McpOAuthSession implements McpOAuthProvider {
       }
     } finally {
       this.store.clear();
+      this.refreshScheduler?.cancel();
       this.log({ step: 'revoke', message: 'local credentials cleared', ok: true });
     }
   }
@@ -1415,7 +1829,7 @@ export class McpOAuthSession implements McpOAuthProvider {
    * drop state that is stale/unusable rather than to sign out.
    */
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
-    if (scope === 'tokens' || scope === 'all') this.store.clear();
+    if (scope === 'tokens' || scope === 'all') { this.store.clear(); this.refreshScheduler?.cancel(); }
     if (scope === 'client' || scope === 'all') {
       this.effectiveClientId = this.opts.clientId;
       this.effectiveClientSecret = this.opts.clientSecret;
@@ -1519,6 +1933,12 @@ export class McpOAuthSession implements McpOAuthProvider {
    * covers what the resource demanded.
    */
   private async performAuthorization(wwwAuthenticate: string | null, requiredScope?: string): Promise<boolean> {
+    // Browserless Cross-App Access (XAA / SEP-990): when an enterprise IdP config is
+    // supplied AND the env gate is on, obtain the token via the token-exchange flow
+    // using the pre-obtained id_token instead of opening a browser for consent.
+    if (this.opts.xaa && isXaaEnabled(this.opts.env)) {
+      return this.performXaaAuthorization();
+    }
     try {
       const { prmScopes } = await this.discoverAuthorizationServer(wwwAuthenticate);
       const authMeta = this.authMeta!;
@@ -1594,6 +2014,9 @@ export class McpOAuthSession implements McpOAuthProvider {
       // change across restarts invalidates the now-stale grant (see constructor).
       tokens.clientId = this.effectiveClientId;
       this.store.set(tokens);
+      // Arm the proactive pre-expiry refresh (no-op when autoRefresh is off / no
+      // refresh token), so a long-running session refreshes ahead of this expiry.
+      if (this.canSilentRefresh()) this.refreshScheduler?.schedule(tokens.expiresAt);
       this.log({ step: 'token-stored', message: 'access token obtained and stored', ok: true });
       return true;
     } catch (error) {
@@ -1604,6 +2027,40 @@ export class McpOAuthSession implements McpOAuthProvider {
         this.log({ step: 'cancelled', message: 'OAuth flow cancelled by the user', ok: false });
       } else {
         this.log({ step: 'authorize', message: 'OAuth flow failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Browserless Cross-App Access authorization (XAA / SEP-990): run the enterprise
+   * token-exchange flow with the configured {@link XaaConfig} instead of interactive
+   * consent, then cache the resulting tokens exactly like the browser flow. Populates
+   * `authMeta`/`resource`/`effectiveClientId` from the discovered AS so a subsequent
+   * silent refresh and revocation work identically. Returns whether a token was obtained.
+   */
+  private async performXaaAuthorization(): Promise<boolean> {
+    const xaa = this.opts.xaa!;
+    this.log({ step: 'xaa-exchange', message: 'performing browserless cross-app access token exchange (SEP-990)' });
+    try {
+      const result = await performCrossAppAccess(this.fetch, this.opts.serverUrl, xaa, this.now());
+      // Carry discovery state so refresh/revocation locate the AS token/revocation
+      // endpoints (the MCP URL is not the AS URL in a typical XAA setup).
+      this.authMeta = result.authServer;
+      this.resource = result.resource;
+      this.effectiveClientId = xaa.clientId;
+      this.effectiveClientSecret = xaa.clientSecret;
+      const tokens = result.tokens;
+      tokens.clientId = xaa.clientId;
+      this.store.set(tokens);
+      if (this.canSilentRefresh()) this.refreshScheduler?.schedule(tokens.expiresAt);
+      this.log({ step: 'token-stored', message: 'access token obtained via cross-app access and stored', ok: true });
+      return true;
+    } catch (error) {
+      if (this.isCancelled()) {
+        this.log({ step: 'cancelled', message: 'cross-app access flow cancelled by the user', ok: false });
+      } else {
+        this.log({ step: 'xaa-exchange', message: 'cross-app access flow failed', ok: false, error: redactTokenBody(error instanceof Error ? error.message : String(error)) });
       }
       return false;
     }

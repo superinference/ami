@@ -1,7 +1,7 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION, getMcpConnectTimeout } from './client';
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
 import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName, mcpCredentialKey } from './oauth';
-import type { McpOAuthProvider, AuthorizeFn, FetchLike } from './oauth';
+import type { McpOAuthProvider, AuthorizeFn, FetchLike, XaaConfig } from './oauth';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
@@ -453,6 +453,14 @@ export interface McpServerConfig {
      * stable per-server callback port. An explicit `redirectUri` still wins over it.
      */
     callbackPort?: number;
+    /**
+     * Browserless Cross-App Access config (XAA / SEP-990) for an enterprise shared-IdP
+     * server. When set AND the {@link MCP_ENABLE_XAA_ENV} gate is on, the server
+     * authenticates via the RFC 8693/7523 token-exchange flow using the pre-obtained
+     * `idpIdToken` instead of an interactive browser consent — the headless/enterprise
+     * path. Ignored (normal consent flow) when the gate is off.
+     */
+    xaa?: XaaConfig;
   };
 }
 
@@ -1160,6 +1168,13 @@ export class McpManager extends EventEmitter {
         scope: config.oauth.scope,
         authServerMetadataUrl: config.oauth.authServerMetadataUrl,
         loginHint: config.oauth.loginHint,
+        // Browserless enterprise SSO (SEP-990): when configured + env-gated, skip the
+        // browser and use the token-exchange flow with the pre-obtained id_token.
+        xaa: config.oauth.xaa,
+        // Proactively refresh long-lived server tokens ahead of expiry so a
+        // long-running session never presents an expired token mid-request. The
+        // background timer is unref'd and torn down with the per-server abort signal.
+        autoRefresh: true,
       });
     }
 
