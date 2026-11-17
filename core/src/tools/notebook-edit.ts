@@ -24,8 +24,13 @@ function cellSourceToString(source: string | string[] | undefined): string {
 /** Derive the notebook's programming language from `metadata.language_info.name`,
  *  defaulting to 'python' when absent/blank. Parity: Claude's NotebookEditTool
  *  (L379 — `notebook.metadata.language_info?.name ?? 'python'`), so the result
- *  carries language context for the edited cell. */
-function deriveNotebookLanguage(nb: NotebookContent): string {
+ *  carries language context for the edited cell. Exported as the single canonical
+ *  notebook-language source reused by the permission-time cell preview (common/
+ *  src/permission-preview.ts) — no re-implementation of the metadata lookup. The
+ *  parameter is a structural `{ metadata? }` shape so callers that hold only a
+ *  loosely-typed parsed notebook (not the internal {@link NotebookContent}) can use
+ *  it directly. */
+export function deriveNotebookLanguage(nb: { metadata?: Record<string, unknown> | null }): string {
   const li = nb.metadata?.language_info as { name?: unknown } | undefined;
   const name = li && typeof li.name === 'string' ? li.name.trim() : '';
   return name.length > 0 ? name : 'python';
@@ -35,8 +40,10 @@ function deriveNotebookLanguage(nb: NotebookContent): string {
  *  highlighted as 'markdown', any other (code) cell as the notebook's programming
  *  language. Parity: Claude's NotebookEditPermissionRequest (L40 —
  *  `cell_type === 'markdown' ? 'markdown' : 'python'`), generalized so a non-Python
- *  kernel's code cells get the correct language rather than a hardcoded 'python'. */
-function deriveCellLanguage(cellType: string | undefined, notebookLanguage: string): string {
+ *  kernel's code cells get the correct language rather than a hardcoded 'python'.
+ *  Exported so the permission-time preview derives the cell's highlight language
+ *  from the same rule instead of duplicating the markdown/code branch. */
+export function deriveCellLanguage(cellType: string | undefined, notebookLanguage: string): string {
   return cellType === 'markdown' ? 'markdown' : notebookLanguage;
 }
 
