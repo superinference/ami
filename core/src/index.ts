@@ -91,7 +91,9 @@ export {
   TOOL_SUMMARY_LINE_MAX, hashFilePath, hashFileContent, FILE_PATH_HASH_LEN, MAX_CONTENT_HASH_SIZE,
   SINK_NAMES, resolveKilledSinks, ProcessMetricsSampler, FailedBatchStore, FAILED_BATCH_FILE_PREFIX,
   ANALYTICS_SOURCE_CRON, buildFileOperationEvent, classifyGitOperation, IncrementalContextTracker,
+  createTelemetryDiagLogger, resolveFileFlushIntervalMs,
 } from './analytics';
+export type { TelemetryDiagLevel, TelemetryDiagLogger, TelemetryDiagLoggerDeps } from './analytics';
 export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps,
   SinkName, ProcessMetrics, ProcessMetricsDeps, LocalOnlyFieldMatcher,
   FileOperationKind, FileOperationTool, FileOperationParams,

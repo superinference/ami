@@ -9,6 +9,7 @@ import { detectWslVersion } from './tools/bash-sandbox';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
+import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
 import {
   isEnvTruthy,
   getPrivacyLevel,
@@ -1630,6 +1631,24 @@ export interface AnalyticsTrackerOpts {
    */
   onDiagnostic?: (message: string) => void;
   /**
+   * Error sink for genuine telemetry FAILURES (OTLP mirror exception, headers-helper
+   * exception) — distinct from the informational {@link onDiagnostic} stream. Wired
+   * through a level-filtered {@link createTelemetryDiagLogger}: failures surface here
+   * as an Error AND on {@link onDiagnostic}, while routine info/debug chatter is
+   * suppressed. A consumer wires this to its error logger; unset → silent.
+   */
+  onError?: (err: Error) => void;
+  /**
+   * Buffer disk-sink appends through a non-blocking {@link createBufferedWriter}
+   * instead of a synchronous {@link fs.appendFileSync} per event: batched writes
+   * drain on a size boundary (deferred via setImmediate) or this idle interval (ms),
+   * so a slow disk append never stalls the render/keystroke tick. The buffer is
+   * drained synchronously on {@link AnalyticsTracker.shutdown}/{@link AnalyticsTracker.closeWithGrace}
+   * (exit-safe). <=0/undefined keeps the synchronous append. Seeded from the
+   * `AMI_ANALYTICS_FILE_FLUSH_MS` env knob. Mirrors Claude's bufferedWriter disk sink.
+   */
+  fileFlushIntervalMs?: number;
+  /**
    * Sink for the `console` exporter type (OTEL_LOGS_EXPORTER=console): invoked with a
    * one-line JSON dump of each event's redacted payload for local introspection with
    * no collector. Defaults to writing a line to process.stdout.
@@ -1782,6 +1801,72 @@ export class FailedBatchStore {
   }
 }
 
+/**
+ * Resolve the disk-sink buffered-flush interval (ms) from an explicit opt or the
+ * `AMI_ANALYTICS_FILE_FLUSH_MS` env var. A positive number (opt or env) enables the
+ * non-blocking buffered disk writer at that idle cadence; anything else (unset, <=0,
+ * non-numeric) returns 0 → the synchronous per-event append is kept.
+ */
+export function resolveFileFlushIntervalMs(env: NodeJS.ProcessEnv, opt?: number): number {
+  if (opt !== undefined) return opt > 0 ? opt : 0;
+  const raw = env.AMI_ANALYTICS_FILE_FLUSH_MS;
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Level-filtered telemetry diagnostic boundary (Claude-Code
+// utils/telemetry/logger.ts ClaudeCodeDiagLogger parity): an error-only bridge
+// for the telemetry subsystem's own internal diagnostics. error()/warn() surface
+// the message as BOTH a real Error (onError) and a debug line (onDebug), while
+// info()/debug()/verbose() are explicit no-ops so routine SDK chatter never
+// becomes noise. This gives the telemetry pipeline a single, severity-aware
+// place to decide what reaches the user vs. what is suppressed.
+// ---------------------------------------------------------------------------
+
+/** Diagnostic severity levels recognised by {@link createTelemetryDiagLogger}. */
+export type TelemetryDiagLevel = 'error' | 'warn' | 'info' | 'debug' | 'verbose';
+
+/** The five-level diagnostic sink the telemetry subsystem logs through. */
+export interface TelemetryDiagLogger {
+  error(message: string): void;
+  warn(message: string): void;
+  info(message: string): void;
+  debug(message: string): void;
+  verbose(message: string): void;
+}
+
+/** Sinks for {@link createTelemetryDiagLogger}; both best-effort and optional. */
+export interface TelemetryDiagLoggerDeps {
+  /** Error sink: receives an Error for error/warn-level diagnostics (surfaced). */
+  onError?: (err: Error) => void;
+  /** Debug sink: receives the (verbatim) message for error/warn-level diagnostics. */
+  onDebug?: (message: string) => void;
+}
+
+/**
+ * Build a {@link TelemetryDiagLogger} that routes error/warn diagnostics to BOTH
+ * the error sink (as an Error) and the debug sink (verbatim), and suppresses
+ * info/debug/verbose entirely. Mirrors Claude's ClaudeCodeDiagLogger, whose
+ * error()/warn() call logError + logForDebugging while info/debug/verbose return.
+ * Both sinks are isolated (a throwing sink never propagates into the hot path).
+ */
+export function createTelemetryDiagLogger(deps: TelemetryDiagLoggerDeps = {}): TelemetryDiagLogger {
+  const surface = (message: string): void => {
+    try { deps.onError?.(new Error(message)); } catch { /* best effort */ }
+    try { deps.onDebug?.(message); } catch { /* best effort */ }
+  };
+  const suppress = (): void => { /* info/debug/verbose are suppressed by design */ };
+  return {
+    error: surface,
+    warn: surface,
+    info: suppress,
+    debug: suppress,
+    verbose: suppress,
+  };
+}
+
 export class AnalyticsTracker {
   private events: AnalyticsEvent[] = [];
   /** Per-event record time (ms, via {@link _now}) parallel to {@link events}, for the age sweep. */
@@ -1831,6 +1916,12 @@ export class AnalyticsTracker {
   private _rand: () => number;
   private _now: () => number;
   private _onDiagnostic: ((message: string) => void) | undefined;
+  /** Level-filtered diagnostic logger for genuine telemetry failures (error/warn surfaced). */
+  private _diagLog: TelemetryDiagLogger;
+  /** Non-blocking deferred-flush writer for the disk sink; null = synchronous append. */
+  private _fileWriter: BufferedWriter | null = null;
+  /** Resolved disk-sink flush interval (ms); 0 = synchronous append (introspection). */
+  private _fileFlushIntervalMs = 0;
   private _consoleSink: (line: string) => void;
   /** Resolved egress allowlist (event names + fields); null when no restriction. */
   private _egressAllowlist: EgressAllowlist | null;
@@ -1932,7 +2023,28 @@ export class AnalyticsTracker {
     this._rand = opts?.rand ?? Math.random;
     this._now = opts?.now ?? Date.now;
     this._onDiagnostic = opts?.onDiagnostic;
+    // Level-filtered diagnostic boundary: genuine telemetry failures surface as an
+    // Error (onError) AND on the informational onDiagnostic stream; routine
+    // info/debug/verbose are suppressed. onDebug stays verbatim so existing
+    // onDiagnostic consumers see the same message text.
+    this._diagLog = createTelemetryDiagLogger({
+      onError: opts?.onError,
+      onDebug: (m) => this._diag(m),
+    });
     this._consoleSink = opts?.consoleSink ?? ((line) => process.stdout.write(line + '\n'));
+    // Non-blocking deferred-flush disk sink: when a positive flush interval is
+    // configured (opt or AMI_ANALYTICS_FILE_FLUSH_MS) and a log file exists, route
+    // appends through a buffered writer so a slow fs.appendFileSync never stalls the
+    // caller's tick. Drained synchronously on shutdown/close for exit safety.
+    this._fileFlushIntervalMs = resolveFileFlushIntervalMs(this._env, opts?.fileFlushIntervalMs);
+    if (this.logFile && this._fileFlushIntervalMs > 0) {
+      const target = this.logFile;
+      this._fileWriter = createBufferedWriter({
+        writeFn: (content) => fs.appendFileSync(target, content, { mode: 0o600 }),
+        flushIntervalMs: this._fileFlushIntervalMs,
+        immediateMode: false,
+      });
+    }
 
     // Egress allowlist: only build the double gate when at least one axis is set,
     // so the common (no-restriction) path stays a cheap null check.
@@ -2009,6 +2121,14 @@ export class AnalyticsTracker {
   /** Resolved logs export interval (ms) — introspection + batch-sender cadence. */
   getExportIntervalMs(): number {
     return this._exportIntervalMs;
+  }
+
+  /**
+   * Resolved disk-sink buffered-flush interval (ms); 0 means the synchronous
+   * per-event append is used. Introspection surface for the non-blocking disk sink.
+   */
+  getFileFlushIntervalMs(): number {
+    return this._fileFlushIntervalMs;
   }
 
   /** Whether this tracker has been shut down (post-shutdown export guard). */
@@ -2295,7 +2415,7 @@ export class AnalyticsTracker {
       } catch (e) {
         if (!this._warnedMirror) {
           this._warnedMirror = true;
-          this._diag(`[telemetry] OTLP mirror failed (events stay local): ${(e as Error).message}`);
+          this._diagLog.warn(`[telemetry] OTLP mirror failed (events stay local): ${(e as Error).message}`);
         }
       }
     }
@@ -2317,8 +2437,11 @@ export class AnalyticsTracker {
         fs.mkdirSync(path.dirname(this.logFile), { recursive: true, mode: 0o700 });
         this.dirInitialized = true;
       }
-      const line = ndjsonSafeStringify({ ...event, data: egressData });
-      fs.appendFileSync(this.logFile, line + '\n', { mode: 0o600 });
+      const line = ndjsonSafeStringify({ ...event, data: egressData }) + '\n';
+      // Deferred-flush disk sink (when enabled) keeps a slow appendFileSync off the
+      // caller's tick; otherwise append synchronously (the default).
+      if (this._fileWriter) this._fileWriter.write(line);
+      else fs.appendFileSync(this.logFile, line, { mode: 0o600 });
     } catch {
       /* best effort */
     }
@@ -2400,6 +2523,9 @@ export class AnalyticsTracker {
     await raceWithTimeout(this.flushOtlp(), graceMs, this._sleep);
     this._shutdown = true;
     this._telemetry?.shutdown();
+    // Exit-safe: synchronously drain any buffered disk-sink writes (incl. a queued
+    // deferred overflow that may not have fired its setImmediate yet).
+    this._fileWriter?.dispose();
   }
 
   /** Drain any queued telemetry and POST it to the configured OTLP endpoint with
@@ -2476,6 +2602,8 @@ export class AnalyticsTracker {
     await this.flushOtlp();
     this._shutdown = true;
     this._telemetry?.shutdown();
+    // Exit-safe: synchronously drain any buffered disk-sink writes before teardown.
+    this._fileWriter?.dispose();
   }
 
   /**
@@ -2520,7 +2648,7 @@ export class AnalyticsTracker {
       } catch (e) {
         if (!this._warnedHeadersHelper) {
           this._warnedHeadersHelper = true;
-          this._diag(`[telemetry] otelHeadersHelper failed; using static headers only: ${(e as Error).message}`);
+          this._diagLog.warn(`[telemetry] otelHeadersHelper failed; using static headers only: ${(e as Error).message}`);
         }
       }
     }
