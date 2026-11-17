@@ -960,6 +960,43 @@ export function teamAllowedPathsToRules(team: TeamFile | null = currentTeam): Pe
   }));
 }
 
+/**
+ * The subdirectory under a team's dir that holds durable, cross-worker SHARED
+ * knowledge — the team scratchpad (parity: Claude Code's coordinator
+ * `scratchpadDir`). {@link teamCreateTool} provisions it on create; teammates
+ * read/write it WITHOUT a permission prompt via {@link teamScratchpadRules}. Kept
+ * as the single canonical name for the dir so the create path, the path resolver,
+ * and the permission-rule builder never drift.
+ */
+export const TEAM_SCRATCHPAD_SUBDIR = 'memory';
+
+/**
+ * Absolute path of a team's shared scratchpad dir (its `memory/` subdir), derived
+ * deterministically from the workspace `cwd` + team name — so a disk-loaded team
+ * resolves the same path a live (in-memory) one does, independent of the module's
+ * `currentTeamDir` singleton. Returns null when there is no team. This is the
+ * durable location workers persist cross-teammate knowledge to.
+ */
+export function getTeamScratchpadDir(cwd: string, team: TeamFile | null = currentTeam): string | null {
+  if (!team) return null;
+  return path.join(cwd, '.ami', 'teams', team.name, TEAM_SCRATCHPAD_SUBDIR);
+}
+
+/**
+ * Session allow-{@link PermissionRule}s granting EVERY tool prompt-free access to
+ * the team's shared scratchpad dir (parity: Claude Code's coordinator gated
+ * "no permission prompt" `scratchpadDir` for durable cross-worker knowledge).
+ * Applied to a teammate's engine on spawn ALONGSIDE {@link teamAllowedPathsToRules}
+ * so workers can persist and share team state without interrupting the human for a
+ * permission decision. The grant is scoped strictly to the team's own scratchpad
+ * dir (`<scratchpad>/**`), never a broader path. Returns [] when there is no team.
+ */
+export function teamScratchpadRules(cwd: string, team: TeamFile | null = currentTeam): PermissionRule[] {
+  const dir = getTeamScratchpadDir(cwd, team);
+  if (!dir) return [];
+  return [{ tool: '*', pattern: `${dir}/**`, action: 'allow' }];
+}
+
 export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
@@ -1174,7 +1211,7 @@ export const teamCreateTool: ToolDefinition = {
     // every later team_create would reject as "already exists".
     try {
       _teamHooks.mkdirSync(teamDir, { recursive: true });
-      _teamHooks.mkdirSync(path.join(teamDir, 'memory'), { recursive: true });
+      _teamHooks.mkdirSync(path.join(teamDir, TEAM_SCRATCHPAD_SUBDIR), { recursive: true });
       _teamHooks.writeFileSync(teamFilePath(teamDir), JSON.stringify(team, null, 2));
     } catch (err) {
       // Roll back any partially-created directory so a retry starts clean.
@@ -1209,8 +1246,14 @@ export const teamCreateTool: ToolDefinition = {
     // teammate, solo) are surfaced from one canonical vocabulary.
     const roleLabel = self.role === 'lead' ? 'team lead' : self.role === 'teammate' ? 'teammate' : 'solo agent';
     const roleNote = ` You are the ${roleLabel} (self: ${self.agentName}).`;
+    // Advertise the shared scratchpad dir (parity: Claude's coordinator exposes the
+    // scratchpadDir) so the lead knows where durable cross-teammate knowledge lives;
+    // spawned teammates get prompt-free read/write there (teamScratchpadRules).
+    const scratchpadDir = path.join(teamDir, TEAM_SCRATCHPAD_SUBDIR);
+    teamDebug(`Team ${name} shared scratchpad: ${scratchpadDir} (prompt-free for teammates)`);
+    const scratchpadNote = ` Shared scratchpad (durable cross-teammate knowledge, prompt-free for teammates): ${scratchpadDir}.`;
     return {
-      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote}${roleNote} ` +
+      output: `Team "${name}" created${renamed}. Team file: ${teamFilePath(teamDir)}. Lead agent id: ${leadAgentId}.${declaredNote}${roleNote}${scratchpadNote} ` +
         `Spawn teammates with task({ name: "<teammate>" }) to add members.`,
     };
   },

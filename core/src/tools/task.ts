@@ -14,7 +14,7 @@ import { spillToolText, resolveTaskMaxChars } from './spill-output';
 import { mapChildToSubagentEvent, attachSubagentUsage } from './subagent-relay';
 import { collapseReadSearchRun } from './tool-activity-class';
 import { inheritBedrockRegionPrefix } from '../bedrock';
-import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemberActive, teamAllowedPathsToRules, loadTeamFromDisk } from './team';
+import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemberActive, teamAllowedPathsToRules, teamScratchpadRules, getTeamScratchpadDir, loadTeamFromDisk } from './team';
 import { reviewSubagentHandoff, type HandoffAction } from './handoff-review';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
@@ -2676,7 +2676,14 @@ export const taskTool: ToolDefinition = {
     // Code's teammatePromptAddendum). Without this the machinery exists but the
     // teammate is never told it can/should message its peers.
     if (agentName && resolvedTeam) {
-      effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}\n\n---\n\n${effectivePrompt}`;
+      // Advertise the team's shared scratchpad (parity: Claude's coordinator
+      // scratchpadDir) so a teammate knows where durable cross-worker knowledge
+      // goes — it has prompt-free read/write there (teamScratchpadRules below).
+      const scratchpadDir = getTeamScratchpadDir(context.cwd, resolvedTeam);
+      const scratchpadNote = scratchpadDir
+        ? `\n\nShared team scratchpad (durable cross-teammate knowledge, no permission prompt needed): ${scratchpadDir}`
+        : '';
+      effectivePrompt = `${TEAMMATE_PROMPT_ADDENDUM}${scratchpadNote}\n\n---\n\n${effectivePrompt}`;
     }
 
     // PARITY (additive): a named teammate spawned into a team (the active team, or a
@@ -2686,7 +2693,14 @@ export const taskTool: ToolDefinition = {
     // each teammate gets them on spawn so the whole team shares a consistent,
     // team-scoped path allowlist.
     if (agentName && resolvedTeam) {
-      const teamRules = teamAllowedPathsToRules(resolvedTeam);
+      // PARITY (additive): a teammate inherits BOTH the declarative team-wide
+      // allowed-path rules AND a prompt-free grant to the team's shared scratchpad
+      // dir (teamScratchpadRules — Claude's gated coordinator scratchpadDir), so
+      // workers persist durable cross-worker knowledge without a permission prompt.
+      const teamRules = [
+        ...teamAllowedPathsToRules(resolvedTeam),
+        ...teamScratchpadRules(context.cwd, resolvedTeam),
+      ];
       if (teamRules.length > 0) {
         subConfig.permissionRules = [...(subConfig.permissionRules ?? []), ...teamRules];
       }
