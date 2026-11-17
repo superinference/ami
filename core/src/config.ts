@@ -1214,6 +1214,12 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
   // recognized keys so they never surface as a spurious unknown-key typo warning.
   'statusLine',
   'strictPluginOnlyCustomization',
+  // Editor-only JSON-Schema reference key (parity: Claude Code's `$schema` support). A
+  // config file may carry `"$schema": "<url>"` so an editor offers autocomplete /
+  // live validation of the known knobs ({@link getConfigJSONSchema}); it is meta, never
+  // an engine knob, so it is recognized (no spurious unknown-key warning) and skipped by
+  // {@link validateProjectConfigValues} (which only iterates the typed field tables).
+  '$schema',
 ]);
 
 /**
@@ -1351,6 +1357,112 @@ export function formatConfigValueIssues(issues: readonly ConfigValueIssue[]): st
   const perIssue = issues.map(i => `${i.field}: ${i.message}${i.tip ? ` (${i.tip})` : ''}`).join('; ');
   const docLinks = [...new Set(issues.map(i => i.docLink).filter((d): d is string => typeof d === 'string'))];
   return docLinks.length > 0 ? `${perIssue}. Learn more: ${docLinks.join(', ')}` : perIssue;
+}
+
+// ---------------------------------------------------------------------------
+// JSON Schema emission for the PROJECT config file (parity: Claude Code's
+// utils/settings/schemaOutput.ts `generateSettingsJSONSchema` + the published
+// `CLAUDE_CODE_SETTINGS_SCHEMA_URL`). This complements the governed-policy schema in
+// settings-guard.ts (`getSettingsJSONSchema`, which describes ONLY the managed/tier-
+// locked subset) by emitting a schema for the FULL set of recognized `ProjectConfig`
+// knobs — every `.ami/config.json` key an editor can autocomplete/validate.
+//
+// Like `getSettingsJSONSchema`, the schema is DERIVED from this module's authoritative
+// validation tables ({@link PROJECT_CONFIG_FIELD_TYPES} + {@link PROJECT_CONFIG_ENUMS} +
+// {@link KNOWN_CONFIG_KEYS}) rather than a hand-maintained duplicate, so it self-updates
+// when a knob is added and can never silently drop one (the campaign's "dynamic
+// denominator" discipline). Surfaced via `ami --introspect`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical published URL of the AMI config JSON Schema (parity: Claude Code's
+ * `CLAUDE_CODE_SETTINGS_SCHEMA_URL`). A user can reference it from a config file via
+ * `"$schema": "<this URL>"` so an editor offers autocomplete + live validation of the
+ * known knobs. Also emitted as the generated schema's `$id`.
+ */
+export const CONFIG_SCHEMA_URL = 'https://docs.superinference.org/schema/ami-config.json';
+
+/** A single property node of the generated project-config JSON Schema. */
+export interface ConfigSchemaProperty {
+  /** JSON Schema primitive type (omitted for union-typed keys left permissive). */
+  type?: 'boolean' | 'number' | 'string' | 'array' | 'object';
+  /** Human-readable description of the key. */
+  description: string;
+  /** Element schema, present only when `type === 'array'`. */
+  items?: { type: 'string' } | Record<string, never>;
+  /** Allowed string values, present only for enum-typed keys. */
+  enum?: string[];
+}
+
+/** The generated project-config JSON Schema document (draft-07, non-strict). */
+export interface ConfigJSONSchema {
+  $schema: string;
+  $id: string;
+  title: string;
+  type: 'object';
+  properties: Record<string, ConfigSchemaProperty>;
+  /** Non-strict: unknown keys load (surfaced as an advisory warning, never fatal). */
+  additionalProperties: boolean;
+}
+
+/** Map a {@link ConfigFieldType} to its JSON-Schema property node (base shape only). */
+function configFieldTypeToSchemaNode(type: ConfigFieldType): ConfigSchemaProperty {
+  switch (type) {
+    case 'string': return { type: 'string', description: '' };
+    case 'number': return { type: 'number', description: '' };
+    case 'boolean': return { type: 'boolean', description: '' };
+    case 'string[]': return { type: 'array', items: { type: 'string' }, description: '' };
+    case 'object': return { type: 'object', description: '' };
+    // The MCP allowlist is a heterogeneous union (string | provenance object); leave the
+    // item schema permissive so either shape validates (parity with the governed schema's
+    // permissive fallback for union-typed keys).
+    case 'mcpAllowlist': return { type: 'array', items: {}, description: '' };
+  }
+}
+
+/**
+ * Generate a (draft-07) JSON Schema describing EVERY recognized {@link ProjectConfig}
+ * knob, derived from the authoritative {@link PROJECT_CONFIG_FIELD_TYPES} /
+ * {@link PROJECT_CONFIG_ENUMS} tables (plus the bespoke union keys in
+ * {@link KNOWN_CONFIG_KEYS}) so it self-updates and never drops a key. Enum fields carry
+ * their allowed values; union/custom-shape keys (`statusLine`,
+ * `strictPluginOnlyCustomization`) are left permissive (no `type`) so a valid value of
+ * either shape validates. Non-strict (`additionalProperties: true`) — unknown keys still
+ * load (AMI never fails closed on an unrecognized config key; it warns). Parity: Claude
+ * Code's `generateSettingsJSONSchema()`. Surfaced via `ami --introspect`.
+ */
+export function getConfigJSONSchema(): ConfigJSONSchema {
+  const properties: Record<string, ConfigSchemaProperty> = {};
+
+  // Deterministic order: sort each source set so the emitted schema is stable across runs.
+  for (const [key, type] of [...PROJECT_CONFIG_FIELD_TYPES].sort((a, b) => (a[0] as string).localeCompare(b[0] as string))) {
+    const node = configFieldTypeToSchemaNode(type);
+    node.description = `Config key "${key as string}" (${configFieldTypeLabel(type)}).`;
+    properties[key as string] = node;
+  }
+  for (const [key, allowed] of [...PROJECT_CONFIG_ENUMS].sort((a, b) => (a[0] as string).localeCompare(b[0] as string))) {
+    properties[key as string] = {
+      type: 'string',
+      enum: [...allowed],
+      description: `Config key "${key as string}" — one of ${allowed.map(v => `"${v}"`).join(', ')}.`,
+    };
+  }
+  // Union/custom-shape recognized keys that have no single-type table entry are left
+  // permissive (no `type`) so both of their accepted shapes validate — the `$schema`
+  // reference key is editor-only meta, not a knob, and is intentionally omitted.
+  for (const key of [...KNOWN_CONFIG_KEYS].sort()) {
+    if (key === '$schema' || properties[key]) continue;
+    properties[key] = { description: `Config key "${key}" (union/custom shape — value validated at load).` };
+  }
+
+  return {
+    $schema: 'http://json-schema.org/draft-07/schema#',
+    $id: CONFIG_SCHEMA_URL,
+    title: 'AMI project configuration (.ami/config.json)',
+    type: 'object',
+    properties,
+    additionalProperties: true,
+  };
 }
 
 /**

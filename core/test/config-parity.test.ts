@@ -91,7 +91,11 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
     for (const k of Object.keys(full)) assert.ok(KNOWN_CONFIG_KEYS.has(k), `missing known key: ${k}`);
-    assert.equal(KNOWN_CONFIG_KEYS.size, Object.keys(full).length);
+    // KNOWN_CONFIG_KEYS == the full ProjectConfig surface PLUS the editor-only `$schema`
+    // reference-key (meta, not a typed knob — it carries a JSON-Schema URL for editor
+    // autocomplete and is recognized so it never warns). Account for it explicitly.
+    assert.ok(KNOWN_CONFIG_KEYS.has('$schema'), '`$schema` reference key is recognized');
+    assert.equal(KNOWN_CONFIG_KEYS.size, Object.keys(full).length + 1);
   });
 
   it('loadConfigFileChecked emits an unknown-key diagnostic but still loads the config', () => {
