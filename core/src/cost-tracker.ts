@@ -434,6 +434,25 @@ export class CostTracker {
     }
   }
 
+  /**
+   * Re-seed the running aggregate totals from a prior session's persisted
+   * {@link CostState} so a RESUMED session's live `/cost` continues from where it
+   * left off instead of restarting at $0 (PARITY — Claude's
+   * restoreCostStateForSession/setCostStateForRestore, gated on a session-id match
+   * by the caller). Only the coarse totals are restored — cost, input/output token
+   * counts (and their sum), and request count — since those are all the on-disk
+   * cost state carries; the per-model/per-category/cache breakdowns rebuild as the
+   * resumed session does new work. Called once, on resume, before any new usage is
+   * tracked; negative fields are clamped to 0.
+   */
+  restoreTotals(state: CostState): void {
+    this.stats.totalCost += Math.max(0, state.totalCost);
+    this.stats.promptTokens += Math.max(0, state.totalInputTokens);
+    this.stats.completionTokens += Math.max(0, state.totalOutputTokens);
+    this.stats.totalTokens += Math.max(0, state.totalInputTokens) + Math.max(0, state.totalOutputTokens);
+    this.stats.requestCount += Math.max(0, state.requestCount);
+  }
+
   trackToolCall(toolName = ''): void {
     this.stats.toolCallCount++;
     if (toolName) {
@@ -1217,7 +1236,7 @@ export function validateCostEntry(
   return { valid: true };
 }
 
-interface CostState {
+export interface CostState {
   totalCost: number;
   totalInputTokens: number;
   totalOutputTokens: number;

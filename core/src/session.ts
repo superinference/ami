@@ -657,6 +657,13 @@ export interface Session {
      *  mode tracking existed → reconciliation is a no-op (back-compat). Parity: Claude
      *  Code's `matchSessionMode` / persisted session mode. */
     operatingMode?: SessionOperatingMode;
+    /** Serialized cost state (cumulative cost + input/output tokens + request count,
+     *  `serializeCostState` JSON) at save time, so `--resume` of the SAME session can
+     *  re-seed the live CostTracker and continue its `/cost` totals instead of showing
+     *  `$0` while the on-disk journal holds the prior spend. Absent on sessions saved
+     *  before cost persistence existed → resume keeps the fresh ($0) tracker. Parity:
+     *  Claude's lastCost/lastModelUsage restored via restoreCostStateForSession. */
+    costState?: string;
   };
 }
 
