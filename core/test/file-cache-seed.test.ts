@@ -183,6 +183,28 @@ describe('seedFileCacheFromTranscript', () => {
     assert.equal(cache.hasChanged(fp), false);
   });
 
+  it('an UNCHANGED trailing-newline file is not spuriously reported as changed on resume', () => {
+    // Regression: the `cat -n` transcript view cannot encode the file's trailing
+    // newline, so a hash of the reconstructed text used to MISMATCH the real disk
+    // bytes and report every normal (newline-terminated) source file as "modified
+    // since read" on resume — defeating the dedup accelerator + read-before-edit
+    // baseline this seeding exists for.
+    const cwd = tmp();
+    const fp = path.join(cwd, 'src.ts');
+    fs.writeFileSync(fp, 'const x = 1;\nconst y = 2;\n'); // real file ends with \n
+    const messages: Message[] = [
+      toolCall('t1', 'file_read', { file_path: fp }),
+      toolResult('t1', '     1\tconst x = 1;\n     2\tconst y = 2;\n<system-reminder>be careful</system-reminder>'),
+    ];
+    const cache = new FileCache();
+    seedFileCacheFromTranscript(messages, cwd, cache);
+    assert.equal(cache.hasChanged(fp), false);
+    // Faithful disk bytes are seeded, so an unchanged full re-read is served from cache.
+    const hit = cache.getCachedRead(fp, fs.statSync(fp).mtimeMs);
+    assert.ok(hit);
+    assert.equal(hit!.content, 'const x = 1;\nconst y = 2;\n');
+  });
+
   it('a file changed on disk after the transcript read is reported as changed (forces re-read)', () => {
     const cwd = tmp();
     const fp = path.join(cwd, 'a.ts');

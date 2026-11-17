@@ -55,8 +55,12 @@ function parseArgs(raw: string): Record<string, unknown> | null {
  * and every successful `file_edit` (edit OR write mode), recovers what the model last
  * saw of that file and pairs it with the file's CURRENT on-disk mtime:
  *
- * - **reads** cache the transcript content (system-reminder blocks removed, line-number
- *   prefixes stripped, trimmed) — what the model actually saw.
+ * - **reads** reconstruct what the model saw (system-reminder blocks removed, line-number
+ *   prefixes stripped, trimmed) and compare it, whitespace-tolerantly, against the file on
+ *   disk: an UNCHANGED file is cached with its FAITHFUL disk bytes (so change detection is a
+ *   true no-op and the unchanged-read dedup accelerator works on resume), while a file edited
+ *   BETWEEN sessions is cached with the reconstructed bytes under the current mtime so
+ *   hasChanged() reports a content change and the model must re-read before editing.
  * - **edits/writes** re-read the file from disk now, since the post-operation disk bytes
  *   ARE the state the model left it in (the edit input carries only old/new fragments).
  *
@@ -104,14 +108,31 @@ export function collectReadFileStatesFromTranscript(
     if (readPath !== undefined && typeof message.content === 'string'
       // Dedup stubs carry no file content — the earlier real read already captured it.
       && !message.content.startsWith(FILE_UNCHANGED_STUB)) {
-      const content = message.content
+      const reconstructed = message.content
         .replace(SYSTEM_REMINDER_RE, '')
         .split('\n')
         .map(stripLineNumberPrefix)
         .join('\n')
         .trim();
-      const mtime = currentMtime(readPath);
-      if (mtime !== null) out.push({ path: readPath, content, mtime, encoding: 'utf-8' });
+      const disk = readDisk(readPath);
+      if (disk !== null) {
+        // The transcript view can never round-trip to EXACT disk bytes — the `cat -n`
+        // formatter does not encode whether the file ends in a trailing newline, and
+        // system-reminder stripping leaves whitespace — so a hash of the reconstructed
+        // text would MISMATCH an unchanged file's real bytes and spuriously report
+        // "modified since read" on every resume (defeating both the unchanged-read
+        // dedup accelerator and the read-before-edit baseline this seeding exists for).
+        // Decide with a whitespace-tolerant compare instead: if the model's view still
+        // matches disk, seed the FAITHFUL disk bytes (+ real encoding) so change
+        // detection is a no-op for an untouched file; if it diverged (an edit made
+        // BETWEEN sessions), seed the reconstructed bytes under the current mtime so
+        // hasChanged() reports a content change and the model must re-read before
+        // editing — never clobbering content it never saw. Mirrors Claude Code's
+        // readFileState resume semantics (unchanged ⇒ dedup, changed ⇒ forced re-read).
+        out.push(disk.content.trim() === reconstructed
+          ? { path: readPath, content: disk.content, mtime: disk.mtime, encoding: disk.encoding }
+          : { path: readPath, content: reconstructed, mtime: disk.mtime, encoding: 'utf-8' });
+      }
     }
 
     const editPath = editIds.get(id);
@@ -122,16 +143,6 @@ export function collectReadFileStatesFromTranscript(
   }
 
   return out;
-}
-
-/** Current on-disk mtime, or null when the file is gone/inaccessible (skip, don't fail). */
-function currentMtime(filePath: string): number | null {
-  try {
-    return fs.statSync(filePath).mtimeMs;
-  } catch (err) {
-    if (isENOENTorInaccessible(err)) return null;
-    throw err;
-  }
 }
 
 /** Decoded disk content + mtime + encoding, or null when the file is gone/inaccessible. */
