@@ -17,7 +17,7 @@ import {
   type HookSourceKind,
   type HookTier,
 } from './hook-protection';
-import { isRestrictedToPluginOnly } from './plugin-only-policy';
+import { isRestrictedToPluginOnly, isSourceAdminTrusted } from './plugin-only-policy';
 import { sanitizePluginIdSegment, readPluginOptionValues, substituteUserConfigValues, buildPluginOptionEnv } from './plugins';
 import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass, categorizeLoadFailure } from './error-classifier';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
@@ -289,6 +289,14 @@ export interface SessionContext {
   /** Agent type the session is running as, forwarded to SessionStart hooks as
    *  `agent_type` (Claude Code's SessionStart `agent_type`). */
   agentType?: string;
+  /** Cooperative-cancellation deadline for the session lifecycle hooks. Claude
+   *  Code threads `AbortSignal.timeout(sessionEndTimeoutMs)` into
+   *  executeSessionEndHooks (commands/clear/conversation.ts) so a slow in-process
+   *  SessionStart/SessionEnd callback can observe the deadline and bail instead of
+   *  blocking shutdown/clear. Threaded to in-process callbacks via {@link raceAbort}
+   *  and to spawned command hooks as the child-kill signal. Optional: when absent,
+   *  executeSessionEnd synthesizes one from its own teardown budget. */
+  signal?: AbortSignal;
 }
 
 export interface SubagentContext {
@@ -345,6 +353,13 @@ export interface CompactContext {
    *  compactSummary })`) so a post-compaction automation can read, log, or
    *  annotate the generated summary. Absent on PreCompact (no summary yet). */
   compactSummary?: string;
+  /** The compaction's cancellation signal. Claude Code passes
+   *  `context.abortController.signal` into executePreCompactHooks
+   *  (commands/compact/compact.ts) so a PreCompact hook subprocess is killed the
+   *  instant the user interrupts the compaction, instead of lingering until its own
+   *  timeout. Threaded to in-process callbacks via {@link raceAbort} and into the
+   *  spawned command/prompt/http/agent hook as its abort signal. */
+  signal?: AbortSignal;
 }
 
 export interface PermissionContext {
@@ -3187,6 +3202,21 @@ export class HookManager extends EventEmitter {
     }
   }
 
+  /**
+   * Whether the `hooks` customization surface is locked to admin/plugin-only
+   * sources by `strictPluginOnlyCustomization` in the managed/policy settings file.
+   * Read fresh from disk each call so frontmatter/bundle hook registration (which
+   * can happen any time a skill/agent is invoked, after startup) observes the live
+   * policy. Degrades to `false` (unlocked) when no managed path is set or the file
+   * is absent/malformed. Parity: Claude's `isRestrictedToPluginOnly('hooks', …)`
+   * computed from `policySettings.strictPluginOnlyCustomization`.
+   */
+  private isHooksSurfaceRestricted(): boolean {
+    const managedPath = process.env.SUPERINFERENCE_MANAGED_SETTINGS_PATH;
+    if (!managedPath) return false;
+    return isRestrictedToPluginOnly('hooks', this.readManagedPluginOnlyPolicy(managedPath));
+  }
+
   /** Managed-policy kill-switch (Claude Code's disableAllHooks). When set via a
    *  managed source it skips ALL hooks, including managed ones. */
   private _disableAllHooks = false;
@@ -3749,7 +3779,7 @@ export class HookManager extends EventEmitter {
     // only, dropping user/project filesystem hooks (.ami/.claude). Composes with
     // allowManagedHooksOnly (which is stricter — managed only). Parity: Claude Code's
     // strictPluginOnlyCustomization. The policy lives in the managed settings file.
-    if (managedPath && isRestrictedToPluginOnly('hooks', this.readManagedPluginOnlyPolicy(managedPath))) {
+    if (this.isHooksSurfaceRestricted()) {
       effectiveSources = effectiveSources.filter(s => s.kind === 'managed' || s.kind === 'plugin');
       coreLog('hooks', "strictPluginOnlyCustomization locks the 'hooks' surface: loading plugin/managed hooks only");
     }
@@ -4165,9 +4195,25 @@ export class HookManager extends EventEmitter {
     }
     const sourceName = options.sourceName;
     const srcSuffix = sourceName ? ` from ${sourceName}` : '';
+    // Per-item fail-closed admin-trust gate (Claude Code's
+    // `allowed = !isRestrictedToPluginOnly(surface) || isSourceAdminTrusted(item.source)`
+    // used at frontmatter/bundle registration). The filesystem settings loader runs
+    // its source-level lock in loadFromFile, but frontmatter hooks arrive from a
+    // skill/agent/plugin bundle at invocation time, AFTER that gate — so when the
+    // `hooks` surface is locked, each entry is admitted ONLY if it is admin-trusted:
+    // a bundled/plugin-provided hook (admin-trusted source OR carries plugin
+    // provenance) passes; a user/project-authored skill/agent hook (no provenance,
+    // source undefined/project) is fail-closed BLOCKED. Computed once per batch.
+    const surfaceLocked = this.isHooksSurfaceRestricted();
     let registered = 0;
     for (const raw of entries) {
       if (!raw || typeof raw.event !== 'string' || !raw.hook) continue;
+      // Admin-trust gate: when the `hooks` surface is locked, drop any entry that is
+      // neither from an admin-trusted source nor carries plugin provenance.
+      if (surfaceLocked && !isSourceAdminTrusted(raw._source) && !raw.pluginRoot && !raw.pluginName && !(raw.hook && (raw.hook.pluginRoot || raw.hook.pluginName))) {
+        coreLog('hooks', `strictPluginOnlyCustomization: skipping untrusted frontmatter hook (${raw.event})${srcSuffix}`);
+        continue;
+      }
       // isAgent remap (Claude Code registerFrontmatterHooks isAgent=true): a subagent
       // completing fires SubagentStop, NOT Stop — so an agent's frontmatter `stop` hook
       // would never run if left as-is. Convert it to `subagentStop` so the hook the
@@ -4331,7 +4377,10 @@ export class HookManager extends EventEmitter {
             // includes it in the SessionStart payload); `agent_type` is supplied
             // by the engine when a non-default agent is active.
             const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source, model: ctx.model ?? this._providerConfig?.model, agentType: ctx.agentType });
-            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.sessionStartHooks, fn, 'sessionStart');
+            // Thread the session lifecycle signal so a spawned SessionStart command
+            // hook is killed when the session-start deadline/cancel fires (Claude
+            // Code SessionContext signal parity).
+            const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.sessionStartHooks, fn, 'sessionStart');
             const watchPaths = this.registerWatchPaths('sessionStart', result);
             // Claude Code accumulates `additionalContexts[]` from every SessionStart
             // hook into a single hook_additional_context attachment — carry them on
@@ -4363,8 +4412,13 @@ export class HookManager extends EventEmitter {
             const eventData = serializeHookEvent({ event: 'sessionEnd', sessionId: ctx.sessionId, reason: ctx.reason });
             // SessionEnd runs during shutdown: kill a slow command hook at the
             // same tight budget that bounds the overall executeSessionEnd run,
-            // so a lingering child process cannot outlive teardown.
-            await this.runArmHook(hookConfig, cwd, eventData, AbortSignal.timeout(getSessionEndHookTimeoutMs()), this.sessionEndHooks, fn, 'sessionEnd');
+            // so a lingering child process cannot outlive teardown. When the caller
+            // supplied an explicit lifecycle signal (an earlier /clear cancel), the
+            // child is torn down on EITHER the caller's cancel OR the budget deadline
+            // (Claude Code SessionContext signal parity).
+            const budgetSignal = AbortSignal.timeout(getSessionEndHookTimeoutMs());
+            const endSignal = ctx.signal ? AbortSignal.any([ctx.signal, budgetSignal]) : budgetSignal;
+            await this.runArmHook(hookConfig, cwd, eventData, endSignal, this.sessionEndHooks, fn, 'sessionEnd');
           };
           this.onSessionEnd(fn);
           break;
@@ -4394,7 +4448,10 @@ export class HookManager extends EventEmitter {
           const fn: PreCompactHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('preCompact', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'preCompact', messageCount: ctx.messageCount, trigger: ctx.trigger, customInstructions: ctx.customInstructions ?? undefined });
-            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.preCompactHooks, fn, 'preCompact');
+            // Thread the compaction's abort signal so a spawned PreCompact command
+            // hook is killed the instant the user interrupts the compaction, rather
+            // than lingering until its own timeout (Claude Code CompactContext signal).
+            const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.preCompactHooks, fn, 'preCompact');
             const parsed = tryParseHookJson(result);
             if (parsed) {
               const out: { newCustomInstructions?: string; userDisplayMessage?: string } = {};
@@ -4973,8 +5030,12 @@ export class HookManager extends EventEmitter {
       const additionalContexts: string[] = [];
       const watchPaths: string[] = [];
       for (const hook of this.sessionStartHooks) {
+        // Cooperative cancellation: a supplied deadline/cancel signal stops the
+        // in-process SessionStart chain mid-flight so a slow callback cannot block
+        // startup (Claude Code SessionContext signal parity).
+        if (ctx.signal?.aborted) { coreLog('hooks', 'SessionStart hooks interrupted by abort signal'); break; }
         try {
-          const result = await hook(ctx);
+          const result = await raceAbort(Promise.resolve(hook(ctx)), ctx.signal);
           if (result?.initialUserMessage) messages.push(result.initialUserMessage);
           if (result?.initialUserMessages?.length) messages.push(...result.initialUserMessages);
           if (result?.additionalContexts?.length) additionalContexts.push(...result.additionalContexts);
@@ -5005,9 +5066,19 @@ export class HookManager extends EventEmitter {
       // hooks additionally receive an AbortSignal at the same budget (see the
       // sessionEnd registration) so their child processes are actually killed.
       const budgetMs = getSessionEndHookTimeoutMs();
+      // In-process SessionEnd callbacks get a cancellation handle: the caller's
+      // explicit lifecycle signal when supplied, otherwise one synthesized from the
+      // teardown budget — so a slow in-process cleanup callback is abandoned on the
+      // deadline instead of blocking shutdown (Claude Code passes
+      // AbortSignal.timeout(sessionEndTimeoutMs) into executeSessionEndHooks).
+      const lifecycleSignal = ctx.signal ?? AbortSignal.timeout(budgetMs);
       const run = (async () => {
         for (const hook of this.sessionEndHooks) {
-          try { await hook(ctx); } catch (err) {
+          if (lifecycleSignal.aborted) { coreLog('hooks', 'SessionEnd hooks interrupted by abort signal'); break; }
+          try { await raceAbort(Promise.resolve(hook(ctx)), lifecycleSignal); } catch (err) {
+            // A deadline/cancel abort is not a hook defect — the run was stopped on
+            // purpose; log and move on without a spurious hookError.
+            if (lifecycleSignal.aborted) { coreLog('hooks', 'SessionEnd hooks interrupted by abort signal'); break; }
             const message = err instanceof Error ? err.message : String(err);
             coreLog('hooks', 'Hook error', { error: message });
             // Surface the failure instead of swallowing it into the debug log:
@@ -5071,8 +5142,11 @@ export class HookManager extends EventEmitter {
       let newCustomInstructions: string | undefined;
       let userDisplayMessage: string | undefined;
       for (const hook of this.preCompactHooks) {
+        // Cooperative cancellation: the user aborting the compaction stops the
+        // in-process PreCompact chain mid-flight (Claude Code CompactContext signal).
+        if (ctx.signal?.aborted) { coreLog('hooks', 'PreCompact hooks interrupted by abort signal'); break; }
         try {
-          const r = await hook(ctx);
+          const r = await raceAbort(Promise.resolve(hook(ctx)), ctx.signal);
           if (r?.newCustomInstructions) newCustomInstructions = mergeHookInstructions(newCustomInstructions, r.newCustomInstructions);
           if (r?.userDisplayMessage) userDisplayMessage = r.userDisplayMessage;
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
