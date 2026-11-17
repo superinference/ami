@@ -102,6 +102,42 @@ export interface SkillSource {
   bundleName?: string;
 }
 
+/**
+ * User-facing source annotation for a skill/command listing (Claude parity:
+ * `formatDescriptionWithSource` — typeahead + help screens show WHERE each entry
+ * comes from). Returns the parenthesized origin token WITHOUT a leading space —
+ * e.g. `(my-plugin)`, `(bundled)`, `(installed)`, `(user)`, `(project)` — or an
+ * empty string when the origin should carry no suffix (an unknown/absent source),
+ * so a caller composes `${description} ${suffix}` only when the suffix is present.
+ *
+ * Mapping from AMI's `SkillTrustTier` to the annotation:
+ * - a plugin-contributed entry (`bundleName` set) wins → `(<bundleName>)`, so the
+ *   originating plugin is named exactly like Claude's `(<pluginName>)`;
+ * - tier `core` is AMI's bundled catalog → `(bundled)`;
+ * - tiers `installed` / `user` / `project` annotate with their own tier name.
+ *
+ * Pure (no I/O) so it is shared verbatim by every listing surface (`/skills`,
+ * `/agents`, help) rather than re-deriving the suffix per call site.
+ */
+export function formatSkillSourceSuffix(
+  source: Pick<SkillSource, 'tier' | 'bundleName'> | null | undefined,
+): string {
+  if (!source) return '';
+  if (source.bundleName) return `(${source.bundleName})`;
+  switch (source.tier) {
+    case 'core':
+      return '(bundled)';
+    case 'installed':
+      return '(installed)';
+    case 'user':
+      return '(user)';
+    case 'project':
+      return '(project)';
+    default:
+      return '';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Installed skill manifest (persisted at ~/.ami/installed-skills/)
 // ---------------------------------------------------------------------------
