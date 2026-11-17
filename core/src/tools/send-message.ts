@@ -27,7 +27,7 @@ function traceMailbox(event: string, data?: Record<string, unknown>): void {
   coreLog(MAILBOX_TRACE_COMPONENT, event, data, 'verbose');
 }
 
-interface AgentMessage {
+export interface AgentMessage {
   /**
    * Stable per-message identifier, assigned at enqueue. It is the ack handle for
    * crash-safe at-least-once delivery: a consumer peeks (reads without removing),
@@ -79,6 +79,16 @@ interface AgentMessage {
    * a structured control message carries its own lifecycle semantics.
    */
   status?: MessageStatus;
+  /**
+   * Receive-side marker set when a message was delivered from the FILE-BACKED
+   * cross-process inbox ({@link ./mailbox-fs}) — i.e. it originated in a SEPARATE
+   * OS process / session of the same swarm, not this process's in-memory mailbox.
+   * Mirrors Claude Code wrapping an inbound out-of-session message as
+   * `<cross-session-message from=...>` so the recipient knows the message crossed a
+   * session boundary. Never persisted (stripped before the message is written to the
+   * durable inbox); stamped only on the drained copy a local consumer receives.
+   */
+  crossSession?: boolean;
 }
 
 /**
@@ -931,6 +941,56 @@ export function sendToUdsSocket(socketPath: string, payload: string): Promise<vo
 
 const mailboxes = new Map<string, AgentMessage[]>();
 
+// --- Cross-process (file-backed) mailbox transport --------------------------
+// The in-memory `mailboxes` Map reaches only teammates spawned IN this process.
+// When `AMI_MAILBOX_FS` is set AND a team directory is established, a durable,
+// per-team file inbox ({@link ./mailbox-fs}) ALSO carries each delivery so a
+// teammate running as a SEPARATE OS process in the same swarm is reachable. The
+// Map stays the default/fallback transport; the file inbox is purely additive.
+// Resolution is lazy (and env-gated first) so the common no-team / disabled path
+// pays nothing and pulls in no fs/lock machinery.
+function fsMailboxEnabled(): boolean {
+  const v = process.env.AMI_MAILBOX_FS;
+  if (!v) return false;
+  const lc = v.toLowerCase();
+  return lc !== '0' && lc !== 'false' && lc !== 'off' && lc !== 'no';
+}
+
+/**
+ * The active cross-process mailbox binding, or null when the feature is disabled or
+ * no team directory is established. Resolves the shared `<teamsRoot>/<teamName>`
+ * location from the team singleton so every process in the swarm addresses the same
+ * inbox tree.
+ */
+function activeFsMailbox():
+  | { mod: typeof import('./mailbox-fs'); loc: import('./mailbox-fs').FsMailboxLocation }
+  | null {
+  if (!fsMailboxEnabled()) return null;
+  try {
+    const { getCurrentTeamDir } = require('./team') as typeof import('./team');
+    const dir = getCurrentTeamDir();
+    if (!dir) return null;
+    const p = require('path') as typeof import('path');
+    const mod = require('./mailbox-fs') as typeof import('./mailbox-fs');
+    return { mod, loc: { teamsRoot: p.dirname(dir), teamName: p.basename(dir) } };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Names of teammates reachable over the cross-process inbox tree (empty when the
+ * file-backed transport is disabled or no team is established). Parity with Claude
+ * Code's `ListPeers` peer discovery — a separate-process teammate is addressable by
+ * bare name because its inbox file is enumerated here. Exposed for introspection and
+ * the corrective "known agents" affordance.
+ */
+export function listCrossSessionPeers(): string[] {
+  const active = activeFsMailbox();
+  if (!active) return [];
+  try { return active.mod.listInboxPeers(active.loc); } catch { return []; }
+}
+
 // --- Last outbound peer-DM tracking -----------------------------------------
 // When a teammate goes idle it should tell the lead what it was last coordinating
 // on, WITHOUT the model having to restate it. Claude Code derives that from the
@@ -1472,10 +1532,26 @@ export function pollMailbox(
   fn?: (msg: AgentMessage) => boolean,
 ): AgentMessage[] {
   const messages = mailboxes.get(agentName) || [];
-  if (messages.length === 0) return messages;
+  // Merge the cross-process file inbox (opt-in). Same-process copies (already queued
+  // in memory, so their id is known) are dropped from the file so nothing is
+  // delivered twice; genuine cross-session arrivals are stamped so a consumer can
+  // render them as `<cross-session-message from=...>`. Drained copies respect the
+  // same optional predicate as the in-memory drain.
+  let fsTaken: AgentMessage[] = [];
+  const active = activeFsMailbox();
+  if (active) {
+    const knownIds = new Set<string>();
+    for (const m of messages) if (m.id) knownIds.add(m.id);
+    try { fsTaken = active.mod.takeFsInbox(active.loc, agentName, knownIds, fn); } catch { fsTaken = []; }
+    for (const m of fsTaken) {
+      m.crossSession = true;
+      if (!m.source) m.source = classifyMessageSource(m.content, m.from);
+    }
+  }
+  if (messages.length === 0) return fsTaken;
   if (!fn) {
     mailboxes.set(agentName, []);
-    return messages;
+    return fsTaken.length ? [...fsTaken, ...messages] : messages;
   }
   const taken: AgentMessage[] = [];
   const kept: AgentMessage[] = [];
@@ -1483,7 +1559,7 @@ export function pollMailbox(
     (fn(m) ? taken : kept).push(m);
   }
   if (taken.length > 0) mailboxes.set(agentName, kept);
-  return taken;
+  return fsTaken.length ? [...fsTaken, ...taken] : taken;
 }
 
 /**
@@ -1641,6 +1717,14 @@ function enqueue(to: string, msg: AgentMessage): void {
   const box = mailboxes.get(to) ?? [];
   appendCapped(box, msg);
   mailboxes.set(to, box);
+  // Durable cross-process copy: a recipient running in a SEPARATE process drains
+  // this from its file inbox (this process's in-memory copy above is its orphan).
+  // Only on the QUEUE path — a same-process waiter hand-off above already delivered
+  // it locally. Best-effort: a transport failure never blocks the in-memory send.
+  const active = activeFsMailbox();
+  if (active) {
+    try { active.mod.appendToInbox(active.loc, to, msg); } catch { /* durable copy best-effort */ }
+  }
   traceMailbox('deliver', { to, from: msg.from, source: msg.source, via: 'queue', depth: box.length });
   notifyMailbox(to);
 }
@@ -1701,7 +1785,9 @@ function isReachable(name: string): boolean {
     if (getAgentByName(name)) return true;
   } catch { /* task module unavailable */ }
   const lc = name.toLowerCase();
-  return rosterMemberNames().some(n => n.toLowerCase() === lc);
+  if (rosterMemberNames().some(n => n.toLowerCase() === lc)) return true;
+  // A separate-process teammate advertises itself by its cross-process inbox file.
+  return listCrossSessionPeers().some(n => n.toLowerCase() === lc);
 }
 
 /**
@@ -1717,6 +1803,7 @@ function knownRecipientNames(exclude?: string): string[] {
   for (const n of mailboxes.keys()) names.add(n);
   for (const n of mailboxNotifiers.keys()) names.add(n);
   for (const n of rosterMemberNames()) names.add(n);
+  for (const n of listCrossSessionPeers()) names.add(n);
   if (exclude) names.delete(exclude);
   return [...names].sort();
 }
@@ -1886,7 +1973,13 @@ export const sendMessageTool: ToolDefinition = {
     'name, to reach an agent running in a SEPARATE session/process. Only PLAIN TEXT crosses a session ' +
     'boundary — structured control messages (shutdown/plan/permission/mode/task) are session-local and ' +
     'cannot be sent cross-session. A reachable local peer is alive and will process your message: there is ' +
-    'no busy state to wait on — the message enqueues and drains at the receiver\'s next tool round.',
+    'no busy state to wait on — the message enqueues and drains at the receiver\'s next tool round.\n' +
+    '\n' +
+    'File-backed swarm: when AMI_MAILBOX_FS is set, teammates running as SEPARATE processes of the same team ' +
+    'are reachable by their bare name too — their inboxes are discovered automatically and appear in the ' +
+    'known-agents list, so you address a cross-process peer exactly like an in-process one. A message that ' +
+    'arrived from another session is marked (delivered as a <cross-session-message from=...>) so you know it ' +
+    'crossed a session boundary.',
   inputSchema: {
     type: 'object',
     properties: {

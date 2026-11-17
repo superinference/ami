@@ -1403,6 +1403,15 @@ export const teamDeleteTool: ToolDefinition = {
 
 export function getCurrentTeam(): TeamFile | null { return currentTeam; }
 
+/**
+ * Absolute path of the active team's on-disk directory (`.ami/teams/<name>/`), or
+ * null when no team is established this session. Exposed so cross-process
+ * coordination surfaces (e.g. the file-backed teammate mailbox in
+ * {@link ./mailbox-fs}) can resolve the shared `<teamsRoot>/<teamName>/` location
+ * other OS processes in the same swarm write to, without re-deriving it from cwd.
+ */
+export function getCurrentTeamDir(): string | null { return currentTeamDir; }
+
 export function resetTeam(): void {
   currentTeam = null;
   currentTeamDir = null;
