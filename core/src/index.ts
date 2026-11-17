@@ -275,6 +275,8 @@ export { getSettingsTierShortName, getSettingsTierDisplayName, getSettingsTierDi
 export type { ManagedSettingsSource } from './settings-guard';
 export { areSandboxSettingsLockedByPolicy, validateManagedPolicyValues } from './settings-guard';
 export type { SandboxPolicyLockInput, ManagedPolicyWarning } from './settings-guard';
+export { getSettingsJSONSchema } from './settings-guard';
+export type { SettingsJSONSchema, SettingsSchemaProperty } from './settings-guard';
 export { CUSTOMIZATION_SURFACES, parseStrictPluginOnlyCustomization, isRestrictedToPluginOnly, isSourceAdminTrusted, ADMIN_TRUSTED_SOURCES } from './plugin-only-policy';
 export type { CustomizationSurface, StrictPluginOnlyPolicy } from './plugin-only-policy';
 export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveManagedApproval, MANAGED_SETTINGS_DECISIONS } from './managed-settings-guard';

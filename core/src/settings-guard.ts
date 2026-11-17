@@ -395,6 +395,144 @@ export const TIER_LOCKED_KEYS = new Set([
   'maxSessionMs',
 ]);
 
+// ---------------------------------------------------------------------------
+// JSON Schema generation for the settings file (parity: Claude Code's
+// utils/settings/schemaOutput.ts generateSettingsJSONSchema). A published JSON
+// Schema lets editors give autocomplete + live validation for settings.json (via
+// a `$schema` ref) and gives one canonical, machine-consumable description of the
+// policy keys AMI governs. Claude derives its schema from a Zod definition; AMI
+// has no Zod, so the schema is DERIVED from this module's own authoritative key
+// sets (MANAGED_ONLY_KEYS / TIER_LOCKED_KEYS / DANGEROUS_SHELL_SETTINGS) — it
+// therefore self-updates when those sets change and can never silently drop a
+// governed key (mirrors the campaign's "dynamic denominator" discipline). It is
+// surfaced via `/settings-guard` and `ami --introspect`.
+// ---------------------------------------------------------------------------
+
+/** A single property node of the generated settings JSON Schema. */
+export interface SettingsSchemaProperty {
+  /** JSON Schema primitive type (omitted for union-typed keys left permissive). */
+  type?: 'boolean' | 'number' | 'string' | 'array' | 'object';
+  /** Human-readable description of the key. */
+  description: string;
+  /** Element schema, present only when `type === 'array'`. */
+  items?: { type: 'string' | 'object' };
+  /** Allowed string values, present only for enum-typed keys. */
+  enum?: string[];
+  /** True when the key is admin/managed-only (a {@link MANAGED_ONLY_KEYS} entry). */
+  managed?: boolean;
+  /** True when the key is {@link TIER_LOCKED_KEYS} (lower tiers cannot override it). */
+  tierLocked?: boolean;
+}
+
+/** The generated settings JSON Schema document (draft-07, non-strict). */
+export interface SettingsJSONSchema {
+  $schema: string;
+  title: string;
+  type: 'object';
+  properties: Record<string, SettingsSchemaProperty>;
+  /** Non-strict: unknown settings keys are allowed (this is a partial, governed schema). */
+  additionalProperties: boolean;
+}
+
+/** Managed-only keys whose value is a `boolean` policy kill-switch/flag. */
+const BOOLEAN_MANAGED_KEYS: ReadonlySet<string> = new Set([
+  'allowManagedModsOnly',
+  'strictKnownMarketplaces',
+  'allowModsToOverrideDenyRules',
+  'disableBypassPermissionsMode',
+  'disableAllHooks',
+  'allowManagedHooksOnly',
+  'allowManagedPermissionRulesOnly',
+  'channelsEnabled',
+]);
+
+/** Managed-only keys whose value is a list of strings. */
+const STRING_ARRAY_MANAGED_KEYS: ReadonlySet<string> = new Set([
+  'allowedMcpServers',
+  'prependPlugins',
+  'appendPlugins',
+  'enabledPlugins',
+]);
+
+/** Managed-only keys whose value is a list of objects. */
+const OBJECT_ARRAY_MANAGED_KEYS: ReadonlySet<string> = new Set([
+  'allowedChannelPlugins',
+]);
+
+/** Managed-only keys whose value is an object/map. */
+const OBJECT_MANAGED_KEYS: ReadonlySet<string> = new Set([
+  'managedMcpServers',
+  'processWrapper',
+]);
+
+/** Known permission modes, surfaced as the `permissionMode` enum. */
+const PERMISSION_MODE_VALUES = ['ask', 'auto-allow', 'deny-all', 'plan', 'bypassPermissions'] as const;
+
+/** Build the schema node for a single managed-only key from its classification. */
+function managedKeyProperty(key: string): SettingsSchemaProperty {
+  if (BOOLEAN_MANAGED_KEYS.has(key)) {
+    return { type: 'boolean', description: `Managed-only policy flag "${key}" (set only in enterprise managed settings).`, managed: true };
+  }
+  if (STRING_ARRAY_MANAGED_KEYS.has(key)) {
+    return { type: 'array', items: { type: 'string' }, description: `Managed-only policy list "${key}" (set only in enterprise managed settings).`, managed: true };
+  }
+  if (OBJECT_ARRAY_MANAGED_KEYS.has(key)) {
+    return { type: 'array', items: { type: 'object' }, description: `Managed-only policy list "${key}" of structured entries (set only in enterprise managed settings).`, managed: true };
+  }
+  if (OBJECT_MANAGED_KEYS.has(key)) {
+    return { type: 'object', description: `Managed-only policy map "${key}" (set only in enterprise managed settings).`, managed: true };
+  }
+  // Union-typed or future keys (e.g. strictPluginOnlyCustomization: boolean | string[])
+  // are left permissive (no `type`) so a valid value of either shape validates and a
+  // newly-added managed key never breaks the schema. Parity with Claude's
+  // `unrepresentable: 'any'` fallback.
+  return { description: `Managed-only policy key "${key}" (set only in enterprise managed settings).`, managed: true };
+}
+
+/** Build the schema node for a tier-locked key. */
+function tierLockedKeyProperty(key: string): SettingsSchemaProperty {
+  if (key === 'permissionMode') {
+    return { type: 'string', enum: [...PERMISSION_MODE_VALUES], description: 'Permission mode. Tier-locked: a lower-priority tier cannot override a higher one.', tierLocked: true };
+  }
+  return { type: 'number', description: `Resource budget "${key}". Tier-locked: a lower-priority tier cannot override a higher one.`, tierLocked: true };
+}
+
+/**
+ * Generate a (draft-07) JSON Schema for the policy keys AMI governs, derived from
+ * this module's authoritative key sets so it self-updates and never drops a key.
+ * Managed-only keys are flagged `managed`, tier-locked keys `tierLocked`, dangerous
+ * shell-executing settings are typed `string` with a danger note. Non-strict
+ * (`additionalProperties: true`) — it describes the governed subset, not every
+ * possible settings key. Parity: Claude Code's `generateSettingsJSONSchema()`.
+ */
+export function getSettingsJSONSchema(): SettingsJSONSchema {
+  const properties: Record<string, SettingsSchemaProperty> = {};
+
+  // Deterministic order: sort each governed set so the emitted schema is stable.
+  for (const key of [...MANAGED_ONLY_KEYS].sort()) {
+    properties[key] = managedKeyProperty(key);
+  }
+  for (const key of [...TIER_LOCKED_KEYS].sort()) {
+    // A tier-locked key already added as managed-only keeps its managed flag but
+    // gains the tierLocked flag (the two policies compose).
+    properties[key] = { ...tierLockedKeyProperty(key), ...(properties[key]?.managed ? { managed: true } : {}) };
+  }
+  for (const key of [...DANGEROUS_SHELL_SETTINGS].sort()) {
+    properties[key] = {
+      type: 'string',
+      description: `Shell command executed by the harness for "${key}" — dangerous when sourced from managed/remote settings (arbitrary code execution).`,
+    };
+  }
+
+  return {
+    $schema: 'http://json-schema.org/draft-07/schema#',
+    title: 'AMI settings (governed policy keys)',
+    type: 'object',
+    properties,
+    additionalProperties: true,
+  };
+}
+
 const TIER_PRIORITY: Record<SettingsTier, number> = {
   managed: 0,
   global: 1,
