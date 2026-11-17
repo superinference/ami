@@ -101,6 +101,7 @@ export const exitWorktreeTool: ToolDefinition = {
       discardedFiles: { type: 'number', description: 'Count of uncommitted files discarded (remove action).' },
       discardedCommits: { type: 'number', description: 'Count of unpushed commits discarded (remove action).' },
       stashedFiles: { type: 'number', description: 'Count of uncommitted files saved to a recoverable git stash (stash action).' },
+      tmuxSessionName: { type: 'string', description: 'Name of the worktree\'s tmux session, when one was attached (kept and still running on "keep"; killed on "remove").' },
       message: { type: 'string', description: 'Human-readable summary of what happened.' },
     },
     required: ['action', 'originalCwd', 'worktreePath', 'message'],
@@ -234,7 +235,15 @@ export const exitWorktreeTool: ToolDefinition = {
         setWorktreeSession(null);
       }
       // Do NOT fire executeWorktreeRemove hook — we are keeping the worktree.
-      const keptMsg = `Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}`;
+      // Surface the tmux reattach command when the kept worktree owns a tmux
+      // session (parity: Claude's ExitWorktreeTool keep branch — "Tmux session <n>
+      // is still running; reattach with: tmux attach -t <n>"). The session is LEFT
+      // running on keep; only a destructive remove tears it down.
+      const tmuxName = session?.tmuxSessionName;
+      const tmuxNote = tmuxName
+        ? ` Tmux session ${tmuxName} is still running; reattach with: tmux attach -t ${tmuxName}`
+        : '';
+      const keptMsg = `Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}${tmuxNote}`;
       return {
         output: cap(keptMsg),
         // Structured result (parity: Claude's ExitWorktreeTool outputSchema) carried
@@ -247,6 +256,7 @@ export const exitWorktreeTool: ToolDefinition = {
           worktreeBranch: branch,
           discardedFiles: 0,
           discardedCommits: 0,
+          ...(tmuxName ? { tmuxSessionName: tmuxName } : {}),
           message: keptMsg,
         },
       };
@@ -420,6 +430,17 @@ export const exitWorktreeTool: ToolDefinition = {
         };
       }
       mergedInto = targetBranch;
+    }
+
+    // Tear down the worktree's tmux session (if any) BEFORE deleting the worktree
+    // dir (parity: Claude's ExitWorktreeTool remove branch — `if (tmuxSessionName)
+    // await killTmuxSession(...)` before cleanupWorktree). A destructive exit
+    // (remove / merge / stash all delete the worktree) must never orphan the
+    // background tmux session rooted at the now-deleted path. Best-effort: a
+    // missing session / absent tmux is a no-op.
+    if (existing?.tmuxSessionName) {
+      const { killTmuxSession } = require('../worktree-manager');
+      try { killTmuxSession(existing.tmuxSessionName); } catch { /* best-effort teardown */ }
     }
 
     // Run the destructive removal from the REPO ROOT, never from inside the

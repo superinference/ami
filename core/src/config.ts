@@ -279,8 +279,13 @@ export interface ProjectConfig {
    * `HEAD` is checked out — so only the listed subtrees materialise on disk (fast
    * worktree creation for huge monorepos). When ABSENT or empty, the full tree is
    * checked out as usual.
+   * `tmux` (default false) opts a freshly-created worktree into a detached tmux
+   * session rooted at the worktree (parity: Claude Code's `--tmux` worktree mode):
+   * enter_worktree spawns the session and surfaces the `tmux attach -t <name>`
+   * command, and exit_worktree tears it down on remove / reminds how to reattach on
+   * keep. When ABSENT or false, no tmux session is created.
    */
-  worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[] };
+  worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[]; tmux?: boolean };
   /**
    * Commit / PR attribution override (parity: Claude Code's `attribution.commit` /
    * `attribution.pr` settings). When `commit` is a non-empty string it REPLACES the
@@ -1953,6 +1958,9 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     }
     if (wt.sparsePaths !== undefined && !matchesConfigFieldType(wt.sparsePaths, 'string[]')) {
       issues.push({ field: 'worktree.sparsePaths', message: `must be a string[] (got ${describeJsonType(wt.sparsePaths)})`, value: wt.sparsePaths, tip: getConfigValidationTip('worktree.sparsePaths', { kind: 'type', type: 'string[]' }) });
+    }
+    if (wt.tmux !== undefined && !matchesConfigFieldType(wt.tmux, 'boolean')) {
+      issues.push({ field: 'worktree.tmux', message: `must be a boolean (got ${describeJsonType(wt.tmux)})`, value: wt.tmux, tip: getConfigValidationTip('worktree.tmux', { kind: 'type', type: 'boolean' }) });
     }
   }
   // 6. `statusLine` union: a bare command string OR a `{ command, padding }` object

@@ -182,6 +182,24 @@ function resolveSparsePaths(cwd: string): string[] | undefined {
   return undefined;
 }
 
+/**
+ * Resolve the opt-in `settings.worktree.tmux` toggle (parity with Claude's
+ * `--tmux` worktree mode). Project config (`<cwd>/.ami/config.json`) takes
+ * precedence over the global config (`~/.ami/config.json`); either may enable it.
+ * Returns true only when a tier sets it to exactly `true`; ABSENT / false / an
+ * unreadable config all mean "no tmux session" (the default).
+ */
+function resolveWorktreeTmux(cwd: string): boolean {
+  try {
+    const { loadProjectConfig, loadGlobalConfig } = require('../config');
+    const proj = loadProjectConfig(cwd)?.worktree?.tmux;
+    if (typeof proj === 'boolean') return proj;
+    const glob = loadGlobalConfig()?.worktree?.tmux;
+    if (typeof glob === 'boolean') return glob;
+  } catch { /* unreadable config → no tmux */ }
+  return false;
+}
+
 function validateSlug(name: string): boolean {
   if (name.length > 64) return false;
   if (path.isAbsolute(name)) return false;
@@ -376,6 +394,7 @@ export const enterWorktreeTool: ToolDefinition = {
     properties: {
       worktreePath: { type: 'string', description: 'Absolute path of the worktree that was created or entered.' },
       worktreeBranch: { type: 'string', description: 'Branch the worktree is on, when known.' },
+      tmuxSessionName: { type: 'string', description: 'Name of the detached tmux session created for the worktree, when settings.worktree.tmux is enabled (attach with: tmux attach -t <name>).' },
       message: { type: 'string', description: 'Human-readable summary of what happened.' },
     },
     required: ['worktreePath', 'message'],
@@ -741,7 +760,13 @@ export const enterWorktreeTool: ToolDefinition = {
     let session;
     let symlinkWarnings: string[] = [];
     try {
-      session = createWorktreeSession(repoRoot, flatSlug);
+      // Thread the turn's abort signal into worktree creation so a cancelled turn
+      // kills the in-flight git worktree-add instead of blocking out the timeout.
+      session = createWorktreeSession(repoRoot, flatSlug, { signal });
+      // Record whether this worktree is a partial (sparse) checkout so a
+      // resume/introspection path can tell an intentional partial tree from a
+      // broken empty one (parity: WorktreeSession.usedSparsePaths).
+      session.usedSparsePaths = !!sparsePaths;
       setWorktreeSession(session);
       // Honor the opt-in settings.worktree.symlinkDirectories knob; undefined keeps
       // AMI's default of symlinking node_modules. Surface any UNEXPECTED symlink
@@ -775,6 +800,26 @@ export const enterWorktreeTool: ToolDefinition = {
       context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
+    // Opt-in tmux session (parity: Claude's `--tmux` worktree mode, setup.ts
+    // L220-269). When settings.worktree.tmux is enabled, spawn a DETACHED tmux
+    // session rooted at the worktree and surface the copy-paste reattach command.
+    // A failure (tmux not installed, spawn error) is NON-fatal: the worktree is
+    // already created, so we only append a yellow-equivalent warning line. The
+    // session name is recorded on the WorktreeSession so exit_worktree can tear it
+    // down on remove / remind how to reattach on keep.
+    let tmuxLine = '';
+    if (resolveWorktreeTmux(repoRoot)) {
+      const { generateTmuxSessionName, createTmuxSessionForWorktree } = require('../worktree-manager');
+      const tmuxName: string = generateTmuxSessionName(repoRoot, branchName);
+      const tmuxResult = createTmuxSessionForWorktree(tmuxName, worktreeDir) as { created: boolean; error?: string };
+      if (tmuxResult.created) {
+        session.tmuxSessionName = tmuxName;
+        tmuxLine = `\n  Created tmux session: ${tmuxName}\n  To attach: tmux attach -t ${tmuxName}`;
+      } else {
+        tmuxLine = `\n  Warning: Failed to create tmux session: ${tmuxResult.error || 'unknown error'}`;
+      }
+    }
+
     const baseLabel = prNumber != null ? `PR #${prNumber}` : baseRef;
     // Stale-clone diagnostic: when the worktree was based on the default remote
     // ref (no explicit base_ref / PR) and the clone has not fetched recently, warn
@@ -796,12 +841,17 @@ export const enterWorktreeTool: ToolDefinition = {
       `Worktree created (session switched to it):\n` +
       `  Path: ${worktreeDir}\n  Branch: ${branchName} (based on ${baseLabel})\n  Base commit: ${commitHash}\n` +
       '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).' +
-      staleHint + warnLines;
+      staleHint + warnLines + tmuxLine;
     return {
       output: createdMessage,
       // Structured fields (parity: Claude's outputSchema result) for programmatic
       // consumers; mirrors the text above.
-      metadata: { worktreePath: worktreeDir, worktreeBranch: branchName, message: createdMessage },
+      metadata: {
+        worktreePath: worktreeDir,
+        worktreeBranch: branchName,
+        ...(session.tmuxSessionName ? { tmuxSessionName: session.tmuxSessionName } : {}),
+        message: createdMessage,
+      },
     };
   },
 };

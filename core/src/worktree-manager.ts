@@ -50,7 +50,18 @@ const GIT_CMD_TIMEOUT_MS = 15_000;
  * + hooks/fsmonitor/gpg disabled) instead of a raw, unbounded child_process call
  * — one canonical hardened git invocation for the whole worktree subsystem.
  */
-export function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe' } = { cwd: process.cwd() }): string {
+export function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe'; signal?: AbortSignal } = { cwd: process.cwd() }): string {
+  // Honor cancellation for the SYNCHRONOUS runner: a blocked event loop means
+  // execFileSync's own `signal` option can never fire mid-call, so the effective
+  // cancellation point is BEFORE each git subprocess — refuse to launch another
+  // one once the turn/engine was aborted (parity with the abort-threading pattern
+  // git-commit.ts / runShellCommand / enter-worktree already follow; this module
+  // previously honored no signal at all, so a worktree add/remove/prune ran to
+  // completion even on a cancelled turn). `signal` is still forwarded to
+  // execFileSync so a future async migration keeps the same contract.
+  if (opts.signal?.aborted) {
+    throw new Error('git operation aborted');
+  }
   const env = { ...process.env, ...GIT_NO_PROMPT_ENV };
   const out = execFileSync('git', [...GIT_HARDENING_FLAGS, ...args], {
     cwd: opts.cwd,
@@ -58,7 +69,8 @@ export function gitExec(args: string[], opts: { cwd: string; timeout?: number; s
     env,
     timeout: opts.timeout ?? GIT_CMD_TIMEOUT_MS,
     stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
-  });
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  } as Parameters<typeof execFileSync>[2]);
   return typeof out === 'string' ? out.trim() : '';
 }
 
@@ -120,6 +132,23 @@ interface WorktreeSession {
   creationDurationMs?: number;
   hookBased?: boolean;
   createdAt: string;
+  /**
+   * Name of the detached tmux session bound to this worktree, when the worktree
+   * was created with the tmux affordance enabled (parity: Claude's
+   * WorktreeSession.tmuxSessionName, utils/worktree.ts:L149). Lets exit_worktree
+   * surface the `tmux attach -t <name>` reattach command on keep and tear the
+   * session down (killTmuxSession) on a destructive remove so a removed/kept
+   * worktree never orphans its background terminal multiplexer session.
+   */
+  tmuxSessionName?: string;
+  /**
+   * True when git sparse-checkout was applied to this worktree via
+   * `settings.worktree.sparsePaths` (parity: Claude's
+   * WorktreeSession.usedSparsePaths, utils/worktree.ts:L152-153). Persisted so a
+   * resume/introspection path knows the working tree is intentionally a partial
+   * checkout rather than a broken/empty one.
+   */
+  usedSparsePaths?: boolean;
 }
 
 let currentSession: WorktreeSession | null = null;
@@ -148,6 +177,69 @@ export function flattenSlug(slug: string): string {
 
 export function worktreeBranchName(slug: string): string {
   return `worktree-${flattenSlug(slug)}`;
+}
+
+/**
+ * Derive a deterministic tmux session name for a worktree from the repo root and
+ * the worktree branch (parity: Claude's `generateTmuxSessionName`,
+ * utils/worktree.ts:L171-179). The repo path is basename'd (only the final dir
+ * component is used, never the full path) and every `/` or `.` in `<repo>_<branch>`
+ * is replaced with `_`, because tmux rejects `.` and `:` in session names and a
+ * `/` would be ambiguous. Pure/synchronous — no subprocess — so it is safe to call
+ * before a session is created.
+ */
+export function generateTmuxSessionName(repoPath: string, branch: string): string {
+  const repoName = path.basename(repoPath);
+  return `${repoName}_${branch}`.replace(/[/.]/g, '_');
+}
+
+/**
+ * Dependency seam for the tmux subprocess calls (mirrors `_exitWorktreeHooks`):
+ * tests inject a stub `run` so the tmux lifecycle can be exercised WITHOUT tmux
+ * installed. The default runs the real `tmux` binary with NO SHELL (execFile with
+ * an argv array) so a session name / worktree path can never be a shell
+ * metacharacter. Returns `{ ok }` plus captured stderr on failure.
+ */
+export const _tmuxHooks = {
+  run(args: string[]): { ok: boolean; error?: string } {
+    try {
+      execFileSync('tmux', args, {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: GIT_CMD_TIMEOUT_MS,
+      });
+      return { ok: true };
+    } catch (err: unknown) {
+      const stderr = (err && typeof err === 'object' && 'stderr' in err && typeof (err as { stderr?: unknown }).stderr === 'string')
+        ? (err as { stderr: string }).stderr.trim()
+        : '';
+      return { ok: false, error: stderr || (err instanceof Error ? err.message : String(err)) };
+    }
+  },
+};
+
+/**
+ * Spawn a DETACHED tmux session named `sessionName`, rooted at `worktreePath`, so
+ * a worktree owns a reattachable background terminal session (parity: Claude's
+ * `createTmuxSessionForWorktree`, utils/worktree.ts:L673-690). Returns
+ * `{ created: true }` on success, or `{ created: false, error }` when tmux is not
+ * installed or the session could not be started — the caller surfaces the failure
+ * as a non-fatal warning rather than aborting worktree creation.
+ */
+export function createTmuxSessionForWorktree(sessionName: string, worktreePath: string): { created: boolean; error?: string } {
+  const res = _tmuxHooks.run(['new-session', '-d', '-s', sessionName, '-c', worktreePath]);
+  return res.ok ? { created: true } : { created: false, error: res.error };
+}
+
+/**
+ * Kill the tmux session `sessionName` (parity: Claude's `killTmuxSession`,
+ * utils/worktree.ts:L693-700). Returns true when the session was killed. Used on a
+ * destructive worktree exit so removing a worktree never orphans its background
+ * tmux session. Best-effort: a missing session / absent tmux returns false
+ * without throwing.
+ */
+export function killTmuxSession(sessionName: string): boolean {
+  return _tmuxHooks.run(['kill-session', '-t', sessionName]).ok;
 }
 
 /**
@@ -182,8 +274,9 @@ export function parsePRReference(input: string): number | null {
   return parseInt(segs[4], 10);
 }
 
-export function createWorktreeSession(cwd: string, name: string): WorktreeSession {
+export function createWorktreeSession(cwd: string, name: string, opts: { signal?: AbortSignal } = {}): WorktreeSession {
   const startMs = Date.now();
+  const signal = opts.signal;
   // Resolve to the canonical main repo root so creation works even when invoked
   // from inside an existing (linked) worktree.
   const repoRoot = resolveMainRepoRoot(cwd);
@@ -196,18 +289,20 @@ export function createWorktreeSession(cwd: string, name: string): WorktreeSessio
   let originalBranch: string | undefined;
   let originalHead: string | undefined;
   try {
-    originalBranch = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
-    originalHead = gitExec(['rev-parse', 'HEAD'], { cwd: repoRoot });
+    originalBranch = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot, signal });
+    originalHead = gitExec(['rev-parse', 'HEAD'], { cwd: repoRoot, signal });
   } catch { /* detached / fresh repo */ }
 
   // Create the worktree on disk if it doesn't already exist.
   // enter-worktree.ts creates the worktree itself (with base_ref support) then
   // calls createWorktreeSession for metadata; task.ts relies on this function
-  // to create the worktree as well.
+  // to create the worktree as well. The optional abort signal is threaded into
+  // the long-running `worktree add` (and its teardown) so a cancelled turn kills
+  // the in-flight git process instead of blocking up to GIT_CMD_TIMEOUT_MS.
   if (!fs.existsSync(worktreeDir)) {
     fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
     try {
-      gitExec(['worktree', 'add', '-B', branch, worktreeDir, 'HEAD'], { cwd: repoRoot, stdio: 'ignore' });
+      gitExec(['worktree', 'add', '-B', branch, worktreeDir, 'HEAD'], { cwd: repoRoot, stdio: 'ignore', signal });
     } catch (err) {
       // Tear down a half-created worktree so a failed add leaves no debris.
       try { gitExec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best effort */ }
