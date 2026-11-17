@@ -172,7 +172,7 @@ export const exitWorktreeTool: ToolDefinition = {
     try { processCwdAtStart = process.cwd(); } catch { processCwdAtStart = null; }
     const globalCwdInWorktree = processCwdAtStart !== null && isPathWithin(processCwdAtStart, worktreePath);
 
-    const { setWorktreeSession, getCurrentWorktreeSession, countWorktreeChanges } = require('../worktree-manager');
+    const { setWorktreeSession, getCurrentWorktreeSession, countWorktreeChanges, getWorktreeFileStatus } = require('../worktree-manager');
 
     // Session-identity scope guard: if a session exists and points at a DIFFERENT
     // worktree, refuse to touch this (foreign) one.
@@ -319,9 +319,17 @@ export const exitWorktreeTool: ToolDefinition = {
         let preview = '';
         if (changes.uncommitted > 0) {
           parts.push(pluralize(changes.uncommitted, 'uncommitted file'));
-          let status = '';
-          try { status = gitExec(['status', '--porcelain'], { cwd: worktreePath }); } catch { /* best effort */ }
-          const files = status ? status.split('\n') : [];
+          // Enumerate the concrete at-risk paths, split tracked vs untracked
+          // (parity: Claude merges getFileStatus().tracked/.untracked before a
+          // destructive confirm) so the user sees exactly what — and which kind —
+          // would be lost, not just a count.
+          const fileStatus = getWorktreeFileStatus(worktreePath) as { tracked: string[]; untracked: string[] } | null;
+          const files = fileStatus
+            ? [
+                ...fileStatus.tracked.map((f: string) => `  modified: ${f}`),
+                ...fileStatus.untracked.map((f: string) => `  untracked: ${f}`),
+              ]
+            : [];
           preview = '\n' + (files.length > FILE_PREVIEW_THRESHOLD
             ? `${files.slice(0, FILE_PREVIEW_THRESHOLD).join('\n')}\n… and ${files.length - FILE_PREVIEW_THRESHOLD} more`
             : files.join('\n'));

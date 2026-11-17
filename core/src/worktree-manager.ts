@@ -294,6 +294,47 @@ export function countWorktreeChanges(
 }
 
 /**
+ * Enumerate the dirty files in a worktree, split into tracked modifications and
+ * untracked files, so a destructive-op warning can show the user the CONCRETE
+ * paths at risk before they confirm (parity with Claude's merge of
+ * getFileStatus().tracked and .untracked, components/TeleportStash.tsx:L18-L19).
+ *
+ * Parses `git --no-optional-locks status --porcelain`: a `??` XY status code
+ * marks an untracked path; every other code is a tracked change. A rename is
+ * reported `R  old -> new` — the NEW path is surfaced (what now exists on disk).
+ * Returns null on git failure (the same fail-closed contract as
+ * {@link countWorktreeChanges}), so a caller never renders an unverifiable empty
+ * list as "nothing at risk".
+ */
+export function getWorktreeFileStatus(
+  worktreePath: string,
+): { tracked: string[]; untracked: string[] } | null {
+  let status: string;
+  try {
+    status = gitExec(['--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath });
+  } catch {
+    return null;
+  }
+  const tracked: string[] = [];
+  const untracked: string[] = [];
+  if (!status) return { tracked, untracked };
+  for (const line of status.split('\n')) {
+    if (!line) continue;
+    const code = line.slice(0, 2);
+    // The path follows the 2-char XY status code after its separator space(s);
+    // strip the leading whitespace rather than assuming a fixed offset.
+    const rest = line.slice(2).replace(/^\s+/, '').trim();
+    if (!rest) continue;
+    // A rename/copy entry is `old -> new`; surface the destination path.
+    const arrow = rest.indexOf(' -> ');
+    const file = arrow >= 0 ? rest.slice(arrow + 4).trim() : rest;
+    if (code === '??') untracked.push(file);
+    else tracked.push(file);
+  }
+  return { tracked, untracked };
+}
+
+/**
  * Stash a worktree's uncommitted changes (tracked modifications AND untracked
  * files, via `git stash push -u`) to a clean working state, preserving them
  * RECOVERABLY instead of discarding them. Mirrors Claude's `stashToCleanState`
@@ -326,16 +367,30 @@ export function stashToCleanState(worktreePath: string, message: string): boolea
   }
 }
 
-export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): string[] {
+/**
+ * Outcome of a stale-worktree sweep. `cleaned` lists the worktrees removed;
+ * `failed` accounts for every removal that was ATTEMPTED (age/change gates
+ * passed) but errored — the name plus the error message — instead of swallowing
+ * it into a bare `catch {}`. Parity with Claude's structured CleanupResult
+ * (utils/cleanup.ts) so a repeatedly-failing removal (permission/lock) is
+ * observable rather than silently invisible.
+ */
+export interface WorktreeCleanupResult {
+  cleaned: string[];
+  failed: Array<{ name: string; error: string }>;
+}
+
+export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): WorktreeCleanupResult {
   const worktreeDir = path.join(cwd, '.ami', 'worktrees');
-  if (!fs.existsSync(worktreeDir)) return [];
+  if (!fs.existsSync(worktreeDir)) return { cleaned: [], failed: [] };
 
   // Config-validity gate: never reap worktrees based on a config we cannot parse.
   // A corrupt .ami/config.json could mean the retention window is wrong, so we
   // fail safe and skip all destructive removal until the config is fixed.
-  if (isProjectConfigInvalid(cwd)) return [];
+  if (isProjectConfigInvalid(cwd)) return { cleaned: [], failed: [] };
 
   const cleaned: string[] = [];
+  const failed: Array<{ name: string; error: string }> = [];
   const now = Date.now();
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
   // Never reap the worktree the active session is currently using.
@@ -359,7 +414,11 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
         try {
           gitExec(['worktree', 'remove', '--force', fullPath], { cwd, timeout: 10000 });
           cleaned.push(entry);
-        } catch { /* leave it for the next sweep */ }
+        } catch (err) {
+          // Account for the failure (so a persistently-failing removal is
+          // observable) and leave the worktree for the next sweep.
+          failed.push({ name: entry, error: err instanceof Error ? err.message : String(err) });
+        }
       }
     } catch { /* unreadable entry — skip */ }
   }
@@ -369,7 +428,7 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): str
     gitExec(['worktree', 'prune'], { cwd, timeout: 5000, stdio: 'ignore' });
   } catch { /* best effort */ }
 
-  return cleaned;
+  return { cleaned, failed };
 }
 
 /**
@@ -381,6 +440,61 @@ export function bumpWorktreeMtime(worktreePath: string): void {
     const now = new Date();
     fs.utimesSync(worktreePath, now, now);
   } catch { /* best effort */ }
+}
+
+/** Default staleness window for a clone's last fetch — 7 days, matching Claude's
+ *  STALE_FETCH_WARN_MS (utils/deepLink/banner.ts:L22). */
+export const STALE_FETCH_WARN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** mtime (ms) of a path, or undefined when it cannot be stat'd. */
+function mtimeOrUndefined(p: string): number | undefined {
+  try {
+    return fs.statSync(p).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Last-fetch timestamp (ms) for the repo at `cwd`, read from the mtime of
+ * `FETCH_HEAD`. Because `FETCH_HEAD` is PER-WORKTREE, this reads it from BOTH the
+ * worktree's own git dir and the resolved common (main repo) git dir and returns
+ * whichever is NEWER — so a fetch run in the main checkout is still seen from a
+ * linked worktree and vice-versa (parity with Claude's readLastFetchTime
+ * worktree/common-dir newer-of-two fallback, utils/deepLink/banner.ts:L94-L101).
+ * Returns undefined when the repo has NEVER fetched (no `FETCH_HEAD` in either
+ * location) or `cwd` is not a git repo.
+ */
+export function readLastFetchTime(cwd: string): number | undefined {
+  const dirs: string[] = [];
+  try {
+    const gitDir = gitExec(['rev-parse', '--path-format=absolute', '--git-dir'], { cwd });
+    if (gitDir) dirs.push(gitDir);
+  } catch { /* not a git repo */ }
+  try {
+    const commonDir = gitExec(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd });
+    if (commonDir) dirs.push(commonDir);
+  } catch { /* not a git repo */ }
+
+  let newest: number | undefined;
+  for (const d of dirs) {
+    const t = mtimeOrUndefined(path.join(d, 'FETCH_HEAD'));
+    if (t !== undefined && (newest === undefined || t > newest)) newest = t;
+  }
+  return newest;
+}
+
+/**
+ * True when the clone at `cwd` is STALE — it has not fetched within `maxAgeMs`
+ * (default {@link STALE_FETCH_WARN_MS}), OR it has never fetched at all (a missing
+ * `FETCH_HEAD` is treated as stale, mirroring buildDeepLinkBanner's
+ * missing-timestamp branch). Lets the worktree path warn that a worktree based on
+ * `origin/<default>` may be built on an out-of-date ref.
+ */
+export function isCloneStale(cwd: string, maxAgeMs: number = STALE_FETCH_WARN_MS): boolean {
+  const last = readLastFetchTime(cwd);
+  if (last === undefined) return true;
+  return (Date.now() - last) > maxAgeMs;
 }
 
 /**
@@ -422,7 +536,28 @@ function isWithin(parent: string, child: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string, dirs: string[] = ['node_modules']): void {
+/** Extract a Node errno string (e.g. 'EACCES') from a thrown fs error, or ''. */
+function errnoCodeOf(err: unknown): string {
+  return (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string')
+    ? (err as { code: string }).code
+    : '';
+}
+
+/**
+ * Symlink large shared directories (default `node_modules`) from the source repo
+ * into a new worktree so each worktree reuses one install.
+ *
+ * Returns the list of human-readable WARNINGS for dirs that failed with an
+ * UNEXPECTED error, so the caller can surface them instead of leaving a silent
+ * failure (parity with Claude's symlinkDirectories, utils/worktree.ts:L109-L136).
+ * Benign cases are NOT warnings: ENOENT (source missing) and EEXIST (target
+ * already present) are expected races and stay silent; any other errno
+ * (EACCES/EPERM permission denied, ENOSYS on a filesystem that forbids symlinks)
+ * is collected so a genuine failure is debuggable. Each dir is still guarded by
+ * the path-traversal containment check on both roots.
+ */
+export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string, dirs: string[] = ['node_modules']): string[] {
+  const warnings: string[] = [];
   for (const dir of dirs) {
     const source = path.join(sourceCwd, dir);
     const target = path.join(worktreePath, dir);
@@ -433,11 +568,15 @@ export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string,
         fs.symlinkSync(source, target, 'dir');
       }
     } catch (err: unknown) {
-      // ENOENT/EEXIST are benign races; anything else is swallowed to keep
-      // worktree setup resilient.
-      void err;
+      const code = errnoCodeOf(err);
+      // ENOENT/EEXIST are benign races; surface anything else so an EACCES/EPERM/
+      // ENOSYS failure is not indistinguishable from the benign case.
+      if (code !== 'ENOENT' && code !== 'EEXIST') {
+        warnings.push(`could not symlink ${dir}: ${code || (err instanceof Error ? err.message : String(err))}`);
+      }
     }
   }
+  return warnings;
 }
 
 /**

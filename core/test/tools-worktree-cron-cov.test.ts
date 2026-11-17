@@ -465,7 +465,7 @@ describe('worktree-manager helpers', () => {
   it('cleanupStaleWorktrees returns [] when no worktrees dir exists', () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    assert.deepEqual(cleanupStaleWorktrees(repo), []);
+    assert.deepEqual(cleanupStaleWorktrees(repo), { cleaned: [], failed: [] });
   });
 
   it('cleanupStaleWorktrees skips non-stale, changed, non-git, and non-dir entries; swallows remove errors', () => {
@@ -506,18 +506,19 @@ describe('worktree-manager helpers', () => {
     fs.mkdirSync(fresh);
     git('init', fresh);
 
-    const cleaned = cleanupStaleWorktrees(repo);
-    assert.ok(Array.isArray(cleaned));
+    const result = cleanupStaleWorktrees(repo);
+    assert.ok(Array.isArray(result.cleaned));
+    assert.ok(Array.isArray(result.failed));
     // None of these are removable registered worktrees.
-    assert.ok(!cleaned.includes('stale-dirty'));
-    assert.ok(!cleaned.includes('stale-plain'));
-    assert.ok(!cleaned.includes('fresh'));
+    assert.ok(!result.cleaned.includes('stale-dirty'));
+    assert.ok(!result.cleaned.includes('stale-plain'));
+    assert.ok(!result.cleaned.includes('fresh'));
   });
 
   it('cleanupStaleWorktrees returns [] when a missing worktrees dir is given', () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
-    assert.deepEqual(cleanupStaleWorktrees(repo, 1), []);
+    assert.deepEqual(cleanupStaleWorktrees(repo, 1), { cleaned: [], failed: [] });
   });
 
   it('symlinkLargeDirectories links existing dirs, skips existing targets and missing sources', () => {

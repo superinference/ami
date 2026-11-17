@@ -142,3 +142,46 @@ describe('U057: default worktree base follows findRemoteBase priority (upstream 
     assert.match(r.output, /based on origin\/main/);
   });
 });
+
+describe('U057: stale-clone (FETCH_HEAD) diagnostic on worktree creation', () => {
+  // A real clone (resolvable origin/main, so no fresh fetch happens) whose
+  // FETCH_HEAD mtime is backdated past the 7-day window → the default-base path
+  // must warn the base may be out of date.
+  function makeStaleClone(): string {
+    const remote = track(mkTmp('wt-u057-remote-'));
+    git('init --bare -b main', remote);
+    const seed = track(mkTmp('wt-u057-seed-'));
+    initRepoWithCommit(seed);
+    git(`remote add origin "${remote}"`, seed);
+    git('push -u origin main', seed);
+    const clone = track(mkTmp('wt-u057-clone-'));
+    child_process.execSync(`git clone "${remote}" "${clone}"`, { encoding: 'utf-8', env: GIT_ENV });
+    git('config user.email "t@t.com"', clone);
+    git('config user.name "Test"', clone);
+    git('config commit.gpgsign false', clone);
+    // Write a FETCH_HEAD and backdate it to 8 days ago (a clone that last fetched
+    // over a week ago). origin/main is already present locally, so enter_worktree
+    // resolves the base without a fresh fetch and this old timestamp stands.
+    const gitDir = git('rev-parse --path-format=absolute --git-dir', clone).trim();
+    const fh = path.join(gitDir, 'FETCH_HEAD');
+    fs.writeFileSync(fh, '');
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(fh, old, old);
+    return clone;
+  }
+
+  it('warns the default base may be out of date when FETCH_HEAD is older than 7 days', async () => {
+    const clone = makeStaleClone();
+    const r = await enterWorktreeTool.execute({ name: 'wt-stale' }, ctx({ cwd: clone }));
+    assert.equal(r.isError, undefined, r.output);
+    // RED (pre-U057): no FETCH_HEAD staleness signal existed, so this note was absent.
+    assert.match(r.output, /has not fetched in over 7 days/);
+  });
+
+  it('omits the stale note when an explicit base_ref is given', async () => {
+    const clone = makeStaleClone();
+    const r = await enterWorktreeTool.execute({ name: 'wt-explicit', base_ref: 'main' }, ctx({ cwd: clone }));
+    assert.equal(r.isError, undefined, r.output);
+    assert.doesNotMatch(r.output, /has not fetched in over 7 days/);
+  });
+});

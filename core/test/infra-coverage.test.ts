@@ -757,14 +757,14 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
 
   it('returns empty array when worktree directory does not exist', () => {
     const cleaned = cleanupStaleWorktrees(tmpDir);
-    assert.deepEqual(cleaned, []);
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] });
   });
 
   it('returns empty array when worktree directory is empty', () => {
     const worktreeDir = path.join(tmpDir, '.ami', 'worktrees');
     fs.mkdirSync(worktreeDir, { recursive: true });
     const cleaned = cleanupStaleWorktrees(tmpDir);
-    assert.deepEqual(cleaned, []);
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] });
   });
 
   it('skips non-directory entries', () => {
@@ -772,7 +772,7 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
     fs.mkdirSync(worktreeDir, { recursive: true });
     fs.writeFileSync(path.join(worktreeDir, 'not-a-dir'), 'file');
     const cleaned = cleanupStaleWorktrees(tmpDir);
-    assert.deepEqual(cleaned, []);
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] });
   });
 
   it('skips directories that are not old enough', () => {
@@ -780,7 +780,7 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
     const freshDir = path.join(worktreeDir, 'fresh-worktree');
     fs.mkdirSync(freshDir, { recursive: true });
     const cleaned = cleanupStaleWorktrees(tmpDir);
-    assert.deepEqual(cleaned, []);
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] });
   });
 
   it('applies half-age threshold for ephemeral worktree names', () => {
@@ -795,7 +795,7 @@ describe('cleanupStaleWorktrees (lines 94-131)', () => {
     // which means cleanup will skip it (fail-closed)
     const cleaned = cleanupStaleWorktrees(tmpDir);
     // It won't be cleaned because countWorktreeChanges returns null (no git repo)
-    assert.deepEqual(cleaned, []);
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] });
   });
 });
 

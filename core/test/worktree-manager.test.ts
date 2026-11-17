@@ -19,6 +19,11 @@ import {
   symlinkLargeDirectories,
   copyWorktreeIncludes,
   countWorktreeChanges,
+  getWorktreeFileStatus,
+  cleanupStaleWorktrees,
+  readLastFetchTime,
+  isCloneStale,
+  STALE_FETCH_WARN_MS,
 } from '../src/worktree-manager';
 
 // ---------------------------------------------------------------------------
@@ -527,5 +532,244 @@ describe('GIT_NO_PROMPT_ENV – CC19 no-replace-objects', () => {
       '1',
       'GIT_NO_PROMPT_ENV should include GIT_NO_REPLACE_OBJECTS=1',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getWorktreeFileStatus — tracked/untracked dirty-file enumeration
+// ---------------------------------------------------------------------------
+
+describe('getWorktreeFileStatus', () => {
+  let tmpDir: string;
+  const gitEnv = {
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@test.com',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@test.com',
+  };
+  const execOpts = (cwd: string) => ({ cwd, encoding: 'utf-8' as const, env: { ...process.env, ...gitEnv } });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-fstat-'));
+    execSync('git init', execOpts(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'init');
+    execSync('git add README.md', execOpts(tmpDir));
+    execSync('git commit -m initial', execOpts(tmpDir));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('splits tracked modifications from untracked files', () => {
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'changed'); // tracked modification
+    fs.writeFileSync(path.join(tmpDir, 'new.txt'), 'brand new');  // untracked
+    const result = getWorktreeFileStatus(tmpDir);
+    assert.ok(result !== null);
+    assert.deepEqual(result!.tracked, ['README.md']);
+    assert.deepEqual(result!.untracked, ['new.txt']);
+  });
+
+  it('returns empty arrays for a clean worktree', () => {
+    const result = getWorktreeFileStatus(tmpDir);
+    assert.deepEqual(result, { tracked: [], untracked: [] });
+  });
+
+  it('surfaces the destination path of a rename as tracked', () => {
+    execSync('git mv README.md RENAMED.md', execOpts(tmpDir));
+    const result = getWorktreeFileStatus(tmpDir);
+    assert.ok(result !== null);
+    assert.ok(result!.tracked.includes('RENAMED.md'), `tracked should include renamed dest, got ${JSON.stringify(result!.tracked)}`);
+  });
+
+  it('returns null for a non-git directory', () => {
+    const notRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-nogit-'));
+    try {
+      assert.equal(getWorktreeFileStatus(notRepo), null);
+    } finally {
+      fs.rmSync(notRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupStaleWorktrees — structured {cleaned, failed} accounting
+// ---------------------------------------------------------------------------
+
+describe('cleanupStaleWorktrees result accounting', () => {
+  let tmpDir: string;
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const gitEnv = {
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@test.com',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@test.com',
+  };
+  const execOpts = (cwd: string) => ({ cwd, encoding: 'utf-8' as const, env: { ...process.env, ...gitEnv } });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-cleanup-'));
+  });
+  afterEach(() => {
+    try { fs.chmodSync(path.join(tmpDir, '.ami', 'worktrees'), 0o755); } catch { /* ignore */ }
+    try { execSync('git worktree prune', execOpts(tmpDir)); } catch { /* ignore */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns {cleaned:[], failed:[]} when no worktrees dir exists', () => {
+    assert.deepEqual(cleanupStaleWorktrees(tmpDir), { cleaned: [], failed: [] });
+  });
+
+  // A clean worktree whose commits are all reachable from a remote (0 unpushed,
+  // 0 uncommitted) and aged past the cutoff is removed and reported in `cleaned`.
+  const setupStaleCleanWorktree = (): string => {
+    const remote = path.join(tmpDir, 'remote.git');
+    execSync(`git init --bare "${remote}"`, execOpts(tmpDir));
+    execSync('git init', execOpts(tmpDir));
+    execSync(`git remote add origin "${remote}"`, execOpts(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'init');
+    execSync('git add README.md', execOpts(tmpDir));
+    execSync('git commit -m initial', execOpts(tmpDir));
+    execSync('git push -u origin HEAD:main', execOpts(tmpDir));
+    const wtBase = path.join(tmpDir, '.ami', 'worktrees');
+    fs.mkdirSync(wtBase, { recursive: true });
+    const wt = path.join(wtBase, 'old-wt');
+    // Detach at the exact pushed commit so the worktree has 0 unpushed commits.
+    execSync(`git worktree add --detach "${wt}" HEAD`, execOpts(tmpDir));
+    const old = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365);
+    fs.utimesSync(wt, old, old);
+    return wt;
+  };
+
+  it('removes an aged clean worktree and reports it in cleaned', () => {
+    setupStaleCleanWorktree();
+    const result = cleanupStaleWorktrees(tmpDir, 1);
+    assert.deepEqual(result.failed, []);
+    assert.ok(result.cleaned.includes('old-wt'), `expected old-wt cleaned, got ${JSON.stringify(result)}`);
+  });
+
+  it('accounts a removal failure in failed[] instead of swallowing it', { skip: isRoot }, () => {
+    setupStaleCleanWorktree();
+    // Make the worktrees container read-only so git cannot rmdir the entry → the
+    // remove throws and must be recorded, not silently dropped.
+    fs.chmodSync(path.join(tmpDir, '.ami', 'worktrees'), 0o555);
+    const result = cleanupStaleWorktrees(tmpDir, 1);
+    assert.equal(result.cleaned.length, 0, 'nothing should be reported as cleaned');
+    assert.equal(result.failed.length, 1, `one failure should be accounted, got ${JSON.stringify(result)}`);
+    assert.equal(result.failed[0].name, 'old-wt');
+    assert.ok(result.failed[0].error.length > 0, 'failure must carry an error message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readLastFetchTime / isCloneStale — FETCH_HEAD staleness
+// ---------------------------------------------------------------------------
+
+describe('readLastFetchTime / isCloneStale', () => {
+  let tmpDir: string;
+  const gitEnv = {
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@test.com',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@test.com',
+  };
+  const execOpts = (cwd: string) => ({ cwd, encoding: 'utf-8' as const, env: { ...process.env, ...gitEnv } });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-fetch-'));
+    execSync('git init', execOpts(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), 'init');
+    execSync('git add README.md', execOpts(tmpDir));
+    execSync('git commit -m initial', execOpts(tmpDir));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('7-day window constant matches Claude', () => {
+    assert.equal(STALE_FETCH_WARN_MS, 7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('returns undefined and reports stale when the repo has never fetched', () => {
+    assert.equal(readLastFetchTime(tmpDir), undefined);
+    assert.equal(isCloneStale(tmpDir), true);
+  });
+
+  it('reads a recent FETCH_HEAD mtime and reports not-stale', () => {
+    const gitDir = execSync('git rev-parse --path-format=absolute --git-dir', execOpts(tmpDir)).toString().trim();
+    fs.writeFileSync(path.join(gitDir, 'FETCH_HEAD'), 'deadbeef\tbranch main\n');
+    const t = readLastFetchTime(tmpDir);
+    assert.ok(typeof t === 'number' && t > 0);
+    assert.equal(isCloneStale(tmpDir), false);
+  });
+
+  it('reports stale when FETCH_HEAD is older than the window', () => {
+    const gitDir = execSync('git rev-parse --path-format=absolute --git-dir', execOpts(tmpDir)).toString().trim();
+    const fh = path.join(gitDir, 'FETCH_HEAD');
+    fs.writeFileSync(fh, 'deadbeef\tbranch main\n');
+    const old = new Date(Date.now() - STALE_FETCH_WARN_MS - 60_000);
+    fs.utimesSync(fh, old, old);
+    assert.equal(isCloneStale(tmpDir), true);
+    // A wide window makes the same timestamp fresh again.
+    assert.equal(isCloneStale(tmpDir, STALE_FETCH_WARN_MS * 1000), false);
+  });
+
+  it('returns undefined for a non-git directory', () => {
+    const notRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-fetch-nogit-'));
+    try {
+      assert.equal(readLastFetchTime(notRepo), undefined);
+    } finally {
+      fs.rmSync(notRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// symlinkLargeDirectories — warning accounting on unexpected errors
+// ---------------------------------------------------------------------------
+
+describe('symlinkLargeDirectories warnings', () => {
+  let tmpDir: string;
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-symwarn-'));
+  });
+  afterEach(() => {
+    try { fs.chmodSync(path.join(tmpDir, 'wt'), 0o755); } catch { /* ignore */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns no warnings on a normal symlink', () => {
+    const src = path.join(tmpDir, 'src');
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(path.join(src, 'node_modules'), { recursive: true });
+    fs.mkdirSync(wt, { recursive: true });
+    assert.deepEqual(symlinkLargeDirectories(src, wt), []);
+  });
+
+  it('returns no warnings when the source is missing (benign ENOENT)', () => {
+    const src = path.join(tmpDir, 'src');
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(src, { recursive: true });
+    fs.mkdirSync(wt, { recursive: true });
+    assert.deepEqual(symlinkLargeDirectories(src, wt), []);
+  });
+
+  it('records a warning for an unexpected error (EACCES/EPERM)', { skip: isRoot }, () => {
+    const src = path.join(tmpDir, 'src');
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(path.join(src, 'node_modules'), { recursive: true });
+    fs.mkdirSync(wt, { recursive: true });
+    fs.chmodSync(wt, 0o555); // read-only worktree → symlinkSync fails to create entry
+    const warnings = symlinkLargeDirectories(src, wt);
+    assert.equal(warnings.length, 1, `expected 1 warning, got ${JSON.stringify(warnings)}`);
+    assert.ok(/node_modules/.test(warnings[0]));
   });
 });

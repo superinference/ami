@@ -88,4 +88,24 @@ describe('exit_worktree U064 parity', () => {
     // distinct from worktree-manager's gitExec. Now it IS gitExec.
     assert.strictEqual(_exitWorktreeHooks.exec, gitExec);
   });
+
+  // ---- U057: the remove refusal enumerates at-risk files split tracked/untracked ----
+  it('labels tracked modifications vs untracked files in the remove refusal preview', async () => {
+    const created = await enterWorktreeTool.execute({ name: 'feat-preview' }, ctx({ cwd: repo }));
+    assert.equal(created.isError, undefined, created.output);
+    const wt = getCurrentWorktreeSession()!.worktreePath;
+
+    // A tracked modification (README.md is committed) and a brand-new untracked file.
+    fs.writeFileSync(path.join(wt, 'README.md'), '# changed\n');
+    fs.writeFileSync(path.join(wt, 'scratch.txt'), 'temp\n');
+
+    const r = await exitWorktreeTool.execute({ action: 'remove' }, ctx({ cwd: wt }));
+    assert.equal(r.isError, true, r.output);
+    // RED (pre-U057): the preview dumped raw `git status --porcelain` lines with no
+    // tracked/untracked distinction, so these labels were absent.
+    assert.match(r.output, /modified: README\.md/);
+    assert.match(r.output, /untracked: scratch\.txt/);
+    // Nothing destroyed on refusal.
+    assert.equal(fs.existsSync(wt), true);
+  });
 });

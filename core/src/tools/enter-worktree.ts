@@ -114,7 +114,7 @@ export const _enterWorktreeHooks = {
    *  `settings.worktree.symlinkDirectories` knob: when undefined the underlying
    *  helper keeps AMI's `['node_modules']` default; an explicit (possibly empty)
    *  list is used verbatim. */
-  symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): void =>
+  symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): string[] =>
     require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath, dirs),
   /** Derive a readable kebab-case worktree/branch slug from a free-form task
    *  description via a deterministic auxiliary model call (parity with Claude's
@@ -739,12 +739,14 @@ export const enterWorktreeTool: ToolDefinition = {
     // createWorktreeSession look for the raw nested path, miss it, and add a
     // second worktree).
     let session;
+    let symlinkWarnings: string[] = [];
     try {
       session = createWorktreeSession(repoRoot, flatSlug);
       setWorktreeSession(session);
       // Honor the opt-in settings.worktree.symlinkDirectories knob; undefined keeps
-      // AMI's default of symlinking node_modules.
-      _enterWorktreeHooks.symlinkLargeDirs(repoRoot, session.worktreePath, resolveSymlinkDirs(repoRoot));
+      // AMI's default of symlinking node_modules. Surface any UNEXPECTED symlink
+      // failure (EACCES/EPERM/ENOSYS) rather than letting it fail silently.
+      symlinkWarnings = _enterWorktreeHooks.symlinkLargeDirs(repoRoot, session.worktreePath, resolveSymlinkDirs(repoRoot));
     } catch (e) {
       // Post-add setup failed: `git worktree add` already registered the worktree
       // on disk and reset the branch, but the session/symlink wiring is broken.
@@ -774,10 +776,27 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     const baseLabel = prNumber != null ? `PR #${prNumber}` : baseRef;
+    // Stale-clone diagnostic: when the worktree was based on the default remote
+    // ref (no explicit base_ref / PR) and the clone has not fetched recently, warn
+    // that the base may be out of date (parity: Claude's FETCH_HEAD staleness
+    // signal). Best-effort — a git failure simply omits the hint.
+    let staleHint = '';
+    try {
+      if (!requestedBaseRef && !prBaseRef) {
+        const { isCloneStale } = require('../worktree-manager');
+        if (isCloneStale(repoRoot)) {
+          staleHint = `\n  Note: this clone has not fetched in over 7 days — ${baseLabel} may be out of date (run \`git fetch\` to refresh).`;
+        }
+      }
+    } catch { /* best-effort diagnostic */ }
+    const warnLines = symlinkWarnings.length
+      ? `\n  Warning: ${symlinkWarnings.join('; ')}.`
+      : '';
     const createdMessage =
       `Worktree created (session switched to it):\n` +
       `  Path: ${worktreeDir}\n  Branch: ${branchName} (based on ${baseLabel})\n  Base commit: ${commitHash}\n` +
-      '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).';
+      '  Leave with exit_worktree (action:"keep" to preserve, "remove" to delete).' +
+      staleHint + warnLines;
     return {
       output: createdMessage,
       // Structured fields (parity: Claude's outputSchema result) for programmatic

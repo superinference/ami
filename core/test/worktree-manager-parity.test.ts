@@ -130,7 +130,7 @@ describe('stale cleanup skips the active session worktree', () => {
     const old = Date.now() - 999 * 86400000;
     fs.utimesSync(session.worktreePath, new Date(old), new Date(old));
     const cleaned = cleanupStaleWorktrees(repo, 1);
-    assert.ok(!cleaned.includes('active-wt'), 'active worktree must be skipped');
+    assert.ok(!cleaned.cleaned.includes('active-wt'), 'active worktree must be skipped');
     assert.ok(fs.existsSync(session.worktreePath));
   });
 });
@@ -157,7 +157,7 @@ describe('stale cleanup is gated on a valid project config', () => {
     const wtPath = makeReapableWorktree('stale-corrupt');
     fs.writeFileSync(path.join(repo, '.ami', 'config.json'), '{ this is not: valid json ');
     const cleaned = cleanupStaleWorktrees(repo, 1);
-    assert.deepEqual(cleaned, [], 'corrupt config must abort cleanup');
+    assert.deepEqual(cleaned, { cleaned: [], failed: [] }, 'corrupt config must abort cleanup');
     assert.ok(fs.existsSync(wtPath), 'worktree must survive when config is untrusted');
   });
 
@@ -165,13 +165,13 @@ describe('stale cleanup is gated on a valid project config', () => {
     makeReapableWorktree('stale-ok');
     fs.writeFileSync(path.join(repo, '.ami', 'config.json'), JSON.stringify({ model: 'x' }));
     const cleaned = cleanupStaleWorktrees(repo, 1);
-    assert.ok(cleaned.includes('stale-ok'), 'a valid config must not block reaping');
+    assert.ok(cleaned.cleaned.includes('stale-ok'), 'a valid config must not block reaping');
   });
 
   it('proceeds with cleanup when no config file exists (defaults)', () => {
     makeReapableWorktree('stale-nocfg');
     const cleaned = cleanupStaleWorktrees(repo, 1);
-    assert.ok(cleaned.includes('stale-nocfg'), 'absent config uses defaults, not a block');
+    assert.ok(cleaned.cleaned.includes('stale-nocfg'), 'absent config uses defaults, not a block');
   });
 });
 
