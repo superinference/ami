@@ -280,15 +280,64 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
   return typeof type === 'string' && type.length > 0 ? type : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// AWS Bedrock credential-chain failure — recognize CredentialsProviderError
+// ---------------------------------------------------------------------------
+
+/**
+ * True when an error is the AWS SDK's `CredentialsProviderError` (thrown when no
+ * AWS credentials can be resolved from any provider in the chain). The AWS SDK
+ * sets `error.name` to this stable string, so matching on the name is minify-safe
+ * and does not require importing the SDK. Mirrors Claude's
+ * `isAwsCredentialsProviderError`, which gives a clear "no AWS credentials
+ * configured" branch instead of surfacing a raw 401/500 from the Bedrock call.
+ */
+export function isAwsCredentialsProviderError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  return (err as { name?: unknown }).name === 'CredentialsProviderError';
+}
+
+/**
+ * Actionable guidance for a Bedrock run that has no resolvable AWS credentials.
+ * Contains the literal "AWS credentials" so `friendlyErrorMessage` can key off it
+ * and surface this instead of the generic API-key auth hint (which is wrong for
+ * the Bedrock/AWS credential chain).
+ */
+export function getAwsCredentialsErrorMessage(): string {
+  return 'No AWS credentials found — configure AWS credentials (set AWS_PROFILE, populate ~/.aws/credentials, or run `aws sso login`) before using the Bedrock provider.';
+}
+
+/**
+ * Stable fallback message for a deserialized/plain-object API error that carries
+ * no usable message — `API error (status N)` (or `status unknown`). Reads a
+ * numeric `.status` or `.statusCode`. Mirrors Claude's `formatAPIError` guard so
+ * a JSONL-round-tripped error (e.g. after `--resume`) never collapses to an empty
+ * string or `[object Object]` that would mislead the user and the classifier.
+ */
+export function apiErrorStatusFallback(error: unknown): string {
+  const raw = (error ?? {}) as { status?: unknown; statusCode?: unknown };
+  const status = typeof raw.status === 'number' ? raw.status
+    : typeof raw.statusCode === 'number' ? raw.statusCode
+    : undefined;
+  return `API error (status ${status ?? 'unknown'})`;
+}
+
 /**
  * Best human-readable message for any error value: a plain string, an Error's
  * `.message`, or a nested/deserialized API-error shape — always HTML-sanitized.
+ * When no usable message survives, falls back to `API error (status N)` rather
+ * than an empty string / `[object Object]`.
  */
 export function normalizeErrorMessage(error: unknown): string {
   if (typeof error === 'string') return sanitizeMessageHTML(error);
   if (error instanceof Error) {
     const nested = extractNestedErrorMessage(error);
-    return nested ?? sanitizeMessageHTML(error.message);
+    if (nested) return nested;
+    const sanitized = sanitizeMessageHTML(error.message);
+    if (sanitized.length > 0) return sanitized;
+    // Deserialized SDK error that lost its `.message` (e.g. JSONL `--resume`):
+    // surface a stable status fallback instead of an empty string.
+    return apiErrorStatusFallback(error);
   }
   const nested = extractNestedErrorMessage(error);
   if (nested) return nested;
@@ -297,6 +346,14 @@ export function normalizeErrorMessage(error: unknown): string {
   // can match instead of falling to a meaningless String(error).
   const envelope = extractUnknownErrorFormat(error);
   if (envelope) return envelope;
+  if (error !== null && typeof error === 'object') {
+    const direct = (error as { message?: unknown }).message;
+    if (typeof direct === 'string' && direct.length > 0) return sanitizeMessageHTML(direct);
+    // A plain-object API error (deserialized, no message/nested/envelope) still
+    // carries a status — surface `API error (status N)` rather than
+    // `[object Object]`. Mirrors Claude's formatAPIError status fallback.
+    return apiErrorStatusFallback(error);
+  }
   return String(error ?? '');
 }
 
@@ -557,6 +614,13 @@ function classifySDKError(error: Error): ClassifiedError | null {
   // declines to treat an ECONNABORTED network drop as a cancellation).
   if (isAbortError(error)) {
     return { category: 'abort', message, retryable: false, shouldCompact: false, shouldFallback: false };
+  }
+
+  // AWS Bedrock credential-chain failure: the AWS SDK throws CredentialsProviderError
+  // (by name) when no credentials resolve. Classify it as a non-retryable auth error
+  // with Bedrock-specific guidance, rather than letting it surface as a raw 401/500.
+  if (isAwsCredentialsProviderError(error)) {
+    return { category: 'auth_error', message: getAwsCredentialsErrorMessage(), retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
   // APICallError carries a numeric statusCode — classify by it
@@ -981,6 +1045,13 @@ export function friendlyErrorMessage(
     if (classified.message.trim().length === 0) {
       return 'An unexpected error occurred. Please wait a moment and try again.';
     }
+    return classified.message;
+  }
+  // AWS Bedrock credential-chain failure classifies as auth_error but needs its
+  // own actionable guidance (the generic "check your API key" is wrong for the AWS
+  // credential chain). The dedicated message carries the literal "AWS credentials",
+  // so surface it verbatim instead of the generic auth fallback.
+  if (classified.category === 'auth_error' && classified.message.includes('AWS credentials')) {
     return classified.message;
   }
   // A non-retryable model_unavailable is a 404 model-not-found (vs a retryable
