@@ -321,6 +321,24 @@ export interface ProjectConfig {
    */
   skillUsage?: Record<string, SkillUsageStat>;
   /**
+   * Persisted one-time preference / dialog "already shown" flags, keyed by a stable
+   * preference name (parity: Claude Code's GlobalConfig one-shot knobs such as
+   * `hasIdeAutoConnectDialogBeenShown` / `hasUsedBackgroundTask` / the bypass-permissions
+   * acknowledgment). Each entry records that a one-time prompt/notice was surfaced so it
+   * is never re-shown. Written to the GLOBAL config via {@link markPreferenceShown} and
+   * read via {@link wasPreferenceShown}; internal, non-user-facing state (lives in global
+   * config only, like {@link skillUsage}).
+   */
+  preferencesShown?: Record<string, boolean>;
+  /**
+   * Persisted seen-COUNTS for count-limited notices, keyed by a stable notice name
+   * (parity: Claude Code's "show at most MAX_SHOW_COUNT times" persisted seen-count
+   * knob). A notice is shown while its count is below its cap; {@link recordNoticeSeen}
+   * increments the count (capped) via the lock-safe updater and {@link shouldShowNotice}
+   * gates on it. Internal, non-user-facing state (global config only).
+   */
+  noticeSeenCounts?: Record<string, number>;
+  /**
    * Glob/path patterns for instruction (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md /
    * `*.local.md`) files to EXCLUDE from the auto-loaded memory context (parity:
    * Claude Code's `claudeMdExcludes` setting / `isClaudeMdExcluded`). A user can opt
@@ -1218,6 +1236,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
   ['worktree', 'object'], ['attribution', 'object'],
   ['skillUsage', 'object'],
+  ['preferencesShown', 'object'], ['noticeSeenCounts', 'object'],
   // Engine-behavior knobs (see ProjectConfig) — merged by {@link mergeConfigs} and
   // read by the engine factory; declared here so they are recognized + value-validated.
   ['architectEnabled', 'boolean'], ['architectModel', 'string'],
@@ -1618,6 +1637,27 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     for (const flag of ['enforcing', 'useLLMCritic'] as const) {
       if (si[flag] !== undefined && typeof si[flag] !== 'boolean') {
         issues.push({ field: `superinference.${flag}`, message: `must be a boolean (got ${describeJsonType(si[flag])})`, value: si[flag], tip: getConfigValidationTip(`superinference.${flag}`, { kind: 'type', type: 'boolean' }) });
+      }
+    }
+  }
+  // 4b. Nested `preferencesShown` flags must be booleans, and `noticeSeenCounts` entries
+  //     non-negative numbers, when present. Step 1 only guards that each outer value is an
+  //     object; a non-boolean flag or a non-number/negative count would otherwise flow into
+  //     the one-time-flag / notice-gate logic unchecked. Skip when the outer object type was
+  //     already flagged. Parity: Claude validates nested settings-schema value types.
+  if (config.preferencesShown !== undefined && !typeInvalid.has('preferencesShown')) {
+    const flags = config.preferencesShown as Record<string, unknown>;
+    for (const [name, v] of Object.entries(flags)) {
+      if (typeof v !== 'boolean') {
+        issues.push({ field: `preferencesShown.${name}`, message: `must be a boolean (got ${describeJsonType(v)})`, value: v, tip: getConfigValidationTip(`preferencesShown.${name}`, { kind: 'type', type: 'boolean' }) });
+      }
+    }
+  }
+  if (config.noticeSeenCounts !== undefined && !typeInvalid.has('noticeSeenCounts')) {
+    const counts = config.noticeSeenCounts as Record<string, unknown>;
+    for (const [name, v] of Object.entries(counts)) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+        issues.push({ field: `noticeSeenCounts.${name}`, message: `must be a non-negative number (got ${JSON.stringify(v)})`, value: v, tip: getConfigValidationTip(`noticeSeenCounts.${name}`, { kind: 'type', type: 'number' }) });
       }
     }
   }
@@ -4035,6 +4075,131 @@ export function recordSkillUsageDebounced(
   if (last !== undefined && now - last < SKILL_USAGE_DEBOUNCE_MS) return false;
   lastWriteBySkill.set(name, now);
   return persistSkillUsageStat(name, now);
+}
+
+/**
+ * Global-scoped transactional read-modify-write of the user config (`~/.ami/config.json`)
+ * — a thin wrapper over the lock-safe {@link updateConfigFile} that resolves the global
+ * path and null-checks it in ONE place (parity: Claude Code's `saveGlobalConfig(updater)`
+ * lost-update + same-reference-skip + corrupt-refuse guard). The caller passes a pure
+ * `updater(current) -> next`; returning the SAME reference is a no-op write. Returns the
+ * {@link UpdateConfigResult}, or `null` when there is no resolvable global config path
+ * (no HOME/USERPROFILE). Best-effort callers should treat `null`/`!written` as "not
+ * persisted" rather than an error. The underlying cross-process lock means two AMI
+ * instances never clobber each other's global-config keys.
+ */
+export function saveGlobalConfig(
+  updater: (current: ProjectConfig) => ProjectConfig,
+): UpdateConfigResult | null {
+  const target = getGlobalConfigPath();
+  if (!target) return null;
+  return updateConfigFile(target, updater);
+}
+
+/**
+ * Read the persisted one-time preference-flag map ({@link ProjectConfig.preferencesShown})
+ * from the GLOBAL config, or `{}` when none exists / the path is unavailable. Best-effort:
+ * any read failure yields `{}` so a missing flag store never blocks startup.
+ */
+export function loadPreferenceFlags(): Record<string, boolean> {
+  try {
+    return loadGlobalConfig()?.preferencesShown ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * True iff the named one-time preference/dialog has already been marked shown (parity:
+ * Claude Code's `shouldShow*Dialog` guards gating on a persisted `has*BeenShown` flag).
+ * An empty name is never "shown". Best-effort read (see {@link loadPreferenceFlags}).
+ */
+export function wasPreferenceShown(name: string): boolean {
+  if (!name) return false;
+  return loadPreferenceFlags()[name] === true;
+}
+
+/**
+ * Mark a one-time preference/dialog as shown in the GLOBAL config via the lock-safe
+ * {@link saveGlobalConfig}, so a first-run prompt/notice is surfaced at most once and the
+ * flag survives across sessions (parity: Claude Code writing `hasIdeAutoConnectDialogBeenShown`
+ * / `hasUsedBackgroundTask` / the bypass-permissions acknowledgment). Concurrency-safe:
+ * the updater re-checks the freshly-read flag and returns the same reference (no write)
+ * when another writer already set it — so the flag is set exactly once. Returns `true`
+ * iff it was newly persisted; `false` when the name is empty, the flag was already set,
+ * there is no writable global path, or the best-effort write failed.
+ */
+export function markPreferenceShown(name: string): boolean {
+  if (!name) return false;
+  try {
+    const result = saveGlobalConfig(current =>
+      current.preferencesShown?.[name] === true
+        ? current
+        : { ...current, preferencesShown: { ...current.preferencesShown, [name]: true } },
+    );
+    return result?.written ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read the persisted notice seen-count map ({@link ProjectConfig.noticeSeenCounts}) from
+ * the GLOBAL config, or `{}` when none exists / the path is unavailable. Best-effort.
+ */
+export function loadNoticeSeenCounts(): Record<string, number> {
+  try {
+    return loadGlobalConfig()?.noticeSeenCounts ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The persisted seen-count for a count-limited notice (parity: Claude Code's persisted
+ * per-notice seen-count). A missing / non-numeric / negative stored value normalizes to
+ * `0` (a corrupt count must never suppress a notice forever). An empty name is `0`.
+ */
+export function getNoticeSeenCount(name: string): number {
+  if (!name) return 0;
+  const n = loadNoticeSeenCounts()[name];
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * Whether a count-limited notice should still be shown — i.e. its persisted seen-count is
+ * below `maxCount` (parity: Claude Code's `shouldShow = seenCount < MAX_SHOW_COUNT` gate).
+ * A non-positive `maxCount` or empty name means "never show".
+ */
+export function shouldShowNotice(name: string, maxCount: number): boolean {
+  if (!name || !(maxCount > 0)) return false;
+  return getNoticeSeenCount(name) < maxCount;
+}
+
+/**
+ * Increment the persisted seen-count for a count-limited notice via the lock-safe
+ * {@link saveGlobalConfig}, capped at `maxCount` so it never grows unbounded (parity:
+ * Claude Code's concurrency-safe seen-count increment). The increment is computed from
+ * the FRESH on-disk value inside the updater, so two processes mounting the same notice
+ * serialize and each sees the other's increment (no double-count via a stale base); and
+ * when the count is already at the cap the updater returns the same reference (no write).
+ * Returns `true` iff the count was advanced; `false` when the name is empty, `maxCount`
+ * is non-positive, the count is already at the cap, there is no writable global path, or
+ * the best-effort write failed.
+ */
+export function recordNoticeSeen(name: string, maxCount: number): boolean {
+  if (!name || !(maxCount > 0)) return false;
+  try {
+    const result = saveGlobalConfig(current => {
+      const raw = current.noticeSeenCounts?.[name];
+      const cur = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+      if (cur >= maxCount) return current; // already at the cap — no write
+      return { ...current, noticeSeenCounts: { ...current.noticeSeenCounts, [name]: cur + 1 } };
+    });
+    return result?.written ?? false;
+  } catch {
+    return false;
+  }
 }
 
 export function cleanupStaleConfigTmp(filePath: string): boolean {

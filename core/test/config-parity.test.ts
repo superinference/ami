@@ -60,6 +60,9 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       language: 'japanese', subagentDefaultModel: 'haiku', memoryExcludes: ['**/AGENTS.md'],
       externalMemoryImportsApproved: true, externalMemoryImportRoots: ['/srv/shared'],
       allowManagedSandboxDomainsOnly: true, skillUsage: { demo: { usageCount: 1, lastUsedAt: 1 } },
+      // Persisted one-time preference flags + count-limited notice seen-counts (U010 w87):
+      // global-only internal state, declared/validated like skillUsage.
+      preferencesShown: { ideAutoConnectDialog: true }, noticeSeenCounts: { welcome: 2 },
       strictPluginOnlyCustomization: ['skills'],
       // Engine-behavior knobs (U010 w78): read off the merged config by the engine
       // factory, now declared/validated/merged so a config-file value takes effect.
