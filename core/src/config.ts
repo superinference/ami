@@ -174,6 +174,19 @@ export interface ProjectConfig {
    * core/core/src/tools/git-commit.ts.
    */
   attribution?: { commit?: string; pr?: string };
+  /**
+   * Persisted preferred RESPONSE language (parity: Claude Code's `LanguagePicker`
+   * settings knob). The English language NAME ("japanese", "french", …) the model
+   * must answer in, regardless of the language the user writes in. Previously AMI
+   * honored a response-language directive ONLY via the ephemeral
+   * `SUPERINFERENCE_LANGUAGE` env var ({@link buildResponseLanguageSection}); this
+   * field lets a user persist the choice as project/user config (and set it with
+   * `/config set language`). Precedence: an explicit `SUPERINFERENCE_LANGUAGE` env
+   * var still WINS (so a one-shot override is possible); when the env is unset this
+   * field seeds it via {@link applyConfigLanguage}. An empty/blank value is treated
+   * as "no preference" (English — the default — never gets a redundant directive).
+   */
+  language?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +538,14 @@ export interface ConfigValueIssue {
    * when no specific tip applies. Surfaced alongside {@link message} by the loader
    * diagnostic + `/doctor`. */
   tip?: string;
+  /**
+   * A documentation URL for THIS field so a diagnostic can render an actionable
+   * "Learn more: <url>" affordance, turning a bare validation error into a pointer
+   * to the fix (parity: Claude Code's `ValidationErrorsList` per-error `docLink` +
+   * its "Learn more:" line). Resolved by {@link getConfigValidationDocLink} and
+   * deduplicated across issues by {@link formatConfigValueIssues} so the same anchor
+   * is never repeated N times. Always populated. */
+  docLink?: string;
 }
 
 /**
@@ -624,6 +645,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['model', 'string'], ['provider', 'string'], ['baseUrl', 'string'],
   ['thinkingLevel', 'string'], ['maxEffortLevel', 'string'], ['fallbackModel', 'string'],
   ['compactionModel', 'string'], ['skill', 'string'], ['statusLine', 'string'],
+  ['language', 'string'],
   ['maxTurns', 'number'], ['tokenBudget', 'number'], ['maxBudgetUsd', 'number'],
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
@@ -741,6 +763,43 @@ export function getConfigValidationTip(field: string, ctx: ConfigTipKind): strin
 }
 
 /**
+ * Base URL of the AMI configuration reference. One source for every per-field doc
+ * anchor so the documentation host can be changed in a single place. Mirrors the
+ * existing doc links AMI already surfaces (e.g. the permissions / keybindings
+ * references).
+ */
+export const CONFIG_DOC_BASE = 'https://docs.superinference.org/configuration';
+
+/**
+ * Resolve the documentation URL for a config `field` so a validation diagnostic can
+ * render an actionable "Learn more: <url>" affordance (parity: Claude Code's
+ * `ValidationErrorsList` per-error `docLink`). A nested field (e.g.
+ * `superinference.enforcing`, `worktree.sparsePaths`, `env.DEBUG`) resolves to its
+ * TOP-LEVEL anchor so related sub-field errors share one deduplicated link. Always
+ * returns a URL — every recognized field documents under the same reference page.
+ */
+export function getConfigValidationDocLink(field: string): string {
+  const dot = field.indexOf('.');
+  const top = dot > 0 ? field.slice(0, dot) : field;
+  return `${CONFIG_DOC_BASE}#${top.toLowerCase()}`;
+}
+
+/**
+ * Render a list of {@link ConfigValueIssue}s into one diagnostic body: the per-field
+ * `field: message (tip)` entries, then a SINGLE deduplicated "Learn more: <url>, …"
+ * line built from the issues' {@link ConfigValueIssue.docLink}s. Deduplicating the
+ * doc links (rather than repeating one per issue) mirrors Claude Code's
+ * `ValidationErrorsList`, which collapses duplicate suggestion|docLink pairs before
+ * rendering each as a hint + "Learn more:" line. Shared by {@link loadConfigFileChecked}
+ * so the loader diagnostic and `/doctor` surface identical, non-repetitive guidance.
+ */
+export function formatConfigValueIssues(issues: readonly ConfigValueIssue[]): string {
+  const perIssue = issues.map(i => `${i.field}: ${i.message}${i.tip ? ` (${i.tip})` : ''}`).join('; ');
+  const docLinks = [...new Set(issues.map(i => i.docLink).filter((d): d is string => typeof d === 'string'))];
+  return docLinks.length > 0 ? `${perIssue}. Learn more: ${docLinks.join(', ')}` : perIssue;
+}
+
+/**
  * Validate the VALUES of a parsed config (the file parsed as a JSON object, but a
  * field may still hold the wrong type, an out-of-range number, or an invalid enum
  * string — the TypeScript type gives no runtime guarantee). Returns a field-level
@@ -807,6 +866,10 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       issues.push({ field: 'worktree.sparsePaths', message: `must be a string[] (got ${describeJsonType(wt.sparsePaths)})`, value: wt.sparsePaths, tip: getConfigValidationTip('worktree.sparsePaths', { kind: 'type', type: 'string[]' }) });
     }
   }
+  // Attach a per-field documentation anchor to EVERY issue in one place (parity:
+  // Claude's ValidationErrorsList per-error docLink), so the loader diagnostic can
+  // render an actionable "Learn more:" affordance without each push site repeating it.
+  for (const issue of issues) issue.docLink = getConfigValidationDocLink(issue.field);
   return issues;
 }
 
@@ -1012,7 +1075,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   // accepting them — the valid parts still load (validation is advisory).
   const issues = validateProjectConfigValues(config);
   if (issues.length > 0) {
-    const message = `${issues.length} invalid config value(s): ${issues.map(i => `${i.field}: ${i.message}${i.tip ? ` (${i.tip})` : ''}`).join('; ')}`;
+    const message = `${issues.length} invalid config value(s): ${formatConfigValueIssues(issues)}`;
     coreLog('config', `invalid value(s) in ${configPath}: ${message}`);
     return { config, diagnostic: { path: configPath, kind: 'invalid-value', message, issues } };
   }
@@ -1540,6 +1603,7 @@ export function mergeConfigs(
     if (layer.maxBudgetUsd !== undefined) merged.maxBudgetUsd = layer.maxBudgetUsd;
     if (layer.superinference !== undefined) merged.superinference = deepMergeConfigObjects(merged.superinference as Record<string, unknown> | undefined, layer.superinference as Record<string, unknown>) as ProjectConfig['superinference'];
     if (layer.skill !== undefined) merged.skill = layer.skill;
+    if (layer.language !== undefined) merged.language = layer.language;
     if (layer.bashOutputMaxChars !== undefined) merged.bashOutputMaxChars = layer.bashOutputMaxChars;
     if (layer.taskOutputMaxChars !== undefined) merged.taskOutputMaxChars = layer.taskOutputMaxChars;
     if (layer.cacheTtl !== undefined) merged.cacheTtl = layer.cacheTtl;
@@ -1711,6 +1775,36 @@ export function applyConfigEnv(
     }
   }
   return { applied, rejected };
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.language} knob into the
+ * `SUPERINFERENCE_LANGUAGE` env var that {@link buildResponseLanguageSection}
+ * (the single response-language consumer) already reads — so a user can persist a
+ * preferred response language in project/user config instead of exporting the env
+ * var before every launch (parity: Claude Code's `LanguagePicker` persisted setting).
+ *
+ * Precedence is preserved: an explicit, non-blank `SUPERINFERENCE_LANGUAGE` already
+ * in `target` WINS (a one-shot env override is still possible) and is returned
+ * unchanged; otherwise a non-blank `config.language` seeds it (trimmed). A
+ * missing/blank value on both sides is a no-op (English — the default — never gets a
+ * redundant directive). Returns the effective language, or `undefined` when none
+ * applies. Applied once at engine setup (common/src/engine-factory.ts), mirroring
+ * {@link applyConfigEnv}.
+ */
+export function applyConfigLanguage(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const existing = target.SUPERINFERENCE_LANGUAGE;
+  if (existing && existing.trim()) return existing.trim();
+  const lang = config?.language;
+  if (typeof lang === 'string' && lang.trim()) {
+    const trimmed = lang.trim();
+    target.SUPERINFERENCE_LANGUAGE = trimmed;
+    return trimmed;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
