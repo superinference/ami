@@ -32,7 +32,7 @@ export const AUX_QUERY_TIMEOUT_MS = 30000;
 // ---------------------------------------------------------------------------
 
 /** Named source of a background query (parity: Claude's `querySource`/`queryName`). */
-export type AuxQuerySource = 'session_title' | 'branch_name';
+export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary';
 
 /** Why a background query yielded no usable model output. Distinguishes an OUTER
  *  failure (stream error / abort / timeout / exception) from a two-tier INNER
@@ -377,8 +377,8 @@ function extractMessageId(headers?: Record<string, string>): string | undefined 
   return undefined;
 }
 
-interface AuxQueryFailure { reason: AuxQueryErrorReason; error?: string }
-interface AuxQueryOutcome {
+export interface AuxQueryFailure { reason: AuxQueryErrorReason; error?: string }
+export interface AuxQueryOutcome {
   /** Raw concatenated model output (empty on an outer failure). */
   raw: string;
   /** Set when the stream produced an observable OUTER failure; undefined on a
@@ -400,14 +400,20 @@ interface AuxQueryOutcome {
  *
  * Abort/timeout wiring mirrors the previous behaviour: the caller's `signal` is
  * linked into an internal controller (already-aborted → abort now; later abort →
- * propagate; listener cleaned up in `finally`), and an internal
- * {@link AUX_QUERY_TIMEOUT_MS} timer bounds a wedged provider.
+ * propagate; listener cleaned up in `finally`), and an internal timer
+ * ({@link AUX_QUERY_TIMEOUT_MS} by default) bounds a wedged provider.
+ *
+ * `timeoutMs` lets a caller override that wall-clock cap; pass a non-positive /
+ * non-finite value (e.g. `0`) to run UNTIMED. Compaction-summary generation uses
+ * the untimed mode because a large-transcript summary legitimately runs longer
+ * than the terse title/branch queries the 30s default was sized for.
  */
-async function runAuxQuery(
+export async function runAuxQuery(
   provider: ProviderConfig,
   messages: Message[],
   streamImpl: typeof streamChatCompletion,
   signal: AbortSignal | undefined,
+  timeoutMs: number = AUX_QUERY_TIMEOUT_MS,
 ): Promise<AuxQueryOutcome> {
   let raw = '';
   let failure: AuxQueryFailure | undefined;
@@ -419,7 +425,11 @@ async function runAuxQuery(
     if (signal.aborted) ac.abort();
     else signal.addEventListener('abort', onExternalAbort, { once: true });
   }
-  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, AUX_QUERY_TIMEOUT_MS);
+  // Only arm the wall-clock guard for a finite, positive cap; a non-positive /
+  // non-finite `timeoutMs` opts the query out of timing entirely (untimed).
+  const timer = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+    ? setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs)
+    : undefined;
   // Classify which abort source won — timeout takes precedence, then an external
   // caller abort, else a plain stream error / exception.
   const classify = (fallback: AuxQueryErrorReason): AuxQueryErrorReason =>
@@ -452,6 +462,23 @@ async function runAuxQuery(
  * `unparseable` error; otherwise it is a success carrying the accepted output.
  * Fire-and-forget: a throwing sink never breaks the query.
  */
+export function buildAuxResult(
+  source: AuxQuerySource,
+  model: string,
+  messageId: string | undefined,
+  failure: AuxQueryFailure | undefined,
+  usable: string,
+): AuxQueryResult {
+  const uuid = randomUUID();
+  if (failure) {
+    return { type: 'error', source, model, reason: failure.reason, error: failure.error, messageId, uuid };
+  }
+  if (!usable) {
+    return { type: 'error', source, model, reason: 'unparseable', messageId, uuid };
+  }
+  return { type: 'success', source, model, result: usable, messageId, uuid };
+}
+
 function reportAuxResult(
   onResult: OnAuxQueryResult | undefined,
   source: AuxQuerySource,
@@ -461,16 +488,78 @@ function reportAuxResult(
   usable: string,
 ): void {
   if (!onResult) return;
-  const uuid = randomUUID();
-  let result: AuxQueryResult;
-  if (failure) {
-    result = { type: 'error', source, model, reason: failure.reason, error: failure.error, messageId, uuid };
-  } else if (!usable) {
-    result = { type: 'error', source, model, reason: 'unparseable', messageId, uuid };
-  } else {
-    result = { type: 'success', source, model, result: usable, messageId, uuid };
-  }
+  const result = buildAuxResult(source, model, messageId, failure, usable);
   try { onResult(result); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Generic declarative auxiliary-query factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Declarative config for one kind of auxiliary (non-streaming) background query.
+ * Parity: Claude Code's `ApiQueryHookConfig` + `createApiQueryHook<TResult>`
+ * (utils/hooks/apiQueryHookHelper.ts) — a single reusable factory drives EVERY
+ * side-query against the model from a data structure instead of per-site stream
+ * loops. Here it composes the canonical {@link runAuxQuery} primitive (shared with
+ * {@link generateTitle} / {@link generateBranchName}) with a per-query
+ * `parseResponse` and the uniform {@link AuxQueryResult} introspection record, so a
+ * new auxiliary query (e.g. compaction-summary generation) is declared, not
+ * re-implemented.
+ */
+export interface AuxiliaryQueryConfig<TResult> {
+  /** Named source tag for the structured {@link AuxQueryResult}. */
+  source: AuxQuerySource;
+  /** Turn the raw concatenated model output into the typed result, or `undefined`
+   *  when the clean output is unusable (surfaced as the two-tier `unparseable`
+   *  inner failure). */
+  parseResponse: (raw: string) => TResult | undefined;
+  /** Render the parsed result as the string carried in a success record
+   *  (defaults to `String(parsed)`). */
+  resultText?: (parsed: TResult) => string;
+  /** Wall-clock cap for the query; pass `0` (or non-finite) to run untimed. */
+  timeoutMs?: number;
+}
+
+/** The complete, observable outcome of one declarative auxiliary query. */
+export interface AuxiliaryQueryRun<TResult> {
+  /** Raw stream outcome (raw text, classified outer failure, correlation id). */
+  outcome: AuxQueryOutcome;
+  /** Parsed typed result, or `undefined` on failure / unusable output. */
+  parsed: TResult | undefined;
+  /** Uniform structured record (also delivered to the `onResult` sink). */
+  result: AuxQueryResult;
+}
+
+/**
+ * Build a reusable auxiliary-query runner from a declarative {@link
+ * AuxiliaryQueryConfig}. The returned function runs ONE deterministic background
+ * query through the shared {@link runAuxQuery} primitive, parses it per config,
+ * emits the uniform {@link AuxQueryResult} to an optional introspection sink
+ * (fire-and-forget), and returns the full {@link AuxiliaryQueryRun} so the caller
+ * can both observe the outcome and branch on it (e.g. retry / fall back).
+ */
+export function createAuxiliaryQuery<TResult>(
+  config: AuxiliaryQueryConfig<TResult>,
+): (
+  provider: ProviderConfig,
+  messages: Message[],
+  streamImpl?: typeof streamChatCompletion,
+  signal?: AbortSignal,
+  onResult?: OnAuxQueryResult,
+) => Promise<AuxiliaryQueryRun<TResult>> {
+  return async (provider, messages, streamImpl = streamChatCompletion, signal, onResult) => {
+    const outcome = await runAuxQuery(provider, messages, streamImpl, signal, config.timeoutMs);
+    const parsed = outcome.failure ? undefined : config.parseResponse(outcome.raw);
+    const usable = parsed === undefined
+      ? ''
+      : (config.resultText ? config.resultText(parsed) : String(parsed));
+    const result = buildAuxResult(config.source, provider.model, outcome.messageId, outcome.failure, usable);
+    if (onResult) {
+      try { onResult(result); } catch { /* fire-and-forget: a throwing sink never breaks the query */ }
+    }
+    return { outcome, parsed, result };
+  };
 }
 
 export async function generateTitle(
