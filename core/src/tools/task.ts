@@ -9,6 +9,7 @@ import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
 import { isReadOnlyBashCommand } from './bash-cache';
 import { coerceBool } from '../utils/coerce';
+import { createBoundedAbortController, raiseAbortListenerCap } from '../utils/abort';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
 import { mapChildToSubagentEvent, attachSubagentUsage } from './subagent-relay';
@@ -536,6 +537,10 @@ export function linkChildAbortToParent(parent: AbortSignal, child: AbortControll
     child.abort(reasonOf(parent));
     return () => { /* nothing to unlink — never attached */ };
   }
+  // Many sub-agents (and their tool-executor child signals) link to ONE parent
+  // turn signal; raise its listener cap before attaching so a wide fan-out of
+  // concurrent children never trips Node's default-10 MaxListenersExceededWarning.
+  raiseAbortListenerCap(parent);
   const forward = () => child.abort(reasonOf(parent));
   parent.addEventListener('abort', forward, { once: true });
   return () => parent.removeEventListener('abort', forward);
@@ -2537,7 +2542,10 @@ export const taskTool: ToolDefinition = {
       agentMaxTurns = DEFAULT_FORK_MAX_TURNS;
     }
 
-    const subAbort = new AbortController();
+    // A sub-agent's own signal is forwarded to its nested grandchildren (and the
+    // tool executor fans a child signal per parallel tool over it), so raise its
+    // listener cap up front to avoid a MaxListenersExceededWarning on a wide turn.
+    const subAbort = createBoundedAbortController();
     // Cascade a parent-turn abort to the subagent for BOTH foreground AND background
     // spawns (parity: Claude's createChildAbortController in registerAsyncAgent). The
     // prior code linked ONLY the foreground path, leaving a detached background

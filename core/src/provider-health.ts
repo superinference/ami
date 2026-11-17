@@ -1,3 +1,5 @@
+import { CircularBuffer } from './utils/circular-buffer';
+
 const WINDOW_SIZE = 100;
 
 /**
@@ -45,10 +47,13 @@ export class ProviderHealthTracker {
   private _requestCount = 0;
   private _errorCount = 0;
   private _successCount = 0;
-  private _latencyWindow: number[] = [];
+  // Rolling windows bounded to WINDOW_SIZE via the shared O(1) ring buffer (no
+  // per-overflow slice()/shift() re-allocation) — the one canonical recency-window
+  // helper (No-Duplication rule).
+  private _latencyWindow = new CircularBuffer<number>(WINDOW_SIZE);
   // Rolling window of recent outcomes: 1 = error, 0 = success. Bounded to
   // WINDOW_SIZE so windowed error-rate/availability track recent behavior.
-  private _outcomeWindow: number[] = [];
+  private _outcomeWindow = new CircularBuffer<number>(WINDOW_SIZE);
   private _consecutiveErrors = 0;
   private _lastErrorTime: number | null = null;
   private _lastSuccessTime: number | null = null;
@@ -75,9 +80,9 @@ export class ProviderHealthTracker {
     const total = this._requestCount;
     const errorRate = total > 0 ? this._errorCount / total : 0;
 
-    const windowLen = this._outcomeWindow.length;
+    const windowLen = this._outcomeWindow.size;
     const windowErrors =
-      windowLen > 0 ? this._outcomeWindow.reduce((a, b) => a + b, 0) : 0;
+      windowLen > 0 ? this._outcomeWindow.toArray().reduce((a, b) => a + b, 0) : 0;
     const windowedErrorRate = windowLen > 0 ? windowErrors / windowLen : 0;
 
     return {
@@ -100,33 +105,27 @@ export class ProviderHealthTracker {
     this._requestCount = 0;
     this._errorCount = 0;
     this._successCount = 0;
-    this._latencyWindow = [];
-    this._outcomeWindow = [];
+    this._latencyWindow.clear();
+    this._outcomeWindow.clear();
     this._consecutiveErrors = 0;
     this._lastErrorTime = null;
     this._lastSuccessTime = null;
   }
 
   private pushOutcome(outcome: 0 | 1): void {
-    this._outcomeWindow.push(outcome);
-    if (this._outcomeWindow.length > WINDOW_SIZE) {
-      this._outcomeWindow = this._outcomeWindow.slice(-WINDOW_SIZE);
-    }
+    this._outcomeWindow.add(outcome);
   }
 
   private pushLatency(ms: number): void {
-    this._latencyWindow.push(ms);
-    if (this._latencyWindow.length > WINDOW_SIZE) {
-      this._latencyWindow = this._latencyWindow.slice(-WINDOW_SIZE);
-    }
+    this._latencyWindow.add(ms);
   }
 
   private computeLatencyStats(): ProviderHealthStats['latency'] {
-    if (this._latencyWindow.length === 0) {
+    if (this._latencyWindow.size === 0) {
       return { min: 0, max: 0, avg: 0, p50: 0, p95: 0 };
     }
 
-    const sorted = [...this._latencyWindow].sort((a, b) => a - b);
+    const sorted = this._latencyWindow.toArray().sort((a, b) => a - b);
     const len = sorted.length;
     const sum = sorted.reduce((a, b) => a + b, 0);
 
