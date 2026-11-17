@@ -326,6 +326,22 @@ export const taskOutputTool: ToolDefinition = {
       }
     }
 
+    // outputFileRedundant optimization (parity with Claude Code's TaskOutput
+    // deleting the on-disk copy when the whole output already fit inline into the
+    // tool_result): a TERMINAL task whose ENTIRE output was read here (bytesOmitted
+    // === 0 — nothing was tail-truncated) no longer needs its duplicate on-disk
+    // file; the model already holds every byte above. Drop it so small background
+    // outputs don't accumulate on disk. Skipped for a filtered/incremental read
+    // (the caller read a subset, not the full inline output). Defensive typeof
+    // guard so a minimal manager stub (tests) is a no-op.
+    if (
+      !filterRe && !hasSince && result.status !== 'running' &&
+      result.bytesOmitted === 0 &&
+      typeof context.processManager.deleteRedundantOutput === 'function'
+    ) {
+      context.processManager.deleteRedundantOutput(taskId, result.bytesOmitted);
+    }
+
     return { output: lines.join('\n'), isError: false };
   },
 };

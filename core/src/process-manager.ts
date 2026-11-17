@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { FlowManager } from './flow-manager';
 import { killTree } from './utils/shell';
+import { isSafeSegment } from './skill-catalog';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024; // 5 MB per task
 
@@ -101,6 +102,31 @@ export const fsHooks: { writeSync: (fd: number, buf: Buffer) => void } = {
 export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry: boolean) => void } = {
   onWriteError: () => { /* default: no-op — frontends may attach a logger */ },
 };
+
+/**
+ * DI seam for the child-process spawn syscall. The synchronous spawn-failure path
+ * (an EMFILE/EAGAIN-class fork failure, or bad spawn options, that makes
+ * child_process.spawn THROW before any child exists — parity with Claude Code's
+ * Shell.ts try/catch around spawn) routes through here so a test can make the fork
+ * throw deterministically and assert the fd is closed and a terminal 'failed' task
+ * is recorded, without racing a real resource-exhaustion failure. Defaults to the
+ * real {@link child_process.spawn}.
+ */
+export const spawnHooks: {
+  spawn: (command: string, args: string[], options: child_process.SpawnOptions) => child_process.ChildProcess;
+} = {
+  spawn: (command, args, options) => child_process.spawn(command, args, options),
+};
+
+/**
+ * POSIX exit code a shell reports when a command was found but could NOT be
+ * executed (permission/exec error). Parity with Claude Code's createFailedCommand,
+ * which returns code 126 when the spawn itself fails. AMI records a synthetic
+ * terminal task with this code when {@link spawnHooks.spawn} throws synchronously,
+ * so the caller always gets a trackable taskId (and a model-facing completion)
+ * instead of an exception propagating out of spawn().
+ */
+export const SPAWN_FAILURE_EXIT_CODE = 126;
 
 export async function forceKillAfterTimeout(pid: number, timeoutMs: number = GRACEFUL_SHUTDOWN_MS): Promise<boolean> {
   if (!procHooks.isAlive(pid)) return false;
@@ -833,10 +859,45 @@ interface InternalProcess extends BackgroundProcess {
    *  {@link STDERR_TAIL_CAP} bytes — stderr still ALSO flows into the merged output
    *  file unchanged (back-compat), this is the separable copy. See {@link ProcessManager.getStderr}. */
   _stderrTail?: string;
+  /** Per-spawn output-byte cap override (see spawn()'s `maxOutputBytes` opt). When
+   *  set it takes precedence over the manager-level {@link ProcessManager.maxOutputBytes}
+   *  in writeChunk; undefined ⇒ use the manager-level cap. */
+  _maxOutputBytes?: number;
+  /** Liveness-poll handle for a task RE-ADOPTED across a restart (see
+   *  {@link ProcessManager.rescanTasks}). We have no ChildProcess 'exit' event for a
+   *  re-attached detached pid, so a polled watchdog finalizes it when the pid dies.
+   *  Distinct from {@link _intervalHandle} (an MCP monitor's own timer) so kill()
+   *  still routes an adopted BASH task through killTree, not the monitor branch. */
+  _adoptPoll?: ReturnType<typeof setInterval>;
 }
 
 /** Cap on the retained per-task stderr tail ({@link InternalProcess._stderrTail}). */
 export const STDERR_TAIL_CAP = 64 * 1024; // 64 KB
+
+/** Filename of the crash-safe task-registry sidecar written under the (session-
+ *  scoped) tasks dir — see {@link ProcessManager.rescanTasks}. */
+export const TASK_REGISTRY_FILE = '.task-registry.json';
+
+/** Poll cadence (ms) for a RE-ADOPTED detached task's liveness watchdog — see
+ *  {@link ProcessManager.rescanTasks}. unref'd so it never pins the event loop. */
+export const ADOPT_POLL_INTERVAL_MS = 2_000;
+
+/**
+ * One persisted background-task record in the crash-safe registry sidecar (parity
+ * with Claude Code's persistRemoteAgentMetadata, RemoteAgentTask.tsx:L442-454). Only
+ * the identity needed to RE-ADOPT a still-running detached shell after a CLI restart
+ * is stored — never the (potentially huge) live output, which already lives in the
+ * on-disk output file this record points at. Written on spawn + every terminal
+ * transition, read by {@link ProcessManager.rescanTasks} on startup/resume.
+ */
+export interface PersistedTaskRecord {
+  taskId: string;
+  pid: number;
+  command: string;
+  description: string;
+  outputPath: string;
+  startTime: number;
+}
 
 /**
  * Incremental progress delta for a background agent, returned by
@@ -903,10 +964,33 @@ export class ProcessManager extends EventEmitter {
    */
   private readonly rootCwd: string;
 
-  constructor(cwd: string) {
+  /**
+   * The session id this manager's task-output directory is SCOPED to, resolved
+   * ONCE at construction and never re-read (parity with Claude Code's diskOutput
+   * memoizing getSessionId() at first call, utils/task/diskOutput.ts:L33-55). Two
+   * things depend on pinning it here:
+   *   1. Concurrent sessions in the SAME project cwd get DISTINCT task dirs
+   *      (`tasks/<sessionId>`), so one session's startup/cleanup can never clobber
+   *      another live session's in-flight output files (they previously shared one
+   *      project-level `tasks/` dir keyed only by random task ids).
+   *   2. A mid-session session-id change (e.g. /clear's regenerateSessionId) does
+   *      NOT strand already-running background tasks, because the dir is captured
+   *      from the id at construction, not re-derived on each write (the documented
+   *      inc-4586 incident). Undefined ⇒ the legacy project-level `tasks/` dir.
+   */
+  private readonly sessionId: string | undefined;
+
+  constructor(cwd: string, sessionId?: string) {
     super();
     this.rootCwd = cwd;
-    this.tasksDir = projectStateDir(cwd, 'tasks');
+    this.sessionId = sessionId;
+    // Scope the output dir to the session when an id is given so concurrent
+    // sessions in the same cwd are isolated; fall back to the project-level dir
+    // when none is supplied. isSafeSessionSegment guards against a crafted id
+    // (path separators / traversal) escaping the tasks root.
+    this.tasksDir = sessionId && isSafeSegment(sessionId)
+      ? projectStateDir(cwd, path.join('tasks', sessionId))
+      : projectStateDir(cwd, 'tasks');
     fs.mkdirSync(this.tasksDir, { recursive: true });
   }
 
@@ -920,7 +1004,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal; maxOutputBytes?: number }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -968,17 +1052,28 @@ export class ProcessManager extends EventEmitter {
     // spawned, so we never leak a process we can't capture output for.
     const fd = fs.openSync(outputPath, secureWriteFlags());
 
+    // SYNCHRONOUS spawn-failure handling (parity with Claude Code's Shell.ts
+    // try/catch around spawn, L315-441). A fork can fail synchronously — EMFILE/
+    // EAGAIN under load, or bad spawn options — making child_process.spawn THROW
+    // before any child exists. Previously that exception propagated out of spawn()
+    // to the caller (bash.ts does not wrap this call), with NO tracked task and the
+    // just-opened output fd leaked. We now: close the fd (no leak), write a
+    // diagnostic into the output file, and record a terminal 'failed' task with the
+    // standard exec-error exit code (126) so the caller ALWAYS gets a trackable
+    // taskId and a model-facing completion — mirroring Claude's createFailedCommand.
     let proc: child_process.ChildProcess;
     try {
-      proc = child_process.spawn(shell, shellArgs, {
+      proc = spawnHooks.spawn(shell, shellArgs, {
         cwd: resolvedCwd.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: !isWindows,
         ...(opts.env ? { env: opts.env } : {}),
       });
     } catch (err) {
+      const msg = `failed to start command: ${(err as Error).message}`;
+      try { fs.writeSync(fd, Buffer.from(`[${msg}]\n`)); } catch { /* best-effort diagnostic */ }
       try { fs.closeSync(fd); } catch { /* ignore */ }
-      throw err;
+      return this.createTerminalStub(taskId, { command, description, status: 'failed', exitCode: SPAWN_FAILURE_EXIT_CODE, kind: opts.kind, agentId: opts.agentId, toolUseId: opts.toolUseId, outputPath, error: msg });
     }
 
     const entry: InternalProcess = {
@@ -1001,12 +1096,17 @@ export class ProcessManager extends EventEmitter {
       proc,
       outputFd: fd,
       bytesWritten: 0,
+      // Per-spawn output cap override (parity with Claude Code's ShellCommand
+      // maxOutputBytes constructor parameter). When the caller supplies a positive
+      // maxOutputBytes it pins THIS task's disk-buffer ceiling; absent, writeChunk
+      // falls back to the manager-level this.maxOutputBytes (which stays runtime-tunable).
+      ...(typeof opts.maxOutputBytes === 'number' && opts.maxOutputBytes > 0 ? { _maxOutputBytes: opts.maxOutputBytes } : {}),
     };
 
     this.processes.set(taskId, entry);
 
     const writeChunk = (data: Buffer) => {
-      const cap = this.maxOutputBytes;
+      const cap = entry._maxOutputBytes ?? this.maxOutputBytes;
       if (entry.bytesWritten >= cap) return;
       const remaining = cap - entry.bytesWritten;
       const chunk = data.length <= remaining ? data : data.subarray(0, remaining);
@@ -1140,6 +1240,11 @@ export class ProcessManager extends EventEmitter {
       }, { once: true });
     }
 
+    // Persist this newly-running detached shell to the crash-safe registry so a CLI
+    // restart can re-adopt it (parity: Claude Code's persistRemoteAgentMetadata at
+    // spawn). No-op for the persisted set beyond running bash tasks (see persistRegistry).
+    this.syncRegistry();
+
     return taskId;
   }
 
@@ -1224,6 +1329,10 @@ export class ProcessManager extends EventEmitter {
     if (this._completedBuffer.length >= MAX_COMPLETED_BUFFER) this._completedBuffer.shift();
     this._completedBuffer.push(payload);
     this.emit('complete', payload);
+    // A task reaching a terminal state changes the live running-bash set the
+    // crash-safe registry mirrors — refresh the sidecar so a later restart doesn't
+    // try to re-adopt a pid that has already finished (see rescanTasks).
+    this.syncRegistry();
   }
 
   /**
@@ -1296,6 +1405,11 @@ export class ProcessManager extends EventEmitter {
     // terminal timestamp is set.
     entry.endTime = Date.now();
     this.setEvictDeadline(entry);
+    // A RE-ADOPTED task (rescanTasks) carries a liveness poll instead of a child
+    // 'exit' listener — stop it so it can't fire after the kill. This is separate
+    // from _intervalHandle so an adopted BASH task still falls through to killTree
+    // below (not the monitor branch) and its detached pid is actually terminated.
+    if (entry._adoptPoll) { clearInterval(entry._adoptPoll); entry._adoptPoll = undefined; }
     if (entry._intervalHandle) {
       clearInterval(entry._intervalHandle);
       entry._intervalHandle = undefined;
@@ -1352,6 +1466,11 @@ export class ProcessManager extends EventEmitter {
       ...(opts.reason ? { reason: opts.reason } : {}),
     };
     this.emit('killed', killed);
+
+    // The task left the running set — refresh the crash-safe registry. For a normal
+    // bash task the later 'close' → finalize → emitComplete also syncs; for an
+    // ADOPTED task (no 'close' event) this is the only sync, so it must run here.
+    this.syncRegistry();
 
     return true;
   }
@@ -1589,6 +1708,9 @@ export class ProcessManager extends EventEmitter {
     const entry = this.processes.get(taskId);
     if (!entry) return false;
     if (!isTerminalTaskStatus(entry.status)) return false;
+    // Defensive: stop any re-adoption liveness poll before dropping the entry so a
+    // reaped adopted task can never leave a dangling timer.
+    if (entry._adoptPoll) { clearInterval(entry._adoptPoll); entry._adoptPoll = undefined; }
     if (entry.outputFd !== null) {
       try { fs.closeSync(entry.outputFd); } catch { /* already closed */ }
       entry.outputFd = null;
@@ -1597,6 +1719,37 @@ export class ProcessManager extends EventEmitter {
       try { fs.rmSync(entry.outputPath, { force: true }); } catch { /* best-effort */ }
     }
     this.processes.delete(taskId);
+    return true;
+  }
+
+  /**
+   * outputFileRedundant optimization (parity with Claude Code's TaskOutput
+   * `outputFileRedundant = bytesTotal <= bytesRead`, diskOutput.ts:L45-48 /
+   * TaskOutput.ts:L306-311,L348-359): once a TERMINAL task's ENTIRE output has
+   * already been read inline into a tool_result (nothing omitted), the on-disk copy
+   * is redundant — the model holds every byte — so the duplicate file can be
+   * deleted instead of lingering on disk for the common small-output case. The
+   * tracked entry STAYS (status/exit code still readable via task_list / get); only
+   * its `outputPath` is blanked so a later {@link getOutput} returns '' for the
+   * now-intentionally-absent file rather than a "could not be read" diagnostic.
+   *
+   * Refuses (returns false) when: the task is unknown, still RUNNING (more output
+   * may arrive), has no output file, or `bytesOmitted > 0` (the whole file did NOT
+   * fit the read, so the on-disk copy still holds the omitted earlier output).
+   * Returns true when the redundant file was deleted. Idempotent — a second call
+   * after the path is blanked returns false.
+   */
+  deleteRedundantOutput(taskId: string, bytesOmitted: number): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || !isTerminalTaskStatus(entry.status)) return false;
+    if (!entry.outputPath) return false;
+    if (bytesOmitted > 0) return false;
+    if (entry.outputFd !== null) {
+      try { fs.closeSync(entry.outputFd); } catch { /* already closed */ }
+      entry.outputFd = null;
+    }
+    try { fs.rmSync(entry.outputPath, { force: true }); } catch { /* best-effort */ }
+    entry.outputPath = '';
     return true;
   }
 
@@ -1800,13 +1953,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, ...rest } = entry;
     return rest;
   }
 
@@ -2163,6 +2316,133 @@ export class ProcessManager extends EventEmitter {
       tokenCountDelta: firstReport ? 0 : Math.max(0, curTok - prevTok),
       firstReport,
     };
+  }
+
+  /** Absolute path of the crash-safe task-registry sidecar (see {@link rescanTasks}). */
+  private registryPath(): string {
+    return path.join(this.tasksDir, TASK_REGISTRY_FILE);
+  }
+
+  /**
+   * Persist the identity of every still-RUNNING detached BASH task to the registry
+   * sidecar (parity with Claude Code's persistRemoteAgentMetadata). Only real
+   * detached children (kind 'bash', a non-zero pid) are recorded — in-process agents
+   * and MCP monitors die WITH the CLI, so re-adopting them is meaningless. Atomic
+   * (temp-write + rename) so a crash mid-write can't leave a torn file. Best-effort:
+   * a write failure is swallowed (the registry is an optimization, not a hard
+   * dependency). Re-invoked on spawn and on every terminal transition via
+   * {@link syncRegistry} so the file always reflects the live running set.
+   */
+  private persistRegistry(): void {
+    const records: PersistedTaskRecord[] = [];
+    for (const entry of this.processes.values()) {
+      if (entry.kind !== 'bash' || entry.status !== 'running' || !entry.pid || !entry.outputPath) continue;
+      records.push({ taskId: entry.taskId, pid: entry.pid, command: entry.command, description: entry.description, outputPath: entry.outputPath, startTime: entry.startTime });
+    }
+    try {
+      const tmp = `${this.registryPath()}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(records), 'utf-8');
+      fs.renameSync(tmp, this.registryPath());
+    } catch { /* best-effort — registry is an optimization */ }
+  }
+
+  /** Refresh the registry sidecar after a running-set change. Thin wrapper so the
+   *  spawn / finalize / kill / error call sites read intent, not file plumbing. */
+  private syncRegistry(): void {
+    this.persistRegistry();
+  }
+
+  /**
+   * CRASH-SAFE RESUME / RE-ADOPTION (parity with Claude Code's
+   * restoreRemoteAgentTasksImpl, RemoteAgentTask.tsx:L484-532): on startup/resume,
+   * reconcile the persisted {@link persistRegistry registry sidecar} against reality.
+   * For each persisted task NOT already tracked in-process:
+   *   - pid STILL ALIVE  → RE-ADOPT it: register a running bash entry pointing at its
+   *     existing output file and arm a liveness watchdog so its eventual completion is
+   *     still surfaced (we have no 'exit' event for a re-attached detached pid).
+   *   - pid DEAD          → the task finished/died while the CLI was down: surface a
+   *     terminal completion (routed through the durable buffer so the engine reports it
+   *     exactly once) with an "exit code unknown" wording — honest about the lost code —
+   *     and keep its output file readable via task_output.
+   * Rewrites the sidecar to the reconciled running set afterwards. `isAlive` is
+   * injectable for deterministic tests. Returns how many tasks were re-adopted vs
+   * reconciled-as-finished. A missing/corrupt sidecar yields {readopted:0, reaped:0}.
+   */
+  rescanTasks(opts: { isAlive?: (pid: number) => boolean } = {}): { readopted: number; reaped: number } {
+    const isAlive = opts.isAlive ?? ((pid: number) => procHooks.isAlive(pid));
+    let records: PersistedTaskRecord[];
+    try {
+      records = JSON.parse(fs.readFileSync(this.registryPath(), 'utf-8')) as PersistedTaskRecord[];
+      if (!Array.isArray(records)) return { readopted: 0, reaped: 0 };
+    } catch {
+      return { readopted: 0, reaped: 0 };
+    }
+    let readopted = 0;
+    let reaped = 0;
+    for (const rec of records) {
+      if (!rec || typeof rec.taskId !== 'string' || typeof rec.pid !== 'number') continue;
+      if (this.processes.has(rec.taskId)) continue; // already live in this process
+      if (isAlive(rec.pid)) {
+        this.adoptRunning(rec, isAlive);
+        readopted++;
+      } else {
+        // Finished/died while we were down — we cannot know the real exit code, so
+        // record a terminal entry (output file still readable) and surface a
+        // completion with an explicit "exit code unknown" summary.
+        const now = Date.now();
+        const entry: InternalProcess = {
+          taskId: rec.taskId, pid: rec.pid, command: rec.command, description: rec.description,
+          status: 'completed', kind: 'bash', exitCode: null, outputPath: rec.outputPath,
+          startTime: rec.startTime, endTime: now,
+          proc: { pid: rec.pid, kill: () => { /* already dead */ } } as unknown as child_process.ChildProcess,
+          outputFd: null, bytesWritten: 0,
+        };
+        this.setEvictDeadline(entry);
+        this.processes.set(rec.taskId, entry);
+        this.emitComplete({ taskId: rec.taskId, exitCode: null, command: rec.command, description: rec.description, outputPath: rec.outputPath, status: 'completed', summary: 'finished while the session was away (exit code unknown)' });
+        reaped++;
+      }
+    }
+    // Rewrite the sidecar to the reconciled running set (re-adopted survivors only).
+    this.syncRegistry();
+    return { readopted, reaped };
+  }
+
+  /**
+   * Re-attach a still-running detached shell discovered by {@link rescanTasks}. There
+   * is no ChildProcess handle to listen to, so we register a running bash entry whose
+   * `proc` is a pid-bearing stub (kill() routes it through killTree like any bash
+   * task) and arm an unref'd liveness poll that finalizes the task once the pid dies.
+   */
+  private adoptRunning(rec: PersistedTaskRecord, isAlive: (pid: number) => boolean): void {
+    const pid = rec.pid;
+    const entry: InternalProcess = {
+      taskId: rec.taskId, pid, command: rec.command, description: rec.description,
+      status: 'running', kind: 'bash', exitCode: null, outputPath: rec.outputPath,
+      startTime: rec.startTime,
+      proc: { pid, kill: () => { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } } } as unknown as child_process.ChildProcess,
+      outputFd: null, bytesWritten: 0,
+    };
+    const poll = setInterval(() => {
+      if (!isAlive(pid)) this.finalizeAdopted(rec.taskId);
+    }, ADOPT_POLL_INTERVAL_MS);
+    poll.unref();
+    entry._adoptPoll = poll;
+    this.processes.set(rec.taskId, entry);
+  }
+
+  /** Finalize a re-adopted task once its pid has died. We never observed the real
+   *  exit code, so record it as completed/unknown and surface a completion exactly
+   *  once through the durable buffer. No-op if the task is already terminal. */
+  private finalizeAdopted(taskId: string): void {
+    const entry = this.processes.get(taskId);
+    if (!entry || isTerminalTaskStatus(entry.status)) return;
+    if (entry._adoptPoll) { clearInterval(entry._adoptPoll); entry._adoptPoll = undefined; }
+    entry.status = 'completed';
+    entry.endTime = Date.now();
+    this.setEvictDeadline(entry);
+    this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: 'completed', summary: 'completed (exit code unknown — re-adopted task)' });
+    this.syncRegistry();
   }
 
   monitorMcp(serverId: string, checkFn: () => Promise<boolean>, intervalMs: number = 30000): string {
