@@ -545,7 +545,45 @@ export interface McpServerStatus {
   /** Absolute path of the config file this server was loaded from (if any), so a
    *  diagnostics/listing view can show the user which file to edit. */
   sourcePath?: string;
+  /**
+   * The skill/stance (agent) definitions that pulled this server in — the reverse
+   * mapping of which `mcp-servers`-declaring stance(s) introduced a given MCP server
+   * (Claude-parity `AgentMcpServerInfo.sourceAgents`, MCPAgentServerMenu.tsx:L139-142
+   * "Used by: <agent list>"). De-duplicated + alphabetically sorted. `undefined` for a
+   * server no stance declares (e.g. a plain config-file server), so a `/mcp` view can
+   * render provenance only where it exists. Populated via
+   * {@link McpManager.addServerSourceAgent}.
+   */
+  sourceAgents?: string[];
   error?: string;
+}
+
+/**
+ * Group a flat list of MCP server statuses by their originating stance/agent
+ * (Claude-parity `MCPListPanel` agent grouping, MCPListPanel.tsx:L166-170/L408): each
+ * server is emitted once under EVERY agent in its {@link McpServerStatus.sourceAgents}
+ * list, agent names are de-duplicated, and both the agent headings and the servers
+ * within each group are alphabetically ordered for a stable `/mcp` rendering. Servers
+ * with no `sourceAgents` are omitted (they appear in the ungrouped/by-scope view). The
+ * single source of truth a `/mcp` "Used by @<agent>" section renders.
+ */
+export function groupMcpServersBySourceAgent(
+  statuses: McpServerStatus[],
+): Array<{ agent: string; servers: McpServerStatus[] }> {
+  const byAgent = new Map<string, McpServerStatus[]>();
+  for (const status of statuses) {
+    for (const agent of status.sourceAgents ?? []) {
+      const bucket = byAgent.get(agent);
+      if (bucket) bucket.push(status);
+      else byAgent.set(agent, [status]);
+    }
+  }
+  return [...byAgent.entries()]
+    .map(([agent, servers]) => ({
+      agent,
+      servers: servers.slice().sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.agent.localeCompare(b.agent));
 }
 
 /**
@@ -708,6 +746,10 @@ export class McpManager extends EventEmitter {
   private _allowManagedServersOnly = false;
   /** Absolute config-file path a server was loaded from (undefined for dynamic). */
   private _serverSources = new Map<string, string>();
+  /** Reverse index of which skill/stance (agent) definition(s) declared each server
+   *  (Claude-parity `AgentMcpServerInfo.sourceAgents`). Recorded when a stance
+   *  registers its `mcp-servers`; surfaced on {@link McpServerStatus.sourceAgents}. */
+  private _serverSourceAgents = new Map<string, Set<string>>();
   /**
    * Content hash of the RAW config entry each config-loaded server was last
    * registered from (Claude-parity config-hash change detection,
@@ -2000,6 +2042,7 @@ export class McpManager extends EventEmitter {
         ...this.reconnectProgress(name),
         scope: this._serverScopes.get(name),
         sourcePath: this._serverSources.get(name),
+        ...this.sourceAgentsField(name),
         error: info.error || this.serverErrors.get(name),
       });
     }
@@ -2027,6 +2070,13 @@ export class McpManager extends EventEmitter {
     return { reconnectAttempt: attempt + 1, maxReconnectAttempts: MAX_MCP_RECONNECT_ATTEMPTS };
   }
 
+  /** The `sourceAgents` status field for `name` (spread into every status site), or `{}`
+   *  when no stance declared the server so the field stays absent. */
+  private sourceAgentsField(name: string): { sourceAgents?: string[] } {
+    const agents = this.getServerSourceAgents(name);
+    return agents ? { sourceAgents: agents } : {};
+  }
+
   private getFullServerStatus(name: string): McpServerStatus {
     const client = this.clients.get(name);
     const config = this.configs.get(name);
@@ -2035,6 +2085,7 @@ export class McpManager extends EventEmitter {
         name, state: 'pending', serverInfo: null, toolCount: 0,
         resourceCount: 0, uptime: null, containerBacked: !!config?.containerConfig,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
+        ...this.sourceAgentsField(name),
       };
     }
     // A server whose connect was short-circuited by the needs-auth skip cache was
@@ -2047,6 +2098,7 @@ export class McpManager extends EventEmitter {
         resourceCount: client.resources.length, promptCount: client.prompts?.length ?? 0,
         uptime: client.uptime, containerBacked: !!config?.containerConfig, needsAuth: true,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
+        ...this.sourceAgentsField(name),
       };
     }
     return {
@@ -2065,6 +2117,7 @@ export class McpManager extends EventEmitter {
       ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
+      ...this.sourceAgentsField(name),
       error: this.serverErrors.get(name),
     };
   }
@@ -2106,6 +2159,7 @@ export class McpManager extends EventEmitter {
     this.configs.delete(name);
     this._serverScopes.delete(name);
     this._serverSources.delete(name);
+    this._serverSourceAgents.delete(name);
     this._serverConfigHashes.delete(name);
     this.invalidateToolCache(name);
   }
@@ -2566,6 +2620,33 @@ export class McpManager extends EventEmitter {
     this._serverScopes.set(name, scope);
     if (sourcePath !== undefined) this._serverSources.set(name, sourcePath);
     else this._serverSources.delete(name);
+  }
+
+  /**
+   * Record that the skill/stance `agent` declared MCP server `name` — the reverse
+   * provenance mapping surfaced on {@link McpServerStatus.sourceAgents} (Claude-parity
+   * `AgentMcpServerInfo.sourceAgents`). Idempotent: registering the same agent twice is
+   * a no-op, and a server declared by several stances accumulates every declarer. A
+   * blank/whitespace agent name is ignored so a malformed stance can't inject an empty
+   * provenance entry. Called from the engine when a stance registers its `mcp-servers`.
+   */
+  addServerSourceAgent(name: string, agent: string): void {
+    const trimmed = agent.trim();
+    if (!trimmed) return;
+    const existing = this._serverSourceAgents.get(name);
+    if (existing) existing.add(trimmed);
+    else this._serverSourceAgents.set(name, new Set([trimmed]));
+  }
+
+  /**
+   * The de-duplicated, alphabetically-sorted stance/agent names that declared server
+   * `name`, or `undefined` when no stance did (so a status never carries an empty
+   * `sourceAgents` array). See {@link addServerSourceAgent}.
+   */
+  getServerSourceAgents(name: string): string[] | undefined {
+    const set = this._serverSourceAgents.get(name);
+    if (!set || set.size === 0) return undefined;
+    return [...set].sort((a, b) => a.localeCompare(b));
   }
 
   /**
