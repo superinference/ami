@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { homedir } from 'os';
+import { homedir, release } from 'os';
 import { isAbsolute, resolve as resolvePath } from 'path';
 import { wildcardMatch } from '../permissions';
 import type { SandboxPolicy } from '../types';
@@ -139,6 +139,105 @@ const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
 };
 
 let _unshareAvailable: boolean | null = null;
+let _wslVersion: 'none' | 'wsl1' | 'wsl2' | null = null;
+
+/** The WSL (Windows Subsystem for Linux) generation, which decides whether the
+ *  host namespace sandbox can run at all. */
+export type WslVersion = 'none' | 'wsl1' | 'wsl2';
+
+/** Seam over `os.release()` so the WSL-generation probe is testable without a
+ *  real WSL1/WSL2 kernel (the `os` namespace import is frozen and cannot be
+ *  monkeypatched). Behavior-preserving: defaults to the real kernel release. */
+export const _sandboxPlatformHooks: { release: () => string } = { release };
+
+/**
+ * PARITY (Claude Code's WSL1-vs-WSL2 sandbox gating — `isSupportedPlatform()`):
+ * classify a kernel release/version string into the WSL generation. Pure +
+ * injectable so the branch can be tested on any host:
+ *   - no `microsoft`/`wsl` marker → `'none'` (native Linux or other),
+ *   - marker PLUS a `wsl2` / `microsoft-standard` tag → `'wsl2'`,
+ *   - marker without that tag → `'wsl1'`.
+ * This answers a DIFFERENT question than the MCP layer's boolean `detectWsl()`
+ * (is-this-WSL-at-all, for `/mnt/c` config discovery): the sandbox needs the
+ * GENERATION, because WSL2 runs a real Linux kernel (user namespaces + `unshare`
+ * work → the sandbox runs) while WSL1 is a syscall-translation shim with NO
+ * namespace support, so the host sandbox cannot run there and Claude reports a
+ * targeted "requires WSL2" error rather than a confusing generic unshare failure.
+ */
+export function detectWslVersion(kernel: string): WslVersion {
+  const k = kernel.toLowerCase();
+  if (!k.includes('microsoft') && !k.includes('wsl')) return 'none';
+  if (k.includes('wsl2') || k.includes('microsoft-standard')) return 'wsl2';
+  return 'wsl1';
+}
+
+/**
+ * Memoized WSL generation of the current host. Non-Linux is always `'none'`.
+ * Determined from the kernel release string ({@link detectWslVersion}); when a
+ * WSL env marker (`WSL_INTEROP`/`WSL_DISTRO_NAME`) is present but the kernel
+ * string carries no generation tag, we assume `'wsl2'` (the modern default) so a
+ * real WSL2 host is never mis-gated as unsupported WSL1. Reset by
+ * {@link resetSandboxCache}.
+ */
+function currentWslVersion(): WslVersion {
+  if (_wslVersion !== null) return _wslVersion;
+  if (process.platform !== 'linux') {
+    _wslVersion = 'none';
+    return _wslVersion;
+  }
+  let kernel = '';
+  try {
+    kernel = _sandboxPlatformHooks.release();
+  } catch {
+    kernel = '';
+  }
+  let v = detectWslVersion(kernel);
+  if (v === 'none' && (process.env.WSL_INTEROP || process.env.WSL_DISTRO_NAME)) {
+    v = 'wsl2';
+  }
+  _wslVersion = v;
+  return v;
+}
+
+/** Result of the platform-support check for the host namespace sandbox. */
+export interface SandboxPlatformSupport {
+  /** True when the host namespace sandbox CAN run on this platform/WSL generation. */
+  supported: boolean;
+  /** When unsupported, the targeted reason (e.g. the WSL2 requirement). */
+  reason?: string;
+}
+
+/**
+ * PARITY (Claude Code's `isSupportedPlatform()` with WSL1 special-casing): decide
+ * whether the host namespace sandbox is runnable on the given platform + WSL
+ * generation. Non-Linux and WSL1 are unsupported, each with a SPECIFIC reason so
+ * the diagnostic names the actual blocker instead of a generic unshare failure.
+ * Pure (platform + WSL generation are injectable for tests); the defaults read the
+ * live host. Consumed by {@link checkSandboxDependencies}.
+ */
+export function getSandboxPlatformSupport(
+  platform: string = process.platform,
+  wsl: WslVersion = currentWslVersion(),
+): SandboxPlatformSupport {
+  if (platform !== 'linux') {
+    return {
+      supported: false,
+      reason:
+        `Namespace sandbox requires Linux; current platform is ${platform}. ` +
+        'Only resource limits (ulimit) are applied — filesystem and network isolation are NOT enforced.',
+    };
+  }
+  if (wsl === 'wsl1') {
+    return {
+      supported: false,
+      reason:
+        'Sandboxing requires WSL2. WSL1 is not supported — it is a syscall-translation layer ' +
+        'with no Linux user-namespace support, so filesystem and network isolation cannot be enforced. ' +
+        'Upgrade the distro to WSL2 (`wsl --set-version <distro> 2`), or set sandbox.enabled to false.',
+    };
+  }
+  return { supported: true };
+}
 
 function isUnshareAvailable(): boolean {
   if (_unshareAvailable !== null) return _unshareAvailable;
@@ -238,11 +337,12 @@ export function checkSandboxDependencies(cfg?: Partial<SandboxConfig>): SandboxD
   const warnings: string[] = [];
 
   // --- namespace isolation availability (the real filesystem/network sandbox) ---
-  if (process.platform !== 'linux') {
-    errors.push(
-      `Namespace sandbox requires Linux; current platform is ${process.platform}. ` +
-        'Only resource limits (ulimit) are applied — filesystem and network isolation are NOT enforced.',
-    );
+  // Platform support is checked FIRST so an unsupported platform/WSL generation
+  // gets its TARGETED reason (non-Linux, or WSL1-requires-WSL2) instead of the
+  // generic unshare failure that WSL1 would otherwise surface.
+  const support = getSandboxPlatformSupport();
+  if (!support.supported) {
+    errors.push(support.reason!);
   } else if (!isUnshareAvailable()) {
     // Distinguish "not installed" from "installed but user namespaces blocked" so
     // the remediation hint names the actual missing capability.
@@ -1264,4 +1364,5 @@ export function validateSandboxEnabled(opts?: { failIfUnavailable?: boolean }): 
 
 export function resetSandboxCache(): void {
   _unshareAvailable = null;
+  _wslVersion = null;
 }
