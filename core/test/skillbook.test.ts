@@ -420,4 +420,126 @@ describe('Skillbook', () => {
     }
     assert.equal(ids.size, 200);
   });
+
+  // --- Relevance-ranked search + noise filter ---
+
+  it('ranks search results by distinct-term coverage, not helpfulCount', () => {
+    // `full` matches both query terms; `one` matches only "react". With pure
+    // popularity ordering `one` (more upvotes) would win, but coverage must rank
+    // the better match first.
+    const full = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['react', 'hooks'], issue: 'i', insight: 'both terms' } });
+    const one = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['react'], issue: 'i', insight: 'one term, very popular' } });
+    skillbook.apply({ type: 'TAG', id: one!.id, feedback: 'helpful' });
+    skillbook.apply({ type: 'TAG', id: one!.id, feedback: 'helpful' });
+    const results = skillbook.search('react hooks');
+    assert.equal(results[0].id, full!.id);
+    assert.ok(results.length >= 1 && results[0].insight === 'both terms');
+  });
+
+  it('noise filter drops a single incidental term match from a multi-term query', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['flaky', 'test', 'timeout'], issue: 'i', insight: 'real match' } });
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['unit', 'test'], issue: 'i', insight: 'incidental only' } });
+    const results = skillbook.search('flaky test timeout');
+    // Only the entry matching >1 distinct term survives; the lone "test" match is noise.
+    assert.equal(results.length, 1);
+    assert.equal(results[0].insight, 'real match');
+  });
+
+  it('single-term query still matches its one term', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['solo'], issue: 'i', insight: 'kept' } });
+    const results = skillbook.search('solo');
+    assert.equal(results.length, 1);
+    assert.equal(results[0].insight, 'kept');
+  });
+
+  it('helpfulCount then score break ties among equally-covering entries', () => {
+    const a = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['x', 'y'], issue: 'i', insight: 'A' } });
+    const b = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['x', 'y'], issue: 'i', insight: 'B' } });
+    skillbook.apply({ type: 'TAG', id: b!.id, feedback: 'helpful' });
+    void a;
+    const results = skillbook.search('x y');
+    assert.equal(results[0].insight, 'B'); // both match 2 terms; B has the upvote
+  });
+
+  it('empty / whitespace-only query returns nothing', () => {
+    skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+    assert.equal(skillbook.search('   ').length, 0);
+    assert.equal(skillbook.search('').length, 0);
+  });
+
+  // --- Staleness / freshness caveat on prompt-injected learnings ---
+
+  it('getContext appends a staleness caveat to entries older than the threshold', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-stale-'));
+    fs.mkdirSync(path.join(dir, '.ami'), { recursive: true });
+    const old = Date.now() - 45 * 86_400_000;
+    fs.writeFileSync(path.join(dir, '.ami', 'skillbook.json'), JSON.stringify({
+      version: 1,
+      entries: [{ id: 'old', section: 'context', keywords: ['k'], issue: 'i', insight: 'aging insight', helpfulCount: 1, harmfulCount: 0, neutralCount: 0, score: 1, occurrences: [], createdAt: old, updatedAt: old }],
+    }));
+    const sb = new Skillbook(dir);
+    const ctx = sb.getContext();
+    assert.ok(ctx.includes('aging insight'));
+    assert.match(ctx, /learned 4[0-9] days ago — may be outdated, verify before relying on it/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('getContext does NOT add a staleness caveat to fresh entries', () => {
+    const e = skillbook.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'fresh insight' } });
+    skillbook.apply({ type: 'TAG', id: e!.id, feedback: 'helpful' });
+    const ctx = skillbook.getContext();
+    assert.ok(ctx.includes('fresh insight'));
+    assert.ok(!ctx.includes('verify before relying on it'));
+  });
+
+  // --- Crash-safe + concurrency-safe persistence (atomic rename + merge) ---
+
+  it('save merges concurrent entries instead of clobbering another session', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-merge-'));
+    const a = new Skillbook(dir);
+    a.apply({ type: 'ADD', entry: { section: 'context', keywords: ['a1'], issue: 'i', insight: 'from A first' } });
+    // Second session loads the current book (sees a1 only).
+    const b = new Skillbook(dir);
+    // A adds another entry AFTER B loaded.
+    a.apply({ type: 'ADD', entry: { section: 'context', keywords: ['a2'], issue: 'i', insight: 'A added later' } });
+    // B now writes — a naive overwrite would drop A's second entry.
+    b.apply({ type: 'ADD', entry: { section: 'context', keywords: ['b1'], issue: 'i', insight: 'from B' } });
+    const reloaded = new Skillbook(dir).getAll().map(e => e.insight).sort();
+    assert.deepEqual(reloaded, ['A added later', 'from A first', 'from B']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('REMOVE is not resurrected by the merge-on-write', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-rm-merge-'));
+    const sb = new Skillbook(dir);
+    const e = sb.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'doomed' } });
+    sb.apply({ type: 'REMOVE', id: e!.id });
+    assert.equal(new Skillbook(dir).getAll().length, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('save leaves no temp files behind and writes a valid atomic file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-atomic-'));
+    const sb = new Skillbook(dir);
+    sb.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'x' } });
+    const files = fs.readdirSync(path.join(dir, '.ami'));
+    assert.deepEqual(files, ['skillbook.json']); // no .tmp residue
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, '.ami', 'skillbook.json'), 'utf-8'));
+    assert.equal(parsed.version, 1);
+    assert.equal(parsed.entries.length, 1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // --- Restrictive file permissions on persisted user data ---
+
+  it('persists the skillbook file owner-only (0o600) and its dir owner-only (0o700)', { skip: process.platform === 'win32' }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-perms-'));
+    const sb = new Skillbook(dir); // .ami not pre-created, so saveToDisk mkdirs it
+    sb.apply({ type: 'ADD', entry: { section: 'context', keywords: ['k'], issue: 'i', insight: 'secret' } });
+    const fileMode = fs.statSync(path.join(dir, '.ami', 'skillbook.json')).mode & 0o777;
+    const dirMode = fs.statSync(path.join(dir, '.ami')).mode & 0o777;
+    assert.equal(fileMode, 0o600);
+    assert.equal(dirMode, 0o700);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });

@@ -116,9 +116,44 @@ function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf-8');
 }
 
+/**
+ * A learned strategy older than this (in days, measured from `updatedAt`) is
+ * surfaced with a staleness caveat in {@link Skillbook.getContext}. Point-in-time
+ * observations — especially file:line citations — go stale as code changes, and a
+ * confident-sounding old insight asserted as current fact is worse than none. The
+ * caveat tells the model to verify before relying on it rather than silently
+ * presenting a fresh and a months-old strategy with identical authority.
+ */
+const STALE_AFTER_DAYS = 30;
+const MS_PER_DAY = 86_400_000;
+
+/** Whole days elapsed since `updatedAt`; clamps future timestamps (clock skew) to 0. */
+function ageDays(updatedAt: number): number {
+  return Math.max(0, Math.floor((Date.now() - updatedAt) / MS_PER_DAY));
+}
+
+/**
+ * Staleness caveat appended to a {@link Skillbook.getContext} bullet for entries
+ * older than {@link STALE_AFTER_DAYS}; `''` for fresh entries (a caveat there is
+ * noise). Kept short because it is injected once per stale entry into the prompt.
+ */
+function freshnessNote(updatedAt: number): string {
+  const d = ageDays(updatedAt);
+  return d > STALE_AFTER_DAYS
+    ? ` _(learned ${d} days ago — may be outdated, verify before relying on it)_`
+    : '';
+}
+
 export class Skillbook {
   private entries: Map<string, SkillbookEntry> = new Map();
   private persistPath: string;
+  /**
+   * Ids this session has deliberately REMOVE'd. Tracked so the concurrency-safe
+   * merge in {@link Skillbook.saveToDisk} can preserve entries another session
+   * added (present on disk, absent in memory) WITHOUT resurrecting the ones this
+   * session intentionally deleted — the merge cannot otherwise tell the two apart.
+   */
+  private removedIds: Set<string> = new Set();
 
   constructor(cwd: string) {
     this.persistPath = path.join(cwd, '.ami', 'skillbook.json');
@@ -181,35 +216,85 @@ export class Skillbook {
     };
   }
 
-  private loadFromDisk(): void {
+  /**
+   * Read, validate, and return the current on-disk entries as a Map. Returns an
+   * empty Map when the file is absent, unparseable, or a non-matching schema
+   * version — in every "can't trust it" case the caller starts/merges from empty
+   * rather than throwing. Shared by {@link Skillbook.loadFromDisk} (initial load)
+   * and {@link Skillbook.saveToDisk} (merge-before-write) so there is one
+   * canonical read+validate path.
+   */
+  private readDiskEntries(): Map<string, SkillbookEntry> {
+    const out = new Map<string, SkillbookEntry>();
     try {
-      if (fs.existsSync(this.persistPath)) {
-        // Strip a leading UTF-8 BOM before parsing: the skillbook file is a
-        // project-cwd JSON (`.ami/skillbook.json`) that may be committed and
-        // re-written by Windows editors / PowerShell 5.x (Out-File, Set-Content),
-        // which prepend U+FEFF. Without this, JSON.parse throws "Unexpected
-        // token" and the whole file reads as corrupt. Reuses the one canonical
-        // {@link stripBom} helper rather than re-implementing it.
-        const data = JSON.parse(stripBom(fs.readFileSync(this.persistPath, 'utf-8')));
-        // Discard on schema mismatch so a future/incompatible format is never
-        // trusted. (Add a migration branch here when SCHEMA_VERSION is bumped.)
-        if (data?.version !== SCHEMA_VERSION) return;
-        for (const raw of Array.isArray(data.entries) ? data.entries : []) {
-          const entry = Skillbook.validateEntry(raw);
-          if (entry) this.entries.set(entry.id, entry);
-        }
+      if (!fs.existsSync(this.persistPath)) return out;
+      // Strip a leading UTF-8 BOM before parsing: the skillbook file is a
+      // project-cwd JSON (`.ami/skillbook.json`) that may be committed and
+      // re-written by Windows editors / PowerShell 5.x (Out-File, Set-Content),
+      // which prepend U+FEFF. Without this, JSON.parse throws "Unexpected
+      // token" and the whole file reads as corrupt. Reuses the one canonical
+      // {@link stripBom} helper rather than re-implementing it.
+      const data = JSON.parse(stripBom(fs.readFileSync(this.persistPath, 'utf-8')));
+      // Discard on schema mismatch so a future/incompatible format is never
+      // trusted. (Add a migration branch here when SCHEMA_VERSION is bumped.)
+      if (data?.version !== SCHEMA_VERSION) return out;
+      for (const raw of Array.isArray(data.entries) ? data.entries : []) {
+        const entry = Skillbook.validateEntry(raw);
+        if (entry) out.set(entry.id, entry);
       }
-    } catch { /* corrupt file — start fresh */ }
+    } catch { /* corrupt file — treat as empty */ }
+    return out;
+  }
+
+  private loadFromDisk(): void {
+    this.entries = this.readDiskEntries();
+  }
+
+  /**
+   * Merge this session's in-memory entries over whatever is currently on disk,
+   * so concurrent sessions sharing one `.ami/skillbook.json` (a normal case — the
+   * path is cwd-scoped) don't clobber each other. An entry another session added
+   * (on disk, not in memory) is preserved; for an id in both, the more recently
+   * updated copy wins; ids this session REMOVE'd are dropped. Adopted back into
+   * {@link Skillbook.entries} so the live session also gains peers' learnings.
+   */
+  private mergeWithDisk(): Map<string, SkillbookEntry> {
+    const merged = this.readDiskEntries();
+    for (const [id, entry] of this.entries) {
+      const existing = merged.get(id);
+      if (!existing || entry.updatedAt >= existing.updatedAt) merged.set(id, entry);
+    }
+    for (const id of this.removedIds) merged.delete(id);
+    return merged;
   }
 
   saveToDisk(): void {
+    const dir = path.dirname(this.persistPath);
+    // Temp sibling in the SAME directory so the rename is atomic on one
+    // filesystem. Randomised + pid-tagged to avoid collisions between concurrent
+    // writers racing on the same book.
+    const tmpPath = `${this.persistPath}.${process.pid}.${randomInt(1_000_000_000)}.tmp`;
     try {
-      fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
-      fs.writeFileSync(this.persistPath, JSON.stringify({
+      // 0o700: the directory may hold per-user captured context; keep it owner-only.
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const merged = this.mergeWithDisk();
+      this.entries = merged;
+      this.removedIds.clear();
+      // Atomic replace: write the full file to a temp sibling, then rename over
+      // the target. A crash mid-write leaves the (ignored) temp file, never a
+      // truncated skillbook.json that loadFromDisk would silently discard whole.
+      // 0o600: the file stores learned issue/insight text + session ids harvested
+      // from the user's work — keep it owner read/write only, not world-readable.
+      fs.writeFileSync(tmpPath, JSON.stringify({
         version: SCHEMA_VERSION,
-        entries: [...this.entries.values()],
-      }, null, 2));
-    } catch { /* best-effort persistence */ }
+        entries: [...merged.values()],
+      }, null, 2), { mode: 0o600 });
+      fs.renameSync(tmpPath, this.persistPath);
+    } catch {
+      // Best-effort persistence; clean up a half-written temp file so it can't
+      // accumulate across failed saves.
+      try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore */ }
+    }
   }
 
   apply(op: SkillbookOperation): SkillbookEntry | null {
@@ -257,6 +342,9 @@ export class Skillbook {
       case 'REMOVE': {
         const entry = this.entries.get(op.id);
         this.entries.delete(op.id);
+        // Tombstone the id so the merge-on-write in saveToDisk does not resurrect
+        // it from a concurrent session's on-disk copy.
+        this.removedIds.add(op.id);
         this.saveToDisk();
         return entry ?? null;
       }
@@ -269,12 +357,34 @@ export class Skillbook {
     return this.getAll().filter(e => e.section === section);
   }
 
+  /**
+   * Relevance-ranked lookup. An entry's rank is the number of DISTINCT query
+   * terms it matches (term coverage), not a popularity poll — the best-matching
+   * entry surfaces first even if a different entry has more upvotes. `helpfulCount`
+   * then `score` break ties among equally-covering entries. A noise filter drops a
+   * single incidental term match from a multi-term query (matching only "test" out
+   * of "flaky test timeout" is almost always a false positive), while a
+   * single-term query still matches on that one term.
+   */
   search(query: string): SkillbookEntry[] {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return this.getAll().filter(e => {
-      const text = `${e.issue} ${e.insight} ${e.keywords.join(' ')}`.toLowerCase();
-      return terms.some(t => text.includes(t));
-    }).sort((a, b) => b.helpfulCount - a.helpfulCount);
+    const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
+    if (terms.length === 0) return [];
+    const scored: Array<{ entry: SkillbookEntry; matched: number }> = [];
+    for (const entry of this.getAll()) {
+      const text = `${entry.issue} ${entry.insight} ${entry.keywords.join(' ')}`.toLowerCase();
+      const matched = terms.filter(t => text.includes(t)).length;
+      if (matched === 0) continue;
+      // Noise filter: a lone incidental term match among a multi-term query is
+      // dropped; a full single-term query (matched === terms.length === 1) stays.
+      if (matched === 1 && terms.length > 1) continue;
+      scored.push({ entry, matched });
+    }
+    return scored
+      .sort((a, b) =>
+        b.matched - a.matched ||
+        b.entry.helpfulCount - a.entry.helpfulCount ||
+        b.entry.score - a.entry.score)
+      .map(s => s.entry);
   }
 
   /**
@@ -329,7 +439,7 @@ export class Skillbook {
       const { text, bytes } = Skillbook.renderGroup(
         entries,
         e => e.score,
-        e => `- **${e.keywords.join(', ')}**: ${e.insight} (${e.helpfulCount} helpful)`,
+        e => `- **${e.keywords.join(', ')}**: ${e.insight} (${e.helpfulCount} helpful)${freshnessNote(e.updatedAt)}`,
         remaining,
       );
       if (text.length === 0) continue;
