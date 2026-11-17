@@ -2,16 +2,7 @@ import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler, localTimeZoneLabel } from '../cron';
 import type { CronJob } from '../cron';
 import { isCronEnabled } from './tool-gates';
-
-/** Split a string into grapheme clusters so a cut never splits a multi-code-unit
- *  character (emoji / surrogate pair / combining mark) in half — which would
- *  otherwise emit a lone surrogate and corrupt the terminal line. Uses
- *  Intl.Segmenter for full grapheme-cluster awareness (always present under the
- *  full-ICU Node runtime AMI ships on). */
-function graphemes(s: string): string[] {
-  const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-  return Array.from(seg.segment(s), (g) => g.segment);
-}
+import { graphemes } from './text-truncate';
 
 /** Single-line, ellipsis-marked, grapheme-safe truncation of a prompt for list
  *  display. Collapses a multi-line prompt to its first line (appending an ellipsis

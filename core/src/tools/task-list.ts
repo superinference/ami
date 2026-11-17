@@ -1,6 +1,17 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus, PROGRESS_IDLE_MS } from '../process-manager';
 import type { BackgroundProcess, TaskStatus } from '../process-manager';
+import { truncateActivity } from './text-truncate';
+
+/**
+ * PARITY (Claude Code BackgroundTask.tsx `activityLimit`, `truncate(cmd, limit,
+ * true)`): width budget for the free-text activity column (a shell task's
+ * description/command or an agent's live summary). Bounds a single pathological
+ * long/multi-line value to one tidy line so it can't dominate a row or inflate
+ * the tool result. Wider than Claude's 40-col TUI budget because this is the
+ * model-facing listing, but still bounded.
+ */
+const MAX_ACTIVITY_WIDTH = 120;
 
 /**
  * Prefix stamped on a background subagent's `command` by task.ts / workflow.ts
@@ -270,7 +281,7 @@ export const taskListTool: ToolDefinition = {
           // progress tick never clobbers the LLM summary). effectiveSummary() encodes
           // agentSummary ?? progressSummary; optional-chained for a minimal stub.
           const summary = context.processManager!.effectiveSummary?.(t.taskId) ?? t.progressSummary;
-          if (summary) parts.push(`— ${summary}`);
+          if (summary) parts.push(`— ${truncateActivity(summary, MAX_ACTIVITY_WIDTH, true)}`);
           if (typeof t.lastActivity === 'number') {
             const idleMs = Date.now() - t.lastActivity;
             if (idleMs >= PROGRESS_IDLE_MS) {
@@ -297,7 +308,11 @@ export const taskListTool: ToolDefinition = {
           }
         }
       } else {
-        parts.push(t.description);
+        // Width-bounded activity column (parity: Claude's BackgroundTask
+        // `truncate(command/description, activityLimit, true)`): collapse a
+        // multi-line description to one line and cap its width so one long shell
+        // task can't blow out the row / inflate the tool result.
+        parts.push(truncateActivity(t.description, MAX_ACTIVITY_WIDTH, true));
       }
 
       // Attention badge (parity: Claude Code's ultraplanPhase / waiting-for-input
@@ -359,11 +374,29 @@ export const taskListTool: ToolDefinition = {
       ? `Background tasks (${tasks.length}):`
       : `Background tasks (${tasks.length} of ${visible.length}):`;
 
-    // Bounded tool output: cap the listing so a very large task set can't flood context.
+    // Bounded tool result (parity: Claude Code `maxResultSizeChars` on the task
+    // tools): cap the listing so a very large task set can't flood the model's
+    // context. Rather than slicing mid-row (which leaves a half-rendered line and
+    // hides how much was dropped), keep WHOLE task rows up to the char budget and
+    // append a `… N more tasks (output truncated)` footer reporting exactly how
+    // many rows were elided — a stable, countable boundary the model can reason
+    // about.
     const MAX_OUTPUT_CHARS = 30_000;
-    let body = lines.join('\n');
-    if (body.length > MAX_OUTPUT_CHARS) {
-      body = body.slice(0, MAX_OUTPUT_CHARS) + `\n... [task list truncated at ${MAX_OUTPUT_CHARS} chars]`;
+    const kept: string[] = [];
+    let used = 0;
+    for (const line of lines) {
+      // +1 for the newline that joins each row; always keep at least one row so a
+      // single oversized row is still shown (its own activity column is already
+      // width-bounded) rather than yielding an empty body.
+      const cost = line.length + 1;
+      if (kept.length > 0 && used + cost > MAX_OUTPUT_CHARS) break;
+      kept.push(line);
+      used += cost;
+    }
+    const dropped = lines.length - kept.length;
+    let body = kept.join('\n');
+    if (dropped > 0) {
+      body += `\n… ${dropped} more task${dropped === 1 ? '' : 's'} (output truncated)`;
     }
     return { output: `${header}\n${summary}\n${typeLine}${body}`, isError: false };
   },

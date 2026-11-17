@@ -184,12 +184,41 @@ describe('task_list parity — filter edge cases', () => {
     assert.ok(!r.output.includes('tok'), r.output);
   });
 
-  it('truncates a very large listing', async () => {
+  it('truncates a very large listing by dropping whole rows with a "N more tasks" footer', async () => {
     const many = Array.from({ length: 500 }, (_, i) =>
-      mkTask({ description: 'x'.repeat(120), taskId: `bg-big-${i}` }),
+      mkTask({ description: 'x'.repeat(100), taskId: `bg-big-${i}` }),
     );
     const r = await taskListTool.execute({}, ctx(many));
-    assert.ok(r.output.includes('truncated at 30000 chars'), r.output.slice(-200));
+    // New boundary: whole rows are kept up to the budget, then an elided-count
+    // footer reports exactly how many were dropped (not a mid-row char slice).
+    const m = r.output.match(/… (\d+) more tasks \(output truncated\)/);
+    assert.ok(m, r.output.slice(-200));
+    const dropped = Number(m![1]);
+    assert.ok(dropped > 0 && dropped < 500, `dropped=${dropped}`);
+    // The footer is the final line; no half-rendered row precedes it.
+    assert.ok(r.output.trimEnd().endsWith('(output truncated)'));
+    // The kept body stays within the char budget (+ small footer allowance).
+    assert.ok(r.output.length <= 30_000 + 200, `len=${r.output.length}`);
+  });
+
+  it('bounds a pathological wide / multi-line activity column to one line', async () => {
+    const wide = mkTask({ description: 'y'.repeat(400), status: 'running' });
+    const multiline = mkTask({ description: 'first line\nsecond line\nthird', status: 'running' });
+    const r = await taskListTool.execute({}, ctx([wide, multiline]));
+    // Width cap: the 400-char description is clipped with an ellipsis.
+    assert.ok(!r.output.includes('y'.repeat(400)), 'wide description not truncated');
+    assert.ok(r.output.includes('…'), 'no ellipsis marker');
+    // Single-line collapse: the trailing lines never leak into the row.
+    assert.ok(!r.output.includes('second line'), r.output);
+    assert.ok(!r.output.includes('third'), r.output);
+    assert.ok(r.output.includes('first line…'), r.output);
+  });
+
+  it('leaves a short activity column verbatim (no ellipsis)', async () => {
+    const t = mkTask({ description: 'short desc', status: 'running' });
+    const r = await taskListTool.execute({}, ctx([t]));
+    assert.ok(r.output.includes('short desc'));
+    assert.ok(!r.output.includes('short desc…'));
   });
 });
 
