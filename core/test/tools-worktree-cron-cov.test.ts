@@ -691,7 +691,9 @@ describe('cron tools', () => {
     const dir = track(mkTmp());
     const r = await cronCreateTool.execute({ cron: 'bad', prompt: 'hi' }, ctx({ cwd: dir }));
     assert.equal(r.isError, true);
-    assert.match(r.output, /5-field cron/);
+    // U090 echoes the offending expression + field count: "cron must have 5 fields
+    // (got 1): \"bad\"". Match the field-count phrasing (richer than the old message).
+    assert.match(r.output, /5 fields/);
   });
 
   it('cron_create rejects a missing cron expression', async () => {
