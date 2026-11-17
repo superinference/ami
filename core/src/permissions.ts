@@ -12,6 +12,7 @@ import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
+import { isCaseInsensitiveFs } from './tools/tool-utils';
 import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
@@ -2498,8 +2499,10 @@ export function countDirectoryChanges(command: string): number {
  * splitting the command across lines — Claude's dotAll wildcard matching).
  */
 const _compilePattern = memoizeWithLRU(
-  (pattern: string): RegExp => new RegExp(`^${globToRegexSource(pattern)}$`, 's'),
-  (pattern: string) => pattern,
+  // The cache key is prefixed with `i` (case-insensitive) or `s` (case-sensitive)
+  // so the two flavours of the same pattern don't collide in the LRU.
+  (key: string): RegExp => new RegExp(`^${globToRegexSource(key.slice(1))}$`, key[0] === 'i' ? 'si' : 's'),
+  (key: string) => key,
   1000,
 );
 /**
@@ -2507,9 +2510,14 @@ const _compilePattern = memoizeWithLRU(
  * characters; every other metachar is escaped) against a value. This is the
  * canonical wildcard matcher reused by MCP-server allowlists, permission rules
  * and the HTTP-hook URL allowlist — do not re-implement it per site.
+ *
+ * `caseInsensitive` (default false) adds the regex `i` flag, mirroring Claude's
+ * `matchWildcardPattern(pattern, command, caseInsensitive)` (shellRuleMatching.ts
+ * L90-L94/L150). It is used for case-insensitive filesystems (macOS/Windows) where
+ * a path deny/allow rule should match regardless of letter-case.
  */
-export function wildcardMatch(pattern: string, value: string): boolean {
-  return matchPattern(pattern, value);
+export function wildcardMatch(pattern: string, value: string, caseInsensitive = false): boolean {
+  return matchPattern(pattern, value, caseInsensitive);
 }
 
 /**
@@ -2548,12 +2556,14 @@ export function globToRegexSource(pattern: string): string {
   return out;
 }
 
-function matchPattern(pattern: string, value: string): boolean {
+function matchPattern(pattern: string, value: string, caseInsensitive = false): boolean {
   if (pattern.includes('\x00') || value.includes('\x00')) return false;
-  if (pattern === value) return true;
   if (pattern === '*') return true;
+  if (caseInsensitive
+    ? pattern.toLowerCase() === value.toLowerCase()
+    : pattern === value) return true;
 
-  return _compilePattern(pattern).test(value);
+  return _compilePattern((caseInsensitive ? 'i' : 's') + pattern).test(value);
 }
 
 /**
@@ -3238,6 +3248,18 @@ export type FileOperationType = 'read' | 'write' | 'create';
 const READ_SHAPED_FILE_TOOLS = new Set(['file_read', 'glob', 'grep', 'list_dir']);
 
 /**
+ * Canonical tools whose deny/allow rule pattern is matched against a FILESYSTEM
+ * PATH (not a command string or a free-text pattern like grep's). On a
+ * case-insensitive filesystem these are matched case-insensitively so a deny rule
+ * written in one casing still blocks the same file reached via another casing
+ * (`{@link pathRuleCaseInsensitive}`). `grep` is deliberately excluded — its rule
+ * content is a search pattern where case is significant.
+ */
+const FILE_PATH_RULE_TOOLS = new Set([
+  'file_read', 'file_edit', 'file_write', 'notebook_edit', 'notebook_read', 'glob', 'list_dir',
+]);
+
+/**
  * Classify a tool call's filesystem operation type (parity with Claude's
  * `operationType`), or `undefined` for a tool that targets no file path. Read-shaped
  * tools are `'read'`; a mutating file tool is `'create'` when its target does not yet
@@ -3719,6 +3741,13 @@ export class PermissionManager {
    *  outside the confined roots is denied even under auto-allow/bypass. Undefined →
    *  inert (gated exactly as before). Set per sub-engine from EngineConfig. */
   private capabilityCeiling?: ToolCapabilityCeiling;
+
+  /** Unrecognized top-level keys read from `.ami/permissions.json` by {@link loadRules}
+   *  (anything other than `mode`/`rules` — e.g. `hooks`, `env`, or a key a future AMI
+   *  version adds). {@link saveRules} spreads these back so a round-trip through this
+   *  manager does not DESTROY settings it doesn't model. Mirrors Claude's
+   *  `...settingsData` preservation spread (permissionsLoader.ts L193-L216/L277-L295). */
+  private _extraPersistedKeys: Record<string, unknown> = {};
 
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
@@ -5060,7 +5089,28 @@ export class PermissionManager {
    */
   addRule(rule: PermissionRule): void {
     if (this._managedRulesOnly && !isManagedPermissionSource(rule.source)) return;
+    // Dedup: skip a rule already present under a normalized identity (so a legacy/
+    // alias tool name — e.g. `Bash` — is recognized as the same rule as `bash`),
+    // mirroring Claude's normalized-Set dedup in addPermissionRulesToSettings
+    // (permissionsLoader.ts L244-L285). Prevents duplicate grants accumulating
+    // across repeated "always allow" clicks or applyPermissionUpdate re-runs.
+    const key = this.ruleDedupKey(rule);
+    if (this.rules.some(r => this.ruleDedupKey(r) === key)) return;
     this.rules.unshift(rule);
+  }
+
+  /**
+   * Stable identity key for {@link addRule} dedup: the canonical rule-value string
+   * (tool name normalized via {@link normalizeToolName} + paren-escaped pattern, so a
+   * legacy alias matches its canonical form) plus action, source tier, and any
+   * structured paramPattern. Two rules with the same key are duplicates.
+   */
+  private ruleDedupKey(rule: PermissionRule): string {
+    const value = permissionRuleValueToString({ toolName: normalizeToolName(rule.tool), ruleContent: rule.pattern });
+    const param = rule.paramPattern
+      ? JSON.stringify(Object.keys(rule.paramPattern).sort().map(k => [k, rule.paramPattern![k]]))
+      : '';
+    return `${value}\0${rule.action}\0${rule.source ?? ''}\0${param}`;
   }
 
   /**
@@ -5180,13 +5230,25 @@ export class PermissionManager {
         const inputStr = this.inputToString(toolName, input);
         const matched = toolName === 'bash' && typeof input.command === 'string'
           ? matchBashPattern(rule.pattern, inputStr, 'deny')
-          : matchPattern(rule.pattern, inputStr);
+          : matchPattern(rule.pattern, inputStr, this.pathRuleCaseInsensitive(toolName));
         if (matched) return true;
       } else {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * True when a FILE-PATH tool's deny pattern should be matched case-insensitively:
+   * on a case-insensitive filesystem (macOS/Windows), `/x/.SSH/k` and `/x/.ssh/k`
+   * name the SAME file, so a deny rule written in one casing must still block the
+   * other — otherwise the deny is bypassable by a trivial case variation. No-op on a
+   * case-sensitive FS (Linux) and for non-path tools (bash/grep are case-sensitive).
+   * Mirrors Claude's `matchWildcardPattern(..., caseInsensitive)` usage.
+   */
+  private pathRuleCaseInsensitive(toolName: string): boolean {
+    return FILE_PATH_RULE_TOOLS.has(normalizeToolName(toolName)) && isCaseInsensitiveFs();
   }
 
   /**
@@ -5528,6 +5590,15 @@ export class PermissionManager {
       const raw = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(raw);
 
+      // Preserve any unrecognized top-level keys (hooks, env, or a future AMI field)
+      // so a round-trip through saveRules doesn't silently destroy settings this
+      // loader doesn't model. Mirrors Claude's `...settingsData` spread-on-write.
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        for (const k of Object.keys(data)) {
+          if (k !== 'mode' && k !== 'rules') this._extraPersistedKeys[k] = (data as Record<string, unknown>)[k];
+        }
+      }
+
       if (data.mode && typeof data.mode === 'string') {
         if ((PERMISSION_MODES as readonly string[]).includes(data.mode)) {
           this.mode = data.mode as PermissionMode;
@@ -5697,7 +5768,9 @@ export class PermissionManager {
     }
     try {
       const filePath = path.join(cwd, '.ami', 'permissions.json');
-      const data = { mode: this.mode, rules: this.rules };
+      // Spread preserved unknown keys FIRST so the canonical mode/rules always win,
+      // while a user's (or a future version's) extra keys survive the round-trip.
+      const data = { ...this._extraPersistedKeys, mode: this.mode, rules: this.rules };
       // Crash-safe, owner-only persist (temp + fsync + atomic rename, mode 0o600):
       // a half-written permissions.json would be silently dropped by loadRules'
       // catch, wiping every "don't ask again" rule, and the file is not left
