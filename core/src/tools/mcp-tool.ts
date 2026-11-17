@@ -234,6 +234,11 @@ export function createMcpTool(
   const safeInputSchema = recursivelySanitizeUnicode(inputSchema);
   // MCP annotations declare read-only/concurrency semantics (H29).
   const readOnly = annotations?.readOnlyHint ?? false;
+  // `openWorldHint` marks a tool whose effects reach outside the local env / are
+  // non-deterministic (external-API calls). Carried onto the ToolDefinition as
+  // `isOpenWorld` so renderers/metadata can tag it — distinct from read-only
+  // (a read-only MCP tool that queries a live remote is still open-world).
+  const openWorld = annotations?.openWorldHint === true;
   // Server-supplied discovery hints (`_meta`): a one-line searchHint so a deferred
   // MCP tool is findable by synonym via tool_search, and alwaysLoad so a server can
   // force-keep a tool in the initial set despite schema-size auto-deferral.
@@ -245,6 +250,7 @@ export function createMcpTool(
     isReadOnly: readOnly,
     isConcurrencySafe: readOnly,
     isMcp: true,
+    ...(openWorld ? { isOpenWorld: true } : {}),
     ...(searchHint ? { searchHint: stripInvisibleUnicode(searchHint) } : {}),
     ...(alwaysLoad ? { alwaysLoad: true } : {}),
     async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {

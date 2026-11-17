@@ -403,6 +403,9 @@ export const webSearchTool: ToolDefinition = {
   },
   isReadOnly: true,
   isConcurrencySafe: true,
+  // Read-only yet OPEN-WORLD: queries a live search backend, so results depend on
+  // external state and are non-reproducible across runs (parity: Claude's isOpenWorld).
+  isOpenWorld: true,
 
   async execute(
     input: Record<string, unknown>,

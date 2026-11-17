@@ -382,6 +382,9 @@ export const webFetchTool: ToolDefinition = {
   },
   isReadOnly: true,
   isConcurrencySafe: true,
+  // Read-only yet OPEN-WORLD: fetches a live remote URL, so its result depends on
+  // external state and is non-reproducible across runs (parity: Claude's isOpenWorld).
+  isOpenWorld: true,
 
   async execute(
     input: Record<string, unknown>,

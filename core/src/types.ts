@@ -674,6 +674,16 @@ export interface ToolDefinition {
   isConcurrencySafe?: boolean;
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
   isMcp?: boolean;
+  /** True when the tool's effects reach OUTSIDE the local environment / are
+   *  non-deterministic (a remote fetch, a web search, a message send, an
+   *  external-API MCP tool). Distinct from {@link isReadOnly}: a tool can be
+   *  read-only yet open-world (a remote fetch mutates nothing locally but still
+   *  depends on live external state). Lets renderers tag a call (an `[open-world]`
+   *  badge) and lets metadata/introspection surface that a result is non-cacheable /
+   *  non-reproducible. Absent / `false` = closed-world (fully local, deterministic).
+   *  Parity: Claude's `Tool.isOpenWorld()` (MCPTool defaults false, overridden
+   *  per-MCP-tool from the server's `annotations.openWorldHint`). */
+  isOpenWorld?: boolean;
   /** Extra capability keywords (3-10 words) weighted by `tool_search`, using terms
    *  NOT already in the name/description (e.g. 'jupyter' for notebook_edit) so a
    *  deferred tool is findable by synonym. Parity: Claude's `Tool.searchHint`. */
