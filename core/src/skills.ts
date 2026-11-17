@@ -1325,3 +1325,235 @@ export function applySkillTemplateVariables(
 export function isBuiltInAgent(agent: Pick<AgentDefinition, 'source'>): boolean {
   return agent.source === 'built-in';
 }
+
+// ---------------------------------------------------------------------------
+// Agent-listing display affordances — surface a sub-agent's persistent-memory
+// scope and its scoped skill allowlist in the `/agents` listing (parity with
+// Claude Code's `formatAgent` memory dimension + AgentDetail `getMemoryScopeDisplay`
+// / skills-list collapse). Pure core formatters; the `/agents` slash-command data
+// already carries `memory` + `skills`, and the CLI listing renderer wires these in.
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable label for an agent's persistent-memory {@link AgentMemoryScope}
+ * (parity with Claude Code's `getMemoryScopeDisplay`): `user` / `project` / `local`
+ * each map to a descriptive, location-aware phrase. Returns `undefined` for an
+ * unset/unknown scope so a memory-less agent surfaces no memory affordance.
+ */
+export function agentMemoryScopeDisplay(scope: AgentMemoryScope | undefined): string | undefined {
+  switch (scope) {
+    case 'user': return 'User (shared across all projects)';
+    case 'project': return 'Project (shared with your team)';
+    case 'local': return 'Local (this project only, not shared)';
+    default: return undefined;
+  }
+}
+
+/**
+ * The short memory dimension appended to an agent's listing line (parity with
+ * Claude Code's `formatAgent`, which appends `${agent.memory} memory` only when the
+ * agent declares a memory scope). Returns e.g. `'project memory'`, or `''` when the
+ * agent declares no (or an unrecognized) memory scope so no dangling affordance is
+ * shown.
+ */
+export function formatAgentMemoryDimension(agent: Pick<AgentDefinition, 'memory'>): string {
+  const scope = parseMemoryScope(agent.memory);
+  return scope ? `${scope} memory` : '';
+}
+
+/**
+ * Collapse an agent's scoped-skills allowlist for display (parity with Claude
+ * Code's AgentDetail skills list: `skills.length > 10 ? '${n} skills' :
+ * skills.join(', ')`). An agent that declares many skills shows a `'N skills'`
+ * count instead of an overwhelming comma list; `undefined`/empty yields `''`.
+ */
+export function formatAgentSkillsList(skills: readonly string[] | undefined): string {
+  if (!skills || skills.length === 0) return '';
+  if (skills.length > 10) return `${skills.length} skills`;
+  return skills.join(', ');
+}
+
+// ---------------------------------------------------------------------------
+// Relevance-filtered bundled-doc inlining — select only the companion docs that
+// match a detected language (plus shared docs) and splice them into a skill's
+// context as deterministically-ordered `<doc path="…">…</doc>` blocks (parity
+// with Claude Code's bundled-skill `getFilesForLanguage` + `buildInlineReference`,
+// e.g. the claude-api skill). Pure core building blocks over {@link
+// SkillDefinition.files}; avoids injecting every bundled doc verbatim.
+// ---------------------------------------------------------------------------
+
+/**
+ * Select the subset of a skill's bundled {@link SkillDefinition.files} keys that
+ * are relevant to a detected language (parity with Claude Code's
+ * `getFilesForLanguage`): a file is relevant when its key is under `${lang}/` or
+ * the always-shared `shared/` prefix. Returns `[]` for no files or a blank
+ * language. Order follows the files map's own key order (callers sort when
+ * inlining via {@link buildInlineReference}).
+ */
+export function getFilesForLanguage(
+  files: Record<string, string> | undefined,
+  lang: string,
+): string[] {
+  if (!files || typeof lang !== 'string' || lang.trim().length === 0) return [];
+  const prefix = `${lang.trim()}/`;
+  return Object.keys(files).filter((p) => p.startsWith(prefix) || p.startsWith('shared/'));
+}
+
+/** Strip HTML comments from markdown, nesting-safe (parity with Claude Code's
+ *  `processContent` comment pass). Looped so a `<!-- a <!-- b --> c -->` resolves. */
+function stripHtmlComments(md: string): string {
+  let out = md;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(/<!--[\s\S]*?-->\n?/g, '');
+  } while (out !== prev);
+  return out;
+}
+
+/**
+ * Assemble the inline-reference block for a set of a skill's bundled-doc keys
+ * (parity with Claude Code's `buildInlineReference`). Keys are sorted
+ * deterministically; each existing file's content is comment-stripped, has its
+ * `{{key}}` author template variables applied (via
+ * {@link applySkillTemplateVariables}), trimmed, and wrapped in a
+ * `<doc path="…">…</doc>` tag. A requested key with no matching file is skipped
+ * (never emits an empty tag). Returns `''` when nothing resolved.
+ */
+export function buildInlineReference(
+  files: Record<string, string> | undefined,
+  filePaths: readonly string[],
+  templateVars?: Record<string, string>,
+): string {
+  if (!files) return '';
+  const sections: string[] = [];
+  for (const filePath of [...filePaths].sort()) {
+    const md = files[filePath];
+    if (typeof md !== 'string') continue; // skip missing keys
+    const processed = applySkillTemplateVariables(stripHtmlComments(md), templateVars).trim();
+    sections.push(`<doc path="${filePath}">\n${processed}\n</doc>`);
+  }
+  return sections.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// Required-MCP-server readiness — the pure decision a subagent-spawn precondition
+// loop needs (parity with Claude Code's AgentTool requiredMcpServers gate, which
+// polls pending servers, early-exits on a failed required server, and errors when
+// a required server is missing). The polling/timeout loop lives in the task tool;
+// this classifies the CURRENT server-state snapshot so the loop can decide to
+// proceed, keep waiting, or abort.
+// ---------------------------------------------------------------------------
+
+/** One required-MCP-server readiness classification over a state snapshot. */
+export interface McpServerReadiness {
+  /** True when every required server is connected (safe to spawn). */
+  ready: boolean;
+  /** Required patterns whose matching server(s) are still connecting — the loop
+   *  should keep polling while these remain. */
+  pending: string[];
+  /** Required patterns whose every matching server has failed — the loop should
+   *  early-exit (no point waiting). */
+  failed: string[];
+  /** Required patterns with no matching server at all — an actionable "missing
+   *  required MCP server" error. */
+  missing: string[];
+}
+
+/**
+ * Classify a required-MCP-server precondition against a snapshot of live server
+ * states (parity with Claude Code's AgentTool requiredMcpServers gate). Each
+ * required entry is matched case-insensitively as a substring against the server
+ * names (consistent with {@link hasRequiredMcpServers}); a requirement is
+ * satisfied when ANY matching server is `'connected'`, `failed` when EVERY match
+ * has `'failed'`, `missing` when no server matches, otherwise `pending`. With no
+ * requirements the result is immediately {@link McpServerReadiness.ready}.
+ */
+export function requiredMcpServerReadiness(
+  required: readonly string[] | undefined,
+  serverStates: Readonly<Record<string, string>>,
+): McpServerReadiness {
+  const pending: string[] = [];
+  const failed: string[] = [];
+  const missing: string[] = [];
+  if (!required || required.length === 0) {
+    return { ready: true, pending, failed, missing };
+  }
+  const entries = Object.entries(serverStates);
+  for (const pattern of required) {
+    const pat = pattern.toLowerCase();
+    const matches = entries.filter(([name]) => name.toLowerCase().includes(pat));
+    if (matches.length === 0) { missing.push(pattern); continue; }
+    if (matches.some(([, state]) => state === 'connected')) continue; // satisfied
+    if (matches.every(([, state]) => state === 'failed')) { failed.push(pattern); continue; }
+    pending.push(pattern); // at least one still connecting
+  }
+  const ready = pending.length === 0 && failed.length === 0 && missing.length === 0;
+  return { ready, pending, failed, missing };
+}
+
+// ---------------------------------------------------------------------------
+// Named positional-argument substitution — bind a skill/command's declared
+// `arguments` names to their positional token values in the body (parity with
+// Claude Code's `substituteArguments`, which replaces BARE `$name` as well as
+// braced `${name}`). AMI previously bound only `${name}`; a bare `$foo` was left
+// literal. Single canonical substitution shared by the SkillManager content path.
+// ---------------------------------------------------------------------------
+
+/** Escape a string for literal use inside a RegExp (so an arg name carrying a
+ *  regex metacharacter matches literally instead of throwing / mis-matching). */
+function escapeForRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * True when `content` references the argument placeholder `name` in EITHER the
+ * braced `${name}` or the bare `$name` form (the same two forms
+ * {@link substituteNamedArgPlaceholders} fills). The bare form uses Claude's
+ * word-boundary guard so `$name` inside `$namexyz` / `$name[0]` does not count.
+ * Shared by the content path's "did the template already consume the args?" check
+ * so the two placeholder forms never diverge from what substitution actually binds.
+ */
+export function contentReferencesArgName(content: string, name: string): boolean {
+  if (typeof content !== 'string' || typeof name !== 'string' || name.length === 0) {
+    return false;
+  }
+  const esc = escapeForRegExp(name);
+  return (
+    content.includes(`\${${name}}`) ||
+    new RegExp(`\\$${esc}(?![\\[\\w])`).test(content)
+  );
+}
+
+/**
+ * Substitute a skill/command's declared positional-argument NAMES into its body
+ * (parity with Claude Code's `substituteArguments`). For each declared name at
+ * index `i`, both the braced `${name}` and the bare `$name` placeholder are
+ * replaced with `tokens[i]` (or `''` when no token was supplied, so a placeholder
+ * is never left literal). The bare form uses Claude's word-boundary guard
+ * `\$name(?![\[\w])` so `$name` inside `$namexyz` or `$name[0]` is NOT touched. A
+ * name listed in `skipNames` (an argument the caller binds explicitly elsewhere)
+ * is left untouched here. Names are escaped so a regex metacharacter is literal.
+ */
+export function substituteNamedArgPlaceholders(
+  content: string,
+  argumentNames: readonly string[] | undefined,
+  tokens: readonly string[],
+  skipNames: readonly string[] = [],
+): string {
+  if (!argumentNames || argumentNames.length === 0 || typeof content !== 'string') {
+    return content;
+  }
+  const skip = new Set(skipNames);
+  let out = content;
+  argumentNames.forEach((argName, i) => {
+    if (skip.has(argName)) return;
+    const value = tokens[i] ?? '';
+    const esc = escapeForRegExp(argName);
+    // Braced ${name}
+    out = out.replace(new RegExp(`\\$\\{${esc}\\}`, 'g'), () => value);
+    // Bare $name — not followed by a word char or `[` (so $name[0] / $namexyz stay)
+    out = out.replace(new RegExp(`\\$${esc}(?![\\[\\w])`, 'g'), () => value);
+  });
+  return out;
+}
