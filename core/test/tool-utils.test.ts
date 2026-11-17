@@ -749,12 +749,18 @@ describe('scanForSecrets – freeze protection', () => {
     assert.ok(found.length > 0, 'should detect secret at start of long line');
   });
 
-  it('does not detect secrets past the line scan limit', () => {
+  it('DETECTS a secret past column 500 on a single long line (full-content scan)', () => {
+    // U069 [4]: scanForSecrets no longer truncates each line to 500 chars before
+    // matching — a one-line .env export / minified config can carry a credential
+    // far past column 500. RED before the fix: the old per-line slice dropped it.
     const padding = 'x'.repeat(600);
     const secret = 'sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef';
-    const line = padding + secret;
+    // A real boundary (`=`) precedes the token so the leading-boundary rule can
+    // fire; the discriminator is purely the column-500 position (old code sliced
+    // the line to 500 chars and lost the token; the fix scans the full line).
+    const line = padding + '=' + secret;
     const found = scanForSecrets(line);
-    assert.equal(found.length, 0, 'secret past 500-char limit should not be scanned');
+    assert.ok(found.length > 0, 'secret past column 500 must now be detected');
   });
 });
 

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import type { ToolResult, DiffHunk } from '../types';
 import { isCredentialPath } from './bash-security';
 import { validatePathExpansionSafety, normalizeCaseForComparison } from '../utils/path';
+import { isSpecialFileStat } from '../path-safety';
 
 /**
  * Dependency seam so tests can drive branches that are otherwise shadowed by
@@ -194,6 +195,13 @@ export function resolveSearchPath(
   cwd: string,
   allowedRoots: readonly string[] = [],
 ): { resolved: string; error?: string } {
+  // UNC guard — BEFORE any filesystem access, mirroring resolveFilePath. Merely
+  // realpath'ing a UNC path on Windows opens an outbound SMB connection that can
+  // leak NTLM credentials, so grep/glob/list refuse it too (Claude Code blocks
+  // UNC in both safeResolvePath AND getPathsForPermissionCheck, not just reads).
+  if (inputPath && isUNCPath(inputPath)) {
+    return { resolved: inputPath, error: `Error: UNC paths are not allowed (potential NTLM credential leak): ${inputPath}` };
+  }
   const resolved = inputPath
     ? path.isAbsolute(inputPath)
       ? inputPath
@@ -209,7 +217,7 @@ export function resolveSearchPath(
   if (!isWithinWorkspaceRoots(abs, realCwd, realRoots)) {
     const roots = formatDirectoryList([cwd, ...allowedRoots]);
     const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
-    return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory.${hint}` };
+    return { resolved, error: `Error: path "${inputPath}" is outside the workspace directory (cwd: ${cwd}).${hint}` };
   }
   return { resolved };
 }
@@ -314,7 +322,10 @@ export function formatDirectoryList(dirs: readonly string[], max: number = MAX_D
 function outsideWorkspaceError(filePath: string, cwd: string, allowedRoots: readonly string[]): ToolResult {
   const roots = formatDirectoryList([cwd, ...allowedRoots]);
   const hint = roots ? ` Accessible roots for this session: ${roots}.` : '';
-  return { output: `Error: path "${filePath}" is outside the workspace directory.${hint}`, isError: true };
+  // Name the working directory in the denial so the model can rebase a relative
+  // path correctly instead of re-guessing (Claude Code's FILE_NOT_FOUND_CWD_NOTE
+  // convention — surface the cwd as context on every containment failure).
+  return { output: `Error: path "${filePath}" is outside the workspace directory (cwd: ${cwd}).${hint}`, isError: true };
 }
 
 /**
@@ -398,6 +409,18 @@ export function resolveFilePath(
   if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
     return { resolved, error: outsideWorkspaceError(filePath, cwd, allowedRoots) };
   }
+  // Special-file (FIFO/socket/char/block device) guard — BEFORE realpathSync,
+  // which can block INDEFINITELY on a FIFO waiting for a writer (a DoS a crafted
+  // named pipe inside the workspace could trigger just by being validated), and
+  // before any readFileSync which would likewise hang. lstat does not follow the
+  // final symlink and never blocks. A non-existent target throws ENOENT here and
+  // is skipped — the realpath/ancestor logic below governs new-file writes. Reuses
+  // the single shared isSpecialFileStat predicate (path-safety), no re-impl.
+  try {
+    if (isSpecialFileStat(fs.lstatSync(resolved))) {
+      return { resolved, error: { output: `Error: path "${filePath}" is a special file (FIFO/socket/device) — refused.`, isError: true } };
+    }
+  } catch { /* target does not exist yet — governed by the ancestor walk below */ }
   try {
     const real = fs.realpathSync(resolved);
     if (!isWithinWorkspaceRoots(real, cwd, allowedRoots)) {
@@ -480,7 +503,7 @@ export function safeLstat(
 ): { stat: fs.Stats; error?: undefined } | { error: ToolResult; stat?: undefined } {
   const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
   if (!isWithinWorkspaceRoots(resolved, cwd, allowedRoots)) {
-    return { error: { output: `Error: path "${filePath}" is outside the workspace directory.`, isError: true } };
+    return { error: { output: `Error: path "${filePath}" is outside the workspace directory (cwd: ${cwd}).`, isError: true } };
   }
 
   try {
@@ -741,6 +764,26 @@ const SECRET_RULES: SecretRule[] = [
   { id: 'jwt', source: '(?:^|[^a-zA-Z0-9])(eyJ[a-zA-Z0-9_-]{20,}\\.eyJ[a-zA-Z0-9_-]{20,}(?:\\.[a-zA-Z0-9_-]+)?)' },
   { id: 'npm-access-token', source: '(?:^|[^a-zA-Z0-9])(npm_[a-zA-Z0-9]{36,})' },
   { id: 'pypi-upload-token', source: '(?:^|[^a-zA-Z0-9])(pypi-[a-zA-Z0-9]{50,})' },
+  // PARITY ADD (curated-provider breadth, Claude Code SECRET_RULES). Each new rule
+  // keeps the secret token in capture group 1 (so redactSecrets replaces ONLY the
+  // token, preserving boundary chars) and adopts Claude's trailing boundary
+  // alternation `(?:[\x60'"\s;]|\\[nr]|$)` — which treats a literal escaped newline
+  // (the two-char `\n`/`\r` inside a serialized JSON/quoted string) as a valid
+  // terminator, catching secrets embedded in minified/escaped content.
+  // Azure AD client secret — distinctive `\dQ~` infix (very low false-positive).
+  { id: 'azure-ad-client-secret', source: '(?:^|[\\\\\'"\\x60\\s>=:(,)])([a-zA-Z0-9_~.]{3}\\dQ~[a-zA-Z0-9_~.-]{31,34})(?:$|[\\\\\'"\\x60\\s<),])' },
+  // Twilio API key — `SK` + 32 hex; negative lookahead bounds a longer hex run.
+  { id: 'twilio-api-key', source: '(?:^|[^a-zA-Z0-9])(SK[0-9a-fA-F]{32})(?![0-9a-fA-F])' },
+  // Databricks personal access token — `dapi` + 32 hex (optional `-N` shard).
+  { id: 'databricks-api-token', source: '(?:^|[^a-zA-Z0-9])(dapi[a-f0-9]{32}(?:-[0-9])?)(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // HashiCorp Terraform Cloud API token — `<14>.atlasv1.<60-70>`.
+  { id: 'hashicorp-tf-api-token', source: '(?:^|[^a-zA-Z0-9])([a-zA-Z0-9]{14}\\.atlasv1\\.[a-zA-Z0-9\\-_=]{60,70})' },
+  // Pulumi access token — `pul-` + 40 hex.
+  { id: 'pulumi-api-token', source: '(?:^|[^a-zA-Z0-9])(pul-[a-f0-9]{40})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Postman API key — `PMAK-<24hex>-<34hex>`.
+  { id: 'postman-api-token', source: '(?:^|[^a-zA-Z0-9])(PMAK-[a-fA-F0-9]{24}-[a-fA-F0-9]{34})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
+  // Grafana Cloud API token — `glc_` + base64-ish body.
+  { id: 'grafana-cloud-api-token', source: '(?:^|[^a-zA-Z0-9])(glc_[A-Za-z0-9+/]{32,400}={0,3})(?:[\\x60\'"\\s;]|\\\\[nr]|$)' },
   // Quoted credential assignment: password/secret/token/api_key : = "value".
   { id: 'credential-assignment', source: '(?:password|secret|token|api_key)\\s*[:=]\\s*[\'"]([^\'"]{8,})[\'"]', flags: 'i' },
 ];
@@ -783,6 +826,7 @@ const RULE_LABEL_SPECIAL: Record<string, string> = {
   pypi: 'PyPI', oauth: 'OAuth', github: 'GitHub', gitlab: 'GitLab',
   openai: 'OpenAI', sendgrid: 'SendGrid', groq: 'Groq',
   huggingface: 'HuggingFace', digitalocean: 'DigitalOcean',
+  ad: 'AD', tf: 'TF', hashicorp: 'HashiCorp',
 };
 
 /** Convert a kebab-case rule id to a human-readable label (never a secret). */
@@ -799,17 +843,18 @@ function ruleIdToLabel(ruleId: string): string {
  * returned — callers name the rule/label and must never echo the secret value.
  */
 export function scanForSecrets(content: string): SecretMatch[] {
-  const lines = content.split('\n');
-  const safeBuf: string[] = [];
-  for (const line of lines) {
-    safeBuf.push(line.length > MAX_SCAN_LINE_LENGTH ? line.slice(0, MAX_SCAN_LINE_LENGTH) : line);
-  }
-  const safe = safeBuf.join('\n');
+  // Scan the FULL content — NOT a per-line 500-char slice. A single-line .env
+  // export, a minified JSON/JS config, a base64 blob, or a one-line connection
+  // string can carry a credential past column 500; truncating each line before
+  // matching let those slip through the write-time guard entirely. Every rule is
+  // prefix-anchored (`sk-`, `AIza`, `ghp_`, …) so a full-content `test` does not
+  // backtrack on long non-matching input (freeze-protection test still holds).
+  // Mirrors Claude Code's secretScanner, which tests `rule.re.test(content)`.
   // One entry per rule that fires (rule ids are unique, so results are naturally
   // deduplicated). The matched bytes are never captured into the result.
   const matches: SecretMatch[] = [];
   for (const rule of getScanRules()) {
-    if (rule.re.test(safe)) {
+    if (rule.re.test(content)) {
       matches.push({ ruleId: rule.id, label: ruleIdToLabel(rule.id) });
     }
   }
