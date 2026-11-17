@@ -4097,6 +4097,49 @@ export function detectContainerEscape(command: string): { blocked: boolean; reas
 /** Shell interpreter tokens that appear on the right side of a pipe. */
 const SHELL_INTERPRETERS_RE = /(?:^|\/)(?:ba)?sh$/;
 
+/**
+ * Python options that CONSUME the following token as their value (`-W filter`,
+ * `-X opt`, `-Q arg`). Skipped as a flag+value pair when locating the module
+ * boundary so their value is not mistaken for the script that ends `-m` scanning.
+ */
+const PYTHON_VALUE_FLAGS_RE = /^(?:-W|-X|-Q)$/;
+
+/**
+ * True when a pipeline segment runs a Python MODULE (`python -m <module>`),
+ * recognizing EVERY valid spelling of the module flag — not just the spaced
+ * `-m <module>` token the previous textual check matched:
+ *   - spaced:  `python -m http.server`
+ *   - fused:   `python -mhttp.server`   (a valid Python short-flag cluster)
+ *   - equals:  `python -m=evil` / `python --module=evil`
+ *   - after other flags, incl. value-taking ones: `python -W ignore -mevil`
+ * A module invocation emits attacker-chosen output (the module's stdout) which,
+ * piped to a shell, is the same code-to-shell vector as `python -c`; the module
+ * name is opaque to textual checks, so the `-m` module boundary — not merely the
+ * spaced token — is what must be detected. Closes the fused
+ * `python -mhttp.server | sh` / `python -W ignore -mevil | sh` bypass of the
+ * prior `-m\b` regex. Tokenized with the shared quote-aware
+ * {@link tokenizeSegmentArgs} after {@link stripSafeWrappers}, and scanning stops
+ * at the first bare positional (the script file) since Python's `-m` only applies
+ * before a script. Parity: Claude Code tags the `-m` argument as an executable
+ * module (utils/bash/registry.ts / specs `isModule`).
+ */
+function pythonInvokesModule(segment: string): boolean {
+  const toks = tokenizeSegmentArgs(stripSafeWrappers(segment.trim()).trim());
+  if (toks.length === 0) return false;
+  const base = toks[0].replace(/^.*\//, '');
+  if (!/^python[23]?$/.test(base)) return false;
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '--') break; // end of options: remaining tokens are module/script args
+    if (t === '-m' || t === '--module') return i + 1 < toks.length; // spaced: needs a module name
+    if (/^-m.+/.test(t) || /^--module=/.test(t)) return true; // fused -mMOD / -m=MOD / --module=MOD
+    if (PYTHON_VALUE_FLAGS_RE.test(t)) { i++; continue; } // flag consumes the next token as its value
+    if (!t.startsWith('-')) break; // the script/program file — Python's -m no longer applies
+    // any other value-less option (-O/-B/-u/-E/-s/…): keep scanning for -m
+  }
+  return false;
+}
+
 export function detectBase64ShellPipe(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
 
@@ -4135,13 +4178,10 @@ export function detectBase64ShellPipe(command: string): { blocked: boolean; reas
       return { blocked: true, reason: 'python -c output piped to shell interpreter — arbitrary script-to-shell execution' };
     }
 
-    // Check if the left segment runs a python module (`python -m <module>`). A
-    // module invocation emits attacker-chosen output (the module's stdout) which,
-    // piped to a shell, is the same code-to-shell vector as `python -c` — the
-    // module name is opaque to the textual checks (parity: Claude Code classifies
-    // the `-m` argument as an executable module, utils/bash/registry.ts isModule).
-    // eslint-disable-next-line security/detect-unsafe-regex -- `-\S+\s+` (non-space run then a required space) and the trailing `-m\b` are matched against a bounded pipe segment; the `\S+`/`\s+` arms are disjoint on their boundary char so backtracking stays linear
-    if (/\bpython[23]?\s+(?:-\S+\s+)*-m\b/.test(current)) {
+    // Check if the left segment runs a python module (`python -m <module>`) — in
+    // any valid spelling (spaced / fused `-mMOD` / `-m=MOD` / after other flags).
+    // See {@link pythonInvokesModule}.
+    if (pythonInvokesModule(current)) {
       return { blocked: true, reason: 'python -m module output piped to shell interpreter — arbitrary module-to-shell execution' };
     }
   }
