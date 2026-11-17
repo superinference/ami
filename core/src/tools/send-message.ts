@@ -124,6 +124,33 @@ export interface PermissionResponse {
   type: 'permission_response';
   requestId: string;
   approve: boolean;
+  /**
+   * Human-readable rejection reason the resolver attaches when denying, carried
+   * back to the worker so it understands WHY the request was refused (not just
+   * that it was). Mirrors Claude Code's SwarmPermissionResolution `feedback`
+   * (utils/swarm/permissionSync.ts) round-tripped via pollForResponse.
+   */
+  feedback?: string;
+  /**
+   * The resolver's edited tool input: a leader may approve a worker's tool call
+   * but modify its arguments first (e.g. tighten a glob, redact a flag) and the
+   * worker must run the EDITED input, not its original. Carried on the response so
+   * the worker's permission path can substitute it. Mirrors Claude Code's
+   * SwarmPermissionResolution `updatedInput`.
+   */
+  updatedInput?: Record<string, unknown>;
+}
+/**
+ * A lifecycle notice that a teammate has terminated (exited or was force-killed),
+ * surfaced so a consumer can release the dead agent's work and stop routing to it.
+ * `message` is an optional human-readable note. Mirrors Claude Code's
+ * teammate_terminated mailbox message (killTeammate injects it into the lead's
+ * inbox; UserTeammateMessage filters it out of the model-facing render — it is a
+ * silent control-plane signal, never conversational chatter).
+ */
+export interface TeammateTerminated {
+  type: 'teammate_terminated';
+  message?: string;
 }
 /**
  * A worker asks the lead to approve network egress to a specific host that the
@@ -213,7 +240,8 @@ export type StructuredMessage =
   | TeamPermissionUpdate
   | TaskAssignment
   | IdleNotification
-  | ModeSetRequest;
+  | ModeSetRequest
+  | TeammateTerminated;
 
 const STRUCTURED_TYPES = new Set([
   'shutdown_request', 'shutdown_response', 'plan_approval_request',
@@ -221,6 +249,7 @@ const STRUCTURED_TYPES = new Set([
   'sandbox_permission_request', 'sandbox_permission_response',
   'team_permission_update',
   'task_assignment', 'idle_notification', 'mode_set_request',
+  'teammate_terminated',
 ]);
 
 const IDLE_REASONS = new Set(['available', 'interrupted', 'failed']);
@@ -289,9 +318,23 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
     case 'permission_request':
       if (typeof o.tool !== 'string') return { error: 'permission_request requires a tool' };
       return { type, requestId: optionalReqId, tool: o.tool, description: typeof o.description === 'string' ? o.description : '' };
-    case 'permission_response':
+    case 'permission_response': {
       if (typeof requestId !== 'string') return { error: 'permission_response requires a requestId' };
-      return { type, requestId, approve: coerceApprove(o) };
+      // A resolver-edited tool input must be a plain object (never a string/array/
+      // primitive) so a malformed `updatedInput` can't be forwarded as the input a
+      // worker runs. A bad shape is ignored rather than fatal (the approve/deny
+      // decision still stands).
+      const updatedInput = (o.updatedInput && typeof o.updatedInput === 'object' && !Array.isArray(o.updatedInput))
+        ? (o.updatedInput as Record<string, unknown>)
+        : undefined;
+      return {
+        type,
+        requestId,
+        approve: coerceApprove(o),
+        feedback: typeof o.feedback === 'string' ? o.feedback : undefined,
+        updatedInput,
+      };
+    }
     case 'sandbox_permission_request': {
       // Accept both AMI's flat `host` and Claude's nested `hostPattern.host` so a
       // cross-framework payload parses identically.
@@ -371,6 +414,10 @@ export function parseStructuredMessage(content: string): StructuredMessage | { e
       if (!norm) return { error: `mode_set_request mode must be one of: ${PERMISSION_MODES.join(', ')}` };
       return { type, mode: norm };
     }
+    case 'teammate_terminated':
+      // A pure lifecycle notice — every field optional (a bare termination signal
+      // carries no `message`). `message` is coerced to a string or dropped.
+      return { type, message: typeof o.message === 'string' ? o.message : undefined };
     default:
       return null;
   }
@@ -450,8 +497,13 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
         : `[Plan Rejected] ${m.feedback || 'Please revise your plan'} — revise and call ExitPlanMode again`;
     case 'permission_request':
       return `[Permission Request] tool "${m.tool}"${m.description ? `: ${m.description}` : ''}`;
-    case 'permission_response':
-      return m.approve ? '[Permission Granted]' : '[Permission Denied]';
+    case 'permission_response': {
+      const edited = m.updatedInput ? ' (input edited by approver)' : '';
+      if (m.approve) return `[Permission Granted]${edited}`;
+      // Default a missing rejection feedback to actionable guidance so the worker
+      // always has a next step, mirroring Claude Code's feedback fallback.
+      return `[Permission Denied] ${m.feedback || 'request refused by the team lead'}`;
+    }
     case 'sandbox_permission_request':
       return `[Sandbox Egress Request]${from ? ` from ${from}` : ''} — approve outbound network access to host "${m.host}"?`;
     case 'sandbox_permission_response':
@@ -474,6 +526,8 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
     }
     case 'mode_set_request':
       return `[Mode Set Request]${from ? ` from ${from}` : ''} → ${m.mode}`;
+    case 'teammate_terminated':
+      return `[Teammate Terminated]${from ? ` ${from}` : ''}${m.message ? ` — ${m.message}` : ''}`;
   }
 }
 
@@ -517,6 +571,8 @@ export function toAutoClassifierInput(content: string, to: string): string {
       return `idle_notification to ${to}`;
     case 'mode_set_request':
       return `mode_set_request ${m.mode} to ${to}`;
+    case 'teammate_terminated':
+      return `teammate_terminated to ${to}`;
   }
 }
 
@@ -1118,7 +1174,7 @@ export function markMailboxDelivered(agentName: string, ids: string[]): number {
 export function classifyMessageSource(content: string, from: string): MessageSource {
   const parsed = parseStructuredMessage(content);
   if (parsed && !('error' in parsed)) {
-    return parsed.type === 'task_assignment' || parsed.type === 'idle_notification'
+    return parsed.type === 'task_assignment' || parsed.type === 'idle_notification' || parsed.type === 'teammate_terminated'
       ? 'task'
       : 'system';
   }
@@ -1208,8 +1264,28 @@ function deliveryAffordance(toRaw: string, to: string, context: ToolContext): st
 }
 
 /**
+ * Display names of every member in the current team roster (from the trusted team
+ * file, never model-supplied), or `[]` when no team is established. Used both to
+ * recognize a declared-but-not-yet-spawned teammate as a valid recipient and to
+ * build the corrective "known agents" affordance. Mirrors Claude Code's
+ * teamContext.teammates lookup in utils/directMemberMessage.ts.
+ */
+function rosterMemberNames(): string[] {
+  try {
+    const { getCurrentTeam } = require('./team');
+    const team = getCurrentTeam();
+    if (!team || !Array.isArray(team.members)) return [];
+    return team.members
+      .map((m: { name?: string }) => m.name)
+      .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
+  } catch { return []; }
+}
+
+/**
  * A recipient is "reachable" if it is a registered agent, has a live notifier,
- * or already owns a mailbox. Used to warn on a likely-dead/typo recipient.
+ * already owns a mailbox, or is a declared member of the current team roster.
+ * Used to warn on a likely-dead/typo recipient. Including roster members means a
+ * pre-declared teammate that has not yet come online is not mis-flagged as unknown.
  */
 function isReachable(name: string): boolean {
   if (mailboxNotifiers.has(name)) return true;
@@ -1218,7 +1294,25 @@ function isReachable(name: string): boolean {
     const { getAgentByName } = require('./task');
     if (getAgentByName(name)) return true;
   } catch { /* task module unavailable */ }
-  return false;
+  const lc = name.toLowerCase();
+  return rosterMemberNames().some(n => n.toLowerCase() === lc);
+}
+
+/**
+ * The deduplicated set of recipient names a sender could legitimately address this
+ * session — live notifier/mailbox owners plus the trusted team roster, always
+ * including the lead. Backs the corrective affordance that lists the KNOWN agents
+ * when a send targets an unrecognized recipient, so the model can self-correct a
+ * typo/stale name instead of silently creating an orphan mailbox nobody drains.
+ * Mirrors Claude Code's PaneBackendExecutor "Invalid agentId … expected …" hint.
+ */
+function knownRecipientNames(exclude?: string): string[] {
+  const names = new Set<string>([TEAM_LEAD_NAME]);
+  for (const n of mailboxes.keys()) names.add(n);
+  for (const n of mailboxNotifiers.keys()) names.add(n);
+  for (const n of rosterMemberNames()) names.add(n);
+  if (exclude) names.delete(exclude);
+  return [...names].sort();
 }
 
 export const sendMessageTool: ToolDefinition = {
@@ -1570,7 +1664,12 @@ export const sendMessageTool: ToolDefinition = {
           }
           const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Permission ${structured.approve ? 'granted' : 'denied'} to ${toRaw} (id: ${structured.requestId})${originTag}` };
+          // Surface the resolver's feedback (on a denial) and whether it edited the
+          // worker's tool input, so the lead's confirmation reflects the full
+          // decision the worker will act on (mirrors Claude's feedback/updatedInput).
+          const editedTag = structured.updatedInput ? ' with edited input' : '';
+          const feedbackTag = !structured.approve && structured.feedback ? `: ${structured.feedback}` : '';
+          return { output: `Permission ${structured.approve ? 'granted' : 'denied'}${editedTag} to ${toRaw} (id: ${structured.requestId})${originTag}${feedbackTag}` };
         }
         case 'sandbox_permission_request': {
           // A worker whose sandbox blocked egress to a host asks the lead to
@@ -1616,6 +1715,18 @@ export const sendMessageTool: ToolDefinition = {
           enqueue(to, { from, to, content, timestamp: Date.now() });
           return { output: `Team permission update (${structured.behavior} "${structured.toolName}") sent to ${toRaw} [from: ${from}]` };
         }
+        case 'teammate_terminated': {
+          // A lifecycle notice that a peer has exited/been killed, routed to the
+          // lead so it can release the dead agent's work. Point-to-point (the
+          // broadcast guard above already rejects "*"); surfaced silently by the
+          // receive-side relay (never dumped as chatter).
+          if (toRaw !== TEAM_LEAD_NAME) {
+            return { output: `Error: teammate_terminated must be sent to "${TEAM_LEAD_NAME}".`, isError: true };
+          }
+          enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
+          const note = structured.message ? ` — ${structured.message}` : '';
+          return { output: `Teammate termination notice sent to ${TEAM_LEAD_NAME} [from: ${from}]${note}` };
+        }
       }
     }
 
@@ -1655,13 +1766,21 @@ export const sendMessageTool: ToolDefinition = {
       return { output: `Broadcast sent to ${recipients.length} agent(s): ${recipients.join(', ')}` };
     }
 
-    // Dead-recipient boundary: if other agents are live this session but the
-    // target isn't reachable, it's almost certainly a typo/stale name. Warn
-    // (still queued, in case it comes online) rather than fail silently.
+    // Dead-recipient boundary: if other agents are live this session (a live
+    // notifier) OR a team roster is established but the target isn't reachable,
+    // it's almost certainly a typo/stale name. Warn — and name the KNOWN agents so
+    // the model can self-correct — while still queuing (in case it comes online)
+    // rather than failing silently or hard-rejecting a teammate that is spawning.
+    // Mirrors Claude Code's corrective "known agents" affordance (PaneBackendExecutor)
+    // without regressing AMI's deliberate queue-to-coming-online superset behavior.
     // Computed BEFORE enqueue, which would otherwise create the mailbox.
-    const unreachableWarn = (!isReachable(to) && mailboxNotifiers.size > 0)
-      ? ` [warning: "${toRaw}" is not a known/live agent — check the name]`
-      : '';
+    const hasRoster = rosterMemberNames().length > 0;
+    let unreachableWarn = '';
+    if (!isReachable(to) && (mailboxNotifiers.size > 0 || hasRoster)) {
+      const known = knownRecipientNames(trustedSelf ?? from);
+      const knownTag = known.length > 0 ? ` Known agents: ${known.join(', ')}.` : '';
+      unreachableWarn = ` [warning: "${toRaw}" is not a known/live agent — check the name.${knownTag}]`;
+    }
 
     enqueue(to, msg);
 

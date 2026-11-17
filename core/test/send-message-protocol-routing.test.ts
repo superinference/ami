@@ -85,7 +85,10 @@ describe('summarizeStructuredMessage', () => {
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'plan_approval_response', requestId: rid, approve: true }))!, /^\[Plan Approved\] You can now proceed with implementation/);
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'plan_approval_response', requestId: rid, approve: false, feedback: 'redo' }))!, /\[Plan Rejected\] redo — revise and call ExitPlanMode again/);
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'permission_request', tool: 'bash', description: 'rm -rf' }))!, /\[Permission Request\] tool "bash": rm -rf/);
-    assert.equal(summarizeStructuredMessage(JSON.stringify({ type: 'permission_response', requestId: rid, approve: false })), '[Permission Denied]');
+    // A permission denial defaults to actionable feedback when none is supplied
+    // (w72 parity: SwarmPermissionResolution.feedback round-trips to the worker).
+    assert.equal(summarizeStructuredMessage(JSON.stringify({ type: 'permission_response', requestId: rid, approve: false })), '[Permission Denied] request refused by the team lead');
+    assert.equal(summarizeStructuredMessage(JSON.stringify({ type: 'permission_response', requestId: rid, approve: true })), '[Permission Granted]');
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'shutdown_request', reason: 'r' }), 'w')!, /\[Shutdown Request from w\] r/);
   });
 
