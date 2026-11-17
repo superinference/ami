@@ -401,7 +401,7 @@ export { containsCredential, redactCredentials, findCredentials, getCredentialLa
 export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, SafeModeGuard, BLOCKED_RESOURCES, resourceTier, describeBlocked, RESOURCE_DESCRIPTIONS, SAFE_MODE_GUIDANCE } from './safe-mode';
 export type { SafeModeConfig, BlockedResource, ResourceTier, BlockedResourceInfo } from './safe-mode';
-export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS } from './request-signature';
+export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS, SIGNATURE_FUTURE_SKEW_MS } from './request-signature';
 export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';
 export type { SecurityPattern, SecurityFinding, SecuritySeverity } from './code-security-patterns';

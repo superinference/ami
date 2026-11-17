@@ -1,4 +1,13 @@
 import * as crypto from 'crypto';
+import { formatDuration } from './conversation-summary';
+
+/**
+ * Clock-skew allowance for a signature whose timestamp is ahead of the
+ * verifier's clock. A signature more than this far in the future is rejected
+ * (its clock is too skewed, or the timestamp was forged forward). Exposed as a
+ * named constant so the verifier can embed it in the human-readable reason.
+ */
+export const SIGNATURE_FUTURE_SKEW_MS = 60_000;
 
 export interface RequestSignature {
   nonce: string;
@@ -134,11 +143,27 @@ export function verifyRequestSignature(
   }
 
   const now = Date.now();
-  if (now - sig.timestamp > maxAgeMs) {
-    return { valid: false, reason: 'signature expired' };
+  // Enrich expiry/skew failures with the concrete time delta (and the window
+  // that was exceeded) so operators get an actionable diagnostic — e.g.
+  // "signature expired (stale by 1m 40s, max age 5m)" — instead of a bare
+  // label. Mirrors Claude Code's jwtUtils, which renders every expiry/skew
+  // message with a human-readable duration via a shared formatDuration helper;
+  // here we reuse AMI's canonical formatDuration (conversation-summary) rather
+  // than duplicating it. The stable "signature expired" / "signature timestamp
+  // in future" prefixes are preserved so existing reason-prefix matching holds.
+  const age = now - sig.timestamp;
+  if (age > maxAgeMs) {
+    return {
+      valid: false,
+      reason: `signature expired (stale by ${formatDuration(age - maxAgeMs)}, max age ${formatDuration(maxAgeMs)})`,
+    };
   }
-  if (sig.timestamp > now + 60_000) {
-    return { valid: false, reason: 'signature timestamp in future' };
+  const skew = sig.timestamp - now;
+  if (skew > SIGNATURE_FUTURE_SKEW_MS) {
+    return {
+      valid: false,
+      reason: `signature timestamp in future (by ${formatDuration(skew)}, max skew ${formatDuration(SIGNATURE_FUTURE_SKEW_MS)})`,
+    };
   }
   const payload = canonicalString([method.toUpperCase(), path, sig.timestamp, sig.nonce, body]);
   const expected = crypto.createHmac(algorithm, secret).update(payload).digest('hex');

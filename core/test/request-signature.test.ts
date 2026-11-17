@@ -89,7 +89,9 @@ describe('createRequestSignature / verifyRequestSignature', () => {
     // Re-sign with the old timestamp to make a structurally valid but expired sig
     const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
     assert.equal(result.valid, false);
-    assert.equal(result.reason, 'signature expired');
+    // The reason keeps the stable "signature expired" prefix and now embeds the
+    // concrete overshoot (see the detail-bearing tests below).
+    assert.match(result.reason ?? '', /^signature expired\b/);
   });
 
   it('verifyRequestSignature rejects future timestamp', () => {
@@ -97,7 +99,7 @@ describe('createRequestSignature / verifyRequestSignature', () => {
     sig.timestamp = Date.now() + 120_000; // 2 min in future
     const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
     assert.equal(result.valid, false);
-    assert.equal(result.reason, 'signature timestamp in future');
+    assert.match(result.reason ?? '', /^signature timestamp in future\b/);
   });
 
   it('verifyRequestSignature rejects wrong body', () => {
@@ -129,7 +131,7 @@ describe('createRequestSignature / verifyRequestSignature', () => {
     // Instead, use a maxAge shorter than the age
     const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret, 1_000);
     assert.equal(result.valid, false);
-    assert.equal(result.reason, 'signature expired');
+    assert.match(result.reason ?? '', /^signature expired\b/);
   });
 
   // --- Crash-safety on malformed/attacker-controlled signatures (G1) ---
@@ -202,6 +204,56 @@ describe('createRequestSignature / verifyRequestSignature', () => {
     const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
     assert.equal(result.valid, false);
     assert.equal(result.reason, 'signature mismatch');
+  });
+});
+
+// --- Human-readable, detail-bearing expiry/skew reasons (G-DETAIL) ---
+// The expiry/future reasons must embed the concrete time delta (and the window
+// exceeded) so a downstream log/diagnostic is actionable — mirroring Claude
+// Code's jwtUtils, which renders every expiry/skew message with a formatted
+// duration. These FAIL against the pre-enrichment terse strings ('signature
+// expired' / 'signature timestamp in future') and PASS with the fix.
+describe('verifyRequestSignature expiry/skew detail (G-DETAIL)', () => {
+  const secret = 'detail-secret';
+
+  it('expired reason reports how stale the signature is and the max age', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.timestamp = Date.now() - 400_000; // 400s old vs 300s default window
+    const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    assert.equal(result.valid, false);
+    // overshoot ≈ 400s - 300s = 100s → "1m 40s"; window 300s → "5m".
+    assert.match(result.reason ?? '', /^signature expired \(stale by 1m 40s, max age 5m\)$/);
+  });
+
+  it('expired reason tracks a custom maxAgeMs window', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.timestamp = Date.now() - 5_000; // 5s old
+    const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret, 1_000);
+    assert.equal(result.valid, false);
+    // overshoot ≈ 5s - 1s = 4s; window 1s → "1s".
+    assert.match(result.reason ?? '', /^signature expired \(stale by 4s, max age 1s\)$/);
+  });
+
+  it('future reason reports how far ahead the timestamp is and the max skew', () => {
+    const sig = createRequestSignature('POST', '/api', 'body', secret);
+    sig.timestamp = Date.now() + 125_000; // ~2m 5s ahead
+    const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    assert.equal(result.valid, false);
+    assert.match(result.reason ?? '', /^signature timestamp in future \(by 2m 5s, max skew 1m\)$/);
+  });
+
+  it('a signature within the future-skew allowance is not rejected as future', () => {
+    // 30s ahead < 60s allowance: must NOT trip the future branch. With a matching
+    // signature it round-trips valid (proving the boundary constant is honored).
+    const ts = Date.now() + 30_000;
+    const payloadSig = signRequest('POST', '/api', 'body', ts, secret);
+    const sig = { nonce: generateNonce(), timestamp: ts, signature: payloadSig };
+    // signRequest omits the nonce from its payload, so this won't match the
+    // verifier's nonce-inclusive canonical string; assert only that it did NOT
+    // fail with a "future" reason.
+    const result = verifyRequestSignature(sig, 'POST', '/api', 'body', secret);
+    assert.equal(result.valid, false);
+    assert.doesNotMatch(result.reason ?? '', /in future/);
   });
 });
 
