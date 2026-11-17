@@ -1806,6 +1806,88 @@ export function scopedToolAllowRules(
   return rules;
 }
 
+// ---------------------------------------------------------------------------
+// MCP-derived tool allowlists — compute a skill/command's allowed MCP tool names
+// from a connected server's ADVERTISED tool set instead of hand-listing them
+// (parity with Claude Code's bundled claude-in-chrome skill, whose allowlist is
+// `BROWSER_TOOLS.map(t => `mcp__<server>__${t.name}`)` — derived from the MCP
+// server's enumerated tools, so it never drifts when the server adds/removes a
+// tool). Pure core building blocks over AMI's `mcp__<server>__<tool>` naming
+// convention; the skill tool's `filterToolsForSkill` wires the `mcp__<server>__*`
+// server-wildcard expansion into the real toolset filter.
+// ---------------------------------------------------------------------------
+
+/**
+ * The model-facing namespace prefix a server's MCP tools carry
+ * (`mcp__<server>__`) — the single source for building and recognizing qualified
+ * MCP tool names, consistent with AMI's `mcp__<server>__<tool>` convention.
+ */
+export function mcpToolNamespacePrefix(serverName: string): string {
+  return `mcp__${serverName}__`;
+}
+
+/**
+ * True when a fully-qualified tool name belongs to `serverName`'s MCP namespace —
+ * i.e. it is `mcp__<server>__<tool>` with a non-empty `<tool>` segment. A blank
+ * server name, or a non-string tool name, never matches. Shared by
+ * {@link deriveMcpToolAllowlist} and the skill-tool server-wildcard expansion so
+ * "which tools does this server advertise" is decided in exactly one place.
+ */
+export function isMcpToolOfServer(toolName: string, serverName: string): boolean {
+  if (typeof toolName !== 'string' || typeof serverName !== 'string') return false;
+  const server = serverName.trim();
+  if (server.length === 0) return false;
+  const prefix = mcpToolNamespacePrefix(server);
+  return toolName.length > prefix.length && toolName.startsWith(prefix);
+}
+
+/**
+ * Namespace a server's advertised BARE tool names into the model-facing
+ * `mcp__<server>__<tool>` allowlist entries (parity with Claude Code's
+ * claude-in-chrome skill: `allowedTools = BROWSER_TOOLS.map(t =>
+ * `mcp__<server>__${t.name}`)`). Lets a skill derive its allowlist from whatever
+ * tools an MCP server currently exposes instead of hard-coding them. A blank/
+ * non-string server name, or no tools, yields `[]`; blank/non-string tool names
+ * are dropped and the result is de-duplicated in input order.
+ */
+export function deriveMcpToolAllowlist(
+  serverName: string,
+  toolNames: readonly string[] | undefined,
+): string[] {
+  if (typeof serverName !== 'string') return [];
+  const server = serverName.trim();
+  if (server.length === 0 || !toolNames || toolNames.length === 0) return [];
+  const prefix = mcpToolNamespacePrefix(server);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of toolNames) {
+    if (typeof raw !== 'string') continue;
+    const tool = raw.trim();
+    if (tool.length === 0) continue;
+    const qualified = `${prefix}${tool}`;
+    if (seen.has(qualified)) continue;
+    seen.add(qualified);
+    out.push(qualified);
+  }
+  return out;
+}
+
+/**
+ * Parse a skill/command `allowedTools`/`disallowedTools` entry of the SERVER-
+ * WILDCARD form `mcp__<server>__*` into the bare `<server>` name, or `null` when
+ * the entry is not a server wildcard. Used by {@link filterToolsForSkill} to
+ * expand such an entry against the LIVE advertised MCP tool set (via
+ * {@link isMcpToolOfServer}), so a skill can allow/deny an entire MCP server's
+ * tools without enumerating them. A blank/non-string entry, or one whose server
+ * segment is empty, yields `null`.
+ */
+export function parseMcpServerWildcard(entry: string): string | null {
+  if (typeof entry !== 'string') return null;
+  const m = /^mcp__(.+)__\*$/.exec(entry.trim());
+  const server = m?.[1]?.trim();
+  return server && server.length > 0 ? server : null;
+}
+
 /**
  * True when `content` references the argument placeholder `name` in EITHER the
  * braced `${name}` or the bare `$name` form (the same two forms

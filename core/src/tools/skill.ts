@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules, parseMcpServerWildcard, isMcpToolOfServer, mcpToolNamespacePrefix, deriveMcpToolAllowlist } from '../skills';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
 import { parseMcpToolName } from './mcp-tool';
@@ -320,6 +320,32 @@ export function filterToolsForSkill(
   // to every tool in that class; a name resolves to itself (warning if it matches
   // no real tool). Category tokens are valid taxonomy and never warn.
   const resolveEntry = (entry: string, list: 'allowed' | 'disallowed', into: Set<string>): void => {
+    // Server-wildcard entry `mcp__<server>__*`: derive the allow/deny set from the
+    // MCP server's LIVE advertised tools (parity with Claude Code's claude-in-chrome
+    // skill, whose allowlist is computed from the server's enumerated tools) instead
+    // of hand-listing each one, so it never drifts when the server adds/removes a tool.
+    const wildcardServer = parseMcpServerWildcard(entry);
+    if (wildcardServer) {
+      // Collect the server's live advertised BARE tool names, then re-derive the
+      // canonical `mcp__<server>__<tool>` allowlist via deriveMcpToolAllowlist — the
+      // single source for "which qualified tools does this server expose" — so the
+      // expansion matches exactly what a static Claude-style allowlist would list.
+      const prefix = mcpToolNamespacePrefix(wildcardServer);
+      const bareNames = allTools
+        .filter(t => isMcpToolOfServer(t.name, wildcardServer))
+        .map(t => t.name.slice(prefix.length));
+      const qualified = deriveMcpToolAllowlist(wildcardServer, bareNames);
+      for (const name of qualified) into.add(name);
+      if (qualified.length === 0) {
+        onWarning?.({
+          kind: 'unknown-tool',
+          entry,
+          list,
+          message: `${list}-tools entry "${entry}" matches no advertised MCP tool`,
+        });
+      }
+      return;
+    }
     const parsed = parseSkillToolEntry(entry);
     if ('category' in parsed) {
       for (const t of allTools) if (toolCategory(t) === parsed.category) into.add(t.name);
