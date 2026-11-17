@@ -127,6 +127,24 @@ export function readMcpToolMeta(
   return { searchHint, alwaysLoad };
 }
 
+/** Derive the user-facing display label for an MCP tool.
+ *
+ *  Prefers the server-supplied `annotations.title` (the human label the server
+ *  intends, 2025-06-18 MCP spec) over the raw programmatic tool name, and renders
+ *  it in Claude Code's `userFacingName` form — `<server> - <label> (MCP)`
+ *  (services/mcp/client.ts:L1972-1976) — so the UI shows e.g.
+ *  `github - Create Issue (MCP)` instead of the mangled `create_issue`. A blank/
+ *  whitespace-only title is ignored (falls back to the tool name). */
+export function getMcpToolDisplayName(
+  serverName: string,
+  toolName: string,
+  annotations?: McpToolAnnotations,
+): string {
+  const title = annotations?.title?.trim();
+  const label = title ? title : toolName;
+  return `${serverName} - ${label} (MCP)`;
+}
+
 export function createMcpTool(
   serverName: string,
   toolName: string,

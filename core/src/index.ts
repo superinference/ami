@@ -40,6 +40,8 @@ export type { McpTransport, McpUrlElicitation } from './mcp/client';
 export { MCP_SERVER_STATES, matchMcpAutoAllow, isValidCallbackPort, resolveMcpOAuthRedirect } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
 export { getMcpServerLogPath, logMcpError, logMcpDebug, sanitizeMcpLogSegment, mcpLogDateStamp } from './mcp/log-sink';
+export { classifyMcpToolForCollapse, normalizeCollapseToolName } from './mcp/classify-collapse';
+export type { McpCollapseClass } from './mcp/classify-collapse';
 export type { McpLogSinkOptions, McpErrorLogRecord, McpDebugLogRecord } from './mcp/log-sink';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow } from './error-classifier';

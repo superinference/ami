@@ -323,7 +323,7 @@ export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam, getSelfIdent
 export type { SelfIdentity } from './team';
 export { todoWriteTool, todoReadTool, resetTodos, getTodos, setTodos, formatTodoReadOutput, validateInProgressActiveForm, extractTodosFromTranscript, rehydrateTodosFromTranscript } from './todo-write';
 export { createMcpAuthTool } from './mcp-auth';
-export { createMcpTool } from './mcp-tool';
+export { createMcpTool, getMcpToolDisplayName } from './mcp-tool';
 export { createMcpConnectTool } from './mcp-connect';
 export { listMcpResourcesTool, readMcpResourceTool } from './mcp-resources';
 export { configTool } from './config-tool';
