@@ -1269,8 +1269,13 @@ export type EngineEvent =
    *  `summary` phrase (`completed (exit code: 0)` / `failed with exit code 1` /
    *  `was stopped`) so a finished/failed/killed background task is visible inline
    *  instead of only in the model's context. Parity: Claude Code's shell/local-agent
-   *  completion notification. */
-  | { type: 'background_task_complete'; taskId: string; status: string; summary: string }
+   *  completion notification. `outputFile` is the on-disk path the task's captured
+   *  output was streamed to (the `${taskId}.output` spool), so a frontend can offer a
+   *  "view full output" affordance that reads the complete transcript instead of only
+   *  the collapsed summary. Parity: Claude Code's task terminal notification
+   *  `output_file` field (`utils/sdkEventQueue.ts`). Omitted only on a legacy direct
+   *  emit that never recorded a spool path. */
+  | { type: 'background_task_complete'; taskId: string; status: string; summary: string; outputFile?: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**
