@@ -1728,6 +1728,38 @@ export function countLinesChanged(
 }
 
 /**
+ * Count the CHARACTERS the agent authored between two revisions — the summed
+ * length of the ADDED lines in the line-level diff (parity intent: Claude Code's
+ * per-edit character contribution, `claudeContribution`). Reuses the SAME exact
+ * line LCS as {@link countLinesChanged} (so the two can never disagree about what
+ * changed) with the identical degenerate-input guard, counting only `+` ops.
+ * A brand-new file (empty old content) counts its full length; a pure deletion,
+ * or no change, counts zero. Line-separator characters are not tallied — the
+ * metric is "characters of content the agent introduced".
+ */
+export function countCharsAdded(
+  oldContent: string,
+  newContent: string,
+  options: { ignoreWhitespace?: boolean } = {},
+): number {
+  if (newContent.length === 0) return 0;
+  if (oldContent.length === 0) return newContent.length;
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  if (oldLines.length * newLines.length > MAX_DIFF_CELLS) {
+    // Bounded fallback: approximate by the net positive length delta, consistent
+    // with countLinesChanged's degenerate-input fallback.
+    return Math.max(0, newContent.length - oldContent.length);
+  }
+  const ops = lineDiffOps(oldLines, newLines, options.ignoreWhitespace ?? false);
+  let chars = 0;
+  for (const op of ops) {
+    if (op.type === '+') chars += op.line.length;
+  }
+  return chars;
+}
+
+/**
  * Count the lines in a blob the way an editor numbers them: a trailing newline
  * is a line TERMINATOR, not the start of a new empty line. `"a\nb\n"` is 2 lines,
  * `"a\nb"` is 2 lines, `""` is 0 lines. Mirrors Claude Code's `countLines`

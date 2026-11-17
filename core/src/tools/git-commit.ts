@@ -7,6 +7,8 @@ import { generateTempFilePath } from '../utils/tempfile';
 import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
+import { getSessionFileAttribution } from './attribution-store';
+import { agentContributionRatio } from '../session';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
@@ -62,6 +64,7 @@ function stripDisallowedAttribution(message: string): string {
 export const _gitCommitFs = {
   writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  readFileSync: fs.readFileSync as typeof fs.readFileSync,
   /**
    * Async, cancellable staging seam. Parity with Claude Code, which routes every
    * git invocation through an async child that always forwards `signal` (and
@@ -165,6 +168,21 @@ export function attributionNotesEnabled(env: NodeJS.ProcessEnv = process.env): b
   return parseEnvBool(env.AMI_COMMIT_ATTRIBUTION_NOTES);
 }
 
+/**
+ * Per-file agent character-contribution figure for a committed file, derived from
+ * the session-scoped attribution store (populated by the edit/write tools).
+ * Parity: Claude Code's AttributionSnapshot `fileStates` → per-file
+ * `claudeContribution` / claudePercent.
+ */
+export interface CommitFileContribution {
+  /** Staged (repo-relative) path. */
+  path: string;
+  /** Characters the agent authored in this file across the session. */
+  agentContribution: number;
+  /** Fraction (0..1) of the file's current character size the agent authored. */
+  ratio: number;
+}
+
 /** Structured per-commit attribution introspection record. */
 export interface CommitAttributionNote {
   /** Always 'ami' — the sanctioned commit tool only creates agent-authored commits. */
@@ -179,6 +197,9 @@ export interface CommitAttributionNote {
   files: string[];
   /** Count of files in the commit. */
   fileCount: number;
+  /** Per-file agent character contribution for committed files that the agent
+   *  authored this session (omitted when none was tracked). */
+  fileContributions?: CommitFileContribution[];
   /** ISO timestamp the attribution record was produced. */
   committedAt: string;
 }
@@ -189,8 +210,10 @@ export interface CommitAttributionNote {
  * files / trailer). It deliberately does NOT fabricate Claude Code's
  * character-level `claudePercent` — accurate per-character authorship needs a
  * cross-cutting Edit/Write char tracker and is a separate concern; a made-up
- * percentage would be worse than none. `now` is injectable for deterministic
- * tests.
+ * percentage would be worse than none. When the edit/write tools tracked
+ * per-file character contributions for this session, they are passed through as
+ * {@link CommitFileContribution}s — a truthful, measured figure (not a fabricated
+ * overall percent). `now` is injectable for deterministic tests.
  */
 export function buildAttributionNote(
   params: {
@@ -198,10 +221,11 @@ export function buildAttributionNote(
     model: string | undefined;
     trailerApplied: boolean;
     files: string[];
+    fileContributions?: CommitFileContribution[];
   },
   now: Date = new Date(),
 ): CommitAttributionNote {
-  return {
+  const note: CommitAttributionNote = {
     authoredBy: 'ami',
     surface: params.surface,
     model: params.model ?? null,
@@ -210,6 +234,41 @@ export function buildAttributionNote(
     fileCount: params.files.length,
     committedAt: now.toISOString(),
   };
+  if (params.fileContributions && params.fileContributions.length > 0) {
+    note.fileContributions = params.fileContributions;
+  }
+  return note;
+}
+
+/**
+ * Build the per-file agent character-contribution list for the committed paths
+ * from the session-scoped attribution store (populated by the edit/write tools).
+ * Only files the agent actually authored this session appear; each carries the
+ * running character count plus the fraction of the file's CURRENT size that
+ * represents ({@link agentContributionRatio}, reading the committed file to size
+ * it — best-effort, a read failure just yields a 0 ratio). Returns `[]` when no
+ * tracked file is part of this commit.
+ */
+export function collectCommitFileContributions(
+  sessionId: string | undefined,
+  cwd: string,
+  stagedPaths: string[],
+): CommitFileContribution[] {
+  const attribution = getSessionFileAttribution(sessionId);
+  const out: CommitFileContribution[] = [];
+  for (const rel of stagedPaths) {
+    const abs = path.resolve(cwd, rel);
+    const state = attribution[abs];
+    if (!state) continue;
+    let totalChars = 0;
+    try { totalChars = _gitCommitFs.readFileSync(abs, { encoding: 'utf-8' }).length; } catch { totalChars = 0; }
+    out.push({
+      path: rel,
+      agentContribution: state.agentContribution,
+      ratio: agentContributionRatio(state, totalChars),
+    });
+  }
+  return out;
 }
 
 /**
@@ -345,7 +404,7 @@ export const gitCommitTool: ToolDefinition = {
     'Optionally stage files before committing. The Co-Authored-By trailer is appended automatically unless SUPERINFERENCE_DISABLE_CO_AUTHOR=1 is set or the config `attribution.commit` overrides/suppresses it. ' +
     'Writing the message: look at the recent commits (`git log --oneline -10`) and follow this repository\'s existing style; pick the verb for the nature of the change — "add" for a wholly new feature, "update" for an enhancement to an existing one, "fix" for a bug fix (also refactor/test/docs/chore); keep it concise (1-2 sentences) and focused on the WHY, not a restatement of the what. ' +
     'Do not stage files that likely contain secrets (.env, credentials.json, *.pem, id_rsa); this tool refuses them and refuses a staged diff containing an embedded credential. ' +
-    'When AMI_COMMIT_ATTRIBUTION_NOTES is set, a structured per-commit attribution record (surface, model, committed files) is written as a git note on ref ami-attribution for introspection.',
+    'When AMI_COMMIT_ATTRIBUTION_NOTES is set, a structured per-commit attribution record (surface, model, committed files, and per-file agent character contribution for files edited this session) is written as a git note on ref ami-attribution for introspection.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -543,6 +602,7 @@ export const gitCommitTool: ToolDefinition = {
             model: resolveCommitModel(env),
             trailerApplied: trailer !== null,
             files: stagedPaths,
+            fileContributions: collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths),
           });
           await writeCommitAttributionNote(sha, note, execOpts);
         } catch { /* best-effort introspection — never fail the commit */ }

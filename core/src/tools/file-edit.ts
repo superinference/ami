@@ -4,7 +4,8 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
 import { fuzzyFindAndReplace, findClosestLines, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countCharsAdded, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { recordAgentFileContribution } from './attribution-store';
 import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
 import { extractContextWindow, renderContextWindow, DEFAULT_EDIT_CONTEXT_LINES } from './read-edit-context';
@@ -578,6 +579,12 @@ export function commitWrite(
   context: ToolContext,
   mode?: number,
 ): string | undefined {
+  // Capture the pre-write content (from the warm read-before-edit cache) BEFORE
+  // overwriting, so the agent's character contribution can be measured as the
+  // added chars of this edit. Cache miss / brand-new file → '' (whole new content
+  // counts as authored). Never re-reads disk itself.
+  const fileCache = getFileCache(context.cwd, context.agentId);
+  const prevContent = fileCache.get(resolved)?.content ?? '';
   try {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
     const symlinkErr = verifyWriteTarget(resolved, context.cwd);
@@ -592,9 +599,21 @@ export function commitWrite(
     const message = err instanceof Error ? err.message : String(err);
     return `Error writing file: ${message}`;
   }
-  getFileCache(context.cwd, context.agentId).setWritten(resolved, cacheContent);
+  fileCache.setWritten(resolved, cacheContent);
   context.filesRead?.add(resolved);
   notifyLsp(resolved, rawToWrite, context);
+  // Record the agent's per-file character contribution for commit attribution
+  // (parity: Claude's AttributionSnapshot fileStates). Best-effort — an
+  // accounting failure must never fail an otherwise-successful write.
+  try {
+    recordAgentFileContribution(
+      context.sessionId,
+      resolved,
+      cacheContent,
+      countCharsAdded(normalizeToLf(prevContent), normalizeToLf(cacheContent)),
+      Date.now(),
+    );
+  } catch { /* attribution accounting is best-effort */ }
   return undefined;
 }
 
