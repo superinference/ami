@@ -147,6 +147,24 @@ describe('read_memory tool', () => {
       const out = capMemoryBody(body);
       assert.match(out, new RegExp(`${MAX_READ_MEMORY_BYTES}-byte cap`));
     });
+    it('bounds the returned body to within the byte cap after a byte-cap cut', () => {
+      const body = 'x'.repeat(MAX_READ_MEMORY_BYTES + 1000);
+      const out = capMemoryBody(body);
+      // The body (everything before the appended warning) must fit the byte cap.
+      const bodyOnly = out.split('\n\n[memory body truncated')[0];
+      assert.ok(Buffer.byteLength(bodyOnly, 'utf-8') <= MAX_READ_MEMORY_BYTES);
+    });
+    it('never splits a multi-byte UTF-8 char at the byte-cap boundary', () => {
+      // One line of 3-byte '€' chars exceeding the byte cap forces the cut to land
+      // mid-character, exercising the replacement-char strip so no mojibake leaks.
+      const body = '€'.repeat(Math.ceil(MAX_READ_MEMORY_BYTES / 3) + 100);
+      const out = capMemoryBody(body);
+      assert.match(out, new RegExp(`${MAX_READ_MEMORY_BYTES}-byte cap`));
+      const bodyOnly = out.split('\n\n[memory body truncated')[0];
+      assert.ok(!bodyOnly.includes('�'), 'no U+FFFD replacement char left behind');
+      assert.ok(bodyOnly.endsWith('€'), 'ends on a whole character');
+      assert.ok(Buffer.byteLength(bodyOnly, 'utf-8') <= MAX_READ_MEMORY_BYTES);
+    });
   });
 
   describe('sliceMemoryBody', () => {
