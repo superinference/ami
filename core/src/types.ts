@@ -709,6 +709,14 @@ export interface ToolDefinition {
    *  Absent => callers fall back to structural equality. Parity: Claude's
    *  `Tool.inputsEquivalent(a, b)`. */
   inputsEquivalent?: (a: Record<string, unknown>, b: Record<string, unknown>) => boolean;
+  /** Per-tool opt-in to Anthropic fine-grained tool streaming (`eager_input_streaming`):
+   *  the model streams this tool's input JSON as it is generated instead of only after the
+   *  tool_use block completes, lowering latency for tools with long arguments. Unlike the
+   *  process-wide `SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING` env knob (which opts in every
+   *  tool), this flag opts in ONLY this tool even when the global knob is off. Applied only
+   *  on the first-party `api.anthropic.com` path (proxies/Bedrock/Vertex 400 on the field).
+   *  Parity: Claude's per-tool `eager_input_streaming` on the cached tool schema. */
+  eagerInputStreaming?: boolean;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
 }
 

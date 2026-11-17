@@ -1051,12 +1051,18 @@ export function withGzipCompression(
 }
 
 /**
- * Add Anthropic's per-tool `eager_input_streaming: true` field to every tool in a
- * RAW Anthropic Messages request body (fine-grained tool streaming). This is set
- * on the wire body rather than through the AI SDK because the SDK exposes no
- * per-tool passthrough for it. Returns the original text unchanged on a non-JSON
- * body, a body with no `tools` array, or when the knob is off — so it is a safe
- * no-op in every path except first-party Anthropic with the opt-in set.
+ * Add Anthropic's per-tool `eager_input_streaming: true` field to tools in a RAW
+ * Anthropic Messages request body (fine-grained tool streaming). This is set on
+ * the wire body rather than through the AI SDK because the SDK exposes no per-tool
+ * passthrough for it. Returns the original text unchanged on a non-JSON body, a
+ * body with no `tools` array, or when the knob is off — so it is a safe no-op in
+ * every path except first-party Anthropic with the opt-in set.
+ *
+ * When `onlyToolNames` is omitted the field is applied to EVERY tool (the
+ * process-wide `SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING` opt-in). When it is
+ * provided, the field is applied ONLY to tools whose `name` is in the set — the
+ * per-tool {@link ToolDefinition.eagerInputStreaming} opt-in — leaving all other
+ * tools untouched.
  *
  * Gated (by the caller) to the first-party `api.anthropic.com` path only: proxies
  * (LiteLLM etc.) and Bedrock/Vertex reject this field with a 400, exactly as
@@ -1065,15 +1071,18 @@ export function withGzipCompression(
  */
 export function withEagerToolStreaming(
   baseFetch: typeof globalThis.fetch = globalThis.fetch,
+  onlyToolNames?: ReadonlySet<string>,
 ): typeof globalThis.fetch {
   return (input, init) => {
     if (init && typeof init.body === 'string') {
       try {
         const parsed: unknown = JSON.parse(init.body);
         if (isPlainRecord(parsed) && Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-          parsed.tools = parsed.tools.map((t) =>
-            isPlainRecord(t) ? { ...t, eager_input_streaming: true } : t,
-          );
+          parsed.tools = parsed.tools.map((t) => {
+            if (!isPlainRecord(t)) return t;
+            if (onlyToolNames && !(typeof t.name === 'string' && onlyToolNames.has(t.name))) return t;
+            return { ...t, eager_input_streaming: true };
+          });
           init = { ...init, body: JSON.stringify(parsed) };
         }
       } catch {
@@ -2054,7 +2063,7 @@ export function getVertexRegionForModel(model: string | undefined): string {
   return getDefaultVertexRegion();
 }
 
-export function resolveModel(config: ProviderConfig) {
+export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // Env-var extra-body override (AMI_EXTRA_BODY / CLAUDE_CODE_EXTRA_BODY): deep-merge
   // the deploy-time JSON into config.extraBody BEFORE withExtraBody is composed, so it
   // rides every OpenAI-compatible request. Explicit config.extraBody (CLI flag / config
@@ -2170,8 +2179,13 @@ export function resolveModel(config: ProviderConfig) {
     // with a 400. A custom baseUrl means a gateway, so the opt-in is skipped there.
     const firstPartyAnthropic = !baseUrl || isFirstPartyBaseUrl(baseUrl, ['anthropic.com']);
     const nativeBase = withGzipCompression(headerFetch ?? proxyFetch);
-    const nativeFetch = (firstPartyAnthropic && fineGrainedToolStreamingEnabled())
-      ? withEagerToolStreaming(nativeBase)
+    // Fine-grained tool streaming: the GLOBAL env knob opts in every tool, while a
+    // per-tool `eagerInputStreaming` flag opts in just those tools even when the
+    // global knob is off. First-party path only (proxies/Bedrock/Vertex 400 on it).
+    const globalEager = fineGrainedToolStreamingEnabled();
+    const perToolEager = tools?.filter((t) => t.eagerInputStreaming).map((t) => t.name) ?? [];
+    const nativeFetch = (firstPartyAnthropic && (globalEager || perToolEager.length > 0))
+      ? withEagerToolStreaming(nativeBase, globalEager ? undefined : new Set(perToolEager))
       : nativeBase;
     return createAnthropic({
       apiKey,
@@ -2875,7 +2889,7 @@ export async function* streamChatCompletion(
   // stream-part switch (tool-call / finish-step / error / reasoning) and the
   // generator's catch (abort / MissingToolResults / API errors) deterministically.
   const streamTextFn = options?.streamTextImpl ?? streamText;
-  const model = resolveModel(config);
+  const model = resolveModel(config, tools);
   const inferred = inferProviderFromApiKey(config.apiKey)
     || (config.baseUrl ? inferProviderFromBaseUrl(config.baseUrl) : null)
     || inferProviderFromEnv();
@@ -3235,6 +3249,40 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Default heartbeat slice for a long retry backoff. Mirrors Claude Code's
+ * `HEARTBEAT_INTERVAL_MS` (services/api/withRetry.ts): a multi-minute wait is
+ * sliced so the host/terminal keeps seeing activity and the UI shows a live
+ * countdown instead of a single static "retrying in Xs".
+ */
+export const RETRY_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Sleep `totalMs`, chunking a LONG wait into `intervalMs` slices and re-firing
+ * `onHeartbeat(remainingMs)` after each completed slice (except the final one, which
+ * resolves the wait). For a short wait (`totalMs <= intervalMs`) it performs a SINGLE
+ * sleep and NEVER fires a heartbeat — byte-identical to a plain `sleep`, so normal
+ * sub-30s backoffs are unchanged. During a multi-minute retry backoff this keeps
+ * emitting periodic activity (so an unattended host does not mark the session idle)
+ * and drives a live countdown. Rejects on abort exactly like {@link sleep}, so the
+ * surrounding retry loop's abort handling is preserved.
+ */
+export async function sleepWithRetryHeartbeat(
+  totalMs: number,
+  signal: AbortSignal | undefined,
+  onHeartbeat?: (remainingMs: number) => void,
+  intervalMs: number = RETRY_HEARTBEAT_INTERVAL_MS,
+): Promise<void> {
+  const step = intervalMs > 0 ? intervalMs : RETRY_HEARTBEAT_INTERVAL_MS;
+  let remaining = totalMs;
+  while (remaining > 0) {
+    const slice = Math.min(step, remaining);
+    await sleep(slice, signal);
+    remaining -= slice;
+    if (remaining > 0 && onHeartbeat) onHeartbeat(remaining);
+  }
+}
+
 function extractStatusCode(errorText: string): number | null {
   // Match "HTTP {status}" or "status code {status}" patterns commonly
   // found in AI SDK error messages and our own error formatting.
@@ -3494,7 +3542,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; heartbeatIntervalMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the underlying single-attempt stream. Defaults to the real
   // streamChatCompletion so production behavior is unchanged; tests inject a
@@ -3538,6 +3586,20 @@ export async function* streamChatCompletionWithRetry(
   const maxDelay = options?.maxDelayMs ?? 60_000;
   const maxTotalWait = options?.maxTotalWaitMs ?? 0;
   const retryStart = maxTotalWait > 0 ? Date.now() : 0;
+  const heartbeatInterval = options?.heartbeatIntervalMs ?? RETRY_HEARTBEAT_INTERVAL_MS;
+
+  // Backoff wait with a live countdown: a long (> heartbeatInterval) delay is sliced
+  // and `onRetry` is re-fired with the decremented remaining time on each slice, so
+  // the host sees periodic activity (not marked idle mid-wait) and the UI counts down.
+  // A short delay sleeps once and fires nothing extra (unchanged). `attempt+1` and
+  // `status` mirror the single pre-sleep onRetry call so every event is consistent.
+  const waitBeforeRetry = (delayMs: number, attempt: number, status: number): Promise<void> =>
+    sleepWithRetryHeartbeat(
+      delayMs,
+      abortSignal,
+      options?.onRetry ? (remainingMs) => options.onRetry!(attempt + 1, maxRetries, remainingMs, status) : undefined,
+      heartbeatInterval,
+    );
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (abortSignal.aborted) {
@@ -3720,16 +3782,17 @@ export async function* streamChatCompletionWithRetry(
             delayMs = jitteredDelay(expBackoff);
           }
 
+          // statusCode may be null when the retry was forced by x-should-retry:true
+          // on an error with no parsed HTTP status; 0 is the established "unknown
+          // status" sentinel other onRetry call sites use. A body-detected overload
+          // reports as 529 so the callback sees the overload it is actually retrying.
+          const retryStatus = statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 0);
           if (options?.onRetry) {
-            // statusCode may be null when the retry was forced by x-should-retry:true
-            // on an error with no parsed HTTP status; 0 is the established "unknown
-            // status" sentinel other onRetry call sites use. A body-detected overload
-            // reports as 529 so the callback sees the overload it is actually retrying.
-            options.onRetry(attempt + 1, maxRetries, delayMs, statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : 0));
+            options.onRetry(attempt + 1, maxRetries, delayMs, retryStatus);
           }
 
           try {
-            await sleep(delayMs, abortSignal);
+            await waitBeforeRetry(delayMs, attempt, retryStatus);
           } catch {
             yield { type: 'error', error: 'Request aborted' };
             return;
@@ -3821,7 +3884,7 @@ export async function* streamChatCompletionWithRetry(
           options.onRetry(attempt + 1, maxRetries, timeoutDelay, 0);
         }
         try {
-          await sleep(timeoutDelay, abortSignal);
+          await waitBeforeRetry(timeoutDelay, attempt, 0);
         } catch {
           yield { type: 'error', error: 'Request aborted' };
           return;
@@ -3847,7 +3910,7 @@ export async function* streamChatCompletionWithRetry(
         options.onRetry(attempt + 1, maxRetries, netDelay, 0);
       }
       try {
-        await sleep(netDelay, abortSignal);
+        await waitBeforeRetry(netDelay, attempt, 0);
       } catch {
         yield { type: 'error', error: 'Request aborted' };
         return;
