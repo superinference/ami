@@ -48,6 +48,8 @@ export { HookManager, sanitizeHookOutput, EventConcurrencyLimiter, MAX_CONCURREN
 export type { HookFn, HookContext, PreToolUseContext, PostToolUseContext, PreSamplingContext, HookDecision, PreToolUseHookFn, PostToolUseHookFn, PreSamplingHookFn, HookEvent, HookConfigType, HttpHookPolicy, HookEventMetadata, HookEventMetadataOpts, HookDescriptor, HookEventMatcherGroup, HookEventDescription, HookAuditRow, SessionStartSource, SessionEndReason, SetupTrigger } from './hooks';
 export { shouldSkipHookDueToTrust } from './hook-protection';
 export { wildcardMatch } from './permissions';
+export { detectPathExpansionHazard, pathExpansionHazardReason } from './permissions';
+export type { PathExpansionHazard } from './permissions';
 export {
   validatePermissionRule, filterInvalidPermissionRules, permissionRuleValueFromString,
   permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,

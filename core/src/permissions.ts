@@ -591,6 +591,51 @@ export function normalizeCaseForComparison(p: string): string {
     : p;
 }
 
+/**
+ * A path token that survives permission validation as a LITERAL string but is
+ * expanded differently by the shell at execution time — a TOCTOU gap where the
+ * boundary check and the actual filesystem target disagree:
+ *   - `shell-expansion`: `$VAR` / `${VAR}` / `$(cmd)` (Unix), `%VAR%` (Windows),
+ *     or a leading `=` (zsh equals-expansion, e.g. `=rg` → `/usr/bin/rg`).
+ *   - `tilde-variant`:   an unsupported `~` form (`~user`, `~+`, `~-`, `~N`) that
+ *     `expandPath` leaves for the shell (it resolves only bare `~`, `~/`, `~\`).
+ */
+export type PathExpansionHazard = 'shell-expansion' | 'tilde-variant';
+
+/**
+ * Classify a raw (un-expanded) path token for shell-expansion / tilde-variant
+ * TOCTOU hazards. Mirrors Claude's pathValidation blanket-reject (pathValidation.ts
+ * L393-L436): such a path is never silently auto-allowed — it is kept literal here
+ * but the shell rewrites it at run time, so the permission decision and the real
+ * target can diverge. Returns the hazard kind, or `null` when the path is inert.
+ *
+ * Tilde variants are detected on the RAW token because AMI's {@link expandPath}
+ * resolves an unsupported `~user`/`~+` against cwd (→ `/cwd/~user`), so the `~`
+ * no longer leads the expanded string.
+ */
+export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard | null {
+  const trimmed = rawPath.trim();
+  if (trimmed.startsWith('~') && trimmed !== '~'
+      && !trimmed.startsWith('~/') && !trimmed.startsWith('~\\')) {
+    return 'tilde-variant';
+  }
+  if (trimmed.includes('$') || trimmed.includes('%') || trimmed.startsWith('=')) {
+    return 'shell-expansion';
+  }
+  return null;
+}
+
+/**
+ * Human-readable, user-facing reason for why an expansion-hazard path requires
+ * manual approval, worded to match Claude's distinct messages so the user
+ * understands why an otherwise-valid-looking path was gated.
+ */
+export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
+  return hazard === 'tilde-variant'
+    ? 'Tilde expansion variants (~user, ~+, ~-) in paths require manual approval'
+    : 'Shell expansion syntax in paths requires manual approval';
+}
+
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
   'echo', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
@@ -789,15 +834,35 @@ function stripQuotedSections(command: string): string {
 /**
  * Check whether a command contains unquoted variable expansions or glob
  * patterns that could be exploited for injection.
+ *
+ * Uses a single-pass quote-state walker (NOT a regex over quote-stripped text) so
+ * single-quote escape semantics are correct — in bash `\` is a literal no-op inside
+ * single quotes, so a stray `'\'` cannot desync the tracker and drop a later
+ * expansion. It also covers EVERY `$`-expansion shape: a following variable-name
+ * char, a `${...}`/`$(...)` substitution start, OR a special parameter
+ * (`$@ $* $# $? $! $$ $- $0-$9`) that the old `\$[A-Za-z_{(]` regex missed — plus
+ * the unquoted glob metacharacters `* ? [` (filename expansion / injection vectors).
+ * Mirrors Claude's containsUnquotedExpansion char-walk (readOnlyValidation.ts).
  */
 export function containsUnquotedExpansion(command: string): boolean {
-  const unquoted = stripQuotedSections(command);
-  // Check for $VAR, ${VAR}, $(cmd)
-  if (/\$[A-Za-z_{(]/.test(unquoted)) return true;
-  // Check for glob characters * and ?
-  if (/[*?]/.test(unquoted)) return true;
-  // Check for bracket expressions [...]
-  if (/\[.*\]/.test(unquoted)) return true;
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\' && !inSingle) { escaped = true; continue; }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble) continue; // quoted content is inert
+    if (c === '$') {
+      const next = command[i + 1];
+      // variable-name char, `${`/`$(` substitution, or a special parameter.
+      if (next && /[A-Za-z_@*#?!$0-9({-]/.test(next)) return true;
+    }
+    // Unquoted glob metacharacters (`*`, `?`, bracket expression `[`).
+    if (c === '*' || c === '?' || c === '[') return true;
+  }
   return false;
 }
 
@@ -3705,6 +3770,10 @@ export class PermissionManager {
     // intermediate target in a symlink chain cannot be laundered behind an
     // innocuous final file.
     if (this.isForbiddenAtAnyHop(filePath, cwd)) return false;
+    // A shell-expansion / tilde-variant TOCTOU path is never silently auto-allowed
+    // (it is kept literal here but rewritten by the shell at run time) — keep this
+    // boundary consistent with classifyReadAccess, which gates it to a prompt.
+    if (detectPathExpansionHazard(filePath)) return false;
     return this.isWithinWorkspace(resolved, cwd);
   }
 
@@ -3724,8 +3793,25 @@ export class PermissionManager {
     // hard deny — a chain cannot launder a credential/system path behind an
     // innocuous final file.
     if (this.isForbiddenAtAnyHop(filePath, cwd)) return 'deny';
+    // TOCTOU: a path carrying shell-expansion syntax ($/%/leading '=') or an
+    // unsupported tilde variant (~user/~+/~-) is validated as a literal here but
+    // rewritten by the shell at execution, so it can never be silently auto-allowed
+    // even when it resolves inside the workspace — force a manual-approval prompt.
+    // Mirrors Claude's pathValidation blanket-reject (pathValidation.ts L393-L436).
+    if (detectPathExpansionHazard(filePath)) return 'prompt';
     if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
     return 'prompt';
+  }
+
+  /**
+   * The user-facing reason a path must be manually approved because it carries a
+   * shell-expansion / tilde-variant TOCTOU hazard, or `null` when the path is inert.
+   * Lets the permission UI explain WHY an otherwise-valid-looking path was gated
+   * rather than mislabelling it "outside the workspace".
+   */
+  pathExpansionHazardReason(filePath: string): string | null {
+    const hazard = detectPathExpansionHazard(filePath);
+    return hazard ? pathExpansionHazardReason(hazard) : null;
   }
 
   // -------------------------------------------------------------------------
