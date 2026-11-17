@@ -160,6 +160,36 @@ describe('validateLspServerConfig', () => {
     assert.equal(c.extensionToLanguage!['.ok'], 'lang');
     assert.equal('.bad' in c.extensionToLanguage!, false);
   });
+
+  // Claude parity (LspServerConfigSchema.command refine): a command carrying its
+  // arguments inline is rejected with a corrective, example-bearing message.
+  it('rejects a command with spaces and names the "args" array as the fix', () => {
+    assert.throws(
+      () => validateLspServerConfig('ts', { command: 'typescript-language-server --stdio' }),
+      /command should not contain spaces\. Use the "args" array/,
+    );
+  });
+
+  it('accepts an absolute-path command that contains spaces (e.g. a macOS app bundle)', () => {
+    const c = validateLspServerConfig('mac', { command: '/Applications/My App/bin/lsp' });
+    assert.equal(c.command, '/Applications/My App/bin/lsp');
+  });
+
+  // Claude parity (schemas.ts fileExtension refine): an extension key must start
+  // with a dot, with a corrective example in the message.
+  it('rejects an extensionToLanguage key missing its leading dot', () => {
+    assert.throws(
+      () => validateLspServerConfig('x', { command: 'c', extensionToLanguage: { ts: 'typescript' } }),
+      /file extension "ts" must start with a dot \(e\.g\., "\.ts", not "ts"\)/,
+    );
+  });
+
+  it('rejects a single-character extension key (a bare dot)', () => {
+    assert.throws(
+      () => validateLspServerConfig('x', { command: 'c', extensionToLanguage: { '.': 'lang' } }),
+      /must start with a dot/,
+    );
+  });
 });
 
 describe('loadLspServersFromFile', () => {

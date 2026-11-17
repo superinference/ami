@@ -1193,10 +1193,40 @@ function validateServerDeclarations(field: string, val: unknown, errors: PluginV
   } else if (Array.isArray(val)) {
     val.forEach((el, i) => {
       if (typeof el === 'string') validateComponentPathString(`${field}[${i}]`, el, errors);
-      // inline-record array entries are opaque here
+      // An inline-record ARRAY entry is a `name → config` map (Claude parity: the
+      // array form mixes file-path strings with inline records). Its structural
+      // shape is opaque for MCP, but an inline LSP record is validated with the
+      // canonical LSP schema so a bad command/extension surfaces here too.
+      else if (field === 'lspServers' && isPlainObject(el)) validateInlineLspServers(`${field}[${i}]`, el, errors);
     });
+  } else if (field === 'lspServers' && isPlainObject(val)) {
+    // A bare inline LSP record (`name → config`) imposes no path to traverse, but
+    // each server config IS validated (Claude parity: PluginManifestLspServerSchema's
+    // inline-record form uses LspServerConfigSchema) so corrective, example-bearing
+    // messages (command-spaces / file-extension dot) reach `/plugin validate`.
+    validateInlineLspServers(field, val, errors);
   }
-  // a bare inline record imposes no path to traverse
+  // a bare inline MCP record imposes no path to traverse and is structurally opaque here
+}
+
+/**
+ * Validate every inline LSP server config in a manifest `lspServers` record
+ * (`name → config`) through the canonical {@link validateLspServerConfig} (the
+ * SINGLE source of LSP-config validation, so the manifest linter and the loader
+ * can never disagree). A thrown validation error — e.g. a command that carries
+ * its arguments inline, or a file-extension key missing its leading dot — is
+ * captured as a labelled {@link PluginValidationIssue} so the author-facing
+ * `/plugin validate` surfaces the same corrective, example-bearing message the
+ * loader would hit.
+ */
+function validateInlineLspServers(label: string, rec: Record<string, unknown>, errors: PluginValidationIssue[]): void {
+  for (const [serverName, cfg] of Object.entries(rec)) {
+    try {
+      validateLspServerConfig(serverName, cfg);
+    } catch (err) {
+      errors.push({ path: `${label}.${serverName}`, message: errMessage(err) });
+    }
+  }
 }
 
 /**

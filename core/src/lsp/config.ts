@@ -215,6 +215,17 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (typeof r.command !== 'string' || r.command.length === 0) {
     throw new Error(`LSP server "${name}": "command" is required and must be a non-empty string`);
   }
+  // A command carrying its arguments inline (spaces) is almost always an authoring
+  // mistake — the launcher would try to exec the whole string as one program name.
+  // Claude parity (LspServerConfigSchema.command refine, utils/plugins/schemas.ts):
+  // reject a space-bearing command with a corrective, example-bearing message,
+  // unless it is an absolute path (which may legitimately contain spaces, e.g. a
+  // macOS app bundle under "/Applications/My App/...").
+  if (r.command.includes(' ') && !r.command.startsWith('/')) {
+    throw new Error(
+      `LSP server "${name}": command should not contain spaces. Use the "args" array for arguments (e.g., { "command": "typescript-language-server", "args": ["--stdio"] }).`,
+    );
+  }
   if (r.args !== undefined && (!Array.isArray(r.args) || !r.args.every((a) => typeof a === 'string'))) {
     throw new Error(`LSP server "${name}": "args" must be an array of strings`);
   }
@@ -238,6 +249,14 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (r.extensionToLanguage && typeof r.extensionToLanguage === 'object') {
     const map: Record<string, string> = {};
     for (const [ext, lang] of Object.entries(r.extensionToLanguage as Record<string, unknown>)) {
+      // Claude parity (schemas.ts fileExtension refine): a file-extension key must
+      // start with a dot and be at least two characters, so a bare "ts" (which would
+      // never match a real file suffix) is rejected with a corrective example.
+      if (!ext.startsWith('.') || ext.length < 2) {
+        throw new Error(
+          `LSP server "${name}": file extension "${ext}" must start with a dot (e.g., ".ts", not "ts").`,
+        );
+      }
       if (typeof lang === 'string') map[ext.toLowerCase()] = lang;
     }
     config.extensionToLanguage = map;
