@@ -170,6 +170,50 @@ export function isAbortError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Dedicated typed cancellation error. A fetch/stream/subagent acquisition aborted
+ * via an AbortSignal surfaces as an error whose stable `.name` is 'AbortError'
+ * (matching Node's fetch path and DOMException), so both `instanceof AbortError`
+ * and the minify-safe {@link isAbortError} / {@link isAbort} name checks recognize
+ * it. Centralizes the ad-hoc `const e = new Error(...); e.name = 'AbortError'`
+ * pattern that was duplicated across the MCP container pull and the subagent
+ * limiter. Mirrors Claude's dedicated `AbortError` class so callers discriminate
+ * user/host cancellation from a genuine failure by type, not by substring.
+ */
+export class AbortError extends Error {
+  constructor(message = 'The operation was aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/**
+ * Canonical factory for the abort rejection of a cancelled operation. When the
+ * signal already carries an Error `reason` (an explicit `AbortController.abort(reason)`)
+ * that reason is preserved; otherwise a typed {@link AbortError} with
+ * `fallbackMessage` is returned. One factory so the container pull, subagent
+ * acquisition, and any future cancellable op reject with the same recognizable
+ * type instead of re-deriving `err.name = 'AbortError'` at each site.
+ */
+export function makeAbortError(signal?: { reason?: unknown } | null, fallbackMessage = 'The operation was aborted'): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  return new AbortError(fallbackMessage);
+}
+
+/**
+ * Robust cancellation check that distinguishes a user/host abort from an unrelated
+ * failure. Prefers the authoritative signal (`signal.aborted`) when one is passed,
+ * then falls back to the typed/name/DOMException detection in {@link isAbortError}
+ * (which never treats an ECONNABORTED network drop as a cancellation). Supersedes
+ * scattered `msg.includes('aborted')` checks at the provider/engine boundary.
+ * Mirrors Claude's `isAbortError`, extended with the signal fast path.
+ */
+export function isAbort(err: unknown, signal?: { aborted?: boolean } | null): boolean {
+  if (signal?.aborted) return true;
+  return isAbortError(err);
+}
+
 export const ERROR_CATEGORIES = [
   'rate_limited', 'plan_limit', 'context_overflow', 'model_unavailable',
   'auth_error', 'output_too_large', 'content_filter', 'server_error',
@@ -413,6 +457,54 @@ export function parseMaxTokensContextOverflow(rawMessage: string): {
   const m = rawMessage.match(/input length and `max_tokens` exceed context limit:\s*(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
   if (!m) return null;
   return { inputTokens: parseInt(m[1], 10), maxTokens: parseInt(m[2], 10), contextLimit: parseInt(m[3], 10) };
+}
+
+// ---------------------------------------------------------------------------
+// Message-level predicates — re-detect an already-rendered error by its text
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable prefix prepended when a classified API error is rendered into the
+ * transcript. Kept constant on purpose so downstream UI / recovery code can
+ * recognize an error line already in history via {@link startsWithApiErrorPrefix}
+ * and re-classify its underlying text. Mirrors Claude's API_ERROR_MESSAGE_PREFIX.
+ */
+export const API_ERROR_MESSAGE_PREFIX = 'API Error';
+
+/** True when a message is (or begins with) a rendered `API Error …` line. */
+export function startsWithApiErrorPrefix(message: string): boolean {
+  return typeof message === 'string' && message.startsWith(API_ERROR_MESSAGE_PREFIX);
+}
+
+/**
+ * Strip a leading rendered `API Error: …` prefix so a message pulled back out of
+ * the transcript re-classifies on its underlying text. No-op when the prefix is
+ * absent. The single place that knows the prefix's punctuation shape.
+ */
+function stripApiErrorPrefix(message: string): string {
+  if (!startsWithApiErrorPrefix(message)) return message;
+  return message.slice(API_ERROR_MESSAGE_PREFIX.length).replace(/^[:\s-]+/, '');
+}
+
+/**
+ * Message-level predicate: is this (raw or already-rendered) text a prompt-too-long
+ * / context-overflow error? Recognizes the authoritative "… N tokens > M maximum"
+ * form (via {@link parsePromptTooLongTokenCounts}) plus the common phrasings, so UI
+ * and recovery code can re-detect an overflow error already sitting in history
+ * without re-running the full {@link classifyError} taxonomy. Mirrors Claude's
+ * isPromptTooLongMessage.
+ */
+export function isPromptTooLongMessage(message: string): boolean {
+  if (typeof message !== 'string') return false;
+  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(message);
+  if (actualTokens !== undefined && limitTokens !== undefined) return true;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('prompt is too long') ||
+    lower.includes('prompt_too_long') ||
+    lower.includes('input is too long') ||
+    (lower.includes('context') && (lower.includes('too long') || lower.includes('overflow')))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -766,11 +858,15 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
   // nested/deserialized API-error shape — HTML-sanitized so a CloudFlare/proxy
   // error page never reaches the user or the classifier's keyword matching.
   const errorString = normalizeErrorMessage(error);
+  // A message pulled back out of the transcript may still carry the rendered
+  // `API Error: …` prefix — strip it for matching so an already-rendered error
+  // re-classifies on its underlying text (Claude's startsWithApiErrorPrefix path).
+  const matchText = stripApiErrorPrefix(errorString);
   // Fold the root `.cause` code (e.g. a nested ETIMEDOUT / CERT_HAS_EXPIRED that
   // the SDK hides under a generic "Connection error.") into the matched text, so
   // network/SSL classification works even when the top-level message has no code.
   const causeCode = error instanceof Error ? findErrorCode(error) : undefined;
-  const lower = (causeCode ? `${errorString} ${causeCode}` : errorString).toLowerCase();
+  const lower = (causeCode ? `${matchText} ${causeCode}` : matchText).toLowerCase();
 
   // Abort — not retryable, checked first so it short-circuits. The shared
   // detector excludes ECONNABORTED, which is a network error, not a
@@ -836,10 +932,9 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
 
   // Context overflow — retryable after compaction
   if (
-    (lower.includes('context') && (lower.includes('too long') || lower.includes('overflow') || lower.includes('maximum'))) ||
+    isPromptTooLongMessage(lower) ||
+    (lower.includes('context') && lower.includes('maximum')) ||
     /\bHTTP\s+413\b/i.test(errorString) ||
-    lower.includes('prompt_too_long') ||
-    lower.includes('prompt is too long') ||
     (lower.includes('max_tokens') && !lower.includes('output') && !lower.includes('maximum number of output')) ||
     lower.includes('context length') ||
     lower.includes('token limit') ||

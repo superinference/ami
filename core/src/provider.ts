@@ -24,7 +24,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic } from './error-classifier';
+import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort } from './error-classifier';
 import {
   getMTLSConfig,
   getTLSConnectOptions,
@@ -3569,8 +3569,12 @@ export async function* streamChatCompletionWithRetry(
       }
     }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if ((msg.includes('AbortError') || msg.includes('aborted') || msg.includes('abort')) && !abortSignal.aborted) {
+      // A cancellation here with the caller's signal NOT aborted is our internal
+      // idle/timeout abort firing — treat as a timeout. The shared `isAbort`
+      // detector (unlike the old `msg.includes('abort')`) will NOT mistake an
+      // ECONNABORTED network drop for a cancellation, so that falls through to the
+      // network-retry branch below instead of being swallowed as a timeout.
+      if (isAbort(err) && !abortSignal.aborted) {
         timedOut = true;
       } else if (requestAbort.signal.aborted && !abortSignal.aborted) {
         timedOut = true;

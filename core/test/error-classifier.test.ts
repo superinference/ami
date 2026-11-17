@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, isToolPairingError, extractUnknownErrorFormat, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, isToolPairingError, extractUnknownErrorFormat, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, type ClassifiedError } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -1163,5 +1163,135 @@ describe('classifyError — non-standard Bedrock envelope (no top-level message)
     const result = classifyError({ Output: { __type: 'SomeRoutingError' } });
     assert.equal(result.message, 'SomeRoutingError');
     assert.notEqual(result.message, '[object Object]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Typed AbortError + makeAbortError + isAbort (U073 — gap: dedicated typed
+// AbortError for distinguishing cancellation from failure)
+// ---------------------------------------------------------------------------
+describe('AbortError (typed cancellation error)', () => {
+  it('is an Error whose name is the stable "AbortError" string', () => {
+    const err = new AbortError();
+    assert.ok(err instanceof Error);
+    assert.ok(err instanceof AbortError);
+    assert.equal(err.name, 'AbortError');
+    assert.equal(err.message, 'The operation was aborted');
+  });
+
+  it('carries a custom message when supplied', () => {
+    assert.equal(new AbortError('pull cancelled').message, 'pull cancelled');
+  });
+
+  it('is classified as the abort category by classifyError (via the name)', () => {
+    const result = classifyError(new AbortError('user cancelled'));
+    assert.equal(result.category, 'abort');
+    assert.equal(result.retryable, false);
+  });
+});
+
+describe('makeAbortError', () => {
+  it('returns a typed AbortError when no signal reason is present', () => {
+    const err = makeAbortError();
+    assert.ok(err instanceof AbortError);
+    assert.equal(err.name, 'AbortError');
+  });
+
+  it('uses the supplied fallback message when the signal has no Error reason', () => {
+    const err = makeAbortError({ reason: undefined }, 'container pull aborted');
+    assert.ok(err instanceof AbortError);
+    assert.equal(err.message, 'container pull aborted');
+  });
+
+  it('preserves an explicit Error reason from AbortController.abort(reason)', () => {
+    const reason = new Error('explicit cancel reason');
+    const err = makeAbortError({ reason }, 'fallback');
+    assert.equal(err, reason);
+  });
+
+  it('falls back when the reason is a non-Error value', () => {
+    const err = makeAbortError({ reason: 'stringy reason' }, 'fell back');
+    assert.ok(err instanceof AbortError);
+    assert.equal(err.message, 'fell back');
+  });
+});
+
+describe('isAbort', () => {
+  it('returns true via the authoritative signal fast path even for a non-abort error', () => {
+    assert.equal(isAbort(new Error('some unrelated failure'), { aborted: true }), true);
+  });
+
+  it('returns false for a non-abort error when the signal is not aborted', () => {
+    assert.equal(isAbort(new Error('some unrelated failure'), { aborted: false }), false);
+  });
+
+  it('detects a typed AbortError with no signal', () => {
+    assert.equal(isAbort(new AbortError()), true);
+  });
+
+  it('detects a DOMException AbortError', () => {
+    assert.equal(isAbort(new DOMException('aborted', 'AbortError')), true);
+  });
+
+  it('does NOT treat an ECONNABORTED network drop as a cancellation', () => {
+    assert.equal(isAbort(new Error('read ECONNABORTED')), false);
+    assert.equal(isAbort('socket read ECONNABORTED'), false);
+  });
+
+  it('tolerates a null signal', () => {
+    assert.equal(isAbort(new AbortError(), null), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message-level predicates: API_ERROR_MESSAGE_PREFIX / startsWithApiErrorPrefix /
+// isPromptTooLongMessage (U073 — gap: re-detect an already-rendered error type)
+// ---------------------------------------------------------------------------
+describe('API_ERROR_MESSAGE_PREFIX + startsWithApiErrorPrefix', () => {
+  it('recognizes a rendered API-error line by its stable prefix', () => {
+    assert.equal(startsWithApiErrorPrefix(`${API_ERROR_MESSAGE_PREFIX}: HTTP 500 server error`), true);
+  });
+
+  it('returns false for a non-prefixed message and for non-strings', () => {
+    assert.equal(startsWithApiErrorPrefix('HTTP 500 server error'), false);
+    assert.equal(startsWithApiErrorPrefix(undefined as unknown as string), false);
+  });
+
+  it('does not collide with the lower-cased "API error (status N)" fallback', () => {
+    assert.equal(startsWithApiErrorPrefix('API error (status 500)'), false);
+  });
+});
+
+describe('classifyError re-classifies an already-rendered (prefixed) error', () => {
+  it('strips the API Error prefix and classifies the underlying rate-limit text', () => {
+    const rendered = `${API_ERROR_MESSAGE_PREFIX}: HTTP 429 - rate limit exceeded`;
+    assert.equal(classifyError(rendered).category, 'rate_limited');
+  });
+
+  it('strips the prefix and classifies the underlying context-overflow text', () => {
+    const rendered = `${API_ERROR_MESSAGE_PREFIX}: prompt is too long: 200000 tokens > 190000 maximum`;
+    const result = classifyError(rendered);
+    assert.equal(result.category, 'context_overflow');
+    assert.equal(result.actualTokens, 200000);
+    assert.equal(result.limitTokens, 190000);
+  });
+});
+
+describe('isPromptTooLongMessage', () => {
+  it('matches the authoritative "N tokens > M maximum" form', () => {
+    assert.equal(isPromptTooLongMessage('prompt is too long: 137500 tokens > 135000 maximum'), true);
+  });
+
+  it('matches common overflow phrasings', () => {
+    assert.equal(isPromptTooLongMessage('Error: prompt_too_long'), true);
+    assert.equal(isPromptTooLongMessage('the input is too long for this model'), true);
+    assert.equal(isPromptTooLongMessage('the context is too long'), true);
+    assert.equal(isPromptTooLongMessage('context window overflow'), true);
+  });
+
+  it('does not match unrelated errors or non-strings', () => {
+    assert.equal(isPromptTooLongMessage('authentication token expired'), false);
+    assert.equal(isPromptTooLongMessage('field value is too long'), false);
+    assert.equal(isPromptTooLongMessage(undefined as unknown as string), false);
   });
 });

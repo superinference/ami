@@ -1,4 +1,5 @@
 import { parseEnvInt } from './utils/env';
+import { makeAbortError } from './error-classifier';
 
 const DEFAULT_MAX_CONCURRENT = 20;
 const DEFAULT_MAX_DEPTH = 0;
@@ -91,9 +92,7 @@ export class SubagentLimiter {
 
   /** Standard abort rejection for a queued acquisition cancelled via AbortSignal. */
   private abortError(): Error {
-    const err = new Error('Subagent acquisition aborted before a concurrency slot was available.');
-    err.name = 'AbortError';
-    return err;
+    return makeAbortError(undefined, 'Subagent acquisition aborted before a concurrency slot was available.');
   }
 
   canSpawnAtDepth(currentDepth: number): boolean {

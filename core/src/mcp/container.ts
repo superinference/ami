@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'child_process';
 
 import { whichSync } from '../utils/which';
+import { makeAbortError } from '../error-classifier';
 
 export interface ContainerConfig {
   image: string;
@@ -90,14 +91,6 @@ export interface PullImageOptions {
   signal?: AbortSignal;
 }
 
-function makeAbortError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  if (reason instanceof Error) return reason;
-  const err = new Error('container pull aborted');
-  err.name = 'AbortError';
-  return err;
-}
-
 export function pullImage(
   runtime: string,
   image: string,
@@ -108,7 +101,7 @@ export function pullImage(
     const signal = options?.signal;
     // Short-circuit a signal that is already aborted before we spawn anything.
     if (signal && signal.aborted) {
-      reject(makeAbortError(signal));
+      reject(makeAbortError(signal, 'container pull aborted'));
       return;
     }
 
@@ -130,7 +123,7 @@ export function pullImage(
     };
     const onAbort = () => {
       proc.kill('SIGTERM');
-      finish(() => reject(makeAbortError(signal!)));
+      finish(() => reject(makeAbortError(signal!, 'container pull aborted')));
     };
 
     if (timeoutMs > 0) {
