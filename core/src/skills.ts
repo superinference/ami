@@ -179,8 +179,10 @@ export interface SkillDefinition {
    *  defaults to 'ask' (parity with task.ts's sub-agent fallback) so forked-skill
    *  tool calls stay gated by the parent's deny/ask rules + prompt handler instead
    *  of the previous hard-coded 'auto-allow' bypass. A trusted skill may opt into
-   *  'auto-allow' explicitly (mirrors AgentDefinition.permissionMode). */
-  permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
+   *  'auto-allow' explicitly (mirrors AgentDefinition.permissionMode). A trusted
+   *  skill may also pin the read-only 'plan' mode so its fork investigates without
+   *  mutating. The valid set is {@link AGENT_PERMISSION_MODES}. */
+  permissionMode?: 'auto-allow' | 'ask' | 'deny-all' | 'plan';
 
   // --- Stance capabilities (used when the skill is pinned as the session/run
   // stance via --skill) — a skill then governs the run the way a persona used to:
@@ -283,8 +285,10 @@ export interface AgentDefinition {
    *  granting every tool. */
   tools?: string[];
   disallowedTools?: string[];
-  /** Permission mode override for sub-agent invocation. */
-  permissionMode?: 'auto-allow' | 'ask' | 'deny-all';
+  /** Permission mode override for sub-agent invocation. `'plan'` runs the sub-agent
+   *  in read-only plan mode (reads/searches allowed, mutations denied) — the valid
+   *  set is {@link AGENT_PERMISSION_MODES}. */
+  permissionMode?: 'auto-allow' | 'ask' | 'deny-all' | 'plan';
   /** Token budget for auto-compaction inside this subagent's context window. */
   autoCompactWindow?: number;
   /** Which tier this agent was loaded from (built-in | plugin | user | project). */
@@ -971,8 +975,15 @@ export function missingSkillArgumentMessage(
   return `Skill "${skill.name}" requires an argument${hint}. Provide one and try again.`;
 }
 
-/** The permission-mode values an agent definition may declare. */
-export const AGENT_PERMISSION_MODES = ['auto-allow', 'ask', 'deny-all'] as const;
+/** The permission-mode values an agent/skill definition may declare. `'plan'` runs
+ *  the sub-agent in read-only PLAN mode (parity with Claude Code's `plan` agent
+ *  permission mode): the permission engine auto-allows read/search tools and DENIES
+ *  every mutating call, so a planning subagent can investigate and propose without
+ *  touching the workspace. It is strictly MORE restrictive than `ask` (see task.ts's
+ *  PERMISSION_MODE_RANK), so {@link clampPermissionMode} never lets it escalate a
+ *  parent's stance. Kept in lockstep with the engine's `PERMISSION_MODES` (which
+ *  already accepts `plan`) so the two never diverge. */
+export const AGENT_PERMISSION_MODES = ['auto-allow', 'ask', 'deny-all', 'plan'] as const;
 
 /** Structured outcome of validating an agent definition. */
 export interface AgentValidationResult {
@@ -1105,16 +1116,29 @@ export function validateAgentDefinition(
  * {@link SkillDefinition.getPromptForCommand} builder, it is invoked (awaited) with
  * the raw `args` string and its return value becomes the body — allowing per-call
  * validation, lazy content loading, or environment branching. A builder that
- * returns a non-string (malformed) yields `''`. With no builder, the static
- * {@link SkillDefinition.content} is returned unchanged.
+ * returns a non-string (malformed) yields `''`.
+ *
+ * GRACEFUL DEGRADATION (parity with Claude Code's bundled claude-api skill, whose
+ * dynamic prompt builder wraps its project-environment detection in a try/catch and
+ * falls back to the static reference when detection throws): when the builder THROWS
+ * — e.g. its environment/feature detection fails — the static
+ * {@link SkillDefinition.content} is returned instead of rejecting, so a broken
+ * dynamic prompt degrades to the author's fallback body rather than crashing the
+ * skill-content path. With no builder, the static content is returned unchanged.
  */
 export async function resolveSkillPrompt(
   skill: Pick<SkillDefinition, 'content' | 'getPromptForCommand' | 'templateVars'>,
   args: string = '',
 ): Promise<string> {
   if (typeof skill.getPromptForCommand === 'function') {
-    const out = await skill.getPromptForCommand(args);
-    return applySkillTemplateVariables(typeof out === 'string' ? out : '', skill.templateVars);
+    try {
+      const out = await skill.getPromptForCommand(args);
+      return applySkillTemplateVariables(typeof out === 'string' ? out : '', skill.templateVars);
+    } catch {
+      // Builder failed (e.g. environment detection threw) — fall back to the static
+      // body so the skill still resolves to its author-provided default.
+      return applySkillTemplateVariables(skill.content, skill.templateVars);
+    }
   }
   return applySkillTemplateVariables(skill.content, skill.templateVars);
 }

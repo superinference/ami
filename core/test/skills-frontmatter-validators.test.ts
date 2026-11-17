@@ -156,7 +156,7 @@ describe('validateAgentDefinition', () => {
   };
 
   it('exposes the permission-mode allowlist', () => {
-    assert.deepEqual([...AGENT_PERMISSION_MODES], ['auto-allow', 'ask', 'deny-all']);
+    assert.deepEqual([...AGENT_PERMISSION_MODES], ['auto-allow', 'ask', 'deny-all', 'plan']);
   });
 
   it('accepts a minimal valid definition', () => {
