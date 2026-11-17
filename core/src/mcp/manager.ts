@@ -2,6 +2,16 @@ import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, Mcp
 import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
 import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName, mcpCredentialKey } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike, XaaConfig } from './oauth';
+import {
+  MCP_NEEDS_AUTH_CACHE_TTL_MS,
+  isNeedsAuthCached,
+  setNeedsAuthEntry,
+  clearNeedsAuthEntry,
+  pruneNeedsAuthCache,
+  readNeedsAuthCache,
+  writeNeedsAuthCache,
+  type NeedsAuthCache,
+} from './needs-auth-cache';
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
@@ -845,6 +855,24 @@ export class McpManager extends EventEmitter {
    * the win32-only diagnostic path is exercisable on any CI host.
    */
   _platform: NodeJS.Platform = process.platform;
+
+  /**
+   * TTL for the needs-auth skip cache. Defaults to the Claude-parity 15 min;
+   * overridable in tests so the expiry path is exercisable without real time.
+   */
+  _needsAuthCacheTtlMs: number = MCP_NEEDS_AUTH_CACHE_TTL_MS;
+  /**
+   * Lazily-loaded needs-auth cache (server name → last-401 timestamp), persisted
+   * cross-session. `undefined` until first use; see {@link loadNeedsAuthCache}.
+   */
+  private _needsAuthCache: NeedsAuthCache | undefined;
+  /**
+   * Remote servers skipped THIS session because their connect was short-circuited
+   * by a fresh needs-auth cache entry (so {@link getFullServerStatus}/
+   * {@link getServerState} can report `needs-auth` without a probe). Cleared on a
+   * successful connect or an explicit re-auth.
+   */
+  private _needsAuthSkipped = new Set<string>();
 
   /** Engine-injected resolver for server elicitation requests (server name + request → user's answer). */
   private _elicitationHandler: ((serverName: string, request: McpElicitationRequest) => Promise<McpElicitationResult>) | null = null;
@@ -1826,6 +1854,10 @@ export class McpManager extends EventEmitter {
    */
   async reconnect(name: string): Promise<void> {
     this.invalidateToolCache(name);
+    // An explicit re-auth/reconnect must bypass the needs-auth skip cache: the
+    // user is actively asking to retry, so drop any cached guaranteed-401 marker
+    // before re-probing (Claude-parity clearMcpAuthCache on manual auth).
+    this.clearNeedsAuthCache(name);
     if (this.clients.get(name)?.state === 'ready') {
       await this.restartServer(name);
     } else {
@@ -1923,6 +1955,8 @@ export class McpManager extends EventEmitter {
     const client = this.clients.get(name);
     if (!client) return 'pending';
     if (client.state === 'ready') return 'ready';
+    // Short-circuited by the needs-auth skip cache (never probed this pass).
+    if (this._needsAuthSkipped.has(name)) return 'needs-auth';
     if (client.state === 'connecting') return 'connecting';
     if (client.state === 'error') return 'error';
     // A connected client whose token died mid-session (a tool call hit an
@@ -2003,6 +2037,18 @@ export class McpManager extends EventEmitter {
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
       };
     }
+    // A server whose connect was short-circuited by the needs-auth skip cache was
+    // never probed, so its client is not `ready`; surface it as `needs-auth` (with
+    // the affordance flag) so the /mcp view prompts a re-auth instead of showing a
+    // misleading idle/connecting state.
+    if (this._needsAuthSkipped.has(name) && client.state !== 'ready') {
+      return {
+        name, state: 'needs-auth', serverInfo: client.serverInfo, toolCount: client.tools.length,
+        resourceCount: client.resources.length, promptCount: client.prompts?.length ?? 0,
+        uptime: client.uptime, containerBacked: !!config?.containerConfig, needsAuth: true,
+        scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
+      };
+    }
     return {
       name,
       state: client.state,
@@ -2072,6 +2118,12 @@ export class McpManager extends EventEmitter {
     const maxRetries = 3;
     let lastErr: unknown;
 
+    // Resolve the effective transport (explicit, else inferred from the URL
+    // scheme) once — it drives both the connect dispatch and the needs-auth cache
+    // bookkeeping (which only applies to REMOTE servers), and must be visible in
+    // the catch handler, so it is hoisted out of the per-attempt try block.
+    const transport = this.effectiveTransport(config);
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         // For http/sse servers with a headersHelper, refresh dynamic auth headers
@@ -2097,11 +2149,9 @@ export class McpManager extends EventEmitter {
             }
           }
         }
-        // Resolve the effective transport (explicit, else inferred from the URL
-        // scheme) so a `{ url: "wss://…" }` / `{ url: "https://…" }` entry with no
-        // `transport` connects over the right remote transport instead of falling
-        // through to the stdio `connect()` path.
-        const transport = this.effectiveTransport(config);
+        // Dispatch over the resolved transport so a `{ url: "wss://…" }` /
+        // `{ url: "https://…" }` entry with no explicit `transport` connects over
+        // the right remote transport instead of falling through to stdio.
         if (transport === 'http' && config?.url) {
           await client.connectHTTP(config.url);
         } else if (transport === 'sse' && config?.url) {
@@ -2116,6 +2166,9 @@ export class McpManager extends EventEmitter {
 
         const tools = await client.listTools();
         this.ingestServerTools(name, tools);
+        // A successful connect proves the server no longer needs auth — drop any
+        // stale needs-auth cache entry so it is not needlessly skipped next time.
+        if (isRemoteMcpTransport(transport)) this.clearNeedsAuthCache(name);
         return;
       } catch (err) {
         lastErr = err;
@@ -2125,6 +2178,10 @@ export class McpManager extends EventEmitter {
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
+        // A terminal auth-required failure on a remote server is a guaranteed-401
+        // for the TTL window — cache it so the next connect pass skips the probe
+        // (Claude-parity setMcpAuthCacheEntry).
+        if (isRemoteMcpTransport(transport) && isAuthRequiredError(err)) this.recordNeedsAuth(name);
         const finalErr = isHandshakeFailure(err) ? handshakeError(name, err) : err;
         // A connect attempt that has exhausted its retries is a per-server error
         // worth persisting to the server's dedicated log (Claude-parity logMCPError).
@@ -2150,7 +2207,24 @@ export class McpManager extends EventEmitter {
     const remote: string[] = [];
     for (const name of this.clients.keys()) {
       const t = this.effectiveTransport(this.configs.get(name));
-      (isRemoteMcpTransport(t) ? remote : local).push(name);
+      if (!isRemoteMcpTransport(t)) {
+        local.push(name);
+        continue;
+      }
+      // Needs-auth skip (Claude-parity isMcpAuthCached / hasMcpDiscoveryButNoToken):
+      // a remote server that returned 401 within the TTL is a guaranteed-401, so
+      // short-circuit straight to a needs-auth result instead of burning a network
+      // round-trip + OAuth discovery on it. The user re-authenticating (/mcp →
+      // reconnect) clears the entry and re-probes.
+      if (this.isNeedsAuthCached(name)) {
+        this._needsAuthSkipped.add(name);
+        this.serverErrors.delete(name);
+        this.emit('server-state-changed', name, 'needs-auth');
+        coreLog('mcp', `skipping MCP server "${name}" connect: cached needs-auth (re-authenticate via /mcp to retry)`);
+        results.set(name, null);
+        continue;
+      }
+      remote.push(name);
     }
     const connectOne = async (name: string) => {
       try { await this.connectServer(name); results.set(name, null); }
@@ -2426,6 +2500,60 @@ export class McpManager extends EventEmitter {
       headers: config.headers,
     });
     return path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey));
+  }
+
+  /** On-disk path of the persisted needs-auth skip cache (Claude-parity
+   *  `mcp-needs-auth-cache.json`). Lives alongside the MCP token files. */
+  private needsAuthCachePath(): string {
+    return path.join(resolveConfigDir(), 'mcp-needs-auth-cache.json');
+  }
+
+  /** Lazily read the needs-auth cache from disk (once), pruning expired entries. */
+  private loadNeedsAuthCache(): NeedsAuthCache {
+    if (this._needsAuthCache === undefined) {
+      const raw = readNeedsAuthCache(this.needsAuthCachePath());
+      const pruned = pruneNeedsAuthCache(raw, Date.now(), this._needsAuthCacheTtlMs);
+      this._needsAuthCache = pruned;
+      // Persist a prune so stale entries do not accumulate across runs.
+      if (pruned !== raw) writeNeedsAuthCache(this.needsAuthCachePath(), pruned);
+    }
+    return this._needsAuthCache;
+  }
+
+  /**
+   * True when `name` returned 401 (or had discovery-but-no-token) within the TTL,
+   * so connecting it now is a guaranteed 401 and should be skipped. Public so a
+   * `/mcp` view / diagnostic can explain why a server was short-circuited.
+   */
+  isNeedsAuthCached(name: string): boolean {
+    return isNeedsAuthCached(this.loadNeedsAuthCache(), name, Date.now(), this._needsAuthCacheTtlMs);
+  }
+
+  /** Record that `name` needs auth (a remote connect returned 401), persisting it. */
+  private recordNeedsAuth(name: string): void {
+    const next = setNeedsAuthEntry(this.loadNeedsAuthCache(), name, Date.now());
+    this._needsAuthCache = next;
+    writeNeedsAuthCache(this.needsAuthCachePath(), next);
+  }
+
+  /**
+   * Clear a server's needs-auth cache entry (on a successful connect or an
+   * explicit re-auth). With no `name`, clears the whole cache. Only rewrites the
+   * file when something actually changed. Also drops any in-session skip marker so
+   * the server stops reporting `needs-auth` once it is re-probed/authenticated.
+   */
+  clearNeedsAuthCache(name?: string): void {
+    // Drop the in-session skip marker(s) so the server(s) stop reporting needs-auth.
+    if (name === undefined) this._needsAuthSkipped.clear();
+    else this._needsAuthSkipped.delete(name);
+    const current = this.loadNeedsAuthCache();
+    const next = name === undefined ? {} : clearNeedsAuthEntry(current, name);
+    // Only rewrite the file when the persisted cache actually changed.
+    const changed = name === undefined ? Object.keys(current).length > 0 : next !== current;
+    if (changed) {
+      this._needsAuthCache = next;
+      writeNeedsAuthCache(this.needsAuthCachePath(), next);
+    }
   }
 
   /** The config-source scope a server was loaded from, or undefined if unknown. */
