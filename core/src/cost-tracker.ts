@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UsageStats } from './types';
+import type { FpsMetrics } from './profiler';
 import { isEssentialTrafficOnly } from './analytics';
 import { getContextWindow, getModelMaxOutputTokens } from './model-capabilities';
 
@@ -1241,16 +1242,59 @@ export interface CostState {
   totalInputTokens: number;
   totalOutputTokens: number;
   requestCount: number;
+  /**
+   * The session this cost state belongs to. Serialized so a resume can enforce a
+   * session-id boundary check (parity: Claude's getStoredSessionCosts, which returns
+   * undefined when projectConfig.lastSessionId !== the resuming sessionId) — another
+   * session's spend can never be restored into the wrong session. Omitted for an unscoped
+   * (session-agnostic) state.
+   */
+  sessionId?: string;
+  /**
+   * Optional TUI render-performance snapshot captured at save time and persisted alongside
+   * the session's costs (parity: Claude's saveCurrentSessionCosts(getFpsMetrics()) →
+   * lastFpsAverage/lastFpsLow1Pct). Absent for non-interactive / unsampled sessions.
+   */
+  fpsMetrics?: FpsMetrics;
+}
+
+/** The serialized on-disk shape of a {@link CostState}, including optional scoping fields. */
+interface SerializedCostState {
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  requestCount: number;
+  version: 1;
+  sessionId?: string;
+  fpsMetrics?: FpsMetrics;
+}
+
+/** True when an {@link FpsMetrics}-shaped value carries two finite, non-negative numbers. */
+function isValidFpsMetrics(v: unknown): v is FpsMetrics {
+  return (
+    typeof v === 'object' && v !== null &&
+    Number.isFinite((v as FpsMetrics).averageFps) &&
+    Number.isFinite((v as FpsMetrics).low1PctFps) &&
+    (v as FpsMetrics).averageFps >= 0 &&
+    (v as FpsMetrics).low1PctFps >= 0
+  );
 }
 
 export function serializeCostState(tracker: CostState): string {
-  return JSON.stringify({
+  const out: SerializedCostState = {
     totalCost: tracker.totalCost,
     totalInputTokens: tracker.totalInputTokens,
     totalOutputTokens: tracker.totalOutputTokens,
     requestCount: tracker.requestCount,
     version: 1,
-  });
+  };
+  if (typeof tracker.sessionId === 'string' && tracker.sessionId) {
+    out.sessionId = tracker.sessionId;
+  }
+  if (isValidFpsMetrics(tracker.fpsMetrics)) {
+    out.fpsMetrics = { averageFps: tracker.fpsMetrics.averageFps, low1PctFps: tracker.fpsMetrics.low1PctFps };
+  }
+  return JSON.stringify(out);
 }
 
 export function deserializeCostState(json: string): CostState | null {
@@ -1269,15 +1313,38 @@ export function deserializeCostState(json: string): CostState | null {
         parsed.totalOutputTokens < 0 || parsed.requestCount < 0) {
       return null;
     }
-    return {
+    const state: CostState = {
       totalCost: parsed.totalCost,
       totalInputTokens: parsed.totalInputTokens,
       totalOutputTokens: parsed.totalOutputTokens,
       requestCount: parsed.requestCount,
     };
+    if (typeof parsed.sessionId === 'string' && parsed.sessionId) {
+      state.sessionId = parsed.sessionId;
+    }
+    if (isValidFpsMetrics(parsed.fpsMetrics)) {
+      state.fpsMetrics = { averageFps: parsed.fpsMetrics.averageFps, low1PctFps: parsed.fpsMetrics.low1PctFps };
+    }
+    return state;
   } catch {
     return null;
   }
+}
+
+/**
+ * Deserialize a persisted cost state ONLY when it belongs to `sessionId` — a session-id
+ * boundary check mirroring Claude's getStoredSessionCosts (which returns undefined when
+ * projectConfig.lastSessionId !== the resuming sessionId). A state carrying a DIFFERENT
+ * embedded sessionId (e.g. a copied or corrupted session file) is rejected (`null`) so
+ * another session's spend can never be restored into this one. A state with NO embedded
+ * sessionId is treated as unscoped and allowed — the cost state lives in the session's own
+ * file, so file identity already scopes it. Malformed JSON → `null` (via deserializeCostState).
+ */
+export function deserializeCostStateForSession(json: string, sessionId: string): CostState | null {
+  const state = deserializeCostState(json);
+  if (!state) return null;
+  if (state.sessionId !== undefined && state.sessionId !== sessionId) return null;
+  return state;
 }
 
 /** Reset the live pricing cache (for testing). */
