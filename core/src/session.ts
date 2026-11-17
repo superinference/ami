@@ -491,6 +491,77 @@ export function isBgSession(session: { kind?: SessionKind }): boolean {
   return session.kind === 'bg' || session.kind === 'daemon' || session.kind === 'daemon-worker';
 }
 
+/**
+ * Sentinel {@link SessionAgentIdentity.model} value meaning "do NOT override the
+ * main-loop model — use whatever model the resumed run is otherwise configured
+ * with". Distinct from an absent model (also no override) only in intent: an agent
+ * can be authored to explicitly inherit. Parity: Claude's `resumedAgent.model !==
+ * 'inherit'` guard in `restoreAgentFromSession`.
+ */
+export const AGENT_MODEL_INHERIT = 'inherit';
+
+/**
+ * Agent/persona identity a session ran under, persisted so `--resume` can restore
+ * it (parity: Claude's conversationRecovery session metadata
+ * `agentName`/`agentColor`/`agentSetting` + the resumed agent's model override).
+ *  - `name` / `color` — display identity for the picker and status line;
+ *  - `setting` — the agent TYPE identifier used to re-resolve the live agent
+ *    definition on resume (Claude's `agentSetting`);
+ *  - `model` — the agent's model override, or the {@link AGENT_MODEL_INHERIT}
+ *    sentinel. Applied on resume via {@link resolveAgentModelOverride}.
+ */
+export interface SessionAgentIdentity {
+  name?: string;
+  color?: string;
+  setting?: string;
+  model?: string;
+}
+
+/**
+ * Decide the model override to apply when resuming a session whose saved agent had
+ * a model (parity: Claude's `restoreAgentFromSession` model-apply branch). Returns
+ * the model id to set as the main-loop override, or `null` when NO override should
+ * be applied, in precedence order:
+ *  1. the user passed `--agent` on the CLI → keep the CLI agent, apply nothing
+ *     (`userPassedAgentOverride`);
+ *  2. a main-loop model override is already set (e.g. a `--model` flag) → it wins
+ *     (`existingModelOverride`);
+ *  3. the saved model is absent/blank or the {@link AGENT_MODEL_INHERIT} sentinel
+ *     → use the main-loop model (no override);
+ *  4. otherwise → apply the saved agent model (trimmed).
+ * Pure (all state injected) so the resume precedence is unit-testable without the
+ * CLI/agent registry — the single acceptance boundary a `--resume` path reuses.
+ */
+export function resolveAgentModelOverride(opts: {
+  savedModel?: string;
+  userPassedAgentOverride?: boolean;
+  existingModelOverride?: boolean;
+}): string | null {
+  if (opts.userPassedAgentOverride) return null;
+  if (opts.existingModelOverride) return null;
+  if (typeof opts.savedModel !== 'string') return null;
+  const model = opts.savedModel.trim();
+  if (!model || model === AGENT_MODEL_INHERIT) return null;
+  return model;
+}
+
+/**
+ * Project a persisted {@link SessionAgentIdentity} down to the display subset a
+ * {@link SessionListEntry} carries (name/color/setting — never the model override,
+ * which is a resume-time concern). Returns `undefined` when there is no agent or it
+ * has no displayable field, so a plain session's list entry carries no `agent` key
+ * at all. The ONE place the picker-projection lives so {@link SessionManager.list}
+ * never re-derives it inline (§0b.6).
+ */
+export function toListEntryAgent(
+  agent: SessionAgentIdentity | undefined,
+): { name?: string; color?: string; setting?: string } | undefined {
+  if (!agent) return undefined;
+  const { name, color, setting } = agent;
+  if (name === undefined && color === undefined && setting === undefined) return undefined;
+  return { name, color, setting };
+}
+
 export interface Session {
   id: SessionId;
   /** A user-set rename. Always wins over {@link aiTitle} and is never
@@ -547,6 +618,12 @@ export interface Session {
    *  Claude's `regenerateSessionId({ setCurrentAsParent })` + `STATE.parentSessionId`).
    *  Lets analytics/resume walk the chain of related sessions a user cleared through. */
   parentSessionId?: SessionId;
+  /** Agent/persona identity the session ran under ({@link SessionAgentIdentity}),
+   *  persisted so --resume can restore the agent's name/color/display setting and
+   *  re-apply its model override via {@link resolveAgentModelOverride} (parity:
+   *  Claude's agentName/agentColor/agentSetting + 'inherit' model sentinel). Absent
+   *  on a plain (default-agent) session. */
+  agent?: SessionAgentIdentity;
   /** Per-session settings saved on disk so /resume can restore them. */
   settings?: {
     skill?: string;
@@ -661,6 +738,12 @@ export interface SessionListEntry {
   /** The session this one was forked/regenerated from, when recorded — lets a
    *  picker/analytics show the lineage of a cleared-through chain of sessions. */
   parentSessionId?: SessionId;
+  /** Agent/persona identity (name/color/setting) the session ran under, when
+   *  recorded — lets the picker/status line show which agent a session used
+   *  (parity: Claude's agentName/agentColor list metadata). The model override is
+   *  intentionally NOT surfaced here (it is a resume-time concern via
+   *  {@link resolveAgentModelOverride}, not a picker label). */
+  agent?: { name?: string; color?: string; setting?: string };
   /** True when this entry was built from a bounded lite metadata read
    *  ({@link SessionManager.readSessionMetaLite}) rather than a full parse: its
    *  {@link preview}/{@link lastPrompt}/{@link summary} come from the title only and
@@ -1013,6 +1096,12 @@ function sanitizeLoadedSession(parsed: unknown): Session | null {
   const mode = session.settings?.permissionMode;
   if (typeof mode === 'string' && normalizePermissionMode(mode) === null) {
     delete session.settings!.permissionMode;
+  }
+  // A tampered/foreign `agent` that is not a plain object (e.g. a string or array)
+  // is dropped so consumers never destructure a non-record identity.
+  const agent = (obj as { agent?: unknown }).agent;
+  if (agent !== undefined && (typeof agent !== 'object' || agent === null || Array.isArray(agent))) {
+    delete (obj as { agent?: unknown }).agent;
   }
   return session;
 }
@@ -1621,6 +1710,7 @@ export class SessionManager {
         permissionMode: session.settings?.permissionMode,
         isSidechain: session.isSidechain,
         parentSessionId: session.parentSessionId,
+        agent: toListEntryAgent(session.agent),
       });
     }
 
