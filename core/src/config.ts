@@ -109,6 +109,13 @@ export interface ProjectConfig {
   enabledPlugins?: Record<string, boolean | string[]>;
   /** Managed allow-only mode for plugins/mods (Claude parity: load only vouched mods). */
   allowManagedModsOnly?: boolean;
+  /**
+   * Per-surface plugin-only lock (Claude parity: `strictPluginOnlyCustomization`). `true`
+   * locks ALL customization surfaces (`skills`/`agents`/`hooks`/`mcp`) to plugin+managed
+   * sources; an array locks only the listed surfaces. A {@link MANAGED_ONLY_KEYS} entry —
+   * only a managed/enterprise config tier can set it.
+   */
+  strictPluginOnlyCustomization?: boolean | ('skills' | 'agents' | 'hooks' | 'mcp')[];
   /** MCP allowlist: when non-empty, only these MCP servers may be connected. */
   allowedMcpServers?: string[];
   /**
@@ -845,6 +852,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
   // validated bespoke in {@link validateProjectConfigValues} but must still count as
   // recognized keys so they never surface as a spurious unknown-key typo warning.
   'statusLine',
+  'strictPluginOnlyCustomization',
 ]);
 
 /**
@@ -1052,6 +1060,20 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       if (sl.padding !== undefined && !matchesConfigFieldType(sl.padding, 'number')) {
         issues.push({ field: 'statusLine.padding', message: `must be a number (got ${describeJsonType(sl.padding)})`, value: sl.padding, tip: getConfigValidationTip('statusLine.padding', { kind: 'type', type: 'number' }) });
       }
+    }
+  }
+  // 7. `strictPluginOnlyCustomization` union: `true`/`false` OR an array of the known
+  //    customization surfaces (`skills`/`agents`/`hooks`/`mcp`). Not in the single-type
+  //    table because the type is a boolean|array union; validate both forms here so a
+  //    valid policy is accepted while a malformed value (number/string/object, or an
+  //    array holding a non-surface name) is surfaced and dropped by salvage.
+  if (config.strictPluginOnlyCustomization !== undefined) {
+    const sp = config.strictPluginOnlyCustomization as unknown;
+    const SURFACES = ['skills', 'agents', 'hooks', 'mcp'];
+    if (typeof sp !== 'boolean' && !Array.isArray(sp)) {
+      issues.push({ field: 'strictPluginOnlyCustomization', message: `must be a boolean or an array of ${SURFACES.join('/')} (got ${describeJsonType(sp)})`, value: sp, tip: 'Use true to lock all surfaces, or an array like ["agents"] to lock specific ones.' });
+    } else if (Array.isArray(sp) && !sp.every((s) => typeof s === 'string' && SURFACES.includes(s))) {
+      issues.push({ field: 'strictPluginOnlyCustomization', message: `array entries must each be one of ${SURFACES.join(', ')}`, value: sp, tip: 'Valid surfaces are skills, agents, hooks, mcp.' });
     }
   }
   // Attach a per-field documentation anchor to EVERY issue in one place (parity:

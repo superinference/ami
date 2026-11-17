@@ -61,7 +61,9 @@ describe('isModAllowed', () => {
     const mod: ModInfo = { id: 'user-mod', name: 'user-mod', tier: 'user' };
     const result = isModAllowed(mod, policy);
     assert.equal(result.allowed, false);
-    assert.ok(result.reason?.includes('allowManagedModsOnly'));
+    // Clean, actionable wording — no leaked internal policy key (gaps: wording + remediation).
+    assert.ok(result.reason?.includes('contact your administrator'));
+    assert.ok(!result.reason?.includes('allowManagedModsOnly'));
   });
 
   it('allows builtin mods when allowManagedModsOnly is true', () => {
@@ -96,7 +98,8 @@ describe('isModAllowed', () => {
     const mod: ModInfo = { id: 'other-mod', name: 'other-mod', tier: 'user' };
     const result = isModAllowed(mod, policy);
     assert.equal(result.allowed, false);
-    assert.ok(result.reason?.includes('allowManagedModsOnly'));
+    assert.ok(result.reason?.includes('contact your administrator'));
+    assert.ok(!result.reason?.includes('allowManagedModsOnly'));
   });
 
   it('blocks remote marketplace mods even if in enabledPlugins', () => {
@@ -117,7 +120,8 @@ describe('ManagedModsEnforcer.shouldBlock — static convenience', () => {
     const mod: ModInfo = { id: 'user-plugin', name: 'user-plugin', tier: 'user' };
     const result = ManagedModsEnforcer.shouldBlock(mod, policy);
     assert.equal(result.blocked, true);
-    assert.ok(result.reason?.includes('allowManagedModsOnly'));
+    assert.ok(result.reason?.includes('contact your administrator'));
+    assert.ok(!result.reason?.includes('allowManagedModsOnly'));
   });
 
   it('with allowManagedModsOnly:true allows managed mods', () => {

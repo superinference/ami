@@ -59,6 +59,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       attribution: { commit: 'x', pr: 'y' }, disabledMcpServers: ['a'], enabledMcpServers: ['a'],
       language: 'japanese', memoryExcludes: ['**/AGENTS.md'],
       allowManagedSandboxDomainsOnly: true, skillUsage: { demo: { usageCount: 1, lastUsedAt: 1 } },
+      strictPluginOnlyCustomization: ['skills'],
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

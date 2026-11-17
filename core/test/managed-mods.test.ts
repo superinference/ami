@@ -116,6 +116,42 @@ describe('isModAllowed', () => {
   });
 });
 
+describe('isModAllowed — refusal reasons are clean + actionable (gaps: wording + remediation)', () => {
+  it('generic allow-only refusal is a grammatical sentence with no internal key', () => {
+    const r = isModAllowed(userMod, activePolicy);
+    assert.equal(r.allowed, false);
+    assert.ok(r.reason!.includes("is not part of your organization's managed mod set"));
+    assert.ok(r.reason!.includes('was not loaded'));
+    // Remediation affordance (parity: Claude pairs every org-policy block with a next step).
+    assert.ok(r.reason!.includes('contact your administrator'));
+    // No leaked implementation jargon.
+    assert.ok(!r.reason!.includes('allowManagedModsOnly'));
+    assert.ok(!r.reason!.includes("limited to your organization's by policy"));
+  });
+
+  it('remote-marketplace refusal names the marketplace AND carries remediation', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'remote-mod@npm': true },
+    };
+    const r = isModAllowed(remoteUserMod, policy);
+    assert.equal(r.allowed, false);
+    assert.ok(r.reason!.includes('remote marketplace'));
+    assert.ok(r.reason!.includes('npm'));
+    assert.ok(r.reason!.includes('contact your administrator'));
+    assert.ok(!r.reason!.includes('allowManagedModsOnly'));
+  });
+
+  it('force-disable refusal reads cleanly, carries remediation, drops the raw enabledPlugins key', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'my-mod@local': false } };
+    const r = isModAllowed(userMod, policy);
+    assert.equal(r.allowed, false);
+    assert.match(r.reason!, /disabled by your organization's policy/);
+    assert.ok(r.reason!.includes('contact your administrator'));
+    assert.ok(!r.reason!.includes('enabledPlugins['));
+  });
+});
+
 describe('isModBlockedByPolicy (unconditional org force-disable)', () => {
   it('returns true when enabledPlugins[id] === false', () => {
     const policy: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'my-mod@local': false } };
@@ -237,10 +273,47 @@ describe('getManagedPluginNames (org-locked name set)', () => {
       enabledPlugins: { 'on@m': true, 'off@m': false, 'arr@m': ['owner/repo'] },
     };
     const names = getManagedPluginNames(policy);
+    // Boolean pins lock BOTH the full id AND the first-'@' bare name (Claude parity).
     assert.equal(names.has('on@m'), true);
+    assert.equal(names.has('on'), true);
     assert.equal(names.has('off@m'), true);
+    assert.equal(names.has('off'), true);
+    // The allow-array form vouches for a source but never locks a name.
     assert.equal(names.has('arr@m'), false);
+    assert.equal(names.has('arr'), false);
+    assert.equal(names.size, 4);
+  });
+
+  it('locks a bare (no-@) boolean pin by its name', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: false,
+      enabledPlugins: { blocked: false, pinned: true },
+    };
+    const names = getManagedPluginNames(policy);
+    assert.equal(names.has('blocked'), true);
+    assert.equal(names.has('pinned'), true);
     assert.equal(names.size, 2);
+  });
+
+  it('extracts the bare name from the FIRST @ for a scoped-ish id', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: false,
+      enabledPlugins: { 'my-mod@local@extra': true },
+    };
+    const names = getManagedPluginNames(policy);
+    assert.equal(names.has('my-mod@local@extra'), true);
+    assert.equal(names.has('my-mod'), true);
+  });
+
+  it('does not add an empty bare name for an id that leads with @', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: false,
+      enabledPlugins: { '@scope/pkg': true },
+    };
+    const names = getManagedPluginNames(policy);
+    assert.equal(names.has('@scope/pkg'), true);
+    assert.equal(names.has(''), false);
+    assert.equal(names.size, 1);
   });
 
   it('returns an empty set for null/undefined or empty policy', () => {
@@ -354,7 +427,10 @@ describe('ManagedModsEnforcer', () => {
     const refused = enforcer.getRefused();
     assert.equal(refused.length, 1);
     assert.equal(refused[0].mod.name, 'my-mod');
-    assert.ok(refused[0].reason.includes('allowManagedModsOnly'));
+    // User-facing reason reads as a clean human sentence with a remediation clause,
+    // and never leaks the internal policy key (gaps: grammatical wording + remediation).
+    assert.ok(refused[0].reason.includes('contact your administrator'));
+    assert.ok(!refused[0].reason.includes('allowManagedModsOnly'));
   });
 
   it('getRefusedCount returns correct count', () => {

@@ -41,12 +41,21 @@ export function isModBlockedByPolicy(id: string, policy: ManagedModsPolicy | nul
  * are equally immutable — the user may not enable/disable/remove either. The legacy
  * owner/repo ARRAY (allow-array) form is explicitly NOT protected (it vouches for a
  * source, it does not lock the name). Parity: Claude's `getManagedPluginNames`.
+ *
+ * Each boolean-pinned id locks BOTH its full `name@marketplace` form AND the bare
+ * `name` extracted from the FIRST `@` (Claude's `pluginId.split('@')[0]`). Locking the
+ * bare name too means a pin such as `my-mod@local` also immobilizes a `my-mod` install
+ * from any other marketplace — a strict superset of Claude's bare-name lock that also
+ * keeps AMI's id-form lock, so a bare pin (no `@`) still protects its name.
  */
 export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefined): Set<string> {
   const names = new Set<string>();
   if (!policy?.enabledPlugins) return names;
   for (const [id, value] of Object.entries(policy.enabledPlugins)) {
-    if (typeof value === 'boolean') names.add(id);
+    if (typeof value !== 'boolean') continue; // arrays vouch for a source, they don't lock a name
+    names.add(id);
+    const at = id.indexOf('@');
+    if (at > 0) names.add(id.slice(0, at)); // bare name from the FIRST '@' (Claude parity)
   }
   return names;
 }
@@ -75,7 +84,7 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
   if (isModBlockedByPolicy(mod.id, policy)) {
     return {
       allowed: false,
-      reason: `${mod.name} is disabled by your organization's policy (enabledPlugins["${mod.id}"] = false)`,
+      reason: `${mod.name} is disabled by your organization's policy — contact your administrator to re-enable it`,
     };
   }
 
@@ -95,7 +104,7 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
       if (!isLocalOrInlineSource(mod)) {
         return {
           allowed: false,
-          reason: `mods are limited to your organization's by policy (allowManagedModsOnly); ${mod.name} from remote marketplace "${mod.marketplace}" was not loaded`,
+          reason: `${mod.name} is not part of your organization's managed mod set, so it was not loaded (it came from the remote marketplace "${mod.marketplace}") — contact your administrator to allow it`,
         };
       }
       return { allowed: true };
@@ -104,7 +113,7 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
 
   return {
     allowed: false,
-    reason: `mods are limited to your organization's by policy (allowManagedModsOnly); ${mod.name} was not loaded`,
+    reason: `${mod.name} is not part of your organization's managed mod set, so it was not loaded — contact your administrator to allow it`,
   };
 }
 
