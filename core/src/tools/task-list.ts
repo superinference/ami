@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { isTerminalTaskStatus } from '../process-manager';
 import type { BackgroundProcess, TaskStatus } from '../process-manager';
 
 /**
@@ -43,6 +44,7 @@ export function formatElapsed(ms: number): string {
 }
 
 const STATUS_ICON: Record<TaskStatus, string> = {
+  pending: '…',
   running: '▶',
   completed: '✓',
   failed: '✗',
@@ -57,6 +59,10 @@ const STATUS_ICON: Record<TaskStatus, string> = {
 export function formatTaskStatus(task: Pick<BackgroundProcess, 'status' | 'exitCode'>): string {
   const icon = STATUS_ICON[task.status] ?? '•';
   if (task.status === 'running') return `${icon} running`;
+  // A queued/not-yet-started task (parity: Claude's getStatusText 'is pending') —
+  // rendered distinctly from running so the model can tell "accepted, waiting to
+  // start" from "actively executing". No exit code (it hasn't run).
+  if (task.status === 'pending') return `${icon} pending`;
   if (task.status === 'killed') return `${icon} killed`;
   // completed / failed
   if (task.exitCode === null || task.exitCode === undefined) return `${icon} ${task.status}`;
@@ -65,7 +71,7 @@ export function formatTaskStatus(task: Pick<BackgroundProcess, 'status' | 'exitC
 
 /** Count tasks by lifecycle status, for the at-a-glance summary line. */
 export function summarizeTasks(tasks: Pick<BackgroundProcess, 'status'>[]): Record<TaskStatus, number> {
-  const counts: Record<TaskStatus, number> = { running: 0, completed: 0, failed: 0, killed: 0 };
+  const counts: Record<TaskStatus, number> = { pending: 0, running: 0, completed: 0, failed: 0, killed: 0 };
   for (const t of tasks) {
     if (t.status in counts) counts[t.status]++;
   }
@@ -106,9 +112,11 @@ export function formatKindSummary(counts: { bash: number; monitor: number; agent
   return parts.join(', ');
 }
 
-/** A terminal task will never run again. */
+/** A terminal task will never run again (completed/failed/killed). A `pending`
+ *  task is NON-terminal (queued, will run), so it sorts with running tasks at the
+ *  top — shared predicate (No-Duplication rule). */
 function isTerminal(status: TaskStatus): boolean {
-  return status !== 'running';
+  return isTerminalTaskStatus(status);
 }
 
 export const taskListTool: ToolDefinition = {
@@ -123,7 +131,7 @@ export const taskListTool: ToolDefinition = {
       // (minus internal monitors), preserving the original no-arg behavior.
       status: {
         type: 'string',
-        enum: ['running', 'completed', 'failed', 'killed'],
+        enum: ['pending', 'running', 'completed', 'failed', 'killed'],
         description: 'Only list tasks currently in this status.',
       },
       type: {
@@ -235,7 +243,7 @@ export const taskListTool: ToolDefinition = {
 
     // At-a-glance status breakdown.
     const counts = summarizeTasks(tasks);
-    const summary = (['running', 'completed', 'failed', 'killed'] as TaskStatus[])
+    const summary = (['pending', 'running', 'completed', 'failed', 'killed'] as TaskStatus[])
       .filter(s => counts[s] > 0)
       .map(s => `${counts[s]} ${s}`)
       .join(', ');

@@ -138,8 +138,16 @@ export function validateBackgroundCommand(command: string): { allowed: boolean; 
   return { allowed: true };
 }
 
-/** The lifecycle states of a background task/agent. */
-export const TASK_STATUS = ['running', 'completed', 'failed', 'killed'] as const;
+/**
+ * The lifecycle states of a background task/agent (parity with Claude Code's
+ * TaskStatus: pending|running|completed|failed|killed).
+ *   - `pending`   → accepted/registered but NOT yet started (e.g. an agent queued
+ *                   behind the concurrency cap). Distinct from `running` so a
+ *                   queued task is not mislabelled as actively executing.
+ *   - `running`   → actively executing.
+ *   - terminal    → `completed` | `failed` | `killed` (see {@link isTerminalTaskStatus}).
+ */
+export const TASK_STATUS = ['pending', 'running', 'completed', 'failed', 'killed'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 /**
@@ -161,12 +169,45 @@ export type TaskKind = (typeof TASK_KINDS)[number];
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);
 
 /**
+ * ACTIVE states — a task in one of these is in-flight and belongs in the
+ * background-tasks indicator (parity with Claude Code's `isBackgroundTask`, which
+ * admits BOTH `running` and `pending`). `pending` (accepted-but-not-started) is
+ * active because the work is queued, not finished.
+ */
+const ACTIVE_TASK_STATUSES = new Set<TaskStatus>(['pending', 'running']);
+
+/**
  * Whether a task status is terminal (completed/failed/killed). Guards against
  * injecting messages into dead teammates, evicting finished tasks, and orphan
  * cleanup (mirrors Claude Code's isTerminalTaskStatus).
  */
 export function isTerminalTaskStatus(status: string | undefined): boolean {
   return !!status && TERMINAL_TASK_STATUSES.has(status as TaskStatus);
+}
+
+/**
+ * Whether a task status is ACTIVE (running or pending) — the two-state "in-flight"
+ * predicate Claude Code uses to decide background-indicator membership (its
+ * `isBackgroundTask` gate: `status !== 'running' && status !== 'pending'` ⇒ not a
+ * background task). A queued/not-yet-started task counts as active so it is visible
+ * as an in-flight affordance, not invisible until it starts. Shared one site
+ * (No-Duplication rule) rather than inlining `status === 'running' || 'pending'`.
+ */
+export function isActiveTaskStatus(status: string | undefined): boolean {
+  return !!status && ACTIVE_TASK_STATUSES.has(status as TaskStatus);
+}
+
+/**
+ * Whether a tracked task belongs in the background-tasks indicator (parity with
+ * Claude Code's `isBackgroundTask`): it must be ACTIVE (running|pending) AND not
+ * explicitly foregrounded. A task whose `isBackgrounded` flag was set to `false`
+ * via {@link ProcessManager.foregroundTask} is a FOREGROUND task pulled into the
+ * main view and is excluded from the indicator until re-backgrounded; `undefined`
+ * (the default — AMI tasks are background-by-construction) counts as a background
+ * task. Mirrors Claude's `isBackgrounded === false` exclusion.
+ */
+export function isBackgroundTask(task: Pick<BackgroundProcess, 'status' | 'isBackgrounded'>): boolean {
+  return isActiveTaskStatus(task.status) && task.isBackgrounded !== false;
 }
 
 /**
@@ -478,6 +519,27 @@ export interface BackgroundProcess {
    * LocalShellTaskState.agentId (killShellTasksForAgent).
    */
   agentId?: string;
+  /**
+   * Id of the tool_use call that spawned this task, or undefined when it was not
+   * started from a tool invocation (parity with Claude Code's TaskStateBase
+   * `toolUseId` / LocalShellSpawnInput.toolUseId). Recorded so a consumer can
+   * correlate a background task back to the specific tool call that created it —
+   * e.g. to attach the completion to the originating tool_result, or to reap a
+   * task whose tool call was abandoned. Set via spawn()/registerAgent(); looked up
+   * by {@link ProcessManager.findByToolUseId}.
+   */
+  toolUseId?: string;
+  /**
+   * Per-task foreground/background flag (parity with Claude Code's per-task
+   * `isBackgrounded`). AMI tasks are background-by-construction, so this is
+   * `undefined` (⇒ background) until a consumer FOREGROUNDS one into the main view
+   * via {@link ProcessManager.foregroundTask} (sets `false`) or re-backgrounds it
+   * via {@link ProcessManager.backgroundTask} (sets `true`). The
+   * {@link isBackgroundTask} predicate excludes a task with `isBackgrounded ===
+   * false` from the background-tasks indicator while it is foregrounded, mirroring
+   * Claude's task-granular backgrounding (foregroundedTaskId + isBackgrounded).
+   */
+  isBackgrounded?: boolean;
 }
 
 /**
@@ -583,6 +645,15 @@ export class ProcessManager extends EventEmitter {
   private _completedBuffer: CompletedTaskEvent[] = [];
 
   /**
+   * The single task currently FOREGROUNDED into the main view, or undefined when
+   * none is (parity with Claude Code's AppState.foregroundedTaskId). Set by
+   * {@link foregroundTask}; cleared by {@link backgroundTask} when it re-backgrounds
+   * the foregrounded task. At most one task is foregrounded at a time, mirroring
+   * Claude's single-slot foreground.
+   */
+  private _foregroundedTaskId: string | undefined;
+
+  /**
    * Per-session cap on concurrently RUNNING background processes (parity with
    * Claude Code's background-shell limit). Defaults to MAX_BACKGROUND_PROCESSES;
    * exposed as a mutable field so callers/tests can tune the ceiling without
@@ -616,7 +687,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -663,6 +734,7 @@ export class ProcessManager extends EventEmitter {
       outputPath,
       startTime: Date.now(),
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
+      ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
       proc,
       outputFd: fd,
       bytesWritten: 0,
@@ -1419,6 +1491,100 @@ export class ProcessManager extends EventEmitter {
     return count;
   }
 
+  /**
+   * FUNCTIONAL (parity): count of ACTIVE tasks — running OR pending — via the
+   * shared {@link isActiveTaskStatus} predicate. Unlike {@link runningCount} (which
+   * counts only actively-executing tasks) this includes queued/not-yet-started
+   * tasks, matching the two-state set Claude Code's background indicator tracks.
+   */
+  activeCount(): number {
+    let count = 0;
+    for (const entry of this.processes.values()) {
+      if (isActiveTaskStatus(entry.status)) count++;
+    }
+    return count;
+  }
+
+  /**
+   * FUNCTIONAL (parity): the tasks that belong in the background-tasks indicator —
+   * ACTIVE (running|pending) AND not explicitly foregrounded — via the shared
+   * {@link isBackgroundTask} predicate. Mirrors Claude Code's `isBackgroundTask`
+   * filter so a foregrounded task (pulled into the main view) is excluded while it
+   * is foregrounded, and a terminal task is excluded entirely. Returns snapshots
+   * (no internal fields), like {@link list}.
+   */
+  listBackgroundTasks(): BackgroundProcess[] {
+    return this.list().filter((t) => isBackgroundTask(t));
+  }
+
+  /** FUNCTIONAL (parity): count of tasks in the background-tasks indicator (see
+   *  {@link listBackgroundTasks} / {@link isBackgroundTask}). */
+  backgroundTaskCount(): number {
+    let count = 0;
+    for (const entry of this.processes.values()) {
+      if (isBackgroundTask(entry)) count++;
+    }
+    return count;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's useSessionBackgrounding): FOREGROUND a
+   * single tracked task into the main view — set its per-task `isBackgrounded` flag
+   * to false (excluding it from the background indicator) and record it as the
+   * session's single {@link getForegroundedTaskId foregrounded task}. Any
+   * previously-foregrounded task is re-backgrounded (its flag set back to true) so
+   * at most one task is foregrounded at a time, mirroring Claude's single-slot
+   * foregroundedTaskId. No-op (returns false) for an unknown task. Returns true on
+   * success.
+   */
+  foregroundTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry) return false;
+    if (this._foregroundedTaskId !== undefined && this._foregroundedTaskId !== taskId) {
+      const prev = this.processes.get(this._foregroundedTaskId);
+      if (prev) prev.isBackgrounded = true;
+    }
+    entry.isBackgrounded = false;
+    this._foregroundedTaskId = taskId;
+    return true;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's Ctrl+B re-background): re-BACKGROUND a
+   * task — set its per-task `isBackgrounded` flag to true so it re-enters the
+   * background-tasks indicator, and clear the session's foregrounded slot when it
+   * was the foregrounded task. No-op (returns false) for an unknown task. Returns
+   * true on success.
+   */
+  backgroundTask(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry) return false;
+    entry.isBackgrounded = true;
+    if (this._foregroundedTaskId === taskId) this._foregroundedTaskId = undefined;
+    return true;
+  }
+
+  /** The id of the single task currently foregrounded into the main view, or
+   *  undefined when none is (parity with Claude Code's AppState.foregroundedTaskId). */
+  getForegroundedTaskId(): string | undefined {
+    return this._foregroundedTaskId;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's toolUseId correlation): find the tracked
+   * task spawned by a given tool_use id, or null when none matches. Lets a consumer
+   * map a tool call back to the background task it created (e.g. to attach the
+   * completion to the originating tool_result). Returns a snapshot (no internal
+   * fields), like {@link get}.
+   */
+  findByToolUseId(toolUseId: string): BackgroundProcess | null {
+    if (!toolUseId) return null;
+    for (const entry of this.processes.values()) {
+      if (entry.toolUseId === toolUseId) return this.get(entry.taskId);
+    }
+    return null;
+  }
+
   runningAgentCount(): number {
     let count = 0;
     for (const entry of this.processes.values()) {
@@ -1440,18 +1606,28 @@ export class ProcessManager extends EventEmitter {
      *  ({@link isActive}). Pass the same signal whose abort the {@link abortFn}
      *  triggers so liveness reflects an in-flight cancel. */
     abortSignal?: AbortSignal;
+    /** Id of the tool_use call that spawned this agent (parity with Claude Code's
+     *  TaskStateBase.toolUseId) — correlates the agent back to its originating tool
+     *  invocation. Looked up by {@link findByToolUseId}. */
+    toolUseId?: string;
+    /** Register the agent in the `pending` (accepted-but-not-yet-started) state
+     *  instead of `running` — e.g. when it is queued behind the concurrency cap.
+     *  Transition it to running with {@link markRunning} when it actually starts.
+     *  Parity with Claude Code's createTaskStateBase defaulting to 'pending'. */
+    pending?: boolean;
   }): void {
     this.processes.set(taskId, {
       taskId,
       pid: process.pid,
       command: opts.command,
       description: opts.description,
-      status: 'running',
+      status: opts.pending ? 'pending' : 'running',
       kind: 'agent',
       exitCode: null,
       outputPath: opts.outputPath,
       startTime: Date.now(),
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
+      ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
       ...(opts.abortSignal ? { _abortSignal: opts.abortSignal } : {}),
       proc: { pid: process.pid, kill: opts.abortFn } as any,
       outputFd: null,
@@ -1459,6 +1635,22 @@ export class ProcessManager extends EventEmitter {
       tokenCount: 0,
       _registered: true,
     });
+  }
+
+  /**
+   * FUNCTIONAL (parity): transition a PENDING task to `running` when it actually
+   * starts (e.g. a slot freed up behind the concurrency cap). No-op (returns false)
+   * for an unknown task or one not currently pending. Resets `startTime` to now so
+   * the elapsed-time clock measures actual run time, not the time spent queued —
+   * mirroring Claude Code starting the clock when a pending task begins. Returns
+   * true when the task transitioned from pending to running.
+   */
+  markRunning(taskId: string): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.status !== 'pending') return false;
+    entry.status = 'running';
+    entry.startTime = Date.now();
+    return true;
   }
 
   updateEntry(taskId: string, updates: Partial<Pick<BackgroundProcess, 'status' | 'exitCode' | 'tokenCount' | 'error'>>): void {

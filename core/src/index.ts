@@ -177,8 +177,8 @@ export {
 } from './utils/path';
 export { generateTitle, sanitizeTitle, truncateTitle, generateBranchName, sanitizeBranchSlug } from './title-generator';
 export { stripDisplayTags } from './utils/display-tags';
-export { ProcessManager, TASK_STATUS, TASK_KINDS } from './process-manager';
-export type { BackgroundProcess, TaskKind } from './process-manager';
+export { ProcessManager, TASK_STATUS, TASK_KINDS, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
+export type { BackgroundProcess, TaskKind, TaskStatus } from './process-manager';
 
 export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE, estimateTextTokens, estimateImageTokens, utf8ByteLength } from './token-estimator';
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
