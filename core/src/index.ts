@@ -241,6 +241,15 @@ export {
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch, isPathGitignored } from './utils/git';
 export {
+  detectCurrentRepository,
+  detectCurrentRepositoryWithHost,
+  getCachedRepository,
+  clearRepositoryCaches,
+  parseGitRemote,
+  parseGitHubRepository,
+} from './detect-repository';
+export type { ParsedRepository } from './detect-repository';
+export {
   expandPath,
   isPathSafe,
   toRelativePath,

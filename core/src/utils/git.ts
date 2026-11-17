@@ -139,6 +139,21 @@ export function normalizeGitRemoteUrl(url: string): string | null {
 }
 
 /**
+ * Read the raw `origin` remote URL for `cwd` via `git config --get
+ * remote.origin.url`, or `null` when `cwd` has no `origin` remote, the value is
+ * empty, or git is unavailable. Single no-shell, hard-timeout spawn point for
+ * "what is this checkout's origin URL" so every repo-identity helper
+ * ({@link getRepoRemoteHash}, {@link classifyRepoRemote}, and the
+ * `detect-repository` resolver) shares one injection-safe reader instead of
+ * re-spawning git with slightly different flags.
+ */
+export function getRemoteOriginUrl(cwd: string): string | null {
+  const res = runGit(cwd, ['config', '--get', 'remote.origin.url']);
+  if (!res || res.code !== 0) return null;
+  return res.stdout || null;
+}
+
+/**
  * Return a stable, PII-free repository identity for `cwd`: the first 16 chars of
  * the SHA-256 of the {@link normalizeGitRemoteUrl normalized} `origin` remote
  * URL, or `null` when `cwd` has no git `origin` remote (or git is unavailable).
@@ -148,10 +163,10 @@ export function normalizeGitRemoteUrl(url: string): string | null {
  * or to log in place of the raw remote URL.
  */
 export function getRepoRemoteHash(cwd: string): string | null {
-  const res = runGit(cwd, ['config', '--get', 'remote.origin.url']);
-  if (!res || res.code !== 0) return null;
+  const url = getRemoteOriginUrl(cwd);
+  if (url === null) return null;
   // An empty / unparseable remote URL falls through to the null return below.
-  const normalized = normalizeGitRemoteUrl(res.stdout);
+  const normalized = normalizeGitRemoteUrl(url);
   if (!normalized) return null;
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }
@@ -179,9 +194,9 @@ export function classifyRepoRemote(
   cwd: string,
   ownedPatterns: readonly string[],
 ): RepoRemoteClass {
-  const res = runGit(cwd, ['config', '--get', 'remote.origin.url']);
-  if (!res || res.code !== 0) return 'none';
-  const normalized = normalizeGitRemoteUrl(res.stdout);
+  const url = getRemoteOriginUrl(cwd);
+  if (url === null) return 'none';
+  const normalized = normalizeGitRemoteUrl(url);
   if (!normalized) return 'none';
   const owned = ownedPatterns.some(p => {
     const pat = p.trim().toLowerCase();
