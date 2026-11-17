@@ -3,7 +3,7 @@ import { resolveConfigDir } from './reference-journal';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import type { Message, AssistantMessage } from './types';
+import type { Message, AssistantMessage, ToolMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
 import {
@@ -124,6 +124,33 @@ export type SamplingOrigin = (typeof SAMPLING_ORIGINS)[number];
 /** Narrow an arbitrary value to a {@link SamplingOrigin}. */
 export function isSamplingOrigin(v: unknown): v is SamplingOrigin {
   return typeof v === 'string' && (SAMPLING_ORIGINS as readonly string[]).includes(v);
+}
+
+/**
+ * Whether the conversation is mid tool-chain — Claude Code's
+ * `hasToolCallsInLastAssistantTurn` (MagicDocs idle-gating). Returns true when the
+ * LAST assistant message issued tool calls that are NOT yet all answered by
+ * subsequent tool results. A background pre/postSampling or maintenance hook reads
+ * the inverse (serialized as the `is_idle` stdin field) so it runs ONLY when the
+ * agent is idle — i.e. it skips while the main loop is still executing a tool
+ * chain, so a file-mutating hook never races the loop's own edits. Pure; a
+ * conversation with no assistant message, or whose last assistant turn made no
+ * tool calls, is considered idle (no pending calls).
+ */
+export function hasPendingToolCalls(messages: Message[]): boolean {
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') { lastAssistantIdx = i; break; }
+  }
+  if (lastAssistantIdx === -1) return false;
+  const calls = (messages[lastAssistantIdx] as AssistantMessage).tool_calls;
+  if (!calls || calls.length === 0) return false;
+  const answered = new Set<string>();
+  for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === 'tool') answered.add((m as ToolMessage).tool_call_id);
+  }
+  return calls.some(c => !answered.has(c.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +432,19 @@ export interface ElicitationContext {
   mcpServerName: string;
   message?: string;
   mode?: string;
+  /** The JSON-schema of the fields the MCP server is requesting the user fill in
+   *  (Claude Code's elicitation `requestedSchema`). Forwarded to the hook stdin as
+   *  `requested_schema` so an elicitation hook can inspect WHAT is being asked
+   *  before deciding accept/decline/cancel. Sourced from the MCP elicitation
+   *  request params (see mcp/client.ts). Optional — observe-only callers omit it. */
+  requestedSchema?: Record<string, unknown>;
+  /** The URL an MCP server asked the user to visit for this elicitation (Claude
+   *  Code's elicitation `url`), when the request is URL-mode. Serialized as `url`. */
+  url?: string;
+  /** Correlation id of the MCP elicitation request (Claude Code's `elicitationId`),
+   *  so a hook can tie its decision back to the exact request / dedup concurrent
+   *  elicitations. Serialized as `elicitation_id`. Optional. */
+  elicitationId?: string;
 }
 
 /** SessionStart/Setup hook result. A hook may inject a single `initialUserMessage`
@@ -1172,6 +1212,16 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   // Snake-case parity for a tool-failure payload (Claude Code PostToolUseFailure
   // emits is_error / is_interrupt; previously AMI emitted only the camelCase keys).
   isError: 'is_error', isInterrupt: 'is_interrupt',
+  // Idle-boundary flag for pre/postSampling hooks (Claude Code's
+  // hasToolCallsInLastAssistantTurn inverse) so a background hook can self-gate on
+  // the serialized `is_idle` field.
+  isIdle: 'is_idle',
+  // PermissionRequest 'always allow' options (Claude Code's `permission_suggestions`
+  // param) so a permission-prompt hook sees the standing-rule suggestions.
+  suggestions: 'permission_suggestions',
+  // MCP elicitation request params (Claude Code's elicitation payload): the
+  // requested JSON-schema and the request correlation id.
+  requestedSchema: 'requested_schema', elicitationId: 'elicitation_id',
 };
 
 /**
@@ -3052,7 +3102,7 @@ export class HookManager extends EventEmitter {
         case 'preSampling': {
           const fn: PreSamplingHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('preSampling', matcher, ctx as unknown as Record<string, unknown>)) return { action: 'allow' };
-            const eventData = serializeHookEvent({ event: 'preSampling', samplingOrigin: ctx.samplingOrigin });
+            const eventData = serializeHookEvent({ event: 'preSampling', samplingOrigin: ctx.samplingOrigin, isIdle: !hasPendingToolCalls(ctx.messages) });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.preSamplingHooks, fn, 'preSampling');
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
             return { action: 'allow' };
@@ -3063,7 +3113,7 @@ export class HookManager extends EventEmitter {
         case 'postSampling': {
           const fn: HookFn = async (ctx) => {
             if (!matcherAppliesToCtx('postSampling', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'postSampling', samplingOrigin: ctx.samplingOrigin });
+            const eventData = serializeHookEvent({ event: 'postSampling', samplingOrigin: ctx.samplingOrigin, isIdle: !hasPendingToolCalls(ctx.messages) });
             await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.postSamplingHooks, fn, 'postSampling');
           };
           this.onPostSampling(fn);
@@ -3258,7 +3308,19 @@ export class HookManager extends EventEmitter {
           const fn: PermissionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('permissionDenied', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName, toolUseId: ctx.toolUseId });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.permissionDeniedHooks, fn, 'permissionDenied');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.permissionDeniedHooks, fn, 'permissionDenied');
+            // Claude Code's PermissionDenied hook may grant a RETRY on exit 0 via
+            // `{"hookSpecificOutput":{"hookEventName":"PermissionDenied","retry":true}}`
+            // (or a flat top-level `retry:true`). Flatten the envelope and, when the
+            // hook signalled retry, return the `allow` decision that
+            // executePermissionDenied maps to `{ retry: true }` — so a stock
+            // CC-format command hook can tell the model to retry the denied call.
+            const parsed = tryParseHookJson(result);
+            if (parsed) {
+              const flat = unwrapHookSpecificOutput(parsed) as Record<string, unknown>;
+              if (flat.retry === true) return { action: 'allow' };
+            }
+            return undefined;
           };
           this.onPermissionDenied(fn);
           break;
@@ -3421,7 +3483,7 @@ export class HookManager extends EventEmitter {
         case 'elicitation': {
           const fn: ElicitationHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('elicitation', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'elicitation', mcpServerName: ctx.mcpServerName, message: ctx.message });
+            const eventData = serializeHookEvent({ event: 'elicitation', mcpServerName: ctx.mcpServerName, message: ctx.message, mode: ctx.mode, requestedSchema: ctx.requestedSchema, url: ctx.url, elicitationId: ctx.elicitationId });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.elicitationHooks, fn, 'elicitation');
             return parseElicitationResult(result);
           };
@@ -3431,7 +3493,7 @@ export class HookManager extends EventEmitter {
         case 'elicitationResult': {
           const fn: ElicitationHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('elicitationResult', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'elicitationResult', mcpServerName: ctx.mcpServerName, message: ctx.message });
+            const eventData = serializeHookEvent({ event: 'elicitationResult', mcpServerName: ctx.mcpServerName, message: ctx.message, mode: ctx.mode, requestedSchema: ctx.requestedSchema, url: ctx.url, elicitationId: ctx.elicitationId });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.elicitationResultHooks, fn, 'elicitationResult');
             return parseElicitationResult(result);
           };
