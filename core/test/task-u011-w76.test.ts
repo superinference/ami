@@ -143,7 +143,10 @@ describe('taskTool – background drain collapses consecutive read/search progre
       await new Promise(r => setTimeout(r, 150));
       const entry: any = pm.list().find(e => e.taskId === taskId);
       assert.ok(entry);
-      assert.ok(entry.progressSummary.startsWith('file_read: '), entry.progressSummary);
+      // A single read op is not collapsed; it shows the human-readable activity
+      // phrase resolved from the tool (parity: getActivityDescription) instead of
+      // the raw `tool:<name>` label.
+      assert.equal(entry.progressSummary, 'Reading /only/one.ts', entry.progressSummary);
     } finally {
       pm.cleanup();
       fs.rmSync(tmpDir, { recursive: true, force: true });

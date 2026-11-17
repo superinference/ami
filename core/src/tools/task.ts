@@ -12,7 +12,11 @@ import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
 import { mapChildToSubagentEvent, attachSubagentUsage } from './subagent-relay';
-import { collapseReadSearchRun } from './tool-activity-class';
+import {
+  collapseActivityRun,
+  createActivityDescriptionResolver,
+  isReadOrSearchActivity,
+} from './tool-activity-class';
 import { inheritBedrockRegionPrefix } from '../bedrock';
 import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemberActive, teamAllowedPathsToRules, teamScratchpadRules, getTeamScratchpadDir, loadTeamFromDisk } from './team';
 import { reviewSubagentHandoff, type HandoffAction } from './handoff-review';
@@ -1674,6 +1678,12 @@ interface BackgroundDrainParams {
   effectiveCwd: string;
   isolation: string | undefined;
   subAbort: AbortController;
+  /** The sub-agent's tool definitions, used to resolve each tool call's
+   *  human-readable activity phrase (`getActivityDescription`) and input-aware
+   *  read/search/list classification (`isSearchOrReadCommand`) for the live
+   *  progressSummary. Omitted in bare/test contexts (falls back to the shared
+   *  name/input phrasing). */
+  tools?: readonly ToolDefinition[];
   /** Unlink the parent→child abort cascade when the background run finishes, so a
    *  completed background agent does not leak its parent-abort listener. */
   unlinkParentAbort?: () => void;
@@ -1719,8 +1729,16 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   // Classified recent tool-activity window (parity: Claude's collapseReadSearch) so
   // the live progressSummary folds a run of consecutive read/search ops into one
   // compact label instead of scrolling a noisy per-file trail. Bounded so it never
-  // grows unboundedly across a long background run.
-  const bgRecentToolNames: string[] = [];
+  // grows unboundedly across a long background run. We track the per-call
+  // collapsibility (input-aware — a read-only bash command collapses, a mutation
+  // does not) alongside the names so the fold is accurate.
+  const bgRecentCollapsible: boolean[] = [];
+  // Resolve each tool call's human-readable activity phrase from the sub-agent's own
+  // tool definitions (`getActivityDescription`), falling back to the shared
+  // name+input phrasing when a tool does not define the hook.
+  const describeActivity = createActivityDescriptionResolver(p.tools ?? []);
+  const findTool = (name: string): ToolDefinition | undefined =>
+    p.tools?.find((t) => t.name === name || t.aliases?.includes(name));
   // The text of the agent's most recent text-bearing assistant turn — the CLEAN
   // final answer written to the `.result` sidecar on completion (parity: Claude's
   // TaskOutputTool preferring the in-memory final answer over the raw transcript).
@@ -1746,11 +1764,17 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       }
       if (event.type === 'tool_use_start') {
         bgToolUseCount++;
-        const summary = typeof event.input?.command === 'string'
-          ? event.input.command
-          : typeof event.input?.file_path === 'string'
-            ? (event.input.file_path as string)
-            : JSON.stringify(event.input || {}).slice(0, 120);
+        const input = event.input ?? {};
+        // Human-readable action phrase (parity: Claude's getActivityDescription),
+        // e.g. "Reading src/foo.ts" / "Running npm test" — resolved from the tool's
+        // own hook when present, else the shared name+input phrasing. Falls back to
+        // the raw command/file_path/JSON when no phrase applies (an unknown tool).
+        const summary = describeActivity(event.toolName, input)
+          ?? (typeof input.command === 'string'
+            ? input.command
+            : typeof input.file_path === 'string'
+              ? (input.file_path as string)
+              : JSON.stringify(input).slice(0, 120));
         // Live tool-call progress: surface the running count on the task entry so
         // task_list can show how much work this background agent has done and the
         // model can see incremental deltas (reportProgressDelta). Mirrors Claude
@@ -1758,15 +1782,15 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         // progress summary of the CURRENT action (progress.summary parity — takes
         // precedence over the static description in task_list); this stamps the
         // entry's lastActivity so a quiet agent can be flagged idle.
-        bgRecentToolNames.push(event.toolName);
-        if (bgRecentToolNames.length > 20) bgRecentToolNames.shift();
+        bgRecentCollapsible.push(isReadOrSearchActivity(event.toolName, input, findTool(event.toolName)));
+        if (bgRecentCollapsible.length > 20) bgRecentCollapsible.shift();
         // Collapse a run of consecutive read/search ops into one line (parity:
         // Claude's collapseReadSearch); a single op / a mutation keeps its own
         // per-tool detail so writes stay visible.
-        const collapsed = collapseReadSearchRun(bgRecentToolNames);
+        const collapsed = collapseActivityRun(bgRecentCollapsible);
         context.processManager?.updateEntry(taskId, {
           toolCount: bgToolUseCount,
-          progressSummary: (collapsed ?? `${event.toolName}: ${summary}`).slice(0, 80),
+          progressSummary: (collapsed ?? summary).slice(0, 80),
         });
         w(`\n▸ ${event.toolName} ${summary}\n`);
       }
@@ -2912,7 +2936,7 @@ export const taskTool: ToolDefinition = {
       const subEngine = context._engineFactory(subConfig);
       runBackgroundAgentDrain({
         context, subEngine, effectivePrompt, taskId, outputPath, label,
-        effectiveCwd, isolation, subAbort, unlinkParentAbort,
+        effectiveCwd, isolation, subAbort, unlinkParentAbort, tools,
       }).catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nOutput file: ${outputPath} (its streamed transcript is appended here live).\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. To check progress mid-flight WITHOUT blocking, call task_output({ task_id: "${taskId}" }) (no wait) or tail the output file. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
@@ -3143,7 +3167,7 @@ export const taskTool: ToolDefinition = {
         }
         runBackgroundAgentDrain({
           context, subEngine, iterator, firstPending: pendingNext, taskId, outputPath, label,
-          effectiveCwd, isolation, subAbort, unlinkParentAbort,
+          effectiveCwd, isolation, subAbort, unlinkParentAbort, tools,
           initialOutput: resultText, initialToolUseCount: toolUseCount, initialTokens: totalTokens, startedAt,
         }).catch(() => {});
         context._emitChild?.({

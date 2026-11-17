@@ -21,6 +21,7 @@ import {
 import { spillToolText } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
+import { classifyBashAccess, describeToolActivity } from './tool-activity-class';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxDefaultDeny, isSandboxEscapeDisabled } from './tool-gates';
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
@@ -1464,6 +1465,19 @@ export const bashTool: ToolDefinition = {
   },
   isReadOnly: false,
   isConcurrencySafe: false,
+
+  // Human-readable live-progress phrase (parity: Claude's getActivityDescription):
+  // "Running <description|command>". Shown in a sub-agent's task_list progressSummary.
+  getActivityDescription(input: Record<string, unknown>): string {
+    return describeToolActivity('bash', input) ?? 'Running command';
+  },
+  // Per-invocation read/search/list classification from the actual command (parity:
+  // Claude's isSearchOrReadCommand → isSearchOrReadBashCommand), so a read-only
+  // shell command (`cat`, `grep`, `ls`) collapses in live progress while a mutation
+  // stays visible.
+  isSearchOrReadCommand(input: Record<string, unknown>) {
+    return classifyBashAccess(typeof input?.command === 'string' ? input.command : '');
+  },
 
   async execute(
     input: Record<string, unknown>,
