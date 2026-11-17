@@ -21,7 +21,7 @@ import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as pathJoin, dirname as pathDirname } from 'node:path';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong } from './error-classifier';
@@ -36,7 +36,7 @@ import {
 } from './utils/mtls';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { isEnvTruthy } from './analytics';
-import { log } from './logger';
+import { log, recordDiagnostic } from './logger';
 import { partitionAndSortTools } from './tools/tool-utils';
 
 /**
@@ -2919,7 +2919,34 @@ export async function* streamChatCompletion(
   const useSdkCacheMarkers = isAnthropic && !isVertexAnthropic && promptCachingEnabled
     && !config.skipCacheWrite && cacheStrategy !== 'none';
 
-  const healed = healOrphanedToolCalls(nonSystemMessages);
+  // Repair tool_use/tool_result pairing before dispatch. Strict mode (armed via
+  // SUPERINFERENCE_STRICT_TOOL_PAIRING) fails the turn loudly on corruption instead of
+  // injecting synthetic placeholders; otherwise the repair is applied and, when it
+  // actually mutated the transcript, a diagnostic event is recorded so the root cause of
+  // a corrupted transcript is traceable (parity: Claude's tengu_tool_result_pairing_repaired).
+  let healed: typeof nonSystemMessages;
+  try {
+    healed = healOrphanedToolCalls(nonSystemMessages, {
+      strict: getStrictToolResultPairing(),
+      onRepair: (diag) => {
+        recordDiagnostic('warn', 'tool_result_pairing_repaired', {
+          messageCountBefore: diag.messageCountBefore,
+          messageCountAfter: diag.messageCountAfter,
+          syntheticResultsInserted: diag.syntheticResultsInserted,
+          orphanedResultsDropped: diag.orphanedResultsDropped,
+          duplicateIdsRemoved: diag.duplicateIdsRemoved,
+          leadingOrphanPlaceholderInserted: diag.leadingOrphanPlaceholderInserted,
+          messageStructure: diag.messageStructure,
+        });
+      },
+    });
+  } catch (err) {
+    if (err instanceof ToolPairingError) {
+      yield { type: 'error', error: err.message };
+      return;
+    }
+    throw err;
+  }
   const sanitized = sanitizeToolCallIds(healed, isAnthropic ? 'anthropic' : '');
   // Proactively cap outbound media so the request can never exceed the API's hard
   // per-request media limit (drops oldest images first).
