@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
+import { createRequire } from 'module';
 import { AsyncLocalStorage } from 'async_hooks';
 import { detectWslVersion } from './tools/bash-sandbox';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
@@ -49,6 +50,28 @@ export interface AnalyticsEvent {
 }
 
 const MAX_IN_MEMORY_EVENTS = 1000;
+
+/**
+ * Default in-memory event TTL (1h) applied when age-eviction is enabled via a truthy
+ * non-numeric `AMI_ANALYTICS_EVENT_TTL_MS`. Mirrors Claude's SPAN_TTL_MS orphan sweep:
+ * bounds retained events by AGE, complementing the {@link MAX_IN_MEMORY_EVENTS} count cap.
+ */
+export const DEFAULT_IN_MEMORY_EVENT_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Resolve the in-memory event TTL (ms) from an explicit opt or the
+ * `AMI_ANALYTICS_EVENT_TTL_MS` env var. A positive number (opt or env) is that TTL;
+ * a truthy non-numeric env value selects {@link DEFAULT_IN_MEMORY_EVENT_TTL_MS};
+ * anything else (unset, <=0, falsey) returns undefined (age sweep disabled).
+ */
+export function resolveInMemoryEventTtlMs(env: NodeJS.ProcessEnv, opt?: number): number | undefined {
+  if (opt !== undefined) return opt > 0 ? opt : undefined;
+  const raw = env.AMI_ANALYTICS_EVENT_TTL_MS;
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (Number.isFinite(n)) return n > 0 ? n : undefined;
+  return isEnvTruthy(raw) ? DEFAULT_IN_MEMORY_EVENT_TTL_MS : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Redaction / data-minimization for analytics event payloads
@@ -1355,6 +1378,26 @@ export interface AnalyticsTrackerOpts {
    * OTEL_RESOURCE_ATTRIBUTES, which an explicit entry here overrides.
    */
   otlpResourceAttrs?: Record<string, string>;
+  /**
+   * Pre-resolved undici dispatcher (proxy / mTLS / custom-CA) attached to every OTLP
+   * POST. When unset, one is auto-resolved from the OTLP proxy + TLS env vars (see
+   * {@link resolveOtlpTransport}) against the configured endpoint. Mirrors Claude's
+   * HttpsProxyAgent + httpAgentOptions transport. Injectable for tests.
+   */
+  otlpDispatcher?: unknown;
+  /** undici loader injection for the auto-resolved transport (tests). */
+  undiciLoader?: () => unknown;
+  /** readFile injection for the auto-resolved mTLS PEM material (tests). */
+  otlpTlsReadFile?: (p: string) => string;
+  /**
+   * Time-to-live (ms) for in-memory events: entries older than this are swept on the
+   * next {@link AnalyticsTracker.log} and on every read ({@link AnalyticsTracker.getEvents}
+   * etc.), bounding memory by AGE in addition to the {@link MAX_IN_MEMORY_EVENTS} count
+   * cap. <=0/undefined disables the age sweep. Seeded from `AMI_ANALYTICS_EVENT_TTL_MS`
+   * (a positive number of ms, or a truthy non-number → {@link DEFAULT_IN_MEMORY_EVENT_TTL_MS}).
+   * Mirrors Claude's SPAN_TTL_MS orphan eviction.
+   */
+  inMemoryEventTtlMs?: number;
   /** Sleep + RNG injection for deterministic tests. */
   sleepImpl?: (ms: number) => Promise<void>;
   rand?: () => number;
@@ -1521,6 +1564,8 @@ export class FailedBatchStore {
 
 export class AnalyticsTracker {
   private events: AnalyticsEvent[] = [];
+  /** Per-event record time (ms, via {@link _now}) parallel to {@link events}, for the age sweep. */
+  private _eventTimes: number[] = [];
   private logFile: string | null;
   private dirInitialized = false;
   private _sessionId: string | undefined;
@@ -1550,6 +1595,10 @@ export class AnalyticsTracker {
   private _onBatchDropped: ((eventCount: number, droppedBatchCount: number) => void) | undefined;
   private _otlpHeaders: Record<string, string>;
   private _otlpResourceAttrs: Record<string, string>;
+  /** Resolved undici proxy/mTLS dispatcher attached to every OTLP POST; undefined = fetch default. */
+  private _otlpDispatcher: unknown;
+  /** In-memory event age cap (ms); undefined disables the age sweep. */
+  private _eventTtlMs: number | undefined;
   private _sleep: (ms: number) => Promise<void>;
   private _rand: () => number;
   private _now: () => number;
@@ -1640,6 +1689,17 @@ export class AnalyticsTracker {
         };
       }
     }
+    // OTLP transport (proxy / mTLS / custom CA): an explicit dispatcher wins; else
+    // auto-resolve from the proxy + TLS env vars against the configured endpoint
+    // (undici is only loaded when a proxy or client-TLS is actually configured —
+    // the no-transport common case resolves to undefined, keeping the fetch default).
+    this._otlpDispatcher = this._otlpEndpoint
+      ? (opts?.otlpDispatcher ?? resolveOtlpTransport(this._otlpEndpoint, this._env, {
+          readFile: opts?.otlpTlsReadFile,
+          undiciLoader: opts?.undiciLoader as (() => UndiciDispatchers) | undefined,
+        }))
+      : undefined;
+    this._eventTtlMs = resolveInMemoryEventTtlMs(this._env, opts?.inMemoryEventTtlMs);
     this._sleep = opts?.sleepImpl ?? ((ms) => new Promise(r => setTimeout(r, ms)));
     this._rand = opts?.rand ?? Math.random;
     this._now = opts?.now ?? Date.now;
@@ -1839,9 +1899,13 @@ export class AnalyticsTracker {
     } as AnalyticsEvent;
     // In-memory sink (killable): skip retention when the memory sink is disabled.
     if (!this.isSinkKilled('memory')) {
+      // Age sweep first (bounds by TTL), then append and apply the count cap.
+      this._evictExpiredEvents();
       this.events.push(event);
+      this._eventTimes.push(this._now());
       if (this.events.length > MAX_IN_MEMORY_EVENTS) {
         this.events = this.events.slice(-MAX_IN_MEMORY_EVENTS);
+        this._eventTimes = this._eventTimes.slice(-MAX_IN_MEMORY_EVENTS);
       }
     }
 
@@ -1955,15 +2019,35 @@ export class AnalyticsTracker {
     }
   }
 
+  /**
+   * Drop the leading run of in-memory events older than the configured TTL (events
+   * are chronological, so the expired ones are always a prefix). No-op when the age
+   * sweep is disabled. A lazy sweep: invoked before each append and on every read so
+   * stale entries never surface even in a session that stops logging.
+   */
+  private _evictExpiredEvents(): void {
+    if (this._eventTtlMs === undefined || this.events.length === 0) return;
+    const cutoff = this._now() - this._eventTtlMs;
+    let i = 0;
+    while (i < this._eventTimes.length && this._eventTimes[i] < cutoff) i++;
+    if (i > 0) {
+      this.events = this.events.slice(i);
+      this._eventTimes = this._eventTimes.slice(i);
+    }
+  }
+
   getEvents(): AnalyticsEvent[] {
+    this._evictExpiredEvents();
     return [...this.events];
   }
 
   getEventsByType(type: string): AnalyticsEvent[] {
+    this._evictExpiredEvents();
     return this.events.filter(e => e.type === type);
   }
 
   getSummary(): Record<string, number> {
+    this._evictExpiredEvents();
     const counts: Record<string, number> = {};
     for (const e of this.events) {
       counts[e.type] = (counts[e.type] || 0) + 1;
@@ -1973,6 +2057,7 @@ export class AnalyticsTracker {
 
   reset(): void {
     this.events = [];
+    this._eventTimes = [];
     // A reset begins a fresh logical session, so forget deduped content hashes —
     // content seen before reset should log in full again afterwards.
     this._dedup?.reset();
@@ -2137,7 +2222,7 @@ export class AnalyticsTracker {
     const headers = this._resolveHeaders();
     const resourceAttrs = this._otlpResourceAttrs;
     for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
-      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs });
+      const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher });
       if (res.ok) return true;
       if (!res.retryable) return this._dropBatch(batch); // 4xx: permanent, drop
       if (attempt === this._maxAttempts) return this._dropBatch(batch);
@@ -2191,6 +2276,7 @@ export class AnalyticsTracker {
       const res = await postOtlpBatch(endpoint, batch, {
         fetchImpl: this._otlpFetch, env: this._env, headers,
         resourceAttrs: this._otlpResourceAttrs, timeoutMs: this._otlpTimeoutMs,
+        dispatcher: this._otlpDispatcher,
       });
       if (res.ok) {
         store.delete(file);
@@ -2566,6 +2652,160 @@ export function otlpLogsUrl(endpoint: string): string {
   return /\/v1\/(logs|traces|metrics)$/.test(trimmed) ? trimmed : `${trimmed}/v1/logs`;
 }
 
+// ---------------------------------------------------------------------------
+// OTLP transport config: proxy (HTTP[S]_PROXY / NO_PROXY), mutual-TLS client
+// certs, and a custom CA — mirroring Claude's getProxyUrl / shouldBypassProxy /
+// HttpsProxyAgent + httpAgentOptions. The export still goes over the global
+// fetch; a resolved undici dispatcher is attached to the request init so a
+// self-hosted collector reachable only through a corporate proxy or presenting a
+// private CA / requiring client certs can be exported to without touching the
+// hot path. All resolution is pure/deterministic; the dispatcher is built lazily
+// (undici only loaded when proxy/TLS is actually configured).
+// ---------------------------------------------------------------------------
+
+/** Client-TLS material for mutual-TLS / custom-CA OTLP export (PEM contents). */
+export interface OtlpTlsConfig {
+  /** Client certificate chain (PEM) for mutual TLS. */
+  cert?: string;
+  /** Client private key (PEM) for mutual TLS. */
+  key?: string;
+  /** Custom CA bundle (PEM) to trust the collector's server certificate. */
+  ca?: string;
+  /** Passphrase decrypting an encrypted client {@link key}. */
+  passphrase?: string;
+}
+
+/** Minimal shape of the undici dispatcher constructors this module uses. */
+interface UndiciDispatchers {
+  ProxyAgent: new (opts: { uri: string; requestTls?: OtlpTlsConfig }) => unknown;
+  Agent: new (opts: { connect?: OtlpTlsConfig }) => unknown;
+}
+
+let _undiciCache: UndiciDispatchers | undefined;
+/** Lazily resolve undici's dispatcher constructors (bundled with Node; never imported unless proxy/TLS is configured). */
+function loadUndici(): UndiciDispatchers {
+  if (!_undiciCache) {
+    const req = createRequire(import.meta.url);
+    _undiciCache = req('undici') as UndiciDispatchers;
+  }
+  return _undiciCache;
+}
+
+/**
+ * Whether `targetUrl` is exempted from proxying by a NO_PROXY-style list.
+ * Supports `*` (bypass everything), exact host, and a leading-dot / `*.`-prefixed
+ * domain suffix (`.example.com` / `*.example.com` match `api.example.com`). A port
+ * in a NO_PROXY entry is ignored (host-level match, mirroring common runtimes).
+ */
+export function shouldBypassProxy(targetUrl: string, noProxy: string | undefined): boolean {
+  if (!noProxy) return false;
+  let host: string;
+  try {
+    host = new URL(targetUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  for (const rawEntry of noProxy.split(',')) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    if (entry === '*') return true;
+    const bare = entry.replace(/^\*?\./, '').replace(/:\d+$/, '').toLowerCase();
+    if (!bare) continue;
+    if (host === bare || host.endsWith('.' + bare)) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the proxy URL to use for an OTLP POST to `targetUrl`, or undefined when
+ * no proxy applies. Precedence: an explicit `OTEL_EXPORTER_OTLP_PROXY`, else the
+ * scheme-matched `HTTPS_PROXY`/`HTTP_PROXY` (lower-case accepted), else
+ * `ALL_PROXY`. A `NO_PROXY` match (see {@link shouldBypassProxy}) suppresses it.
+ */
+export function resolveOtlpProxyUrl(targetUrl: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  let scheme: string;
+  try {
+    scheme = new URL(targetUrl).protocol;
+  } catch {
+    return undefined;
+  }
+  const schemeProxy = scheme === 'https:'
+    ? (env.HTTPS_PROXY ?? env.https_proxy)
+    : (env.HTTP_PROXY ?? env.http_proxy);
+  const proxy = env.OTEL_EXPORTER_OTLP_PROXY ?? schemeProxy ?? env.ALL_PROXY ?? env.all_proxy;
+  if (!proxy) return undefined;
+  if (shouldBypassProxy(targetUrl, env.NO_PROXY ?? env.no_proxy)) return undefined;
+  return proxy;
+}
+
+/**
+ * Resolve client-TLS material from the OTLP env vars, reading each PEM file from
+ * disk. Signal-specific `OTEL_EXPORTER_OTLP_LOGS_*` overrides the generic
+ * `OTEL_EXPORTER_OTLP_*`; `OTEL_EXPORTER_OTLP_CERTIFICATE` is the CA bundle,
+ * `*_CLIENT_CERTIFICATE`/`*_CLIENT_KEY` the mTLS pair, and
+ * `AMI_OTEL_CLIENT_KEY_PASSPHRASE` the key passphrase. Returns undefined when
+ * none are set; a file that cannot be read collapses the whole config to
+ * undefined (best-effort telemetry never crashes the caller).
+ */
+export function resolveOtlpTlsConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  readFile: (p: string) => string = (p) => fs.readFileSync(p, 'utf8'),
+): OtlpTlsConfig | undefined {
+  const pick = (base: string): string | undefined =>
+    env[`OTEL_EXPORTER_OTLP_LOGS_${base}`] ?? env[`OTEL_EXPORTER_OTLP_${base}`];
+  const certPath = pick('CLIENT_CERTIFICATE');
+  const keyPath = pick('CLIENT_KEY');
+  const caPath = pick('CERTIFICATE');
+  const passphrase = env.AMI_OTEL_CLIENT_KEY_PASSPHRASE;
+  if (!certPath && !keyPath && !caPath && !passphrase) return undefined;
+  const cfg: OtlpTlsConfig = {};
+  try {
+    if (certPath) cfg.cert = readFile(certPath);
+    if (keyPath) cfg.key = readFile(keyPath);
+    if (caPath) cfg.ca = readFile(caPath);
+  } catch {
+    return undefined; // unreadable PEM → skip mTLS rather than crash the export
+  }
+  if (passphrase) cfg.passphrase = passphrase;
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
+/**
+ * Build an undici dispatcher for a proxied and/or mutually-authenticated OTLP
+ * export, or undefined when neither a proxy nor TLS material is configured (the
+ * common case — the global fetch default is used, undici never loaded). A proxy
+ * yields a `ProxyAgent` (carrying any client-TLS as `requestTls` for the upstream
+ * collector); TLS alone yields an `Agent` with the material on `connect`.
+ */
+export function buildOtlpDispatcher(
+  cfg: { proxyUrl?: string; tls?: OtlpTlsConfig },
+  loader: () => UndiciDispatchers = loadUndici,
+): unknown | undefined {
+  const { proxyUrl, tls } = cfg;
+  if (!proxyUrl && !tls) return undefined;
+  const undici = loader();
+  if (proxyUrl) {
+    return new undici.ProxyAgent({ uri: proxyUrl, ...(tls ? { requestTls: tls } : {}) });
+  }
+  return new undici.Agent({ connect: tls });
+}
+
+/**
+ * Resolve the full OTLP transport (proxy + mTLS/CA) for `targetUrl` into an undici
+ * dispatcher, or undefined when nothing is configured. Combines
+ * {@link resolveOtlpProxyUrl} + {@link resolveOtlpTlsConfig} + {@link buildOtlpDispatcher};
+ * `readFile`/`undiciLoader` are injectable for tests.
+ */
+export function resolveOtlpTransport(
+  targetUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: { readFile?: (p: string) => string; undiciLoader?: () => UndiciDispatchers } = {},
+): unknown | undefined {
+  const proxyUrl = resolveOtlpProxyUrl(targetUrl, env);
+  const tls = resolveOtlpTlsConfig(env, deps.readFile);
+  return buildOtlpDispatcher({ proxyUrl, tls }, deps.undiciLoader);
+}
+
 /** Rich result of one OTLP POST attempt — drives retry/backoff decisions. */
 export interface OtlpSendResult {
   ok: boolean;
@@ -2600,7 +2840,7 @@ function parseRetryAfterMs(header: string | null | undefined): number | undefine
 export async function postOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown } = {},
 ): Promise<OtlpSendResult> {
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
   if (!fetchImpl) return { ok: false, retryable: false };
@@ -2611,12 +2851,17 @@ export async function postOtlpBatch(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5000);
   try {
-    const res = await fetchImpl(otlpLogsUrl(endpoint), {
+    // A proxy/mTLS dispatcher (undici) is attached to the request init so a
+    // collector reachable only through a proxy or requiring client certs / a
+    // private CA can still be exported to over the global fetch.
+    const init: RequestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(deps.headers ?? {}) },
       body: JSON.stringify(toOtlpLogsPayload(batch, resourceAttrs, env)),
       signal: controller.signal,
-    });
+    };
+    if (deps.dispatcher) (init as { dispatcher?: unknown }).dispatcher = deps.dispatcher;
+    const res = await fetchImpl(otlpLogsUrl(endpoint), init);
     if (res.ok) return { ok: true, status: res.status, retryable: false };
     const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
     return { ok: false, status: res.status, retryable: isRetryableStatus(res.status), retryAfterMs };
@@ -2631,7 +2876,7 @@ export async function postOtlpBatch(
 export async function sendOtlpBatch(
   endpoint: string,
   batch: TelemetryBatch,
-  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv } = {},
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; headers?: Record<string, string>; resourceAttrs?: Record<string, string>; env?: NodeJS.ProcessEnv; dispatcher?: unknown } = {},
 ): Promise<boolean> {
   return (await postOtlpBatch(endpoint, batch, deps)).ok;
 }
