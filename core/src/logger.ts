@@ -6,6 +6,7 @@ import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './privacy-level';
 import { isSafeSegment } from './skill-catalog';
 import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
+import { AMI_VERSION } from './version';
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
@@ -364,6 +365,26 @@ function pushErrorRing(text: string): void {
   inMemoryErrors.push(entry);
 }
 
+/**
+ * Standard enrichment fields stamped onto every persisted error entry (the dated
+ * JSONL error sink below) AND merged into the structured `data` of each
+ * `logError()` debug line. Mirrors Claude Code's errorLogSink `appendToLog`,
+ * which tags every record with `cwd` + `sessionId` + `version` so a later
+ * bug-report/triage flow can attribute an error to the exact run, working
+ * directory, and build that produced it. `sessionId` reuses `AMI_DEBUG_SESSION_ID`
+ * (the same id that names the per-session log file, path-safety validated);
+ * `version` is the single-source {@link AMI_VERSION}; `cwd` is the live process
+ * working directory.
+ */
+function standardLogFields(): { sessionId: string; cwd: string; version: string } {
+  const sid = process.env.AMI_DEBUG_SESSION_ID?.trim();
+  return {
+    sessionId: sid && isSafeSegment(sid) ? sid : 'unknown',
+    cwd: process.cwd(),
+    version: AMI_VERSION,
+  };
+}
+
 /** Test-only seam: force the next log() call to re-run directory setup/rotation. */
 export function __resetLoggerForTest(): void {
   initialized = false;
@@ -532,7 +553,11 @@ export function logError(component: string, error: string, context?: Record<stri
   // be large/circular and leak internals) — only the extracted bracketed prefix.
   const { httpError, ...restContext } = context ?? {};
   const enriched = `${httpErrorContext(httpError)}${error}`;
-  const dataContext = Object.keys(restContext).length > 0 ? restContext : undefined;
+  // Every error entry is stamped with the standard enrichment fields (sessionId
+  // + cwd + version) so it is attributable to the exact run; caller-supplied
+  // structured context is merged on top (and can override). Mirrors Claude Code's
+  // errorLogSink entry enrichment.
+  const dataContext = { ...standardLogFields(), ...restContext };
 
   // Hard-fail mode: surface silently-swallowed errors by throwing immediately,
   // so a logged error crashes the run instead of being buried. Checked FIRST so
@@ -551,6 +576,68 @@ export function logError(component: string, error: string, context?: Record<stri
   // or fails. Mirrors Claude Code's "always add to in-memory log" behavior.
   pushErrorRing(`[${component}] ${enriched}`);
   log(component, `ERROR: ${enriched}`, dataContext, 'error');
+  // Also append a machine-readable record to the dated structured error sink
+  // (no-op unless AMI_ERRORS_DIR is configured). Carries the same enrichment so a
+  // per-run JSONL error log is independently greppable. Mirrors Claude Code's
+  // errorLogSink dated-JSONL file.
+  appendErrorRecord({ level: 'error', component, error: enriched, ...dataContext });
+}
+
+// ---------------------------------------------------------------------------
+// Dated structured JSONL error sink (opt-in, PII-redacted) — a machine-readable
+// per-run error log SEPARATE from the human debug log. Mirrors Claude Code's
+// errorLogSink: one date-stamped `.jsonl` file whose records carry the standard
+// enrichment fields, so errors from a run can be parsed/triaged after the fact.
+// ---------------------------------------------------------------------------
+/**
+ * Convert a Date to a filesystem-safe, lexically-sortable stamp by replacing the
+ * `:` and `.` that some filesystems forbid with `-` (e.g.
+ * `2026-11-17T08-30-00-000Z`). Mirrors Claude Code's `dateToFilename` so dated
+ * log files sort by time and never collide on a colon.
+ */
+export function dateToFilename(date: Date): string {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+// Resolved ONCE per process so every error in a run lands in the same JSONL file
+// (a stable per-run log), matching Claude Code's module-level dated filename.
+const ERROR_LOG_DATE = dateToFilename(new Date());
+
+/**
+ * Resolve the structured error-sink directory from `AMI_ERRORS_DIR` (Claude-
+ * compatible `CLAUDE_CODE_ERRORS_DIR` fallback), or undefined when neither is
+ * set — so the dated JSONL error file is strictly opt-in and zero-cost by
+ * default.
+ */
+function getErrorsDir(): string | undefined {
+  const dir = (process.env.AMI_ERRORS_DIR ?? process.env.CLAUDE_CODE_ERRORS_DIR)?.trim();
+  return dir || undefined;
+}
+
+/**
+ * Path to the active structured error-log file — `<errorsDir>/<date>.jsonl` — or
+ * null when the sink is not configured. Introspection surface (consumed by
+ * `/debug`) so a user/bug-report flow can point straight at the machine-readable
+ * error log. Mirrors Claude Code's `getErrorsPath`.
+ */
+export function getErrorsPath(): string | null {
+  const dir = getErrorsDir();
+  return dir ? path.join(dir, `${ERROR_LOG_DATE}.jsonl`) : null;
+}
+
+/**
+ * Append one credential-redacted `{timestamp, ...record}` JSONL line to the dated
+ * error sink. No-op — zero cost — when the sink is unconfigured. Reuses the
+ * self-healing {@link appendDiagnosticsRaw} sink (shared missing-dir mkdir+retry),
+ * so there is no second copy of the append-with-recovery logic. The whole
+ * serialized line is redacted so a secret in the error text or context never
+ * reaches disk, and JSON encoding keeps every record on its own parseable line.
+ */
+function appendErrorRecord(record: Record<string, unknown>): void {
+  const file = getErrorsPath();
+  if (!file) return;
+  const entry = { timestamp: new Date().toISOString(), ...record };
+  appendDiagnosticsRaw(file, redactCredentials(JSON.stringify(entry)) + '\n');
 }
 
 // ---------------------------------------------------------------------------

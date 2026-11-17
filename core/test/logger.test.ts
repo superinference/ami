@@ -4,7 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename } from '../src/logger';
+import { AMI_VERSION } from '../src/version';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -874,6 +875,113 @@ describe('logError gating & enrichment', () => {
     process.env.DISABLE_ERROR_REPORTING = '1';
     process.env.AMI_LOG_HARD_FAIL = '1';
     assert.throws(() => logError('x', 'boom'), /HARD FAIL/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standard enrichment fields + dated JSONL error sink (U060)
+// ---------------------------------------------------------------------------
+describe('logError enrichment fields + dated JSONL error sink', () => {
+  const ORIG = { ...process.env };
+  beforeEach(() => { __resetLoggerForTest(); });
+  afterEach(() => { mock.restoreAll(); __resetLoggerForTest(); process.env = { ...ORIG }; });
+
+  function captureAll(): Array<{ file: string; data: string }> {
+    const calls: Array<{ file: string; data: string }> = [];
+    mock.method(fsHooks, 'mkdirSync', () => undefined as unknown as string);
+    mock.method(fsHooks, 'statSync', () => { throw new Error('ENOENT'); });
+    mock.method(fsHooks, 'appendFileSync', (f: fs.PathOrFileDescriptor, data: unknown) => {
+      calls.push({ file: String(f), data: String(data) });
+    });
+    return calls;
+  }
+
+  it('stamps sessionId + cwd + version onto every logError debug line', () => {
+    delete process.env.AMI_ERRORS_DIR;
+    delete process.env.CLAUDE_CODE_ERRORS_DIR;
+    process.env.AMI_DEBUG_SESSION_ID = 'sess-abc';
+    const calls = captureAll();
+    logError('engine', 'broke');
+    const line = calls.map((c) => c.data).join('');
+    assert.ok(line.includes('"sessionId":"sess-abc"'));
+    assert.ok(line.includes('"cwd":"'));
+    assert.ok(line.includes(`"version":"${AMI_VERSION}"`));
+  });
+
+  it('falls back to sessionId "unknown" when AMI_DEBUG_SESSION_ID is unset or unsafe', () => {
+    delete process.env.AMI_ERRORS_DIR;
+    delete process.env.AMI_DEBUG_SESSION_ID;
+    let calls = captureAll();
+    logError('engine', 'a');
+    assert.ok(calls.some((c) => c.data.includes('"sessionId":"unknown"')));
+    mock.restoreAll();
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG_SESSION_ID = '../escape';
+    calls = captureAll();
+    logError('engine', 'b');
+    assert.ok(calls.some((c) => c.data.includes('"sessionId":"unknown"')));
+  });
+
+  it('caller context augments and can override the standard fields', () => {
+    delete process.env.AMI_ERRORS_DIR;
+    const calls = captureAll();
+    logError('engine', 'x', { attempt: 7, version: 'override' });
+    const line = calls.map((c) => c.data).join('');
+    assert.ok(line.includes('"attempt":7'));
+    assert.ok(line.includes('"version":"override"'));
+  });
+
+  it('dateToFilename replaces : and . with - (sortable, fs-safe)', () => {
+    assert.equal(dateToFilename(new Date('2026-11-17T08:30:00.000Z')), '2026-11-17T08-30-00-000Z');
+  });
+
+  it('getErrorsPath is null unless AMI_ERRORS_DIR / CLAUDE_CODE_ERRORS_DIR is set', () => {
+    delete process.env.AMI_ERRORS_DIR;
+    delete process.env.CLAUDE_CODE_ERRORS_DIR;
+    assert.equal(getErrorsPath(), null);
+    process.env.AMI_ERRORS_DIR = path.join('/tmp', 'ami-err');
+    assert.ok(getErrorsPath()!.startsWith(path.join('/tmp', 'ami-err')));
+    assert.ok(getErrorsPath()!.endsWith('.jsonl'));
+    delete process.env.AMI_ERRORS_DIR;
+    process.env.CLAUDE_CODE_ERRORS_DIR = path.join('/tmp', 'cc-err');
+    assert.ok(getErrorsPath()!.startsWith(path.join('/tmp', 'cc-err')));
+  });
+
+  it('logError appends a redacted structured JSONL record to the dated error file', () => {
+    process.env.AMI_ERRORS_DIR = path.join('/tmp', 'ami-errsink');
+    delete process.env.AMI_DEBUG_SESSION_ID;
+    const calls = captureAll();
+    const secret = 'sk-ant-' + 'a'.repeat(40);
+    logError('provider', `auth failed ${secret}`, { attempt: 3 });
+    const errFile = getErrorsPath()!;
+    const rec = calls.find((c) => c.file === errFile);
+    assert.ok(rec, 'a record must be written to the dated error file');
+    assert.ok(rec!.data.endsWith('\n'), 'record is one JSONL line');
+    const parsed = JSON.parse(rec!.data.trim());
+    assert.equal(parsed.level, 'error');
+    assert.equal(parsed.component, 'provider');
+    assert.equal(parsed.attempt, 3);
+    assert.equal(parsed.version, AMI_VERSION);
+    assert.equal(typeof parsed.timestamp, 'string');
+    assert.ok(!rec!.data.includes(secret), 'secret must be redacted in the JSONL record');
+    assert.ok(rec!.data.includes('[REDACTED]'));
+  });
+
+  it('dated error sink is a no-op when neither errors-dir env is set', () => {
+    delete process.env.AMI_ERRORS_DIR;
+    delete process.env.CLAUDE_CODE_ERRORS_DIR;
+    const calls = captureAll();
+    logError('engine', 'x');
+    // Only the human debug log file is written; no dated error file.
+    assert.ok(calls.every((c) => c.file.endsWith('engine.log')));
+  });
+
+  it('DISABLE_ERROR_REPORTING also skips the dated error sink', () => {
+    process.env.AMI_ERRORS_DIR = path.join('/tmp', 'ami-errsink');
+    process.env.DISABLE_ERROR_REPORTING = '1';
+    const calls = captureAll();
+    logError('engine', 'silenced');
+    assert.equal(calls.length, 0);
   });
 });
 
