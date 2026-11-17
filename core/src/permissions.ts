@@ -158,6 +158,33 @@ export function toExternalPermissionMode(mode: PermissionMode | undefined): Exte
 }
 
 /**
+ * The payload delivered to a {@link PermissionModeChangeListener} whenever the
+ * permission mode is mutated through {@link PermissionManager}'s single choke point.
+ * Carries both the raw internal modes and their externalized forms so a listener can
+ * audit the security-critical transition (e.g. into `bypassPermissions`/`auto-allow`)
+ * without re-deriving the external label. `reason` names the mutation path that
+ * triggered it. Parity: Claude's `notifyPermissionModeChanged` single-choke-point
+ * notification (state/onChangeAppState.ts, utils/sessionState.ts) — every path that
+ * changes the mode fires this, so no path can silently escalate privileges.
+ */
+export interface PermissionModeChange {
+  /** Mode in effect before this change. */
+  previousMode: PermissionMode;
+  /** Mode now in effect. */
+  mode: PermissionMode;
+  /** {@link toExternalPermissionMode} of `previousMode`. */
+  previousExternalMode: ExternalPermissionMode;
+  /** {@link toExternalPermissionMode} of `mode`. */
+  externalMode: ExternalPermissionMode;
+  /** The mutation path that triggered the change (`setMode`, `exitPlanMode`,
+   *  `deserialize`, `init`), for audit provenance. */
+  reason: string;
+}
+
+/** A listener invoked on every real permission-mode transition. */
+export type PermissionModeChangeListener = (change: PermissionModeChange) => void;
+
+/**
  * Where a permission rule/update is persisted, in precedence order (later wins at
  * runtime; earlier is broader scope). Mirrors Claude's PermissionUpdateDestination:
  * - `userSettings`   — global (~/.ami), applies everywhere;
@@ -4440,6 +4467,10 @@ function denialKey(toolName: string, input: Record<string, unknown>): string {
 
 export class PermissionManager {
   private mode: PermissionMode = 'ask';
+  /** Single observer notified by {@link applyMode} on every real mode transition,
+   *  regardless of which mutation path (setMode / exitPlanMode / deserialize)
+   *  triggered it. Parity: Claude's single `notifyPermissionModeChanged` choke point. */
+  private _modeChangeListener?: PermissionModeChangeListener;
   private rules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
@@ -4500,7 +4531,7 @@ export class PermissionManager {
   private readonly MAX_TOTAL = 20;
 
   constructor(mode?: PermissionMode, rules?: PermissionRule[], allowedRoots?: string[]) {
-    if (mode) this.mode = mode;
+    if (mode) this.applyMode(mode, 'init');
     if (rules) this.rules = [...rules];
     if (allowedRoots) for (const r of allowedRoots) this.registerAllowedRoot(r);
     // A session launched directly in bypassPermissions has bypass available, so a
@@ -5884,10 +5915,51 @@ export class PermissionManager {
       this._prePlanMode = undefined;
     }
     const prev = this.mode;
-    this.mode = mode;
+    this.applyMode(mode, 'setMode');
     // Include the external-facing mode label so an introspection trace shows how the
     // mode is surfaced to external/SDK consumers (toExternalPermissionMode).
     this.traceMutation(`Setting mode to '${mode}' (external: ${toExternalPermissionMode(mode)}) (was '${prev}')`);
+    return true;
+  }
+
+  /**
+   * Register (or clear, with `undefined`) the single listener notified on every
+   * real permission-mode transition. Replaces any previously-registered listener —
+   * there is exactly one observer, so mode-change auditing has a single wiring point
+   * and cannot be double-counted. Parity: Claude's `permissionModeListener` register.
+   */
+  setModeChangeListener(listener: PermissionModeChangeListener | undefined): void {
+    this._modeChangeListener = listener;
+  }
+
+  /**
+   * The ONE place that mutates {@link mode}. Every mutation path (constructor,
+   * {@link setMode}, {@link exitPlanMode}'s fallback, {@link deserialize}) routes
+   * through here so a change can never bypass the {@link _modeChangeListener}
+   * notification. A no-op (`next === current`) neither assigns nor notifies — only a
+   * genuine transition fires the listener, so default→bubble→default-style noise is
+   * suppressed, mirroring Claude's `prevMode !== newMode` diff gate. The listener is
+   * invoked defensively: a throwing listener must never leave `mode` unchanged or
+   * abort the caller. Returns whether a real transition occurred.
+   */
+  private applyMode(next: PermissionMode, reason: string): boolean {
+    const previousMode = this.mode;
+    if (previousMode === next) return false;
+    this.mode = next;
+    if (this._modeChangeListener) {
+      const change: PermissionModeChange = {
+        previousMode,
+        mode: next,
+        previousExternalMode: toExternalPermissionMode(previousMode),
+        externalMode: toExternalPermissionMode(next),
+        reason,
+      };
+      try {
+        this._modeChangeListener(change);
+      } catch {
+        /* a listener failure must never break a privilege transition */
+      }
+    }
     return true;
   }
 
@@ -5912,7 +5984,7 @@ export class PermissionManager {
     const restore = this._prePlanMode ?? 'ask';
     this._prePlanMode = undefined;
     if (!this.setMode(restore)) {
-      this.mode = 'ask';
+      this.applyMode('ask', 'exitPlanMode');
     }
     return this.mode;
   }
@@ -6546,7 +6618,7 @@ export class PermissionManager {
 
       if (data.mode && typeof data.mode === 'string') {
         if ((PERMISSION_MODES as readonly string[]).includes(data.mode)) {
-          this.mode = data.mode as PermissionMode;
+          this.applyMode(data.mode as PermissionMode, 'deserialize');
         } else {
           warnings.push(`Invalid permission mode "${data.mode}" was ignored`);
         }
