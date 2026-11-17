@@ -46,6 +46,18 @@ export interface RateLimitStatus {
   requestsPercent: number;
   tokensPercent: number;
   shouldWarn: boolean;
+  /**
+   * Coarse rate-limit tier (parity: Claude's getRateLimitMessage models distinct
+   * warning/rejected tiers, not a single boolean). Always present:
+   * - `'ok'` — utilization is below the warn threshold.
+   * - `'warning'` — approaching the limit (`shouldWarn`, below the at-limit tier).
+   * - `'exceeded'` — a HARD STOP: a tracked bucket is at/over its limit
+   *   (`remaining<=0` or utilization `>= errorThreshold`) or the unified primary
+   *   tier was `rejected`. Callers should treat this as "stop", not a soft warning.
+   * A stale (post-reset) bucket is refilled before this is computed, so a
+   * reset window that has elapsed never reports `'exceeded'`.
+   */
+  state: 'ok' | 'warning' | 'exceeded';
   /** Severity of the warning, when shouldWarn is true. */
   severity?: 'warning' | 'error';
   /** User-facing, graded warning message, when shouldWarn is true. */
@@ -214,15 +226,32 @@ export class RateLimitTracker {
   }
 
   getStatus(): RateLimitStatus {
-    const reqPct = this.requests
-      ? (this.requests.limit > 0 ? (this.requests.limit - this.requests.remaining) / this.requests.limit : 1)
+    const now = Date.now();
+    // Stale post-reset-window guard (parity: Claude's getRateLimitMessage
+    // suppresses an `allowed_warning` carrying stale low-usage data "after week
+    // reset"). getStatus derives everything from the last-seen remaining/limit, so
+    // once a bucket's reset window has elapsed (resetAt>0 && now>=resetAt) the real
+    // budget has refilled but our snapshot is known-invalid — reporting the old high
+    // percent would latch shouldWarn on forever until some later update() happens to
+    // arrive. Treat such a bucket as REFILLED (remaining===limit, 0% used) until the
+    // next update() supplies fresh headers. resetAt===0 is the "unknown" sentinel
+    // (no reset header seen) and is deliberately NOT treated as stale.
+    const refillIfStale = (bucket: RateLimitBucket | null): RateLimitBucket | null =>
+      bucket && bucket.resetAt > 0 && now >= bucket.resetAt
+        ? { ...bucket, remaining: bucket.limit }
+        : bucket;
+    const requests = refillIfStale(this.requests);
+    const tokens = refillIfStale(this.tokens);
+
+    const reqPct = requests
+      ? (requests.limit > 0 ? (requests.limit - requests.remaining) / requests.limit : 1)
       : 0;
-    const tokPct = this.tokens
-      ? (this.tokens.limit > 0 ? (this.tokens.limit - this.tokens.remaining) / this.tokens.limit : 1)
+    const tokPct = tokens
+      ? (tokens.limit > 0 ? (tokens.limit - tokens.remaining) / tokens.limit : 1)
       : 0;
 
-    const reqBurn = this.burnRateWarns(this.requests, this.requestsWindowMs, reqPct);
-    const tokBurn = this.burnRateWarns(this.tokens, this.tokensWindowMs, tokPct);
+    const reqBurn = this.burnRateWarns(requests, this.requestsWindowMs, reqPct);
+    const tokBurn = this.burnRateWarns(tokens, this.tokensWindowMs, tokPct);
 
     const reqWarn = reqPct >= this.warnThreshold || reqBurn;
     const tokWarn = tokPct >= this.warnThreshold || tokBurn;
@@ -235,12 +264,25 @@ export class RateLimitTracker {
     const earlyWarn = computeEarlyWarning(this.unifiedWindows, this.earlyWarningConfigs);
     const shouldWarn = bucketWarn || earlyWarn !== null;
 
+    // Multi-tier state (parity: Claude models distinct warning vs rejected tiers
+    // rather than one boolean). `'exceeded'` is a HARD STOP — a tracked bucket is
+    // at/over its limit (remaining<=0 or utilization >= errorThreshold) or the
+    // unified primary tier was rejected; `'warning'` is approaching; `'ok'` is below
+    // the warn threshold. Stale buckets are refilled above, so a reset window that
+    // has elapsed never reports `'exceeded'`.
+    const atLimit = (bucket: RateLimitBucket | null, pct: number): boolean =>
+      !!bucket && (bucket.remaining <= 0 || pct >= this.errorThreshold);
+    const exceeded =
+      atLimit(requests, reqPct) || atLimit(tokens, tokPct) || this.unifiedStatus === 'rejected';
+    const state: RateLimitStatus['state'] = exceeded ? 'exceeded' : shouldWarn ? 'warning' : 'ok';
+
     const status: RateLimitStatus = {
-      requests: this.requests,
-      tokens: this.tokens,
+      requests,
+      tokens,
       requestsPercent: Math.round(reqPct * 100),
       tokensPercent: Math.round(tokPct * 100),
       shouldWarn,
+      state,
       retryAfterMs: this.retryAfterMs,
     };
 
@@ -256,9 +298,9 @@ export class RateLimitTracker {
       const useReq = reqWarn && (!tokWarn || reqPct >= tokPct);
       const pct = useReq ? reqPct : tokPct;
       const dimension = useReq ? 'request' : 'token';
-      const bucket = useReq ? this.requests : this.tokens;
+      const bucket = useReq ? requests : tokens;
       status.severity = pct >= this.errorThreshold ? 'error' : 'warning';
-      const resetText = bucket && bucket.resetAt > Date.now()
+      const resetText = bucket && bucket.resetAt > now
         ? formatResetTime(Math.floor(bucket.resetAt / 1000))
         : undefined;
       status.warnMessage =
@@ -269,7 +311,7 @@ export class RateLimitTracker {
       status.proactive = true;
       const util = earlyWarn.utilization;
       status.severity = util !== null && util >= this.errorThreshold ? 'error' : 'warning';
-      const resetText = earlyWarn.resetAt && earlyWarn.resetAt.getTime() > Date.now()
+      const resetText = earlyWarn.resetAt && earlyWarn.resetAt.getTime() > now
         ? formatResetTime(Math.floor(earlyWarn.resetAt.getTime() / 1000))
         : undefined;
       const usedClause = util !== null ? `used ${Math.round(util * 100)}% of ` : 'nearly reached ';
