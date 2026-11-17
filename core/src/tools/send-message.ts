@@ -477,6 +477,49 @@ export function summarizeStructuredMessage(content: string, from?: string): stri
   }
 }
 
+/**
+ * Compact, per-message-type natural-language PROJECTION of a send_message call for
+ * the permission auto-classifier. Mirrors Claude Code's SendMessageTool
+ * `toAutoClassifierInput`: the classifier that decides whether a send is auto-
+ * allowable should see a short, intent-revealing phrase ("shutdown_request to X",
+ * "plan_approval approve to X") rather than a raw JSON control blob (which both
+ * bloats the classifier input and lets a crafted payload obscure intent). Plain
+ * text projects as `to <recipient>: <text>`; a structured control message projects
+ * to a terse `<type> <decision?> <recipient-or-id>` phrase. Distinct from
+ * {@link summarizeStructuredMessage} (human/model-facing inbox wording with "[...]"
+ * tags) — this is the classifier-facing projection keyed on the OUTBOUND `to`.
+ */
+export function toAutoClassifierInput(content: string, to: string): string {
+  const m = parseStructuredMessage(content);
+  if (!m || 'error' in m) return `to ${to}: ${content}`;
+  switch (m.type) {
+    case 'shutdown_request':
+      return `shutdown_request to ${to}`;
+    case 'shutdown_response':
+      return `shutdown_response ${m.approve ? 'approve' : 'reject'} ${m.requestId}`;
+    case 'plan_approval_request':
+      return `plan_approval_request to ${to}`;
+    case 'plan_approval_response':
+      return `plan_approval ${m.approve ? 'approve' : 'reject'} to ${to}`;
+    case 'permission_request':
+      return `permission_request "${m.tool}" to ${to}`;
+    case 'permission_response':
+      return `permission_response ${m.approve ? 'grant' : 'deny'} ${m.requestId}`;
+    case 'sandbox_permission_request':
+      return `sandbox_permission_request host "${m.host}" to ${to}`;
+    case 'sandbox_permission_response':
+      return `sandbox_permission_response ${m.allow ? 'allow' : 'deny'} host "${m.host}"`;
+    case 'team_permission_update':
+      return `team_permission_update ${m.behavior} "${m.toolName}" to ${to}`;
+    case 'task_assignment':
+      return `task_assignment #${m.taskId} to ${to}`;
+    case 'idle_notification':
+      return `idle_notification to ${to}`;
+    case 'mode_set_request':
+      return `mode_set_request ${m.mode} to ${to}`;
+  }
+}
+
 // --- Receive-side relay router ----------------------------------------------
 // A consumer draining a mailbox must NOT feed every message verbatim into the
 // model's context. Claude Code runs an ordered router over each incoming teammate
@@ -814,10 +857,67 @@ export function unregisterMailboxNotifier(agentName: string): void {
   mailboxNotifiers.delete(agentName);
 }
 
-/** Fire a registered notifier for an agent, if any. Never throws. */
+/**
+ * Multi-subscriber mailbox change signal (parity with Claude Code's
+ * utils/mailbox.ts `Mailbox.subscribe`, backed by utils/signal.ts createSignal).
+ * Distinct from the single eager-delivery notifier above: that one is a replace-
+ * semantics wake-hook whose PRESENCE means "this agent's engine loop is actively
+ * listening" (consumed by deliveryAffordance/isReachable); this is a fan-out
+ * observer registry where ANY number of independent reactive consumers can learn
+ * that "something changed" on an agent's mailbox (e.g. a revision-counter view via
+ * useSyncExternalStore) without any of them clobbering another. Both fire on every
+ * delivery (see notifyMailbox) so the eager wake-hook and reactive observers
+ * coexist. Returns an unsubscribe function (AMI differentiator: the eager hook is
+ * kept alongside Claude's multi-subscriber signal, not replaced by it).
+ */
+const mailboxSubscribers = new Map<string, Set<() => void>>();
+
+export function subscribeMailbox(agentName: string, listener: () => void): () => void {
+  const set = mailboxSubscribers.get(agentName) ?? new Set<() => void>();
+  set.add(listener);
+  mailboxSubscribers.set(agentName, set);
+  return () => {
+    const s = mailboxSubscribers.get(agentName);
+    if (!s) return;
+    s.delete(listener);
+    if (s.size === 0) mailboxSubscribers.delete(agentName);
+  };
+}
+
+/**
+ * Fire BOTH the single eager-delivery notifier AND every reactive subscriber for
+ * an agent, if any. Never throws — one listener failing must never break delivery
+ * or starve the others (each is isolated in its own try/catch).
+ */
 export function notifyMailbox(agentName: string): void {
   const fn = mailboxNotifiers.get(agentName);
   if (fn) { try { fn(); } catch { /* a notifier must never break delivery */ } }
+  const subs = mailboxSubscribers.get(agentName);
+  if (subs) {
+    for (const s of subs) { try { s(); } catch { /* one observer must not starve the rest */ } }
+  }
+}
+
+// --- Idempotent graceful-shutdown handshake ---------------------------------
+// A shutdown_request opens a negotiated cancellation with the target teammate: it
+// either approves (exits) or rejects (keeps working). Re-sending a shutdown_request
+// to a teammate that already has one outstanding is a NO-OP — a second request must
+// not queue a duplicate or restart the handshake. Mirrors Claude Code's
+// InProcessBackend.terminate(): it sets a `shutdownRequested` flag on the task and,
+// on re-entry, returns early ("shutdown already requested") instead of sending
+// another request. The handshake is RESOLVED (flag cleared) when the teammate emits
+// its shutdown_response, and torn down on purge/reset. Keyed by the bare teammate
+// name the request was addressed to (the same identity the responder stamps as its
+// trusted `from`), so request-open and response-close line up.
+const outstandingShutdowns = new Map<string, string>();
+
+/**
+ * True when a shutdown_request has been sent to `agentName` and no shutdown_response
+ * has resolved it yet. Introspection surface for the idempotent handshake — lets a
+ * caller (and tests) see the pending-cancellation state without re-sending.
+ */
+export function hasOutstandingShutdownRequest(agentName: string): boolean {
+  return outstandingShutdowns.has(agentName);
 }
 
 export function getMailbox(agentName: string): AgentMessage[] {
@@ -842,16 +942,20 @@ export function purgeMailbox(agentName: string): void {
   clearMailbox(agentName);
   mailboxWaiters.delete(agentName);
   mailboxNotifiers.delete(agentName);
+  mailboxSubscribers.delete(agentName);
   mailboxRevisions.delete(agentName);
   outboundDms.delete(agentName);
+  outstandingShutdowns.delete(agentName);
 }
 
 export function resetAllMailboxes(): void {
   mailboxes.clear();
   mailboxNotifiers.clear();
+  mailboxSubscribers.clear();
   mailboxWaiters.clear();
   mailboxRevisions.clear();
   outboundDms.clear();
+  outstandingShutdowns.clear();
   messageSeq = 0;
 }
 
@@ -934,6 +1038,39 @@ export function pollMailbox(
   }
   if (taken.length > 0) mailboxes.set(agentName, kept);
   return taken;
+}
+
+/**
+ * Drain an agent's mailbox in PRIORITY order (anti-starvation), removing every
+ * queued message but returning them two-tier-ordered instead of raw FIFO. Mirrors
+ * Claude Code's inProcessRunner.waitForNextPromptOrShutdown scan order:
+ *  1. `shutdown_request` messages first — a pending cancellation must never be
+ *     starved behind a flood of peer-to-peer chatter;
+ *  2. then messages FROM the team lead — the lead carries user intent and
+ *     coordination, so its messages are not starved behind peer chatter;
+ *  3. then everything else (peer messages).
+ * FIFO order is preserved WITHIN each tier (a stable partition), so same-tier
+ * messages keep their arrival order. Equivalent to the unordered drain of
+ * `pollMailbox(agentName)` in membership — nothing is dropped — only the order
+ * differs, so it is a drop-in replacement for a drain-all consumer.
+ */
+export function drainMailboxPrioritized(agentName: string): AgentMessage[] {
+  const messages = pollMailbox(agentName);
+  if (messages.length <= 1) return messages;
+  const shutdowns: AgentMessage[] = [];
+  const lead: AgentMessage[] = [];
+  const rest: AgentMessage[] = [];
+  for (const m of messages) {
+    const parsed = parseStructuredMessage(m.content);
+    if (parsed && !('error' in parsed) && parsed.type === 'shutdown_request') {
+      shutdowns.push(m);
+    } else if (m.from === TEAM_LEAD_NAME) {
+      lead.push(m);
+    } else {
+      rest.push(m);
+    }
+  }
+  return [...shutdowns, ...lead, ...rest];
 }
 
 /**
@@ -1291,6 +1428,16 @@ export const sendMessageTool: ToolDefinition = {
       }
       switch (structured.type) {
         case 'shutdown_request': {
+          // Idempotent handshake: a shutdown_request to a teammate that already has
+          // one outstanding is a NO-OP — do not queue a duplicate or restart the
+          // negotiation. Mirrors Claude Code's InProcessBackend.terminate() early
+          // return on an already-set `shutdownRequested` flag. The flag is cleared
+          // when the teammate emits its shutdown_response (see that case), on
+          // purge/reset.
+          const existing = outstandingShutdowns.get(toRaw);
+          if (existing) {
+            return { output: `Shutdown already requested for ${toRaw} (id: ${existing}) — not re-sent (idempotent).` };
+          }
           // Auto-generate a structured request id when the model omits one, and
           // stamp the trusted sender as `from` so the payload is self-contained;
           // rewrite the queued payload so the recipient always receives both an id
@@ -1300,6 +1447,9 @@ export const sendMessageTool: ToolDefinition = {
             ? content
             : JSON.stringify({ ...structured, requestId: reqId, from });
           enqueue(to, { from, to, content: wire, timestamp: Date.now() });
+          // Open the handshake: record the outstanding request keyed by the bare
+          // teammate name so a re-send is guarded until the teammate responds.
+          outstandingShutdowns.set(toRaw, reqId);
           return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]` };
         }
         case 'shutdown_response': {
@@ -1311,6 +1461,11 @@ export const sendMessageTool: ToolDefinition = {
             return { output: 'Error: a reason is required when rejecting a shutdown request.', isError: true };
           }
           const originTag = requestOriginTag(structured.requestId);
+          // Resolve the handshake: whether the teammate approves or rejects, the
+          // outstanding shutdown-request for this responder is closed, so the lead
+          // may open a fresh one later (a rejection explicitly invites "request
+          // again later"). Keyed by the responder's own trusted identity.
+          outstandingShutdowns.delete(from);
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content, timestamp: Date.now() });
           if (structured.approve) {
             // Approving a shutdown TERMINATES the approving teammate: abort its own
