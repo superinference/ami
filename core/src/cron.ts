@@ -8,6 +8,11 @@ export interface CronJob {
   id: string;
   cron: string;
   prompt: string;
+  /** Optional human-readable label chosen by the caller so a job is identifiable by
+   *  purpose (not just its opaque auto-generated id) in list/get/delete flows.
+   *  Mirrors Claude's required trigger `name` field (src/skills/bundled/scheduleRemoteAgents.ts).
+   *  AMI keeps it OPTIONAL (superset): an unnamed job still works and is addressed by id. */
+  name?: string;
   recurring: boolean;
   durable: boolean;
   createdAt: number;
@@ -34,6 +39,10 @@ export interface CronJob {
 }
 
 export const MAX_AGE_DAYS = 7;
+/** Upper bound on a job's human-readable name. A name is a short label, not a
+ *  document; anything longer is almost always a mistake and would bloat the
+ *  persisted store, so it is rejected as clean validation. */
+export const MAX_CRON_NAME_LEN = 200;
 const MAX_AGE_MS = MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const MAX_JOBS = 50;
 const LOCK_STALE_MS = 120_000;
@@ -202,6 +211,18 @@ function computeJitter(gapMs: number | null, jobId: string, cfg: CronJitterConfi
   return Math.floor(normalizedHash * maxJitterMs);
 }
 
+/** Validate an optional human-readable job name. Returns an error message string,
+ *  or null when valid (including when absent — the field is optional). A name must
+ *  be a non-empty, non-whitespace string no longer than {@link MAX_CRON_NAME_LEN}.
+ *  Single canonical validator reused by create() (engine boundary) and the
+ *  cron_create tool (clean tool-level error) so the rule exists in one place. */
+export function validateCronName(name: string | undefined): string | null {
+  if (name === undefined) return null;
+  if (typeof name !== 'string' || !name.trim()) return 'name must be a non-empty string';
+  if (name.length > MAX_CRON_NAME_LEN) return `name is too long (${name.length} chars; max ${MAX_CRON_NAME_LEN})`;
+  return null;
+}
+
 /** Validate a 5-field cron expression's structure and field ranges. Returns an
  *  error message string, or null when valid. */
 export function validateCronExpression(cron: string): string | null {
@@ -285,6 +306,12 @@ export class CronScheduler {
   private watcher: fs.FSWatcher | null = null;
   /** When set and returning true, the tick defers firing (session is mid-turn). */
   private busyCheck: (() => boolean) | null = null;
+  /** Invoked once with each recurring job that is auto-expired (aged past its
+   *  maxAgeDays window) so the consumer can surface a USER-VISIBLE notice that the
+   *  schedule has stopped — not just the internal coreLog. Mirrors Claude's guidance
+   *  to tell the user a recurring task has auto-expired (src/tools/ScheduleCronTool/
+   *  prompt.ts). Registered via {@link startTicker}; null = no notice (log only). */
+  private onExpire: ((job: CronJob) => void) | null = null;
   /** Assistant-mode bypass: when active the busy/idle gate is ignored so a due job
    *  fires immediately (even mid-turn) instead of waiting for the next idle tick —
    *  a latency nicety for always-on assistant sessions that already have scheduled
@@ -412,7 +439,7 @@ export class CronScheduler {
     };
   }
 
-  create(opts: { cron: string; prompt: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number; utc?: boolean }): CronJob {
+  create(opts: { cron: string; prompt: string; name?: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number; utc?: boolean }): CronJob {
     if (this.jobs.size >= MAX_JOBS) {
       throw new Error(`Maximum of ${MAX_JOBS} cron jobs reached. Delete existing jobs first.`);
     }
@@ -420,6 +447,12 @@ export class CronScheduler {
     const validationError = validateCronExpression(opts.cron);
     if (validationError) {
       throw new Error(`Invalid cron expression: ${validationError}`);
+    }
+    // Optional human-readable label: validated at the engine boundary so every
+    // consumer (not only the tool) rejects a blank/oversized name up front.
+    const nameError = validateCronName(opts.name);
+    if (nameError) {
+      throw new Error(`Invalid cron ${nameError}.`);
     }
     // FUNCTIONAL: validate an optional per-job run budget — must be a positive
     // integer (a non-positive / fractional budget would retire the job instantly
@@ -471,6 +504,7 @@ export class CronScheduler {
       id,
       cron: opts.cron,
       prompt: opts.prompt,
+      ...(opts.name !== undefined ? { name: opts.name.trim() } : {}),
       recurring,
       // Durable kill-switch: a requested durable job is silently degraded to
       // session-only when disk persistence is gated off (no schema change, so
@@ -571,6 +605,15 @@ export class CronScheduler {
     return this.jobs.get(id);
   }
 
+  /** Resolve jobs by their human-readable {@link CronJob.name}, scoped to what the
+   *  caller may see (teammate scoping identical to {@link list}). Returns every
+   *  match because names are NOT guaranteed unique — the caller decides how to
+   *  handle 0 / 1 / many (e.g. address an ambiguous name by id instead). Matching
+   *  is exact on the stored (trimmed) name. */
+  findByName(name: string, agentId?: string): CronJob[] {
+    return this.list(agentId).filter(j => j.name === name);
+  }
+
   /** Epoch ms of the soonest scheduled fire across all loaded jobs, or null when
    *  nothing is pending (no jobs, or none with a computed nextRun). Lets a caller
    *  decide whether to keep an idle session warm for an imminent fire or let it go
@@ -653,8 +696,11 @@ export class CronScheduler {
     }
   }
 
-  startTicker(onDue: (job: CronJob) => void): void {
+  startTicker(onDue: (job: CronJob) => void, onExpire?: (job: CronJob) => void): void {
     if (this.tickInterval) return;
+    // Record the (optional) auto-expiry notice sink so expireOld can surface a
+    // user-visible "this recurring schedule has reached its N-day limit" message.
+    this.onExpire = onExpire ?? null;
     this.tickInterval = setInterval(() => this.tick(onDue), 5_000);
     this.tickInterval.unref();
     this.startWatching();
@@ -1135,8 +1181,13 @@ export class CronScheduler {
           this.markRun(id);
           onDue(job);
         }
+        // Snapshot BEFORE delete so the user-visible notice carries the job detail.
+        const expired = { ...job };
         this.delete(id);
         coreLog('cron', `Expired recurring job ${id} after ${maxAgeDays} days`);
+        // User-visible auto-expiry notice (not just the internal coreLog): tell the
+        // user the recurring schedule has reached its limit and stopped firing.
+        this.onExpire?.(expired);
       }
     }
   }
@@ -1185,6 +1236,9 @@ export class CronScheduler {
     const j = entry as Record<string, unknown>;
     if (typeof j.id !== 'string' || typeof j.cron !== 'string' || typeof j.prompt !== 'string') return false;
     if (typeof j.recurring !== 'boolean' || typeof j.durable !== 'boolean') return false;
+    // A corrupt on-disk name (non-string / blank / oversized) must not smuggle an
+    // invalid label into a persisted job — re-validate with the canonical rule.
+    if (j.name !== undefined && validateCronName(j.name as string | undefined) !== null) return false;
     if (typeof j.createdAt !== 'number') return false;
     if (validateCronExpression(j.cron) !== null) return false; // re-validate the stored cron
     // Validate the optional run-budget fields so a corrupt on-disk maxRuns/runCount

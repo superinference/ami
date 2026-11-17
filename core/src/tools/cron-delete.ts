@@ -4,7 +4,7 @@ import { coerceBool } from '../utils/coerce';
 import { isCronEnabled } from './tool-gates';
 
 const ID_RE = /^[\w-]+$/;
-const ALLOWED_KEYS = new Set(['id', 'ids', 'all', 'ignoreMissing']);
+const ALLOWED_KEYS = new Set(['id', 'ids', 'name', 'all', 'ignoreMissing']);
 
 export const cronDeleteTool: ToolDefinition = {
   name: 'cron_delete',
@@ -12,7 +12,8 @@ export const cronDeleteTool: ToolDefinition = {
   isEnabled: () => isCronEnabled(),
   description:
     'Cancel scheduled cron job(s) by ID (as shown by cron_list). ' +
-    'Delete one job with id, several at once with ids:[...], or every job you own with all:true. ' +
+    'Delete one job with id, several at once with ids:[...], one by its human-readable name with name:"...", ' +
+    'or every job you own with all:true. ' +
     'You can only delete jobs you own; a job created by another teammate is rejected. ' +
     'Pass ignoreMissing:true to treat an already-deleted / unknown id as a no-op (idempotent) ' +
     'instead of an error.',
@@ -39,6 +40,12 @@ export const cronDeleteTool: ToolDefinition = {
         type: 'array',
         items: { type: 'string' },
         description: 'A list of job IDs to delete in one call (bulk delete).',
+      },
+      name: {
+        type: 'string',
+        description:
+          'Cancel the single job with this human-readable name (as given at creation / shown by cron_list). ' +
+          'Rejected if the name is ambiguous (shared by several jobs) — use id/ids instead. Mutually exclusive with id/ids/all.',
       },
       all: {
         type: 'boolean',
@@ -98,19 +105,20 @@ export const cronDeleteTool: ToolDefinition = {
     const all = coerceBool(input.all);
     const hasId = input.id !== undefined;
     const hasIds = input.ids !== undefined;
+    const hasName = input.name !== undefined;
 
     // Exactly one selector. Zero → nothing to do; more than one → ambiguous.
-    const selectors = [hasId, hasIds, all].filter(Boolean).length;
+    const selectors = [hasId, hasIds, hasName, all].filter(Boolean).length;
     if (selectors === 0) {
       return {
-        output: 'Error: provide one of id, ids:[...], or all:true.',
+        output: 'Error: provide one of id, ids:[...], name, or all:true.',
         isError: true,
         metadata: { errorCode: 1 },
       };
     }
     if (selectors > 1) {
       return {
-        output: 'Error: id, ids, and all are mutually exclusive — provide exactly one.',
+        output: 'Error: id, ids, name, and all are mutually exclusive — provide exactly one.',
         isError: true,
         metadata: { errorCode: 1 },
       };
@@ -120,7 +128,29 @@ export const cronDeleteTool: ToolDefinition = {
 
     // Resolve the target id set for each mode.
     let ids: string[];
-    if (all) {
+    if (hasName) {
+      const name = input.name;
+      if (!name || typeof name !== 'string') {
+        return { output: 'Error: name must be a non-empty string.', isError: true, metadata: { errorCode: 1 } };
+      }
+      // Name lookup is teammate-scoped by findByName (via list(agentId)), so a
+      // teammate can only cancel its own named job.
+      const matches = sched.findByName(name, context.agentId);
+      if (matches.length === 0) {
+        if (ignoreMissing) {
+          return { output: `No scheduled job named "${name}" (nothing to do).`, metadata: { deleted: 0, deletedIds: [], alreadyDeleted: true } };
+        }
+        return { output: `Error: no scheduled job named "${name}" (not found).`, isError: true, metadata: { errorCode: 1 } };
+      }
+      if (matches.length > 1) {
+        return {
+          output: `Error: name "${name}" is ambiguous — ${matches.length} jobs share it (${matches.map(j => j.id).join(', ')}). Delete by id/ids instead.`,
+          isError: true,
+          metadata: { errorCode: 1 },
+        };
+      }
+      ids = [matches[0].id];
+    } else if (all) {
       // Scoped to what this agent owns/sees — never deletes a teammate's job.
       ids = sched.list(context.agentId).map(j => j.id);
       if (ids.length === 0) {

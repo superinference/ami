@@ -27,7 +27,7 @@ import {
 // and `createDefaultTools` honors it uniformly via `filterAvailableTools`
 // instead of hand-rolled `if (gate())` blocks — one declarative mechanism.
 
-const CRON_TOOLS = ['cron_create', 'cron_delete', 'cron_list', 'schedule_wakeup'];
+const CRON_TOOLS = ['cron_create', 'cron_delete', 'cron_list', 'cron_get', 'cron_run', 'schedule_wakeup'];
 
 function toolNames(env: NodeJS.ProcessEnv): Set<string> {
   const saved = process.env;

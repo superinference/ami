@@ -4,7 +4,7 @@ import { isCronEnabled } from './tool-gates';
 import { isActiveJob, formatJobFlags } from './cron-list';
 
 const ID_RE = /^[\w-]+$/;
-const ALLOWED_KEYS = new Set(['id']);
+const ALLOWED_KEYS = new Set(['id', 'name']);
 
 /**
  * cron_get — fetch ONE scheduled job's full, untruncated detail by id.
@@ -33,8 +33,15 @@ export const cronGetTool: ToolDefinition = {
         type: 'string',
         description: 'The job ID returned by cron_create / shown by cron_list.',
       },
+      name: {
+        type: 'string',
+        description:
+          'Alternatively, the human-readable name given at creation. Exactly one of id or name is required; ' +
+          'an ambiguous name (shared by several jobs) is rejected — use the id instead.',
+      },
     },
-    required: ['id'],
+    // Exactly one of id | name is required; enforced in execute so the "pick one" /
+    // ambiguity errors are surfaced cleanly.
   },
   // PARITY (additive): declared structured-result schema so an SDK/automation caller
   // can consume the job detail without parsing the human-readable block.
@@ -42,6 +49,7 @@ export const cronGetTool: ToolDefinition = {
     type: 'object',
     properties: {
       id: { type: 'string' },
+      name: { type: 'string', description: 'The human-readable job name (absent when unnamed).' },
       cron: { type: 'string', description: 'The raw cron expression.' },
       prompt: { type: 'string', description: 'The full, untruncated scheduled prompt.' },
       recurring: { type: 'boolean' },
@@ -63,24 +71,60 @@ export const cronGetTool: ToolDefinition = {
       return { output: `Error: unknown parameter(s): ${unknown.join(', ')}.`, isError: true, metadata: { errorCode: 1 } };
     }
 
-    const id = input.id;
-    if (!id || typeof id !== 'string' || !ID_RE.test(id)) {
+    const hasId = input.id !== undefined;
+    const hasName = input.name !== undefined;
+    // Exactly one selector (id | name). Zero → nothing to look up; both → ambiguous.
+    if (hasId === hasName) {
       return {
-        output: 'Error: id is required and must match ^[\\w-]+$.',
+        output: 'Error: provide exactly one of id or name.',
         isError: true,
         metadata: { errorCode: 1 },
       };
     }
 
     const sched = getScheduler(context.cwd);
-    const job = sched.get(id);
-    // Teammate-scoped visibility (mirrors cron_list): a sub-agent may only read a
-    // global job or one it owns; another teammate's job is reported as not found so
-    // its full prompt is never leaked across agents.
-    const visible = job && (!job.agentId || context.agentId === undefined || job.agentId === context.agentId);
-    if (!job || !visible) {
+    let job;
+    let selector: string;
+    if (hasId) {
+      const id = input.id;
+      if (!id || typeof id !== 'string' || !ID_RE.test(id)) {
+        return {
+          output: 'Error: id is required and must match ^[\\w-]+$.',
+          isError: true,
+          metadata: { errorCode: 1 },
+        };
+      }
+      selector = id;
+      const found = sched.get(id);
+      // Teammate-scoped visibility (mirrors cron_list): a sub-agent may only read a
+      // global job or one it owns; another teammate's job is reported as not found so
+      // its full prompt is never leaked across agents.
+      const visible = found && (!found.agentId || context.agentId === undefined || found.agentId === context.agentId);
+      job = visible ? found : undefined;
+    } else {
+      const name = input.name;
+      if (!name || typeof name !== 'string') {
+        return {
+          output: 'Error: name must be a non-empty string.',
+          isError: true,
+          metadata: { errorCode: 1 },
+        };
+      }
+      selector = name;
+      // Name lookup is already teammate-scoped by findByName (via list(agentId)).
+      const matches = sched.findByName(name, context.agentId);
+      if (matches.length > 1) {
+        return {
+          output: `Error: name "${name}" is ambiguous — ${matches.length} jobs share it (${matches.map(j => j.id).join(', ')}). Use cron_get with the id instead.`,
+          isError: true,
+          metadata: { errorCode: 1 },
+        };
+      }
+      job = matches[0];
+    }
+    if (!job) {
       return {
-        output: `Error: no scheduled job with id "${id}" (not found).`,
+        output: `Error: no scheduled job with ${hasId ? 'id' : 'name'} "${selector}" (not found).`,
         isError: true,
         metadata: { errorCode: 1 },
       };
@@ -92,8 +136,9 @@ export const cronGetTool: ToolDefinition = {
     const lastLine = typeof job.lastRun === 'number'
       ? `\nLast: ${new Date(job.lastRun).toLocaleString()} (local)`
       : '';
+    const nameLine = job.name ? ` "${job.name}"` : '';
     const output =
-      `${job.id}: ${schedule} (${formatJobFlags(job)})\n` +
+      `${job.id}${nameLine}: ${schedule} (${formatJobFlags(job)})\n` +
       `Next: ${next} (local)${lastLine}\n` +
       `Prompt:\n${job.prompt}`;
 
@@ -101,6 +146,7 @@ export const cronGetTool: ToolDefinition = {
       output,
       metadata: {
         id: job.id,
+        ...(job.name ? { name: job.name } : {}),
         cron: job.cron,
         prompt: job.prompt,
         recurring: !!job.recurring,

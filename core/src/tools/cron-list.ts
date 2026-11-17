@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler, localTimeZoneLabel } from '../cron';
+import { getScheduler, localTimeZoneLabel, MAX_AGE_DAYS } from '../cron';
 import type { CronJob } from '../cron';
 import { isCronEnabled } from './tool-gates';
 import { graphemes } from './text-truncate';
@@ -53,11 +53,17 @@ export function sortJobsForDisplay(jobs: CronJob[]): CronJob[] {
  *  cron_get so the two surfaces stay consistent (one canonical formatter). */
 export function formatJobFlags(job: CronJob): string {
   const active = isActiveJob(job);
-  // Surface a custom per-job expiry window so a user can see at a glance that a
-  // recurring job will age out sooner/later than the default (or never, when
-  // maxAgeDays:0 was set without the permanent flag).
-  const ageFlag = job.recurring && !job.permanent && typeof job.maxAgeDays === 'number'
-    ? [job.maxAgeDays === 0 ? 'never-expires' : `expires in ${job.maxAgeDays}d`]
+  // Surface the EFFECTIVE expiry window so a user can see at a glance when a
+  // recurring job will auto-expire (and therefore stop firing) — the custom
+  // maxAgeDays when set, otherwise the MAX_AGE_DAYS default; "never-expires" when
+  // maxAgeDays:0 was set without the permanent flag. Permanent jobs carry the
+  // 'permanent' flag instead, so expiry is omitted for them. Mirrors Claude's
+  // guidance to make the N-day auto-expiry visible (src/tools/ScheduleCronTool/prompt.ts).
+  const ageFlag = job.recurring && !job.permanent
+    ? [(() => {
+        const days = typeof job.maxAgeDays === 'number' ? job.maxAgeDays : MAX_AGE_DAYS;
+        return days === 0 ? 'never-expires' : `expires in ${days}d`;
+      })()]
     : [];
   return [
     job.recurring ? 'recurring' : 'one-shot',
@@ -151,7 +157,10 @@ export const cronListTool: ToolDefinition = {
       const lastLine = typeof j.lastRun === 'number'
         ? `\n    Last: ${new Date(j.lastRun).toLocaleString()} (local, ${tz})`
         : '';
-      return `  ${j.id}: ${schedule} (${flags})\n    Next: ${next}${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
+      // Surface the human-readable name (when set) alongside the id so a job is
+      // identifiable by purpose at a glance, not only by its opaque id.
+      const label = j.name ? ` "${j.name}"` : '';
+      return `  ${j.id}${label}: ${schedule} (${flags})\n    Next: ${next}${lastLine}\n    Prompt: ${truncatePrompt(j.prompt)}`;
     });
 
     return { output: `${jobs.length} scheduled job(s):\n${lines.join('\n')}` };

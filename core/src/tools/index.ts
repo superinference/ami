@@ -29,6 +29,7 @@ import { cronCreateTool } from './cron-create';
 import { cronDeleteTool } from './cron-delete';
 import { cronListTool } from './cron-list';
 import { cronGetTool } from './cron-get';
+import { cronRunTool } from './cron-run';
 import { scheduleWakeupTool } from './schedule-wakeup';
 import { enterWorktreeTool } from './enter-worktree';
 import { exitWorktreeTool } from './exit-worktree';
@@ -183,6 +184,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     cronDeleteTool,
     cronListTool,
     cronGetTool,
+    cronRunTool,
     scheduleWakeupTool,
     enterWorktreeTool,
     exitWorktreeTool,
@@ -279,6 +281,7 @@ export { cronCreateTool, getCronScheduler, resetCronScheduler, MAX_CRON_PROMPT_L
 export { cronDeleteTool } from './cron-delete';
 export { cronListTool } from './cron-list';
 export { cronGetTool } from './cron-get';
+export { cronRunTool } from './cron-run';
 export { scheduleWakeupTool } from './schedule-wakeup';
 export { enterWorktreeTool } from './enter-worktree';
 export { exitWorktreeTool } from './exit-worktree';

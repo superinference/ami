@@ -1,5 +1,5 @@
 import { ToolDefinition, ToolResult } from '../types';
-import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, cronRuntimeBehaviorNote, localTimeZoneLabel, MAX_AGE_DAYS, type CronJob } from '../cron';
+import { getScheduler, resetScheduler, CronScheduler, validateCronExpression, validateCronName, cronRuntimeBehaviorNote, localTimeZoneLabel, MAX_AGE_DAYS, MAX_CRON_NAME_LEN, type CronJob } from '../cron';
 import { coerceBool } from '../utils/coerce';
 import { isCronEnabled } from './tool-gates';
 
@@ -12,7 +12,7 @@ export function resetCronScheduler(): void {
   resetScheduler();
 }
 
-const ALLOWED_KEYS = new Set(['cron', 'prompt', 'recurring', 'durable', 'permanent', 'maxAgeDays', 'utc']);
+const ALLOWED_KEYS = new Set(['cron', 'prompt', 'name', 'recurring', 'durable', 'permanent', 'maxAgeDays', 'utc']);
 
 // PARITY (additive): upper bound on a scheduled prompt's length. A prompt far
 // larger than this is almost always an accident (e.g. a whole file pasted in)
@@ -99,6 +99,13 @@ export const cronCreateTool: ToolDefinition = {
         type: 'string',
         description: 'The prompt to enqueue at each fire time.',
       },
+      name: {
+        type: 'string',
+        description:
+          `Optional human-readable label for this job (max ${MAX_CRON_NAME_LEN} chars), so it is identifiable ` +
+          'by purpose in cron_list / cron_get / cron_delete instead of only by its opaque id ' +
+          '(e.g. "nightly backup check"). You can also delete or fetch a job by this name.',
+      },
       recurring: {
         type: 'boolean',
         description:
@@ -150,6 +157,16 @@ export const cronCreateTool: ToolDefinition = {
 
     const cron = input.cron as string;
     const prompt = input.prompt as string;
+    // Optional human-readable name. Validate here for a clean tool-level error;
+    // create() re-validates as the engine-boundary guarantee.
+    let name: string | undefined;
+    if (input.name !== undefined) {
+      const nameError = validateCronName(input.name as string | undefined);
+      if (nameError) {
+        return { output: `Error: ${nameError}.`, isError: true };
+      }
+      name = input.name as string;
+    }
     const recurring = input.recurring === undefined ? true : coerceBool(input.recurring);
     const durable = coerceBool(input.durable);
     const permanent = coerceBool(input.permanent);
@@ -215,7 +232,7 @@ export const cronCreateTool: ToolDefinition = {
 
     let job;
     try {
-      job = sched.create({ cron, prompt, recurring, durable, permanent, maxAgeDays, utc, agentId: context.agentId });
+      job = sched.create({ cron, prompt, name, recurring, durable, permanent, maxAgeDays, utc, agentId: context.agentId });
     } catch (err) {
       // MAX_JOBS cap and the minimum-interval floor surface as clean validation.
       return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -246,9 +263,11 @@ export const cronCreateTool: ToolDefinition = {
         ? '\n  Durable persistence is disabled by operator policy — this job is session-only (lost on restart).'
         : '\n  Session-only (lost on restart).';
 
+    // Echo the chosen name (when given) so the caller sees the label it can reuse.
+    const nameLine = job.name ? `\n  Name: ${job.name}` : '';
     return {
       output:
-        `Scheduled ${recurring ? 'recurring' : 'one-shot'} job ${job.id}\n` +
+        `Scheduled ${recurring ? 'recurring' : 'one-shot'} job ${job.id}${nameLine}\n` +
         `  Schedule: ${schedule} (${utc ? 'defined in UTC, shown in local time' : 'local time'})\n  Next run: ${nextRun}\n` +
         `  Recurring: ${recurring}\n  Durable: ${effectiveDurable}${expiry}${durabilityNote}\n` +
         '  Cancel with cron_delete.',
