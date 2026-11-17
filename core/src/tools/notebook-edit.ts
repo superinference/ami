@@ -19,6 +19,46 @@ function cellSourceToString(source: string | string[] | undefined): string {
   return source ?? '';
 }
 
+/** Derive the notebook's programming language from `metadata.language_info.name`,
+ *  defaulting to 'python' when absent/blank. Parity: Claude's NotebookEditTool
+ *  (L379 — `notebook.metadata.language_info?.name ?? 'python'`), so the result
+ *  carries language context for the edited cell. */
+function deriveNotebookLanguage(nb: NotebookContent): string {
+  const li = nb.metadata?.language_info as { name?: unknown } | undefined;
+  const name = li && typeof li.name === 'string' ? li.name.trim() : '';
+  return name.length > 0 ? name : 'python';
+}
+
+/** Derive the syntax-highlight language for a single cell: a markdown cell is
+ *  highlighted as 'markdown', any other (code) cell as the notebook's programming
+ *  language. Parity: Claude's NotebookEditPermissionRequest (L40 —
+ *  `cell_type === 'markdown' ? 'markdown' : 'python'`), generalized so a non-Python
+ *  kernel's code cells get the correct language rather than a hardcoded 'python'. */
+function deriveCellLanguage(cellType: string | undefined, notebookLanguage: string): string {
+  return cellType === 'markdown' ? 'markdown' : notebookLanguage;
+}
+
+/** Structured, machine-readable result surface for `notebook_edit`, carried on
+ *  {@link ToolResult.metadata} and described by the tool's `outputSchema`. Parity:
+ *  Claude's NotebookEditTool output `data` (new_source / cell_type / language /
+ *  edit_mode / cell_id / error / notebook_path / original_file / updated_file), so
+ *  a resume/SDK/non-LLM caller — and attribution tracking — can branch on the
+ *  before/after content and resolved language without parsing the human message. */
+interface NotebookEditMetadata {
+  notebook_path: string;
+  new_source: string;
+  cell_type: string;
+  /** The notebook's programming language (metadata.language_info.name ?? 'python'). */
+  language: string;
+  /** The syntax-highlight language for the edited cell (markdown vs the notebook language). */
+  cell_language: string;
+  edit_mode: string;
+  cell_id?: string;
+  error: string;
+  original_file: string;
+  updated_file: string;
+}
+
 interface NotebookCell {
   cell_type: string;
   source: string | string[];
@@ -93,6 +133,30 @@ export const notebookEditTool: ToolDefinition = {
   // Discovery hint for tool_search using synonyms NOT already in the name/
   // description, so a deferred notebook_edit is findable by "jupyter"/"ipynb".
   searchHint: 'jupyter ipynb notebook cell code markdown edit insert delete',
+  // PARITY (additive): structured-result schema describing the machine-readable
+  // outcome AMI carries on `ToolResult.metadata` ({@link NotebookEditMetadata}).
+  // Mirrors Claude's NotebookEditTool `outputSchema` (new_source / cell_type /
+  // language / edit_mode / cell_id / error / notebook_path / original_file /
+  // updated_file) so a resume/SDK/non-LLM caller — and attribution tracking — can
+  // branch on the before/after notebook content and resolved language without
+  // parsing the human message. Object-rooted so it passes the provider's
+  // object-root-only exposure guard (toolDefinitionsToOpenAI).
+  outputSchema: {
+    type: 'object',
+    properties: {
+      notebook_path: { type: 'string', description: 'Absolute path of the edited notebook.' },
+      new_source: { type: 'string', description: 'The source written to (or that was targeted at) the cell.' },
+      cell_type: { type: 'string', description: "Resolved type of the affected cell ('code' | 'markdown')." },
+      language: { type: 'string', description: "The notebook's programming language (metadata.language_info.name, default 'python')." },
+      cell_language: { type: 'string', description: "Syntax-highlight language for the affected cell (markdown vs the notebook language)." },
+      edit_mode: { type: 'string', description: "The edit mode actually applied ('replace' | 'insert' | 'delete')." },
+      cell_id: { type: 'string', description: 'Stable id of the affected cell, when the notebook format carries ids.' },
+      error: { type: 'string', description: 'Error message when the operation failed, else empty.' },
+      original_file: { type: 'string', description: 'Full notebook JSON before the edit (attribution).' },
+      updated_file: { type: 'string', description: 'Full notebook JSON after the edit (attribution).' },
+    },
+    required: ['notebook_path', 'edit_mode', 'language', 'error'],
+  },
 
   async execute(
     input: Record<string, unknown>,
@@ -171,8 +235,12 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     if (path.extname(resolved) !== '.ipynb') {
+      // FUNCTIONAL (Claude parity, errorCode 2): append a recovery affordance so a
+      // wrong-file-type call is not a dead end — the model is told exactly which
+      // tool to reach for instead. Mirrors Claude's NotebookEditTool message
+      // ("For editing other file types, use the FileEdit tool.").
       return {
-        output: 'Error: File must be a Jupyter notebook (.ipynb).',
+        output: 'Error: File must be a Jupyter notebook (.ipynb file). For editing other file types, use the file_edit tool.',
         isError: true,
       };
     }
@@ -286,6 +354,13 @@ export const notebookEditTool: ToolDefinition = {
     // confirmation can surface what was deleted (parity with Claude's
     // NotebookEditToolDiff, which shows the deleted cell's source on delete).
     let deletedSource: string | undefined;
+    // The stable id and resolved type of the cell actually touched by this edit,
+    // surfaced in the confirmation message and the structured metadata so the model
+    // (or a non-LLM/SDK caller) can correlate the edit back to a specific cell.
+    // Parity: Claude's `new_cell_id` + `cell_type` result fields (NotebookEditTool
+    // L379-389, L444-446).
+    let affectedCellId: string | undefined;
+    let affectedCellType: string | undefined;
 
     // For insert mode with cell_id match, insert AFTER the matched cell (Claude behavior)
     let effectiveIndex: number;
@@ -310,6 +385,8 @@ export const notebookEditTool: ToolDefinition = {
         };
       }
       deletedSource = cellSourceToString(notebook.cells[effectiveIndex].source);
+      affectedCellId = notebook.cells[effectiveIndex].id;
+      affectedCellType = notebook.cells[effectiveIndex].cell_type;
       notebook.cells.splice(effectiveIndex, 1);
     } else if (editMode === 'insert') {
       if (effectiveIndex < 0 || effectiveIndex > totalCells) {
@@ -340,6 +417,8 @@ export const notebookEditTool: ToolDefinition = {
         newCell.id = Math.random().toString(36).substring(2, 15);
       }
 
+      affectedCellId = newCell.id;
+      affectedCellType = newCell.cell_type;
       notebook.cells.splice(effectiveIndex, 0, newCell);
     } else {
       // replace
@@ -368,6 +447,8 @@ export const notebookEditTool: ToolDefinition = {
         ) {
           newCell.id = Math.random().toString(36).substring(2, 15);
         }
+        affectedCellId = newCell.id;
+        affectedCellType = newCell.cell_type;
         notebook.cells.splice(effectiveIndex, 0, newCell);
       } else {
         const target = notebook.cells[effectiveIndex];
@@ -391,6 +472,11 @@ export const notebookEditTool: ToolDefinition = {
         if (cellType && cellType !== target.cell_type) {
           target.cell_type = cellType;
         }
+
+        // Parity (NotebookEditTool L386-388): on replace the existing cell id is
+        // kept, so surface it (and the resolved type) for correlation/attribution.
+        affectedCellId = target.id;
+        affectedCellType = target.cell_type;
       }
     }
 
@@ -467,12 +553,19 @@ export const notebookEditTool: ToolDefinition = {
 
     // --- Build confirmation message ---
     const newTotal = notebook.cells.length;
+    // Parity (NotebookEditTool L379): resolve the notebook's language once so the
+    // confirmation and structured metadata both report it.
+    const nbLanguage = deriveNotebookLanguage(notebook);
+    const cellLanguage = deriveCellLanguage(affectedCellType, nbLanguage);
+    // Parity (NotebookEditTool L384-389): surface the affected cell's stable id so
+    // the model can correlate the edit to a specific cell across turns.
+    const idSuffix = affectedCellId ? ` (cell id: ${affectedCellId})` : '';
     const modeLabel =
       editMode === 'delete'
-        ? `Deleted cell ${effectiveIndex}`
+        ? `Deleted cell ${effectiveIndex}${idSuffix}`
         : editMode === 'insert'
-          ? `Inserted new ${cellType ?? 'code'} cell at index ${effectiveIndex}`
-          : `Replaced cell ${effectiveIndex}`;
+          ? `Inserted new ${affectedCellType ?? cellType ?? 'code'} cell at index ${effectiveIndex}${idSuffix}`
+          : `Replaced cell ${effectiveIndex}${idSuffix}`;
 
     // Per-mode cell preview (parity with Claude's NotebookEditToolDiff, which
     // renders a distinct body per edit_mode): a unified diff of old→new source for
@@ -489,8 +582,27 @@ export const notebookEditTool: ToolDefinition = {
     } else if (editMode === 'delete' && deletedSource !== undefined) {
       previewBlock = `\n\nDeleted cell source:\n${deletedSource}`;
     }
+    // PARITY (additive): attach the structured attribution surface (before/after
+    // notebook content + resolved language/cell id) to the result metadata. The
+    // shape is declared by this tool's `outputSchema` (advertised to the model via
+    // the provider), so the human message stays unchanged while an SDK/non-LLM/
+    // resume consumer can read the fields programmatically.
+    const structured: NotebookEditMetadata = {
+      notebook_path: resolved,
+      new_source: editMode === 'delete' ? '' : newSource,
+      cell_type: affectedCellType ?? cellType ?? 'code',
+      language: nbLanguage,
+      cell_language: cellLanguage,
+      edit_mode: editMode,
+      error: '',
+      original_file: raw,
+      updated_file: updatedJson,
+    };
+    if (affectedCellId !== undefined) structured.cell_id = affectedCellId;
+
     return {
-      output: `${modeLabel} in ${resolved}. Notebook now has ${newTotal} cell(s).${previewBlock}`,
+      output: `${modeLabel} in ${resolved} (language: ${nbLanguage}). Notebook now has ${newTotal} cell(s).${previewBlock}`,
+      metadata: { ...structured },
     };
   },
 };
