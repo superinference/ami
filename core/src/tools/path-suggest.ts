@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logError } from '../logger';
+import { isWithinWorkspaceRoots } from './tool-utils';
+import { matchesReadIgnore } from './read-ignore';
+import { findProjectRoot, gitignoreToIgnoreGlobs } from '../workspace-indexer';
 
 // PARITY (error observability): a directory scan that fails with ENOENT is the
 // expected "parent does not exist" case and is swallowed quietly. Any OTHER
@@ -56,6 +59,60 @@ function clampCount(n: number): number {
   return Math.max(0, Math.floor(n));
 }
 
+// PARITY (secret-leak hardening): a directory-entry predicate that answers "may
+// this entry be surfaced as a 'did you mean' suggestion?". Claude Code's
+// suggestion pipeline filters ignored files out of results so secret/ignored
+// filenames are never disclosed (hooks/fileSuggestions.ts:289-295); AMI's
+// readdir-and-score loop previously scored EVERY entry verbatim, so a near-miss
+// of `.env` (or a gitignored `secret-config.json`) could leak the existence of a
+// credential file. This builds a synchronous ignore matcher for `scanDir` that:
+//   1. drops dotfiles/hidden entries (the dominant secret vector: .env, keys), and
+//   2. drops gitignored entries, reusing the single canonical gitignore→glob
+//      translator (`gitignoreToIgnoreGlobs`) + glob matcher (`matchesReadIgnore`)
+//      rather than re-implementing ignore parsing.
+// Patterns are gathered from the project root's `.git/info/exclude` and every
+// `.gitignore` from the root down to `scanDir` (each anchored at its own dir).
+function buildSuggestionIgnore(scanDir: string): (entry: string) => boolean {
+  const root = findProjectRoot(scanDir);
+  const globs: string[] = [];
+  if (root) {
+    try {
+      globs.push(
+        ...gitignoreToIgnoreGlobs(
+          fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf-8'),
+          '',
+        ),
+      );
+    } catch {
+      // absent/unreadable exclude file — nothing to contribute.
+    }
+    const rel = path.relative(root, scanDir);
+    const segs = rel ? rel.split(path.sep).filter(Boolean) : [];
+    let cur = root;
+    for (let i = 0; ; i++) {
+      const baseRel = path.relative(root, cur).split(path.sep).join('/');
+      try {
+        const content = fs.readFileSync(path.join(cur, '.gitignore'), 'utf-8');
+        globs.push(...gitignoreToIgnoreGlobs(content, baseRel));
+      } catch {
+        // no .gitignore at this level — skip.
+      }
+      if (i >= segs.length) break;
+      cur = path.join(cur, segs[i]);
+    }
+  }
+  return (entry: string): boolean => {
+    // Hidden/dotfiles are always withheld (credential stores, VCS metadata).
+    if (entry.startsWith('.')) return true;
+    if (!root || globs.length === 0) return false;
+    const relFromRoot = path
+      .relative(root, path.join(scanDir, entry))
+      .split(path.sep)
+      .join('/');
+    return matchesReadIgnore(relFromRoot, globs);
+  };
+}
+
 export function suggestSimilarPaths(
   missingPath: string,
   cwd: string,
@@ -73,6 +130,14 @@ export function suggestSimilarPaths(
   // PARITY (same-stem/different-extension): the basename WITHOUT its extension.
   const stemLower = path.basename(base, path.extname(base)).toLowerCase();
 
+  // PARITY (workspace-boundary containment): never enumerate a directory that
+  // lives OUTSIDE the caller's workspace (cwd). An out-of-tree target would
+  // otherwise disclose sibling-filesystem contents via the suggestion list.
+  // Mirrors Claude Code's cwd-scoped suggestion enumeration
+  // (hooks/fileSuggestions.ts:243-316). Reuses the single canonical containment
+  // helper so the check matches the rest of the tool layer exactly.
+  if (!isWithinWorkspaceRoots(dir, cwd)) return [];
+
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);
@@ -81,8 +146,13 @@ export function suggestSimilarPaths(
     return [];
   }
 
+  // Secret-leak hardening: withhold dotfiles and gitignored entries before they
+  // are scored (see buildSuggestionIgnore).
+  const isIgnored = buildSuggestionIgnore(dir);
+
   const scored: Array<{ name: string; distance: number; stem: boolean }> = [];
   for (const entry of entries) {
+    if (isIgnored(entry)) continue;
     const dist = levenshteinDistance(base.toLowerCase(), entry.toLowerCase());
     // PARITY (same-stem suggestion, findSimilarFile): an entry whose basename
     // stripped of its extension equals the requested stem (e.g. `config.ts`
@@ -172,8 +242,11 @@ export function suggestPathCorrection(
   }
 
   if (entries) {
+    // Apply the same secret-leak filter as suggestSimilarPaths so a case-variant
+    // of a dotfile/gitignored name (e.g. `.ENV` → `.env`) is never disclosed.
+    const isIgnored = buildSuggestionIgnore(dir);
     const caseMatches = entries.filter(
-      e => e !== base && e.toLowerCase() === base.toLowerCase(),
+      e => e !== base && e.toLowerCase() === base.toLowerCase() && !isIgnored(e),
     );
     if (caseMatches.length > 0) {
       return {

@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   suggestSimilarPaths,
   suggestPathUnderCwd,
+  suggestPathCorrection,
 } from '../src/tools/path-suggest';
 import { getInMemoryErrors, __resetLoggerForTest } from '../src/logger';
 import { fileReadTool } from '../src/tools/file-read';
@@ -16,6 +17,113 @@ import type { ToolContext } from '../src/types';
 // U218 — core/core/src/tools/path-suggest.ts parity superset.
 // Each block maps to a labeled ADDITIVE feature and is red-green validated.
 // ---------------------------------------------------------------------------
+
+describe('U218 security: hidden/dotfile + gitignore filtering of suggestions', () => {
+  // A near-miss of a SECRET dotfile must never be surfaced — doing so leaks the
+  // existence of credential files (.env, keys) the model/user has no business
+  // learning about. Mirrors Claude Code's suggestion pipeline filtering ignored
+  // files out of results (hooks/fileSuggestions.ts:289-295).
+  it('does NOT suggest a dotfile neighbour for a near-miss hidden path', () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-dot-')));
+    try {
+      fs.writeFileSync(path.join(tmp, '.env'), 'SECRET=1');
+      const got = suggestSimilarPaths(path.join(tmp, '.en'), tmp);
+      assert.ok(
+        !got.some(p => p.endsWith('.env')),
+        `expected .env to be filtered, got ${JSON.stringify(got)}`,
+      );
+      assert.deepEqual(got, []);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // A non-dotfile that is GITIGNORED must also be filtered (e.g. a build-emitted
+  // `secret-config.json` listed in .gitignore). The dotfile rule alone misses
+  // these, so the gitignore matcher is exercised distinctly here.
+  it('does NOT suggest a gitignored (non-dotfile) neighbour', () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-gi-')));
+    try {
+      fs.mkdirSync(path.join(tmp, '.git'), { recursive: true }); // project root marker
+      fs.writeFileSync(path.join(tmp, '.gitignore'), 'secret-config.json\n');
+      fs.writeFileSync(path.join(tmp, 'secret-config.json'), '{}');
+      const got = suggestSimilarPaths(path.join(tmp, 'secret-config.jsom'), tmp);
+      assert.ok(
+        !got.some(p => p.endsWith('secret-config.json')),
+        `expected gitignored file filtered, got ${JSON.stringify(got)}`,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Regression guard: ordinary (tracked, non-hidden) near-miss files are STILL
+  // suggested — the filter must not swallow legitimate "did you mean" hits.
+  it('still suggests ordinary tracked near-miss files', () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-ok-')));
+    try {
+      fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.gitignore'), 'dist/\n');
+      fs.writeFileSync(path.join(tmp, 'index.ts'), '');
+      const got = suggestSimilarPaths(path.join(tmp, 'indx.ts'), tmp);
+      assert.ok(
+        got.some(p => p.endsWith('index.ts')),
+        `expected index.ts suggested, got ${JSON.stringify(got)}`,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('U218 security: suggestPathCorrection withholds dotfile case-variants', () => {
+  it('does NOT return a dotfile as an exact-case correction', () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-pc-')));
+    try {
+      fs.writeFileSync(path.join(tmp, '.env'), 'SECRET=1');
+      const r = suggestPathCorrection(path.join(tmp, '.ENV'), tmp);
+      assert.ok(
+        !r.suggestions.some(p => p.endsWith('.env')),
+        `expected .env withheld, got ${JSON.stringify(r)}`,
+      );
+      assert.notEqual(r.kind, 'exact-case');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('U218 security: workspace-boundary containment for path enumeration', () => {
+  // suggestSimilarPaths must not enumerate a directory OUTSIDE the caller's cwd.
+  // An out-of-tree target would otherwise disclose sibling-filesystem contents.
+  // Mirrors Claude's cwd-scoped suggestion enumeration (hooks/fileSuggestions.ts
+  // :243-316).
+  it('returns [] when the target directory is outside cwd', () => {
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-cwd-')));
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-out-')));
+    try {
+      fs.writeFileSync(path.join(outside, 'index.ts'), '');
+      const got = suggestSimilarPaths(path.join(outside, 'indx.ts'), cwd);
+      assert.deepEqual(got, []);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // In-tree enumeration (dir under cwd, and dir === cwd) still works.
+  it('still enumerates a directory nested under cwd', () => {
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-in-')));
+    try {
+      fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, 'src', 'index.ts'), '');
+      const got = suggestSimilarPaths(path.join(cwd, 'src', 'indx.ts'), cwd);
+      assert.ok(got.some(p => p.endsWith('index.ts')), JSON.stringify(got));
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('U218 same-stem / different-extension suggestion (findSimilarFile parity)', () => {
   let tmp: string;
