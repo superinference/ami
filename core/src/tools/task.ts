@@ -1702,6 +1702,46 @@ export function filterToolsForAgent(
 }
 
 /**
+ * Select a `fork` child's tool pool from the parent engine's EXACT ordered tool
+ * names ({@link ToolContext._parentToolNames}) rather than rebuilding a general
+ * pool. The child keeps the parent's tools in the parent's order (intersected with
+ * the live registry — a tool the parent had but the child's registry lacks is
+ * skipped) so the serialized tool array — and therefore the provider prompt-cache
+ * prefix — stays byte-identical to the parent's. Mirrors Claude Code's
+ * `useExactTools` / `tools:['*']` fork inheritance (forkSubagent.ts:L44-L71), which
+ * deliberately avoids re-deriving the pool under a different permission mode because
+ * that reorders tools / changes a tool-def's serialization and busts the cache at the
+ * first differing tool.
+ *
+ * The one deviation from byte-exact is the nested-spawn depth cap: `task` is dropped
+ * when the child is at/over the nesting limit ({@link shouldAllowNestedTask}), exactly
+ * as {@link filterToolsForAgent} does — an unbounded recursive re-fork is never worth a
+ * cache hit. The universal subagent denylist ({@link ALL_AGENT_DISALLOWED_TOOLS}) is
+ * still applied by the caller afterwards. Returns the ordered pool; a parent name with
+ * no live tool is silently skipped. Exported for testing.
+ */
+export function selectExactForkToolPool(
+  allTools: ToolDefinition[],
+  parentToolNames: readonly string[],
+  agentDepth?: number,
+  maxAgentDepth?: number,
+): ToolDefinition[] {
+  const allowNested = shouldAllowNestedTask(agentDepth ?? 0, maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH);
+  const byName = new Map(allTools.map(t => [t.name, t] as const));
+  const seen = new Set<string>();
+  const pool: ToolDefinition[] = [];
+  for (const name of parentToolNames) {
+    if (seen.has(name)) continue;            // de-dupe a parent list with repeats
+    if (name === 'task' && !allowNested) continue;
+    const tool = byName.get(name);
+    if (!tool) continue;                     // parent had it, child's registry doesn't
+    seen.add(name);
+    pool.push(tool);
+  }
+  return pool;
+}
+
+/**
  * Narrow an already-resolved tool set to the async/background allowlist
  * (`ASYNC_AGENT_ALLOWED_TOOLS`). Applied as the LAST filter on the
  * `run_in_background: true` spawn path so a detached agent — which has no live
@@ -2917,7 +2957,15 @@ export const taskTool: ToolDefinition = {
     } else if (mode === 'coordinator') {
       tools = filterToolsForAgent(allTools.getAll(), 'coordinator', currentDepth, maxDepth);
     } else if (mode === 'fork') {
-      tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
+      // Cache-identical fork prefix: inherit the parent's EXACT ordered tool pool
+      // ({@link selectExactForkToolPool}) when the parent threaded it, so the child's
+      // serialized tool array matches the parent's cached prefix byte-for-byte instead
+      // of a freshly-rebuilt general pool (parity: Claude's useExactTools). Falls back
+      // to the general rebuild when no parent pool was threaded (e.g. a fork spawned
+      // outside a live engine turn).
+      tools = context._parentToolNames && context._parentToolNames.length > 0
+        ? selectExactForkToolPool(allTools.getAll(), context._parentToolNames, currentDepth, maxDepth)
+        : filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
       effectiveMode = 'general';
     } else {
       tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
@@ -3308,7 +3356,18 @@ export const taskTool: ToolDefinition = {
       // When a named agent type is used, its system prompt is the authoritative
       // identity — skip stance-skill resolution (which would inject e.g. the
       // swebench stance workflow into a verification-only agent).
-      systemPrompt: finalSystemPrompt || undefined,
+      //
+      // Cache-identical fork prefix (parity: Claude's forkSubagent renderedSystemPrompt
+      // threading, forkSubagent.ts:L44-L71): a `fork` child with NO custom/named prompt
+      // reuses the parent's ALREADY-RENDERED system prompt VERBATIM instead of leaving
+      // systemPrompt undefined (which makes the child re-derive the stance from scratch —
+      // re-rendering can diverge from the parent and bust the provider prompt cache). The
+      // fork still carries the user-message return/worker directives below (finalSystemPrompt
+      // stays undefined, so that branch is unchanged). Falls back to the re-derived stance
+      // when the parent threaded no prompt (a fork spawned outside a live engine turn).
+      systemPrompt: finalSystemPrompt
+        || (mode === 'fork' ? context._parentSystemPrompt : undefined)
+        || undefined,
       tokenBudget: agentTokenBudget || undefined,
       ...(agentFrontmatterHooks && agentFrontmatterHooks.length > 0
         ? {
@@ -3330,7 +3389,14 @@ export const taskTool: ToolDefinition = {
     // turn and any assistant message with an unanswered tool_use first so the seeded
     // transcript is API-valid (the engine re-validates/heals it on construction).
     // Parity: Claude's buildForkedMessages + filterIncompleteToolCalls.
-    if (mode === 'fork' && context._parentMessages && context._parentMessages.length > 0) {
+    //
+    // RESUME guard (parity: Claude's resumeAgent passing forkContextMessages:undefined,
+    // resumeAgent.ts:L116-L148): on a fork RESUME the sub-engine already reloads the
+    // child's saved transcript from `resumeSessionId`, which ALREADY contains the
+    // originally-seeded parent fork context. Re-seeding it here would replay the parent's
+    // tool_use blocks a second time — duplicate tool_use IDs that corrupt the request —
+    // so the fork context is seeded ONLY on the initial spawn, never on resume.
+    if (mode === 'fork' && !resumeSessionId && context._parentMessages && context._parentMessages.length > 0) {
       const seeded = sanitizeTranscriptForReplay(context._parentMessages);
       if (seeded.length > 0) subConfig.initialMessages = seeded;
     }

@@ -724,6 +724,27 @@ export interface ToolContext {
   _hookManager?: import('./hooks').HookManager;
   _mcpManager?: any;
   _parentMessages?: Message[];
+  /**
+   * Parent engine's ALREADY-RENDERED system prompt (byte-exact), threaded into a
+   * `fork`-mode child so the child reuses the parent's cached prompt prefix VERBATIM
+   * instead of re-deriving the stance from scratch. Re-rendering a fork child's
+   * stance can diverge from the parent (e.g. a cold→warm feature flag, a differently
+   * ordered skill block) and bust the provider prompt cache at the first differing
+   * byte — so a cache-identical fork pays full input-token cost. Parity with Claude
+   * Code's FORK_AGENT threading `toolUseContext.renderedSystemPrompt` instead of
+   * calling `getSystemPrompt()` again (forkSubagent.ts:L44-L71). Only consumed by the
+   * fork branch of the task tool; other modes keep their own authoritative prompt. */
+  _parentSystemPrompt?: string;
+  /**
+   * The ORDERED names of the parent engine's exact tool array, threaded into a
+   * `fork`-mode child so it inherits the parent's EXACT tool pool (same tools, same
+   * order) rather than a freshly-rebuilt general pool. Rebuilding the pool under a
+   * child's permission mode can reorder tools or change a tool-def's serialization,
+   * which busts the prompt cache at the first differing tool. Parity with Claude
+   * Code's `useExactTools` / `tools:['*']` fork inheritance (forkSubagent.ts:L44-L71,
+   * resumeAgent.ts:L183-L190). The fork branch selects from the live tool registry in
+   * this order; the universal subagent denylist/depth gate still applies afterwards. */
+  _parentToolNames?: string[];
   _engineAddSystemReminder?: (msg: string) => void;
   /**
    * Activate (or, with `undefined`, clear) the inline skill named `name`. The
