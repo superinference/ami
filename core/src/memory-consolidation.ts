@@ -20,6 +20,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { MAX_ENTRYPOINT_LINES, MEMORY_INDEX_FILENAME } from './memory';
+import { log } from './logger';
+
+/**
+ * Namespaced, human-readable debug sink for consolidation diagnostics (parity:
+ * Claude Code's `[autoDream]` {@link logForDebugging} lines in
+ * `consolidationLock.ts`). Each call explains WHY a consolidation was skipped or
+ * delayed so an operator can trace scheduling decisions. The default routes to
+ * the shared logger under the `autoDream` component, so every line is emitted as
+ * `[…] [DEBUG] [autoDream] <message>` into the real debug log / `--debug-to-stderr`
+ * stream; tests inject a capturing sink.
+ */
+export type ConsolidationDebug = (message: string) => void;
+
+/** Component name the default sink namespaces consolidation diagnostics under. */
+export const CONSOLIDATION_DEBUG_COMPONENT = 'autoDream';
+
+/** Default debug sink — emits each line through the shared logger, namespaced. */
+const defaultDebug: ConsolidationDebug = (message) => log(CONSOLIDATION_DEBUG_COMPONENT, message);
 
 /** Scheduling knobs for background memory consolidation (parity: Claude's
  *  `AutoDreamConfig` — `minHours` / `minSessions`). */
@@ -99,7 +117,11 @@ function isProcessRunning(pid: number): boolean {
  * dead / unparseable PID is reclaimed. Two reclaimers that both write race on
  * the final PID; the loser detects it on re-read and bails.
  */
-export function tryAcquireConsolidationLock(lockDir: string, now: number = Date.now()): number | null {
+export function tryAcquireConsolidationLock(
+  lockDir: string,
+  now: number = Date.now(),
+  debug: ConsolidationDebug = defaultDebug,
+): number | null {
   const p = consolidationLockPath(lockDir);
   let mtimeMs: number | undefined;
   let holderPid: number | undefined;
@@ -112,7 +134,10 @@ export function tryAcquireConsolidationLock(lockDir: string, now: number = Date.
   }
 
   if (mtimeMs !== undefined && now - mtimeMs < HOLDER_STALE_MS) {
-    if (holderPid !== undefined && isProcessRunning(holderPid)) return null;
+    if (holderPid !== undefined && isProcessRunning(holderPid)) {
+      debug(`lock held by live PID ${holderPid} (mtime ${Math.round((now - mtimeMs) / 1000)}s ago)`);
+      return null;
+    }
     // Dead PID or unparseable body — reclaim.
   }
 
@@ -140,7 +165,11 @@ export function tryAcquireConsolidationLock(lockDir: string, now: number = Date.
  * clearing the PID body so our still-running process doesn't look like a holder.
  * `priorMtime === 0` means "no lock existed" → remove the file.
  */
-export function rollbackConsolidationLock(lockDir: string, priorMtime: number): void {
+export function rollbackConsolidationLock(
+  lockDir: string,
+  priorMtime: number,
+  debug: ConsolidationDebug = defaultDebug,
+): void {
   const p = consolidationLockPath(lockDir);
   try {
     if (priorMtime === 0) {
@@ -150,8 +179,10 @@ export function rollbackConsolidationLock(lockDir: string, priorMtime: number): 
     fs.writeFileSync(p, '');
     const t = priorMtime / 1000; // utimes wants seconds
     fs.utimesSync(p, t, t);
-  } catch {
-    // Best effort — next trigger is merely delayed by up to minHours.
+  } catch (e) {
+    // Best effort — next trigger is merely delayed by up to minHours. Surface
+    // WHY so the delay is traceable rather than silent.
+    debug(`rollback failed: ${(e as Error).message} — next trigger delayed to minHours`);
   }
 }
 
@@ -159,12 +190,16 @@ export function rollbackConsolidationLock(lockDir: string, priorMtime: number): 
  * Stamp "consolidated now" (best effort) — e.g. after a manual consolidation.
  * Writes our PID and bumps mtime, creating the memory dir if needed.
  */
-export function recordConsolidation(lockDir: string): void {
+export function recordConsolidation(
+  lockDir: string,
+  debug: ConsolidationDebug = defaultDebug,
+): void {
   try {
     fs.mkdirSync(lockDir, { recursive: true });
     fs.writeFileSync(consolidationLockPath(lockDir), String(process.pid));
-  } catch {
-    // Best effort.
+  } catch (e) {
+    // Best effort — but surface the failure so a missed stamp is diagnosable.
+    debug(`recordConsolidation write failed: ${(e as Error).message}`);
   }
 }
 
@@ -251,4 +286,92 @@ Update \`${MEMORY_INDEX_FILENAME}\` so it stays under ${MAX_ENTRYPOINT_LINES} li
 ---
 
 Return a brief summary of what you consolidated, updated, or pruned. If nothing changed, say so.${extra ? `\n\n## Additional context\n\n${extra}` : ''}`;
+}
+
+/**
+ * Discriminator for the spawnable background memory-consolidation task type
+ * (parity: Claude Code's `TaskType` 'dream' entry in `tasks.ts` and
+ * `DreamTaskState.type` in `DreamTask.ts`). AMI's `task` tool `mode` enum
+ * (explore/general/fork) covers interactive delegation; `'dream'` is the distinct
+ * NON-interactive, background consolidation run, carried as a typed descriptor
+ * ({@link ConsolidationRunParams}) rather than a user-selectable tool mode.
+ */
+export const CONSOLIDATION_TASK_TYPE = 'dream' as const;
+
+/**
+ * Typed parameters driving one background memory-consolidation ("dream") run —
+ * the core-layer analog of Claude Code's `registerDreamTask` opts /
+ * `DreamTaskState`. Bundles the three run parameters so a
+ * consumer surfacing the run (footer pill, task dialog, `/dream`) carries the
+ * same state Claude does:
+ *
+ * - `sessionsReviewing` — how many prior sessions this pass is consolidating
+ *   (recorded for display / diagnostics; never negative, always an integer).
+ * - `priorMtime` — the pre-acquire lock mtime stashed so an abort/kill can rewind
+ *   the schedule exactly like a failed launch (see {@link rollbackConsolidationLock}).
+ * - `abortController` — cancels the in-flight consolidation subagent.
+ */
+export interface ConsolidationRunParams {
+  /** Task-type discriminator (always {@link CONSOLIDATION_TASK_TYPE}). */
+  type: typeof CONSOLIDATION_TASK_TYPE;
+  /** Count of prior sessions being consolidated in this pass (>= 0, integer). */
+  sessionsReviewing: number;
+  /** Pre-acquire lock mtime, for rewinding the schedule on abort. */
+  priorMtime: number;
+  /** Cancels the in-flight consolidation subagent. */
+  abortController: AbortController;
+}
+
+/**
+ * Type guard for a consolidation ("dream") run descriptor (parity: Claude's
+ * `isDreamTask`). Lets a dispatcher distinguish a background consolidation run
+ * from other spawnable work without a structural check at each call site.
+ */
+export function isDreamTask(task: unknown): task is ConsolidationRunParams {
+  return (
+    typeof task === 'object' &&
+    task !== null &&
+    'type' in task &&
+    (task as { type?: unknown }).type === CONSOLIDATION_TASK_TYPE
+  );
+}
+
+/**
+ * Acquire the consolidation lock and, on success, return a typed
+ * {@link ConsolidationRunParams} describing the run (parity: Claude's
+ * acquire-then-`registerDreamTask`). Returns `null` when the lock is held by a
+ * live, fresh holder (a diagnostic is emitted by {@link tryAcquireConsolidationLock}),
+ * so a caller never double-launches a consolidation. An {@link AbortController}
+ * is created when one is not supplied so the run is always cancellable.
+ */
+export function beginConsolidationRun(opts: {
+  lockDir: string;
+  sessionsReviewing: number;
+  now?: number;
+  abortController?: AbortController;
+  debug?: ConsolidationDebug;
+}): ConsolidationRunParams | null {
+  const priorMtime = tryAcquireConsolidationLock(opts.lockDir, opts.now ?? Date.now(), opts.debug);
+  if (priorMtime === null) return null;
+  return {
+    type: CONSOLIDATION_TASK_TYPE,
+    sessionsReviewing: Math.max(0, Math.trunc(opts.sessionsReviewing)),
+    priorMtime,
+    abortController: opts.abortController ?? new AbortController(),
+  };
+}
+
+/**
+ * Cancel an in-flight consolidation run and rewind the lock to its pre-acquire
+ * state (parity: Claude's dream-task kill, which aborts the agent then rolls the
+ * lock mtime back via the same path as a fork-failure). Idempotent: aborting an
+ * already-aborted controller is a no-op.
+ */
+export function abortConsolidationRun(
+  lockDir: string,
+  run: ConsolidationRunParams,
+  debug: ConsolidationDebug = defaultDebug,
+): void {
+  run.abortController.abort();
+  rollbackConsolidationLock(lockDir, run.priorMtime, debug);
 }
