@@ -1223,6 +1223,37 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /\b(Format-Volume|Clear-Disk)\b/i, description: 'PowerShell disk format / wipe' },
 ];
 
+/** Serializable snapshot of the built-in (default) permission patterns. */
+export interface DefaultPermissionPatterns {
+  /** Bash commands auto-classified SAFE (read-only) — never prompt. */
+  autoAllowBashCommands: string[];
+  /** Unconditionally BLOCKED command patterns (hardline deny — interrupts). */
+  hardlineDenied: Array<{ pattern: string; description: string }>;
+  /** Commands classified DESTRUCTIVE (irreversible) — require confirmation. */
+  destructiveCommands: string[];
+  /** SQL statement patterns classified DESTRUCTIVE. */
+  destructiveSqlPatterns: string[];
+}
+
+/**
+ * Return the built-in (default) permission classifier patterns as a serializable
+ * structure — the auto-allow safe-command list, the unconditional hardline-deny
+ * patterns, and the destructive-command/SQL sets. Surfaced by `/permissions
+ * defaults` (and merged with the live session rules by `/permissions effective`)
+ * so a user can see the floor AMI classifies against before any of their own
+ * rules apply. Parity: Claude Code's `auto-mode defaults` / `getDefaultExternalAutoModeRules`
+ * dump. Pure + side-effect free; the source sets are the SAME canonical ones the
+ * runtime classifier uses (no duplicate table).
+ */
+export function getDefaultPermissionPatterns(): DefaultPermissionPatterns {
+  return {
+    autoAllowBashCommands: [...SAFE_COMMANDS].sort(),
+    hardlineDenied: HARDLINE_PATTERNS.map(h => ({ pattern: h.pattern.source, description: h.description })),
+    destructiveCommands: [...DESTRUCTIVE_COMMANDS].sort(),
+    destructiveSqlPatterns: DESTRUCTIVE_SQL_PATTERNS.map(p => p.source),
+  };
+}
+
 /**
  * Expand two documented evasions of the unconditional hardline guard so the
  * patterns still fire: (a) a catastrophic base built via a bare assignment and
