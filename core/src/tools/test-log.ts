@@ -5,6 +5,7 @@
  */
 
 import { countCharInString } from '../utils/string';
+import { validateBoundedIntEnvVar } from '../config';
 
 // [parity] Expanded runner set so compaction kicks in for the JS/TS, Python,
 // Go, Rust, Elixir, Swift and Dart ecosystems Claude Code recognizes — not just
@@ -19,7 +20,57 @@ const TEST_RUNNER_RE =
 // `AssertionError`/`ValueError`, and `FAIL` already covers `FAILED`.
 const FAIL_TEXT_RE =
   /panic|FAIL|Error|Exception|Traceback|not ok|syntax error|no such file|undefined|✕|✗/i;
-const SUITE_CAP = 12_000;
+// [parity] Compaction thresholds are operator-tunable env knobs (defaults match
+// the former hardcoded magic numbers) so large CI suites — or a debugging run that
+// wants more failing context — can widen them without a rebuild. Each is parsed
+// through the single canonical `validateBoundedIntEnvVar`, so an absent/mistyped/
+// negative value falls back to the default and an over-limit value is capped,
+// mirroring Claude's `getMaxOutputLength`/`validateBoundedIntEnvVar`
+// (utils/shell/outputLimits.ts) rather than flowing through verbatim.
+const SUITE_CAP_DEFAULT = 12_000;
+const SIZE_GATE_DEFAULT = 8_000;
+const BODY_LINES_DEFAULT = 120;
+// Upper bounds: the char caps share Claude's bash output ceiling (150_000); the
+// body-line cap is bounded well above any realistic failing-test list.
+const CHAR_CAP_UPPER_LIMIT = 150_000;
+const BODY_LINES_UPPER_LIMIT = 100_000;
+
+/** Suite-log char cap before a truncation marker is appended (`AMI_TEST_LOG_SUITE_CAP`). */
+function suiteCap(): number {
+  return validateBoundedIntEnvVar('AMI_TEST_LOG_SUITE_CAP', process.env.AMI_TEST_LOG_SUITE_CAP, {
+    default: SUITE_CAP_DEFAULT,
+    min: 1,
+    max: CHAR_CAP_UPPER_LIMIT,
+  }).effective;
+}
+
+/** Char threshold above which a non-suite log is compacted (`AMI_TEST_LOG_SIZE_GATE`). */
+function sizeGate(): number {
+  return validateBoundedIntEnvVar('AMI_TEST_LOG_SIZE_GATE', process.env.AMI_TEST_LOG_SIZE_GATE, {
+    default: SIZE_GATE_DEFAULT,
+    min: 1,
+    max: CHAR_CAP_UPPER_LIMIT,
+  }).effective;
+}
+
+/** Max failing-output lines kept in the compacted body (`AMI_TEST_LOG_BODY_LINES`). */
+function bodyLines(): number {
+  return validateBoundedIntEnvVar('AMI_TEST_LOG_BODY_LINES', process.env.AMI_TEST_LOG_BODY_LINES, {
+    default: BODY_LINES_DEFAULT,
+    min: 1,
+    max: BODY_LINES_UPPER_LIMIT,
+  }).effective;
+}
+
+/**
+ * Count the lines elided when `text` is head-sliced at `cap`, +1 (the partial
+ * final line), without allocating the dropped tail. Shared by every truncation
+ * path so the quantitative marker can never drift between sites. Parity: Claude's
+ * `remainingLines = countCharInString(content, '\n', maxOutputLength) + 1`.
+ */
+function droppedLineCount(text: string, cap: number): number {
+  return countCharInString(text, '\n', cap) + 1;
+}
 
 // [parity] Recognize the human-readable summary lines emitted by pytest
 // (`=== 3 failed, 5 passed, 2 skipped in 1.2s ===`), jest/vitest
@@ -61,15 +112,15 @@ function actionName(line: string): string | null {
 }
 
 function capSuite(text: string): string {
-  if (text.length > SUITE_CAP) {
+  const cap = suiteCap();
+  if (text.length > cap) {
     // Quantify how much failing output was dropped so the model/caller can decide
     // whether to re-read the full log from disk, instead of an opaque marker.
     // Parity: Claude's formatOutput computes
     // `remainingLines = countCharInString(content, '\n', maxOutputLength) + 1`
     // and emits `... [N lines truncated] ...`. countCharInString's `start`
     // argument counts only the elided tail without allocating a slice.
-    const remainingLines = countCharInString(text, '\n', SUITE_CAP) + 1;
-    return text.slice(0, SUITE_CAP) + `\n...[${remainingLines} lines of failing output truncated]`;
+    return text.slice(0, cap) + `\n...[${droppedLineCount(text, cap)} lines of failing output truncated]`;
   }
   return text;
 }
@@ -142,15 +193,25 @@ export function compactTestLog(output: string): string {
     // verbose (non-JSON) go-test summary carries a pass/fail breakdown instead
     // of only a pass tally.
     const failCount = lines.filter((l) => /^--- FAIL:/.test(l)).length;
-    const body = interesting.length > 0 ? interesting.slice(0, 120).join('\n') : '';
+    const body = interesting.length > 0 ? interesting.slice(0, bodyLines()).join('\n') : '';
     return capSuite(
       `Passed ${passCount}, Failed ${failCount}. Showing failing output only.\n${body}`.trimEnd(),
     );
   }
-  if (output.length < 8_000) return output;
+  const gate = sizeGate();
+  if (output.length < gate) return output;
   const interesting = lines.filter((l) => l.startsWith('[') || FAIL_TEXT_RE.test(l));
   const passCount = lines.filter((l) => /--- PASS:/.test(l)).length;
-  if (interesting.length < 3) return output.slice(0, 8_000);
+  if (interesting.length < 3) {
+    // [parity] Too few interesting lines to build a failing-only view, but the log
+    // is over the size gate — head-slice it AND append a quantitative truncation
+    // marker so the model knows content was cut and roughly how much, instead of a
+    // silent hard slice. Claude's formatOutput never returns a silent cut. When the
+    // log is exactly at the gate nothing is actually dropped, so no marker is added.
+    return output.length > gate
+      ? output.slice(0, gate) + `\n...[${droppedLineCount(output, gate)} lines truncated]`
+      : output;
+  }
   // [parity] Prefer an accurate runner-reported summary (pytest/jest/vitest/
   // mocha/cargo) when one is present; fall back to the `--- PASS:` tally for
   // raw go-test output that has no summary line.
@@ -158,7 +219,7 @@ export function compactTestLog(output: string): string {
   const header = summary
     ? `Tests: ${summary.passed} passed, ${summary.failed} failed${summary.skipped ? `, ${summary.skipped} skipped` : ''}. Showing failing output only.`
     : `Passed ${passCount}. Showing failing output only.`;
-  return capSuite(`${header}\n` + interesting.slice(0, 120).join('\n'));
+  return capSuite(`${header}\n` + interesting.slice(0, bodyLines()).join('\n'));
 }
 
 /** Text that may be stored for the next prompt. A suite log never is. */
