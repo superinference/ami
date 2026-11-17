@@ -3,7 +3,6 @@ import { projectStateDir } from './reference-journal';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { parseEnvBool } from './utils/env';
-import { isPidAlive } from './utils/file-lock';
 
 export interface CronJob {
   id: string;
@@ -139,11 +138,16 @@ export function validateJitterConfig(cfg: CronJitterConfig): void {
 
 /** True if a process with the given pid is currently alive. Used as the primary
  *  staleness signal for the scheduler lock (take over a dead owner immediately,
- *  never steal a live owner's lease). Delegates to the ONE canonical PID-liveness
- *  probe in `utils/file-lock` (ESRCH→dead, EPERM→alive, `pid <= 1` sentinel guard)
- *  rather than hand-rolling a second copy (dedup rule). */
+ *  never steal a live owner's lease). */
 export function isProcessRunning(pid: number): boolean {
-  return isPidAlive(pid);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0); // signal 0 = liveness probe, no signal sent
+    return true;
+  } catch (err: unknown) {
+    // EPERM means the process exists but we can't signal it → still alive.
+    return !!(err && typeof err === 'object' && 'code' in err && (err as { code?: string }).code === 'EPERM');
+  }
 }
 
 /** A scheduler lock-file record, written by the owning session each tick. */
