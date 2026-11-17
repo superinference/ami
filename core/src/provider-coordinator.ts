@@ -1,5 +1,5 @@
 import type { ProviderConfig, ProviderSubsystem } from './types';
-import { inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv } from './provider';
+import { inferProviderFromApiKey, inferProviderFromBaseUrl, inferProviderFromEnv, isFirstPartyBaseUrl } from './provider';
 import { RateLimitTracker } from './rate-limiter';
 import type { RateLimitStatus } from './rate-limiter';
 import { CredentialPool } from './credential-pool';
@@ -145,17 +145,11 @@ export class ProviderCoordinator {
   /** Host-based (parsed) classification of an Anthropic first-party endpoint.
    *  A raw `baseUrl.includes('anthropic.com')` is host-spoofable — it matches
    *  `anthropic.com.evil.example`, `not-anthropic.com`, and
-   *  `evil.example/?x=anthropic.com` alike. Parse the URL and inspect the real
-   *  hostname so only `anthropic.com` and its genuine subdomains qualify. */
+   *  `evil.example/?x=anthropic.com` alike. Delegates to the shared
+   *  {@link isFirstPartyBaseUrl} host-boundary matcher so only `anthropic.com`
+   *  and its genuine subdomains qualify (single canonical implementation). */
   private isAnthropicBaseUrl(baseUrl: string | undefined): boolean {
-    if (!baseUrl) return false;
-    let host: string;
-    try {
-      host = new URL(baseUrl).hostname.toLowerCase();
-    } catch {
-      return false;
-    }
-    return host === 'anthropic.com' || host.endsWith('.anthropic.com');
+    return isFirstPartyBaseUrl(baseUrl, ['anthropic.com']);
   }
 
   hasFallback(): boolean {

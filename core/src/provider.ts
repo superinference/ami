@@ -442,6 +442,39 @@ export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK
 
 const modelListCache = new Map<string, Promise<Record<string, unknown>[]>>();
 
+/**
+ * Host-boundary classification of a first-party API base URL. Parses `baseUrl`
+ * with `new URL()` inside a try/catch (returning `false` on a malformed URL — the
+ * safe/conservative default) and matches its real `hostname` (case-insensitive)
+ * against `domains`: a domain matches when the host equals it OR is a genuine
+ * subdomain of it (`host === d || host.endsWith('.' + d)`).
+ *
+ * This replaces host-spoofable `baseUrl.includes('anthropic.com')` substring
+ * tests, which falsely matched lookalikes like `api.anthropic.com.evil.example`,
+ * `not-anthropic.com`, and `https://evil.example/?x=anthropic.com` — so AMI would
+ * attach official credentials/headers (x-api-key, anthropic-version) and route to
+ * the first-party SDK path for an attacker-controlled host. Mirrors Claude Code's
+ * `isFirstPartyAnthropicBaseUrl()` (utils/model/providers.ts) parse-then-exact-host
+ * pattern, generalized over an allowlist and permitting genuine subdomains (AMI's
+ * established convention — see ProviderCoordinator).
+ */
+export function isFirstPartyBaseUrl(
+  baseUrl: string | undefined,
+  domains: readonly string[],
+): boolean {
+  if (!baseUrl) return false;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return domains.some(d => {
+    const dl = d.toLowerCase();
+    return host === dl || host.endsWith(`.${dl}`);
+  });
+}
+
 function modelsEndpoint(config: ProviderConfig): { url: string; headers: Record<string, string> } | null {
   const provider = config.provider ?? '';
   const baseUrl = (config.baseUrl || '').replace(/\/+$/, '');
@@ -451,7 +484,7 @@ function modelsEndpoint(config: ProviderConfig): { url: string; headers: Record<
   const officialGoogle = (provider === 'google' || provider === 'google-vertex')
     && (!baseUrl || baseUrl.includes('googleapis.com'));
 
-  if (officialAnthropic || baseUrl.includes('anthropic.com')) {
+  if (officialAnthropic || isFirstPartyBaseUrl(baseUrl, ['anthropic.com'])) {
     const root = baseUrl.includes('anthropic.com') ? baseUrl : 'https://api.anthropic.com';
     const url = /\/v1$/.test(root) ? `${root}/models` : `${root}/v1/models`;
     return {
@@ -459,7 +492,7 @@ function modelsEndpoint(config: ProviderConfig): { url: string; headers: Record<
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     };
   }
-  if (officialGoogle || baseUrl.includes('generativelanguage.googleapis.com')) {
+  if (officialGoogle || isFirstPartyBaseUrl(baseUrl, ['generativelanguage.googleapis.com'])) {
     const root = baseUrl.includes('generativelanguage.googleapis.com')
       ? baseUrl
       : 'https://generativelanguage.googleapis.com/v1beta';
@@ -597,7 +630,53 @@ const NATIVE_PROVIDERS = new Set<ProviderName>([
 ]);
 
 function isVertexAIConfigured(): boolean {
-  return !!(process.env.CLAUDE_CODE_USE_VERTEX === '1' || process.env.ANTHROPIC_VERTEX_PROJECT_ID);
+  return !!(isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) || process.env.ANTHROPIC_VERTEX_PROJECT_ID);
+}
+
+/**
+ * Env var carrying a Bedrock API key (bearer token). When set, Bedrock auth uses
+ * this bearer token instead of SigV4/long-term AWS access keys. Mirrors Claude
+ * Code's `AWS_BEARER_TOKEN_BEDROCK` branch (utils/model/bedrock.ts): its presence
+ * skips credential refresh and selects API-key auth.
+ */
+export const AWS_BEARER_TOKEN_BEDROCK_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
+
+/**
+ * AWS region-resolution waterfall: `AWS_REGION` → `AWS_DEFAULT_REGION` →
+ * `'us-east-1'`. Mirrors Claude Code's `getAWSRegion()` (utils/envUtils.ts) and
+ * the Anthropic Bedrock SDK's region behavior, so a Bedrock user relying on the
+ * standard `AWS_DEFAULT_REGION` env (and the `us-east-1` default) resolves to the
+ * right region instead of getting no region at all.
+ */
+export function getAWSRegion(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1';
+}
+
+/**
+ * Resolve the gateway endpoint + auth for the amazon-bedrock OpenAI-compatible
+ * path. Two ADDITIVE affordances over routing a raw `apiKey`/`baseUrl`:
+ *
+ *  1. **Bearer-token auth** — when {@link AWS_BEARER_TOKEN_BEDROCK_ENV} is set it
+ *     takes precedence over `config.apiKey`, enabling the increasingly common
+ *     Bedrock API-key auth mode without AWS access keys.
+ *  2. **Region-derived default endpoint** — when the user gives no explicit
+ *     `baseUrl`, construct Bedrock's OpenAI-compatible endpoint for the resolved
+ *     region ({@link getAWSRegion}) instead of an empty base URL, so IAM-role /
+ *     `AWS_DEFAULT_REGION` setups reach the correct regional endpoint.
+ *
+ * An explicit `config.baseUrl` (trailing slashes trimmed) always wins over the
+ * derived default so a user's custom gateway is never overridden.
+ */
+export function resolveBedrockGateway(
+  config: Pick<ProviderConfig, 'apiKey' | 'baseUrl'>,
+  env: NodeJS.ProcessEnv = process.env,
+): { apiKey: string; baseURL: string } {
+  const bearer = (env[AWS_BEARER_TOKEN_BEDROCK_ENV] ?? '').trim();
+  const apiKey = bearer || config.apiKey || '';
+  const explicit = (config.baseUrl || '').replace(/\/+$/, '');
+  const baseURL = explicit
+    || `https://bedrock-runtime.${getAWSRegion(env)}.amazonaws.com/openai/v1`;
+  return { apiKey, baseURL };
 }
 
 // Providers that always route through OpenAI-compatible endpoint
@@ -1796,7 +1875,7 @@ export function resolveModel(config: ProviderConfig) {
     const vertexBase = hasVertexBetas
       ? withAnthropicBetaHeader(headerFetch ?? proxyFetch, vertexBetas)
       : (headerFetch ?? proxyFetch);
-    const vertexCacheFetch = process.env.AMI_VERTEX_PROMPT_CACHE === '1'
+    const vertexCacheFetch = isEnvTruthy(process.env.AMI_VERTEX_PROMPT_CACHE)
       ? withVertexAnthropicCache(vertexBase, config.cacheTtl)
       : (hasVertexBetas ? vertexBase : (headerFetch ?? (proxyActive ? proxyFetch : undefined)));
     return createVertexAnthropic({
@@ -1807,7 +1886,7 @@ export function resolveModel(config: ProviderConfig) {
   }
 
   // Native Anthropic SDK
-  if (provider === 'anthropic' || model.startsWith('claude') || baseUrl.includes('anthropic.com')) {
+  if (provider === 'anthropic' || model.startsWith('claude') || isFirstPartyBaseUrl(baseUrl, ['anthropic.com'])) {
     // Beta tokens for the native path, from the single canonical source: extended-cache
     // (1h TTL) + 1M-context + interleaved-thinking / token-efficient-tools (experimental,
     // kill-switchable) + any ANTHROPIC_BETAS. All ride one comma-separated header; deduped.
@@ -1822,7 +1901,8 @@ export function resolveModel(config: ProviderConfig) {
 
   // Native Google Generative AI SDK
   if (provider === 'google' || provider === 'google-vertex' || model.startsWith('gemini') ||
-      baseUrl.includes('generativelanguage.googleapis.com') || baseUrl.includes('aiplatform.googleapis.com')) {
+      isFirstPartyBaseUrl(baseUrl, ['generativelanguage.googleapis.com']) ||
+      baseUrl.includes('aiplatform.googleapis.com')) {
     return createGoogleGenerativeAI({ apiKey, baseURL: baseUrl || undefined })(model);
   }
 
@@ -1841,7 +1921,10 @@ export function resolveModel(config: ProviderConfig) {
     // Claude Code's BEDROCK_EXTRA_PARAMS_HEADERS set. No-op for non-Claude models.
     const bedrockBetaBody = computeBedrockBetaExtraBody(bedrockModel);
     const bedrockFetch = withExtraBody(bedrockBetaBody, fetch) ?? fetch;
-    return createOpenAI({ apiKey, baseURL: baseUrl, fetch: bedrockFetch })(bedrockModel);
+    // Prefer an AWS_BEARER_TOKEN_BEDROCK API key when present and derive the
+    // region-scoped OpenAI-compatible endpoint when no explicit gateway is set.
+    const gateway = resolveBedrockGateway(config);
+    return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL, fetch: bedrockFetch })(bedrockModel);
   }
 
   // Native Vercel AI SDK providers — each has its own adapter with correct
@@ -2437,7 +2520,7 @@ export async function* streamChatCompletion(
   // <system-reminder> blocks so they don't bust the prompt cache. (hoistSystemPrompt)
   const { system: systemPrompt, rest: nonSystemMessages } = hoistSystemPrompt(messages);
   const isAnthropic = modelId.startsWith('claude') ||
-    config.baseUrl?.includes('anthropic.com') ||
+    isFirstPartyBaseUrl(config.baseUrl, ['anthropic.com']) ||
     config.provider === 'anthropic' ||
     config.provider === 'anthropic-vertex';
   // On vertex, cache_control is injected into the RAW request body by
