@@ -18,6 +18,13 @@ import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
 import { scanForSecrets } from './tools/tool-utils';
 import { resolveConfiguredMemoryExcludes } from './config';
+import { sequential } from './utils/sequential';
+import {
+  isMemoryFileAccess,
+  classifyToolSessionFileType,
+  type SessionFileType,
+  type MemoryDirs,
+} from './memory-file-detection';
 
 /**
  * Home-abbreviated path for log/diagnostic lines. Memory diagnostics name the
@@ -1734,6 +1741,16 @@ export class MemoryManager {
    *  when {@link additionalInstructionDirsEnabled}. Empty when none supplied. */
   private _additionalInstructionDirs: string[];
 
+  /** In-process serializer for MEMORY.md index mutations. The index is updated
+   *  by a read-then-write cycle ({@link addToMemoryIndex} /
+   *  {@link removeFromMemoryIndex}); two concurrent mutations could each observe
+   *  the pre-write content and the second clobber the first's change. Routing
+   *  both through ONE {@link sequential} wrapper runs them strictly one-at-a-time
+   *  in FIFO order, each resolving with its own result. */
+  private readonly _serializeIndexMutation = sequential(
+    async (task: () => Promise<void>): Promise<void> => { await task(); },
+  );
+
   constructor(cwd: string, opts?: { additionalInstructionDirs?: readonly string[] }) {
     this.cwd = cwd;
     // Absolutize + de-duplicate once; a relative entry is resolved against cwd so
@@ -3449,23 +3466,28 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * `- [topic](filename.md) — description`.
    */
   async addToMemoryIndex(cwd: string, entry: string): Promise<void> {
-    const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
-    try {
-      await fsp.mkdir(path.dirname(indexPath), { recursive: true, mode: MEMORY_DIR_MODE });
-      try { await fsp.chmod(path.dirname(indexPath), MEMORY_DIR_MODE); } catch { /* best effort */ }
-      // Atomically create the index if absent WITHOUT clobbering existing content
-      // (EEXIST-safe `wx` write via {@link createFileIfAbsent}) — closes the
-      // read-then-write race where two concurrent appends both observe the file
-      // missing and the second overwrites the first's entry.
-      createFileIfAbsent(indexPath);
-      let content = '';
-      try { content = await fsp.readFile(indexPath, 'utf-8'); } catch { /* file doesn't exist */ }
-      const next = computeIndexAppend(content, entry);
-      if (next !== null) {
-        await fsp.writeFile(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-        try { await fsp.chmod(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
-      }
-    } catch { /* best effort */ }
+    // Serialize against every other index mutation on this manager so two
+    // concurrent read-then-write cycles cannot interleave (the second would
+    // otherwise clobber the first's entry). See {@link _serializeIndexMutation}.
+    return this._serializeIndexMutation(async () => {
+      const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
+      try {
+        await fsp.mkdir(path.dirname(indexPath), { recursive: true, mode: MEMORY_DIR_MODE });
+        try { await fsp.chmod(path.dirname(indexPath), MEMORY_DIR_MODE); } catch { /* best effort */ }
+        // Atomically create the index if absent WITHOUT clobbering existing content
+        // (EEXIST-safe `wx` write via {@link createFileIfAbsent}) — closes the
+        // read-then-write race where two concurrent appends both observe the file
+        // missing and the second overwrites the first's entry.
+        createFileIfAbsent(indexPath);
+        let content = '';
+        try { content = await fsp.readFile(indexPath, 'utf-8'); } catch { /* file doesn't exist */ }
+        const next = computeIndexAppend(content, entry);
+        if (next !== null) {
+          await fsp.writeFile(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+          try { await fsp.chmod(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+        }
+      } catch { /* best effort */ }
+    });
   }
 
   /**
@@ -3473,12 +3495,48 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Matches by substring — if any line contains the given text, it is removed.
    */
   async removeFromMemoryIndex(cwd: string, entrySubstring: string): Promise<void> {
-    const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
-    try {
-      const content = await fsp.readFile(indexPath, 'utf-8');
-      const lines = content.split('\n').filter(l => !l.includes(entrySubstring));
-      await fsp.writeFile(indexPath, lines.join('\n'), 'utf-8');
-    } catch { /* best effort */ }
+    // Share the serializer with {@link addToMemoryIndex} so an append and a
+    // removal that race do not read-then-write over each other.
+    return this._serializeIndexMutation(async () => {
+      const indexPath = path.join(projectStateDir(cwd, 'memory'), 'MEMORY.md');
+      try {
+        const content = await fsp.readFile(indexPath, 'utf-8');
+        const lines = content.split('\n').filter(l => !l.includes(entrySubstring));
+        await fsp.writeFile(indexPath, lines.join('\n'), 'utf-8');
+      } catch { /* best effort */ }
+    });
+  }
+
+  // ── Memory / transcript file-access classification ─────────────────────
+
+  /** The directories that define what counts as memory/transcript for this
+   *  workspace, for {@link detectMemoryFileAccess} / {@link classifyToolSessionFile}. */
+  private _memoryDetectDirs(): MemoryDirs {
+    return {
+      memoryDir: this.getMemoryDir(),
+      // Session transcripts live in the project's sessions store, keyed on the
+      // canonical git root (same keying as {@link getMemoryDir}).
+      transcriptDir: projectStateDir(canonicalGitRoot(this.cwd), 'sessions'),
+    };
+  }
+
+  /**
+   * Reusable predicate (parity: Claude Code `isMemoryFileAccess`): given a tool
+   * name and its raw input, report whether the call touches a memory or session
+   * file for THIS workspace. Lets a consumer re-label generic
+   * `file_read`/`grep`/`glob`/`file_edit` activity as a memory operation.
+   */
+  detectMemoryFileAccess(toolName: string, toolInput: unknown): boolean {
+    return isMemoryFileAccess(toolName, toolInput, this._memoryDetectDirs());
+  }
+
+  /**
+   * Classify a tool call to its session-file type (`'session_memory'` |
+   * `'session_transcript'` | `null`) for THIS workspace. Parity with Claude
+   * Code's `getSessionFileTypeFromInput`.
+   */
+  classifyToolSessionFile(toolName: string, toolInput: unknown): SessionFileType | null {
+    return classifyToolSessionFileType(toolName, toolInput, this._memoryDetectDirs());
   }
 
   // ── Instruction source collection ─────────────────────────────────────
