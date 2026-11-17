@@ -998,11 +998,19 @@ const BASH_DESCRIPTION_BASE =
   + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
   + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
   + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
+  // [functional parity] Working-directory stability guidance (Claude prompt.ts:L334):
+  // keep the cwd stable across the session — prefer absolute paths and avoid `cd`,
+  // using it only when the user explicitly asks.
+  + 'Keep your working directory stable: prefer absolute paths and avoid `cd` — only `cd` when the user explicitly asks you to. '
   // [functional parity] Multiple-command guidance (Claude prompt.ts:L297-L302):
   // separate commands with `&&`/`;`, never newlines (newlines are fine only
-  // inside quoted strings).
+  // inside quoted strings); run INDEPENDENT commands as parallel tool calls
+  // rather than chaining them.
   + 'When issuing multiple commands, separate them with `&&` (stop on failure) or `;` (run regardless); do NOT use newlines '
   + 'to separate commands (newlines are OK inside quoted strings). '
+  + 'If several commands are independent, prefer issuing them as parallel bash tool calls in a single message (e.g. run '
+  + '`git status` and `git diff` as two parallel calls) instead of chaining with `&&`; chain only commands that genuinely '
+  + 'depend on each other. '
   + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
   + 'an editor or prompts for a password); they will hang. ';
 
@@ -1014,13 +1022,32 @@ const BASH_DESCRIPTION_GIT =
   + 'commit unless explicitly asked. ';
 
 // Closing sleep guidance, always present (it is not git- or background-specific).
-const BASH_DESCRIPTION_TAIL = 'Do not sleep between commands.';
+// [functional parity] Anti-retry-loop / anti-poll guidance (Claude prompt.ts:L310-L328):
+// never retry a failing command inside a sleep loop — diagnose the root cause
+// instead of polling. (The companion "you'll be notified, don't poll a background
+// task" line lives in BASH_DESCRIPTION_BACKGROUND so it is dropped with the
+// run_in_background capability when background tasks are disabled.)
+const BASH_DESCRIPTION_TAIL =
+  'Do not sleep between commands. Do not retry a failing command in a sleep loop — diagnose the root cause instead of polling.';
 
 // Background-task guidance, suppressed when background tasks are disabled so the
 // model is never told about a capability that is turned off for this deployment.
 const BASH_DESCRIPTION_BACKGROUND =
   ' For intentionally long tasks pass run_in_background: true; a command that overruns its timeout is automatically moved to '
-  + 'the background so the session stays responsive.';
+  + 'the background so the session stays responsive. You will be notified when a background command finishes — do not poll it.';
+
+/**
+ * [functional parity] Output-truncation threshold surfaced to the model (Claude
+ * PowerShellTool/prompt.ts:L121-L125 "If the output exceeds N characters, output
+ * will be truncated"). AMI truncates bash output head+tail at the effective cap
+ * ({@link resolveBashMaxOutput}, honoring BASH_MAX_OUTPUT_LENGTH), but never told
+ * the model, so it could not plan around the limit. Computed at advertise-time so
+ * the sentence always reflects the live knob.
+ */
+function describeOutputTruncation(): string {
+  return ` Output longer than ${resolveBashMaxOutput()} characters (BASH_MAX_OUTPUT_LENGTH) is truncated (head + tail) `
+    + 'before being returned to you; redirect very large output to a file and inspect it with file_read.';
+}
 
 /**
  * Model-facing bash description. When background tasks are disabled the
@@ -1031,7 +1058,9 @@ const BASH_DESCRIPTION_BACKGROUND =
  */
 export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = false): string {
   const head = BASH_DESCRIPTION_BASE + (gitDisabled ? '' : BASH_DESCRIPTION_GIT) + BASH_DESCRIPTION_TAIL;
-  return backgroundDisabled ? head : head + BASH_DESCRIPTION_BACKGROUND;
+  const withBg = backgroundDisabled ? head : head + BASH_DESCRIPTION_BACKGROUND;
+  // Always surface the output-truncation threshold so the model can plan around it.
+  return withBg + describeOutputTruncation();
 }
 
 /**
@@ -1074,7 +1103,12 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
           'When a command fails with evidence of a sandbox restriction — "Operation not permitted", access denied to paths ' +
           'outside the project, or a network/unix-socket connection error — retry that SAME command with ' +
           'dangerouslyDisableSandbox: true. Scope the override to the individual command that needs it; do not disable the ' +
-          'sandbox pre-emptively.',
+          'sandbox pre-emptively. ' +
+          // [functional parity] dangerouslyDisableSandbox guardrails (Claude
+          // prompt.ts:L228-L257): prefer the sandbox-writable $TMPDIR for temp
+          // files, and never weaken the sandbox to reach credential paths.
+          'Prefer $TMPDIR (sandbox-writable) over /tmp for temporary files, and never weaken the sandbox to reach ' +
+          'credential paths such as ~/.bashrc, ~/.zshrc, ~/.ssh/*, or other secret files.',
       },
     },
     required: ['command'],
