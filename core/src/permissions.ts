@@ -1707,13 +1707,13 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]/, warning: 'Note: may recursively remove files' },
   { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f/, warning: 'Note: may force-remove files' },
   { pattern: /(^|[;&|\n]\s*)rmdir\b/, warning: 'Note: may remove directories' },
-  // PowerShell deletions (AMI runs PowerShell on Windows). classifyBashCommand
-  // already escalates `Remove-Item -Recurse/-Force` and `Clear-Content` to a
-  // destructive prompt; these carry the SPECIFIC note so the prompt says WHY
-  // instead of the generic "is destructive" line. Parity with Claude's PowerShell
-  // destructiveCommandWarning cmdlet notes (Remove-Item / Clear-Content).
-  { pattern: /\bRemove-Item\b[^;&|\n]*\s-(?:Recurse|Force)\b/i, warning: 'Note: may recursively force-remove files' },
-  { pattern: /\bClear-Content\b/i, warning: 'Note: may erase the contents of the target files' },
+  // PowerShell deletions: the SPECIFIC, flag-differentiated notes live in the
+  // dedicated PowerShell-cmdlet block below (most-specific-first). Earlier this
+  // block carried COARSE duplicates (`Remove-Item -(Recurse|Force)` collapsed to
+  // one "recursively force-remove" note; a bare `Clear-Content` matched here and
+  // shadowed the glob-specific note) — they preceded the fine-grained set and so
+  // won the first-match, defeating the very differentiation that set exists for.
+  // Removed; the fine-grained block is the single source for PowerShell notes.
   // Secure-deletion / truncation. `shred` is DETERMINISTIC (it always overwrites
   // then removes), so its note uses "will"; `truncate` is conditional ("may",
   // e.g. only shrinks when `-s` reduces the size) — mirrors Claude's will/may
@@ -1741,6 +1741,10 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Recurse\b/i, warning: 'Note: may recursively remove files' },
   { pattern: /(?:^|[|;&\n({])\s*(?:Remove-Item|ri|rd|rmdir|del|erase)\b[^|;&\n}]*-Force\b/i, warning: 'Note: may force-remove files' },
   { pattern: /\bClear-Content\b[^|;&\n]*\*/i, warning: 'Note: may clear content of multiple files' },
+  // General Clear-Content (single target or no wildcard): still real data loss —
+  // it erases the file's contents in place — so it always carries a note; the
+  // glob-specific "multiple files" note above wins first when a wildcard is present.
+  { pattern: /\bClear-Content\b/i, warning: 'Note: may erase the contents of the target files' },
   { pattern: /\bFormat-Volume\b/i, warning: 'Note: may format a disk volume' },
   { pattern: /\bClear-Disk\b/i, warning: 'Note: may clear a disk' },
   { pattern: /\bClear-RecycleBin\b/i, warning: 'Note: permanently deletes recycled files' },
@@ -4257,14 +4261,44 @@ function stripSingleQuotedSpans(s: string): string {
  *  — AMI already decomposes substitutions in the deny/ask matcher (and elevates
  *  a destructive inner to a prompt), so folding them in would both regress the
  *  "benign `$(date)` stays allowed" behavior and duplicate that path. */
-function argTokenLeaksValue(token: string): boolean {
+function argTokenLeaksValue(token: string, vetted?: ReadonlySet<string>): boolean {
   // Named variable expansion: `$NAME`, `${NAME}`, or PowerShell-style `$env:NAME`.
   const re = /\$\{?(?:env:)?([A-Za-z_][A-Za-z0-9_]*)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(token)) !== null) {
-    if (!SAFE_ENV_VARS.has(m[1]!)) return true;
+    const name = m[1]!;
+    // A vetted SAFE_ENV_VARS name OR a loop variable bound to a non-leaking
+    // word-list (see {@link collectSafeLoopVars}) is not a value leak.
+    if (!SAFE_ENV_VARS.has(name) && !(vetted && vetted.has(name))) return true;
   }
   return false;
+}
+
+/**
+ * Variable names bound by a `for NAME in LIST` whose word-LIST introduces no
+ * unvetted value expansion (a glob/literal list such as `*.ts` or `a b c`). Such
+ * a loop variable's runtime values come from that already-vetted list — NOT from
+ * an unvetted env/secret — so expanding it in a loop-body argument is not a value
+ * leak and must not withhold allow-rule auto-approval (the for-loop-with-glob
+ * perk: `for f in *.ts; do cat "$f"; done` stays auto-safe, matching the
+ * {@link containsShellSubstitution} tolerance of a quoted loop-body `"$f"`).
+ *
+ * SECURITY: a list that itself leaks (`for f in $SECRET; do echo "$f"; done`)
+ * does NOT vet its variable — `$f` would then iterate the secret's words — so the
+ * body's `"$f"` still forces an explicit prompt. Bindings are collected in source
+ * order so a later loop's list can safely reference an earlier vetted loop var.
+ */
+function collectSafeLoopVars(command: string): Set<string> {
+  const vetted = new Set<string>();
+  // `for NAME in LIST` — LIST runs to the next `;`/newline (where `do` follows).
+  const forRe = /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^\n;]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = forRe.exec(command)) !== null) {
+    const name = m[1]!;
+    const listTokens = stripSingleQuotedSpans(m[2]!).trim().split(/\s+/).filter(Boolean);
+    if (!listTokens.some(t => argTokenLeaksValue(t, vetted))) vetted.add(name);
+  }
+  return vetted;
 }
 
 /**
@@ -4286,12 +4320,13 @@ function argTokenLeaksValue(token: string): boolean {
  */
 export function bashCommandArgLeaksValue(command: string): boolean {
   const normalized = normalizeLineContinuations(command);
+  const vettedLoopVars = collectSafeLoopVars(normalized);
   for (const sub of splitCompoundCommand(normalized)) {
     const stripped = stripSingleQuotedSpans(sub).trim();
     if (!stripped) continue;
     const tokens = stripped.split(/\s+/);
     for (let i = 1; i < tokens.length; i++) {
-      if (argTokenLeaksValue(tokens[i]!)) return true;
+      if (argTokenLeaksValue(tokens[i]!, vettedLoopVars)) return true;
     }
   }
   return false;

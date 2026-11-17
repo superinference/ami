@@ -168,6 +168,8 @@ describe('subagent activity relay — omit structured_output from the preview', 
       'node-1', 1,
     );
     assert.ok(relayed && relayed.type === 'subagent_progress');
-    assert.match((relayed as { detail: string }).detail, /file_read/);
+    // U237: the relay preview now shows a human-readable verb+target ("Reading src/x.ts")
+    // rather than the raw tool name; the concrete target proves a real tool call relayed.
+    assert.match((relayed as { detail: string }).detail, /src\/x\.ts/);
   });
 });

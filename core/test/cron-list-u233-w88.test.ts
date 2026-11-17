@@ -67,8 +67,10 @@ describe('cron_list U233 parity', () => {
     const job = sched.create({ cron: '*/5 * * * *', prompt: 'ping', recurring: true });
     job.lastRun = Date.now();
     const out = (await cronListTool.execute!({}, ctx())).output;
-    assert.match(out, new RegExp(`Next: .+ \\(${tz.replace(/[/.]/g, '\\$&')}\\)`));
-    assert.match(out, new RegExp(`Last: .+ \\(${tz.replace(/[/.]/g, '\\$&')}\\)`));
+    // Fire-time lines carry the host timezone as "(local, <tz>)" (consolidated with
+    // the U090 schedule labelling so Next/Last read identically); not a bare "(local)".
+    assert.match(out, new RegExp(`Next: .+ \\(local, ${tz.replace(/[/.]/g, '\\$&')}\\)`));
+    assert.match(out, new RegExp(`Last: .+ \\(local, ${tz.replace(/[/.]/g, '\\$&')}\\)`));
     assert.doesNotMatch(out, /\(local\)/);
   });
 });

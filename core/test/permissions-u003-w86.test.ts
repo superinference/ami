@@ -68,9 +68,11 @@ test('getDestructiveCommandWarning: Remove-Item -Recurse -Force carries a specif
     getDestructiveCommandWarning('Remove-Item -Recurse -Force C:\\tmp\\build'),
     'Note: may recursively force-remove files',
   );
+  // `-Force` without `-Recurse` force-removes but does NOT recurse into dirs, so
+  // it gets the narrower flag-differentiated note (not the recurse+force note).
   assert.equal(
     getDestructiveCommandWarning('Remove-Item -Force foo'),
-    'Note: may recursively force-remove files',
+    'Note: may force-remove files',
   );
 });
 

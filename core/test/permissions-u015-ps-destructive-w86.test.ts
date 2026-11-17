@@ -54,12 +54,17 @@ test('warning is anchored to a statement start inside a block', () => {
   );
 });
 
-test('Clear-Content on a glob warns; a single file does not', () => {
+test('Clear-Content on a glob gets the multi-file note; a single file gets the general note', () => {
   assert.equal(
     getDestructiveCommandWarning('Clear-Content ./logs/*.log'),
     'Note: may clear content of multiple files',
   );
-  assert.equal(getDestructiveCommandWarning('Clear-Content ./one.txt'), null);
+  // A single-target Clear-Content still erases that file's contents in place —
+  // real data loss — so it carries the general content-erasure note.
+  assert.equal(
+    getDestructiveCommandWarning('Clear-Content ./one.txt'),
+    'Note: may erase the contents of the target files',
+  );
 });
 
 test('disk-level cmdlets warn', () => {

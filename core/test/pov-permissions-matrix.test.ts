@@ -53,14 +53,14 @@ test('classifyBashCommand: safe read-only commands', () => {
 
 test('classifyBashCommand: unsafe mutating commands', () => {
   const pm = new PermissionManager();
-  for (const cmd of ['git push', 'git commit -m x', 'npm install', 'mv a b', 'cp a b', 'mkdir d', 'touch f', 'curl http://x', 'sed -i s/a/b/ f', 'docker run x', 'make clean', 'unknowncmd', 'cat ~/.ssh/id_rsa']) {
+  for (const cmd of ['git push', 'git commit -m x', 'git clean', 'npm install', 'mv a b', 'cp a b', 'mkdir d', 'touch f', 'curl http://x', 'sed -i s/a/b/ f', 'docker run x', 'make clean', 'unknowncmd', 'cat ~/.ssh/id_rsa']) {
     assert.equal(pm.classifyBashCommand(cmd), 'unsafe', `${JSON.stringify(cmd)} should be unsafe`);
   }
 });
 
 test('classifyBashCommand: destructive commands', () => {
   const pm = new PermissionManager();
-  for (const cmd of ['rm foo', 'rm -rf dir', 'kill 1', 'git reset --hard', 'git clean', 'dd if=/dev/zero of=f', 'find . -delete', 'DROP TABLE users', 'DELETE FROM t', 'rmdir d']) {
+  for (const cmd of ['rm foo', 'rm -rf dir', 'kill 1', 'git reset --hard', 'git clean -fd', 'dd if=/dev/zero of=f', 'find . -delete', 'DROP TABLE users', 'DELETE FROM t', 'rmdir d']) {
     assert.equal(pm.classifyBashCommand(cmd), 'destructive', `${JSON.stringify(cmd)} should be destructive`);
   }
 });
