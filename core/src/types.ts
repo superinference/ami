@@ -782,6 +782,11 @@ export interface ToolContext {
    *  production; typed `unknown` (cast at the web-fetch call site) to avoid a
    *  types.ts -> tools/web-utils import cycle. */
   _webFetchHttpGet?: unknown;
+  /** Test-only dependency seam for the `advisor` tool's reviewer stream. Never set
+   *  in production (the tool falls through to the real streamChatCompletion); typed
+   *  `unknown` and cast at the advisor call site to avoid a types.ts -> provider
+   *  import coupling. */
+  _advisorStreamImpl?: unknown;
   detachedMode?: boolean;
   /** Bash isolation policy. When mode==='container', every bash command runs in
    *  a container (project-only writable); fail-closed if the backend is absent. */

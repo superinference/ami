@@ -44,6 +44,7 @@ import { syntheticOutputTool } from './synthetic-output';
 import { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
 import { lspTool } from './lsp';
 import { agenticFetchTool } from './agentic-fetch';
+import { advisorTool } from './advisor';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
 
@@ -192,6 +193,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     configTool,
     syntheticOutputTool,
     agenticFetchTool,
+    advisorTool,
     scoutTool,
     endConversationTool,
     readMemoryTool,
@@ -360,6 +362,18 @@ export { syntheticOutputTool } from './synthetic-output';
 export { lspDiagnosticsTool, lspReferencesTool } from './lsp-diagnostics';
 export { lspTool } from './lsp';
 export { agenticFetchTool } from './agentic-fetch';
+export {
+  advisorTool,
+  isAdvisorDisabled,
+  resolveAdvisorModel,
+  buildTranscriptDigest,
+  ADVISOR_MODEL_ENV,
+  ADVISOR_DISABLE_ENV,
+  ADVISOR_DISABLE_ENV_ALIAS,
+  ADVISOR_TIMEOUT_MS,
+  ADVISOR_REVIEWER_PREAMBLE,
+  ADVISOR_TOOL_INSTRUCTIONS,
+} from './advisor';
 export { scoutTool } from './scout';
 export { endConversationTool, resetEndedConversations, isConversationEnded, countPendingWork } from './end-conversation';
 export { isReadOnlyBashCommand, BashResultCache } from './bash-cache';
