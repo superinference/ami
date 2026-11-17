@@ -1988,6 +1988,70 @@ export interface HookDecisionOutput {
 
 export type HookCallback = (event: string, data: unknown) => Promise<HookDecisionOutput | string | void>;
 
+/**
+ * Function-hook callback (Claude Code's {@link FunctionHookCallback}): an
+ * in-memory TypeScript gate that inspects the conversation messages and returns
+ * `true` to let the event proceed or `false` to block it. Session-scoped only —
+ * it embeds a live callback and so can never be persisted to settings.json.
+ */
+export type FunctionHookCallback = (messages: Message[], signal?: AbortSignal) => boolean | Promise<boolean>;
+
+/**
+ * A runtime ('function') hook with an embedded callback (Claude Code's
+ * sessionHooks.ts `FunctionHook`). Registered via {@link HookManager.addFunctionHook},
+ * returns `true`=pass / `false`=block, and surfaces {@link errorMessage} as the
+ * block reason. Never loaded from a config file (hence NOT in HOOK_CONFIG_TYPES,
+ * which is the file-config union): a JS callback cannot be serialized.
+ */
+export interface FunctionHook {
+  type: 'function';
+  /** Stable id for id-based removal; auto-generated when not supplied. */
+  id?: string;
+  /** Per-callback timeout (ms); defaults to {@link DEFAULT_CALLBACK_HOOK_TIMEOUT_MS}. */
+  timeout?: number;
+  callback: FunctionHookCallback;
+  /** Block reason surfaced when the callback returns `false`. */
+  errorMessage: string;
+  /** Optional author-facing progress label. */
+  statusMessage?: string;
+}
+
+/**
+ * Scoping metadata for a runtime callback hook (Claude Code's SessionHookMatcher
+ * `matcher`/`skillRoot` + addSessionHook `sessionId`). Lets a skill/stance/agent
+ * register hooks at runtime that are matcher-gated and can be torn down as a group
+ * by the skill root or session that installed them.
+ */
+export interface RuntimeHookMeta {
+  /** Glob matcher gating which tool/event names fire this hook ('' / absent = all). */
+  matcher?: string;
+  /** Owning skill/plugin base directory (Claude Code `skillRoot`) for grouped teardown. */
+  skillRoot?: string;
+  /** Owning session/agent id (Claude Code `sessionId`) for end-of-session teardown. */
+  sessionId?: string;
+  /** Stable id (function hooks) for id-based removal. */
+  id?: string;
+}
+
+/**
+ * A hook-execution lifecycle event (Claude Code's hookEvents.ts
+ * HookExecutionEvent): `progress` when a hook starts running, `resolved` when it
+ * settles. Delivered to a {@link HookManager.registerHookEventHandler} subscriber,
+ * and BUFFERED (bounded FIFO) when no subscriber is attached so an early event
+ * (e.g. a SessionStart hook firing before the UI attaches) is replayed, never lost.
+ */
+export interface HookLifecycleEvent {
+  phase: 'progress' | 'resolved';
+  event: string;
+  hookType: HookConfigType;
+  label: string;
+  /** Present on `resolved`: whether the hook completed successfully. */
+  success?: boolean;
+}
+
+/** Bounded cap on buffered hook-lifecycle events (Claude Code's MAX_PENDING_EVENTS). */
+export const MAX_PENDING_HOOK_EVENTS = 100;
+
 export interface HookConfigEntry {
   event: string;
   hook: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig;
@@ -2379,6 +2443,14 @@ export class HookManager extends EventEmitter {
   /** Per-callback timeout (ms) for in-process ('function') hooks, keyed by the
    *  callback. Unset callbacks use DEFAULT_CALLBACK_HOOK_TIMEOUT_MS. */
   private _callbackTimeouts = new WeakMap<HookCallback, number>();
+  /** Scoping metadata (matcher / skillRoot / sessionId / id) for runtime callback
+   *  hooks, keyed by the callback. Drives matcher-gated dispatch in
+   *  {@link executeCallbacks} and grouped teardown by skill root / session. */
+  private _callbackMeta = new WeakMap<HookCallback, RuntimeHookMeta>();
+  /** Function hooks indexed by id (Claude Code's removeFunctionHook id lookup):
+   *  the firing event + the wrapper callback registered under it, so a function
+   *  hook can be removed by the id {@link addFunctionHook} returned. */
+  private _functionHooks = new Map<string, { event: string; callback: HookCallback }>();
 
   // Gap 1: Tier-aware verdict hold-over
   private _hookTiers = new WeakMap<Function, string>();
@@ -2418,6 +2490,14 @@ export class HookManager extends EventEmitter {
    *  for introspection; also emitted live on the `stopHookSummary` event. */
   private _lastStopHookSummary: StopHookSummary | null = null;
 
+  /** Bounded FIFO of hook-lifecycle events produced while no
+   *  {@link registerHookEventHandler} subscriber is attached (Claude Code's
+   *  `pendingEvents` ring). Drained in order on register so an early event is
+   *  replayed, capped at {@link MAX_PENDING_HOOK_EVENTS} (oldest dropped). */
+  private _pendingHookEvents: HookLifecycleEvent[] = [];
+  /** The currently-attached hook-lifecycle subscriber, or null (buffer mode). */
+  private _hookEventHandler: ((e: HookLifecycleEvent) => void) | null = null;
+
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
    */
@@ -2425,7 +2505,43 @@ export class HookManager extends EventEmitter {
 
   constructor() {
     super();
+    // Feed the replayable hook-lifecycle buffer from the live EventEmitter
+    // channel so progress/resolved events emitted before a subscriber attaches
+    // are not lost (Claude Code's hookEvents.ts pending-buffer guarantee).
+    this.on('hookProgress', (p: HookProgressEvent) =>
+      this.publishHookLifecycle({ phase: 'progress', event: p.event, hookType: p.hookType, label: p.label }));
+    this.on('hookResolved', (p: HookProgressEvent & { success?: boolean }) =>
+      this.publishHookLifecycle({ phase: 'resolved', event: p.event, hookType: p.hookType, label: p.label, success: p.success }));
   }
+
+  /**
+   * Publish a hook-lifecycle event to the attached subscriber, or buffer it in a
+   * bounded FIFO (dropping the oldest past {@link MAX_PENDING_HOOK_EVENTS}) when
+   * none is attached. Parity with Claude Code's hookEvents.ts `emit`.
+   */
+  private publishHookLifecycle(e: HookLifecycleEvent): void {
+    if (this._hookEventHandler) { this._hookEventHandler(e); return; }
+    this._pendingHookEvents.push(e);
+    if (this._pendingHookEvents.length > MAX_PENDING_HOOK_EVENTS) this._pendingHookEvents.shift();
+  }
+
+  /**
+   * Attach (or, with `null`, detach) a hook-lifecycle subscriber. On attach, any
+   * events buffered while no subscriber was present are replayed IN ORDER and the
+   * buffer is drained — guaranteeing a late subscriber still sees early events
+   * (Claude Code's registerHookEventHandler). Returns a detach closure.
+   */
+  registerHookEventHandler(handler: ((e: HookLifecycleEvent) => void) | null): () => void {
+    this._hookEventHandler = handler;
+    if (handler && this._pendingHookEvents.length > 0) {
+      for (const e of this._pendingHookEvents.splice(0)) handler(e);
+    }
+    return () => { this._hookEventHandler = null; };
+  }
+
+  /** Number of hook-lifecycle events currently buffered awaiting a subscriber
+   *  (introspection surface). */
+  getPendingHookEventCount(): number { return this._pendingHookEvents.length; }
 
   setEngineFactory(factory: EngineFactory): void { this._engineFactory = factory; }
   setProviderConfig(config: any): void { this._providerConfig = config; }
@@ -2505,28 +2621,149 @@ export class HookManager extends EventEmitter {
    *  web-utils validateUrlSafety). */
   setUrlSafetyValidator(fn: typeof validateUrlSafety): void { this._validateUrlSafety = fn; }
 
-  registerCallback(event: string, callback: HookCallback, timeoutMs?: number): () => void {
+  registerCallback(event: string, callback: HookCallback, timeoutMs?: number, meta?: RuntimeHookMeta): () => void {
     const hooks = this._callbackHooks.get(event) || [];
     hooks.push(callback);
     this._callbackHooks.set(event, hooks);
     // Per-callback timeout (Claude Code addFunctionHook `timeout`): bound a
     // slow/stuck in-process callback so it cannot stall the turn.
     if (timeoutMs !== undefined) this._callbackTimeouts.set(callback, timeoutMs);
-    return () => {
-      const current = this._callbackHooks.get(event) || [];
-      const index = current.indexOf(callback);
-      if (index >= 0) current.splice(index, 1);
-      this._callbackTimeouts.delete(callback);
+    // Scoping metadata (matcher/skillRoot/sessionId/id) for matcher-gated dispatch
+    // and grouped teardown (Claude Code's SessionHookMatcher).
+    if (meta) this._callbackMeta.set(callback, meta);
+    return () => this.unregisterCallback(event, callback);
+  }
+
+  /** Remove one runtime callback from an event and drop all its side tables. */
+  private unregisterCallback(event: string, callback: HookCallback): void {
+    const current = this._callbackHooks.get(event) || [];
+    const index = current.indexOf(callback);
+    if (index >= 0) current.splice(index, 1);
+    if (current.length === 0) this._callbackHooks.delete(event);
+    this._callbackTimeouts.delete(callback);
+    const meta = this._callbackMeta.get(callback);
+    this._callbackMeta.delete(callback);
+    if (meta?.id) this._functionHooks.delete(meta.id);
+  }
+
+  /**
+   * Register a runtime ('function') hook: an in-memory callback that inspects the
+   * conversation messages and returns `true` (pass) / `false` (block). Parity with
+   * Claude Code's addFunctionHook — defaults the timeout to 5000ms, auto-generates
+   * an id when none is given, and RETURNS the id so the hook can later be removed
+   * via {@link removeFunctionHook}. When a `false` verdict blocks the event the
+   * `errorMessage` is surfaced as the block reason. Re-registering an explicit id
+   * replaces the prior hook (idempotent). The callback is matcher-gated via
+   * {@link executeCallbacks} when an `options.matcher` is supplied.
+   */
+  addFunctionHook(
+    event: string,
+    callback: FunctionHookCallback,
+    errorMessage: string,
+    options?: { timeout?: number; id?: string; matcher?: string; skillRoot?: string; sessionId?: string; statusMessage?: string },
+  ): string {
+    // Build the canonical FunctionHook record (Claude Code's sessionHooks.ts
+    // shape) so its id/timeout defaults and schema fields live in one place.
+    const spec: FunctionHook = {
+      type: 'function',
+      id: options?.id || `function-hook-${Date.now()}-${Math.random()}`,
+      timeout: options?.timeout ?? DEFAULT_CALLBACK_HOOK_TIMEOUT_MS,
+      callback,
+      errorMessage,
+      ...(options?.statusMessage !== undefined ? { statusMessage: options.statusMessage } : {}),
     };
+    const id = spec.id!;
+    // Replace a prior hook registered under the same explicit id (last wins).
+    if (this._functionHooks.has(id)) this.removeFunctionHook(id);
+    const wrapper: HookCallback = async (_ev, data) => {
+      const messages = (data && typeof data === 'object' ? (data as { messages?: Message[] }).messages : undefined) ?? [];
+      const pass = await spec.callback(messages);
+      return pass ? undefined : ({ decision: 'block', reason: spec.errorMessage } as HookDecisionOutput);
+    };
+    this.registerCallback(event, wrapper, spec.timeout, {
+      id,
+      ...(options?.matcher !== undefined ? { matcher: options.matcher } : {}),
+      ...(options?.skillRoot !== undefined ? { skillRoot: options.skillRoot } : {}),
+      ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+    });
+    this._functionHooks.set(id, { event, callback: wrapper });
+    return id;
+  }
+
+  /** Remove a function hook by the id {@link addFunctionHook} returned. Returns
+   *  true when a hook was removed (Claude Code's removeFunctionHook). */
+  removeFunctionHook(id: string): boolean {
+    const entry = this._functionHooks.get(id);
+    if (!entry) return false;
+    this.unregisterCallback(entry.event, entry.callback);
+    this._functionHooks.delete(id);
+    return true;
+  }
+
+  /**
+   * Register a session/agent-scoped runtime hook (Claude Code's addSessionHook via
+   * registerFrontmatterHooks). The hook is tagged with `sessionId` so it can be
+   * torn down as a group by {@link clearSessionHooks} when that session/agent ends.
+   * With `isAgent:true` a `stop` hook is remapped to `subagentStop` (a subagent
+   * fires SubagentStop, not Stop). Optional `matcher`/`skillRoot` scope + group it.
+   * Returns an unregister closure.
+   */
+  addSessionHook(
+    sessionId: string,
+    event: string,
+    callback: HookCallback,
+    opts?: { matcher?: string; skillRoot?: string; isAgent?: boolean; timeoutMs?: number },
+  ): () => void {
+    const targetEvent = opts?.isAgent && event === 'stop' ? 'subagentStop' : event;
+    return this.registerCallback(targetEvent, callback, opts?.timeoutMs, {
+      sessionId,
+      ...(opts?.matcher !== undefined ? { matcher: opts.matcher } : {}),
+      ...(opts?.skillRoot !== undefined ? { skillRoot: opts.skillRoot } : {}),
+    });
+  }
+
+  /** Tear down every runtime callback scoped to a session/agent id (Claude Code's
+   *  clearSessionHooks, called on sessionEnd/subagentStop). Returns the count removed. */
+  clearSessionHooks(sessionId: string): number {
+    return this.removeRuntimeHooksWhere(meta => meta.sessionId === sessionId);
+  }
+
+  /** Tear down every runtime callback registered by a given skill root (Claude
+   *  Code's skill-scoped teardown on stance deactivation). Returns the count removed. */
+  removeBySkillRoot(skillRoot: string): number {
+    return this.removeRuntimeHooksWhere(meta => meta.skillRoot === skillRoot);
+  }
+
+  /** Remove every runtime callback whose scoping metadata satisfies `pred`. */
+  private removeRuntimeHooksWhere(pred: (meta: RuntimeHookMeta) => boolean): number {
+    let removed = 0;
+    for (const [event, hooks] of Array.from(this._callbackHooks.entries())) {
+      for (const cb of [...hooks]) {
+        const meta = this._callbackMeta.get(cb);
+        if (meta && pred(meta)) { this.unregisterCallback(event, cb); removed++; }
+      }
+    }
+    return removed;
   }
 
   /**
    * Execute all registered callback hooks for the given event.
    * Returns the first non-void HookDecisionOutput if any callback returns one.
+   * When `matchValue` is supplied, a callback registered with a non-empty `matcher`
+   * fires ONLY if the matcher applies to it (Claude Code's SessionHookMatcher
+   * gating; an empty/absent matcher is the `''` wildcard that always fires).
    */
-  async executeCallbacks(event: string, data: unknown): Promise<HookDecisionOutput | void> {
-    const hooks = this._callbackHooks.get(event);
-    if (!hooks || hooks.length === 0) return;
+  async executeCallbacks(event: string, data: unknown, matchValue?: string): Promise<HookDecisionOutput | void> {
+    const all = this._callbackHooks.get(event);
+    if (!all || all.length === 0) return;
+    // Snapshot + matcher-filter so a hook removed mid-dispatch or gated out by its
+    // matcher is skipped without mutating the live array during iteration.
+    const hooks = all.filter(cb => {
+      const matcher = this._callbackMeta.get(cb)?.matcher;
+      if (!matcher || matchValue === undefined) return true;
+      return matchesPattern(matcher, matchValue);
+    });
+    if (hooks.length === 0) return;
     return this.withConcurrencyGate(`cb:${event}`, async () => {
       for (const cb of hooks) {
         try {
@@ -4280,6 +4517,8 @@ export class HookManager extends EventEmitter {
       elicitationResult: this.elicitationResultHooks.length,
       stopFailure: this.stopFailureHooks.length,
       callbackHooks: Array.from(this._callbackHooks.values()).reduce((a, b) => a + b.length, 0),
+      functionHooks: this._functionHooks.size,
+      pendingHookEvents: this._pendingHookEvents.length,
     };
   }
 
