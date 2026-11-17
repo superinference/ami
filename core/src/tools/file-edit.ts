@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
+import { areFileEditsEquivalent } from './file-edit-equivalence';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
@@ -574,12 +575,24 @@ async function applySequentialEdits(
 
   const originalEnding = detectLineEnding(rawContent);
   let content = normalizeToLf(rawContent);
+  // The original (pre-mutation) LF-normalized file, captured once as the stable
+  // base for edit-equivalence comparisons below (strings are immutable, so this
+  // holds the starting content even as `content` is rewritten per edit).
+  const originalLf = content;
   // Markdown (.md/.mdx) uses two trailing spaces as a hard line break, so the
   // trailing-whitespace normalization of the replacement text is skipped there.
   const stripWs = !isMarkdownPath(resolved);
 
   const applied: string[] = [];
   const failed: string[] = [];
+  // Edits already seen (not duplicates) in this batch, used to recognize and skip
+  // a later edit that is EQUIVALENT to an earlier one — same result on the
+  // original file, or the same reproducible failure — instead of re-applying it
+  // (which would double-apply) or surfacing a confusing "not found" once the
+  // earlier edit already rewrote the region. Parity: Claude Code's
+  // areFileEditsEquivalent idempotent/duplicate-edit recognition.
+  const seenEdits: SequentialEdit[] = [];
+  const skipped: string[] = [];
   // Track the new_strings of edits already applied in this batch. A later edit
   // whose old_string is a substring of an earlier edit's new_string is almost
   // always a model mistake (it would re-edit text the previous edit just wrote,
@@ -590,6 +603,18 @@ async function applySequentialEdits(
 
   for (let i = 0; i < edits.length; i++) {
     const { old_string, new_string, replace_all: replaceAll } = edits[i];
+
+    // Idempotent-duplicate guard: if this edit is equivalent to one already seen
+    // in the batch (identical inputs, or the same effect / same failure on the
+    // original file), skip it rather than re-applying or failing on now-rewritten
+    // text. Only a non-empty old_string is a candidate — an empty one is a
+    // validation failure handled below.
+    if (old_string && old_string.length > 0 &&
+        seenEdits.some(prev => areFileEditsEquivalent([prev], [edits[i]], originalLf))) {
+      skipped.push(`Edit ${i + 1}: skipped (duplicate of an earlier edit in this batch)`);
+      continue;
+    }
+    seenEdits.push(edits[i]);
 
     if (!old_string || old_string.length === 0) {
       failed.push(`Edit ${i + 1}: old_string must not be empty`);
@@ -640,8 +665,9 @@ async function applySequentialEdits(
   }
 
   if (applied.length === 0) {
+    const notes = [...failed, ...skipped];
     return {
-      output: `No edits applied.\n${failed.join('\n')}`,
+      output: `No edits applied.\n${notes.join('\n')}`,
       isError: true,
     };
   }
@@ -662,10 +688,23 @@ async function applySequentialEdits(
   if (writeErr) return { output: writeErr, isError: true };
 
   const { additions, removals } = countLinesChanged(normalizeToLf(rawContent), content);
+  // Compute the structured patch once and reuse it for both the location tag and
+  // the `structuredPatch` field. Surface the TRUE 1-based line where the first
+  // change landed so the model/UI can locate the edit without re-reading the file
+  // — the SAME `[edit: file:LINE, +a -b]` tag the single-replace path emits
+  // (parity: Claude Code's readEditContext lineOffset, applied uniformly across
+  // both replace modes).
+  const patch = buildStructuredPatch(normalizeToLf(rawContent), content);
+  const editLine = firstChangedLine(patch);
+  const locationNote = editLine !== undefined ? `:${editLine}` : '';
   const summary = [
+    `[edit: ${path.basename(resolved)}${locationNote}, +${additions} -${removals}]`,
     `Successfully edited ${resolved}`,
     `${applied.length}/${edits.length} edits applied (+${additions} -${removals}).`,
   ];
+  if (skipped.length > 0) {
+    summary.push(`\nSkipped edits:\n${skipped.join('\n')}`);
+  }
   if (failed.length > 0) {
     summary.push(`\nFailed edits:\n${failed.join('\n')}`);
   }
@@ -680,7 +719,7 @@ async function applySequentialEdits(
   return {
     output: summary.join('\n'),
     isError: false,
-    structuredPatch: buildStructuredPatch(normalizeToLf(rawContent), content),
+    structuredPatch: patch,
   };
 }
 
