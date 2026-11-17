@@ -1,4 +1,5 @@
 import { isEnvTruthy } from '../analytics';
+import type { ToolRegistryGuardOptions } from './tool-registry-guard';
 
 /**
  * PARITY (additive): centralized capability gates for conditional tool
@@ -212,16 +213,51 @@ export function isCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
  */
 export const DENY_TOOLS_ENV = 'AMI_DENY_TOOLS';
 
+/** Split a comma-separated env value into a trimmed, non-empty list. Shared by the
+ *  deny-list and registry-guard parsers so every CSV knob splits identically. */
+function splitCsvEnv(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 /** Parse {@link DENY_TOOLS_ENV} into a de-duplicated, trimmed rule set. */
 export function parseDeniedTools(env: NodeJS.ProcessEnv = process.env): Set<string> {
-  const raw = env[DENY_TOOLS_ENV];
-  if (!raw) return new Set();
-  return new Set(
-    raw
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
+  return new Set(splitCsvEnv(env[DENY_TOOLS_ENV]));
+}
+
+/**
+ * Env var holding extra RESERVED tool-name prefixes for the registration gate.
+ * PARITY (additive): lets an operator reserve org-specific built-in namespaces so a
+ * plugin/MCP tool cannot shadow them. Comma-separated; canonicalized + boundary-matched
+ * like {@link import('./tool-registry-guard').RESERVED_TOOL_PREFIXES}. Unset → no extras.
+ */
+export const RESERVED_PREFIXES_ENV = 'AMI_RESERVED_TOOL_PREFIXES';
+
+/**
+ * Env var holding extra TRUSTED tool sources for the registration gate.
+ * PARITY (additive): a source listed here may claim a reserved prefix exactly like
+ * the always-trusted `core`/`builtin` sources (e.g. a verified first-party plugin).
+ * Comma-separated. Unset → only `core`/`builtin` are trusted.
+ */
+export const TRUSTED_SOURCES_ENV = 'AMI_TRUSTED_TOOL_SOURCES';
+
+/**
+ * Parse {@link RESERVED_PREFIXES_ENV} + {@link TRUSTED_SOURCES_ENV} into the
+ * registration-gate options consumed by `ToolRegistryGuard` / `detectToolConflict`.
+ * Omits empty knobs so an all-default call yields `{}` (behavior unchanged).
+ */
+export function parseToolRegistryGuardOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): ToolRegistryGuardOptions {
+  const extraReservedPrefixes = splitCsvEnv(env[RESERVED_PREFIXES_ENV]);
+  const trustedSources = splitCsvEnv(env[TRUSTED_SOURCES_ENV]);
+  const options: ToolRegistryGuardOptions = {};
+  if (extraReservedPrefixes.length > 0) options.extraReservedPrefixes = extraReservedPrefixes;
+  if (trustedSources.length > 0) options.trustedSources = new Set(trustedSources);
+  return options;
 }
 
 /**

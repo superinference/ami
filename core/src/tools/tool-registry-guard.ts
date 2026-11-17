@@ -94,13 +94,54 @@ export function validateToolDefinition(tool: RegistrableToolLike): string | null
   return null;
 }
 
-function matchesReservedPrefix(name: string): string | null {
+/**
+ * PARITY (additive): operator-configurable knobs for the registration gate. An
+ * operator can RESERVE extra prefixes so plugin/MCP tools cannot shadow an
+ * org-specific built-in namespace, and TRUST extra sources so a verified
+ * first-party plugin may claim a reserved prefix exactly like `core`/`builtin`.
+ * Both are off by default (empty), preserving AMI's existing behavior. Grounded in
+ * Claude Code's config-driven tool filtering (tools.ts) — surfaced here as
+ * registration-gate configuration rather than a fixed-at-compile-time set.
+ */
+export interface ToolRegistryGuardOptions {
+  /** Extra reserved prefixes (beyond {@link RESERVED_TOOL_PREFIXES}) that only a
+   *  trusted source may claim. Matched on the canonical form like the built-ins;
+   *  blank entries are ignored. */
+  extraReservedPrefixes?: readonly string[];
+  /** Sources that — like the implicit `core`/`builtin` — may register a
+   *  reserved-prefix name without triggering a conflict. */
+  trustedSources?: ReadonlySet<string> | readonly string[];
+}
+
+/** The two sources that are ALWAYS trusted to claim a reserved prefix. */
+const BUILTIN_TRUSTED_SOURCES: ReadonlySet<string> = new Set(['core', 'builtin']);
+
+/** PARITY (additive): is `source` allowed to register a reserved-prefix name — one of
+ *  the always-trusted built-in sources, or an operator-configured trusted source? */
+function isTrustedSource(
+  source: string,
+  trusted?: ReadonlySet<string> | readonly string[],
+): boolean {
+  if (BUILTIN_TRUSTED_SOURCES.has(source)) return true;
+  if (!trusted) return false;
+  const set = trusted instanceof Set ? trusted : new Set(trusted);
+  return set.has(source);
+}
+
+function matchesReservedPrefix(name: string, extraPrefixes?: readonly string[]): string | null {
   // PARITY (additive): match on the CANONICAL form so a non-core source cannot slip
   // a tool past the reserved guard with a case variant (`Bash`) or a doubled/leading
   // underscore (`__bash`, `task__create`) that is equivalent after normalization.
   const canonical = canonicalToolName(name);
-  for (const prefix of RESERVED_TOOL_PREFIXES) {
-    const canonicalPrefix = prefix.toLowerCase();
+  const prefixes: readonly string[] =
+    extraPrefixes && extraPrefixes.length
+      ? [...RESERVED_TOOL_PREFIXES, ...extraPrefixes]
+      : RESERVED_TOOL_PREFIXES;
+  for (const prefix of prefixes) {
+    // Canonicalize the prefix too (folds case / underscore runs) so an operator-supplied
+    // extra prefix is matched on the same normalized footing as a crafted tool name.
+    const canonicalPrefix = canonicalToolName(prefix);
+    if (canonicalPrefix.length === 0) continue; // ignore blank/underscore-only extras
     const boundary = canonicalPrefix.endsWith('_') ? canonicalPrefix : canonicalPrefix + '_';
     if (canonical === canonicalPrefix || canonical.startsWith(boundary)) return prefix;
   }
@@ -111,6 +152,7 @@ export function detectToolConflict(
   toolName: string,
   source: string,
   existingTools: Map<string, string>,
+  options?: ToolRegistryGuardOptions,
 ): ToolConflict | null {
   // PARITY (additive): reject structurally invalid names/sources BEFORE the
   // duplicate/prefix checks — an unnameable tool can never be registered under any
@@ -145,8 +187,8 @@ export function detectToolConflict(
     };
   }
 
-  if (source !== 'core' && source !== 'builtin') {
-    const prefix = matchesReservedPrefix(toolName);
+  if (!isTrustedSource(source, options?.trustedSources)) {
+    const prefix = matchesReservedPrefix(toolName, options?.extraReservedPrefixes);
     if (prefix) {
       return {
         toolName,
@@ -193,8 +235,12 @@ export class ToolRegistryGuard {
   private _aliases = new Map<string, string>();
   private _conflicts: ToolConflict[] = [];
 
+  // PARITY (additive): operator-configurable registration-gate knobs (extra reserved
+  // prefixes / trusted sources). Empty by default — behavior is unchanged unless set.
+  constructor(private readonly _options: ToolRegistryGuardOptions = {}) {}
+
   register(toolName: string, source: string, aliases?: readonly string[]): ToolConflict | null {
-    const conflict = detectToolConflict(toolName, source, this._registry);
+    const conflict = detectToolConflict(toolName, source, this._registry, this._options);
     if (conflict) {
       this._conflicts.push(conflict);
       return conflict;
@@ -255,8 +301,8 @@ export class ToolRegistryGuard {
       };
     }
 
-    if (source !== 'core' && source !== 'builtin') {
-      const prefix = matchesReservedPrefix(alias);
+    if (!isTrustedSource(source, this._options.trustedSources)) {
+      const prefix = matchesReservedPrefix(alias, this._options.extraReservedPrefixes);
       if (prefix) {
         return {
           toolName: alias,

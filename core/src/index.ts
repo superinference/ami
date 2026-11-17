@@ -364,7 +364,7 @@ export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveMa
 export type { ManagedSettingsDecision, ManagedSettingsReview } from './managed-settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, canonicalToolName, filterAvailableTools, toolMatchesName, findToolByName, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
-export type { ToolConflict, RegistrableToolLike } from './tools/tool-registry-guard';
+export type { ToolConflict, RegistrableToolLike, ToolRegistryGuardOptions } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
 export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn, estimateCompactionMessageTokens, dropOrphanedToolResults, selectRecentWithinBudget, buildTruncationMarker, getLanguageFromPath, categorizeToolError, responseTimeHistogram, formatDuration, formatConversationSummary } from './conversation-summary';

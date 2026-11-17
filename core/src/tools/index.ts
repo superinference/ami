@@ -1,6 +1,6 @@
 import { ToolDefinition, ToolInputSchema, ToolContext } from '../types';
-import { ToolRegistryGuard, type ToolConflict, filterAvailableTools } from './tool-registry-guard';
-import { parseDeniedTools, isToolDenied } from './tool-gates';
+import { ToolRegistryGuard, type ToolConflict, type ToolRegistryGuardOptions, filterAvailableTools } from './tool-registry-guard';
+import { parseDeniedTools, isToolDenied, parseToolRegistryGuardOptions } from './tool-gates';
 import { bashTool } from './bash';
 import { fileReadTool } from './file-read';
 import { fileEditTool } from './file-edit';
@@ -55,7 +55,14 @@ export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
   /** Registration source per tool name, used to partition the cache-stable pool. */
   private sources: Map<string, string> = new Map();
-  private _guard = new ToolRegistryGuard();
+  private _guard: ToolRegistryGuard;
+
+  // PARITY (additive): accept operator-configurable registration-gate options (extra
+  // reserved prefixes / trusted sources) so a non-core registration honors them. Empty
+  // by default — an argument-less `new ToolRegistry()` behaves exactly as before.
+  constructor(guardOptions: ToolRegistryGuardOptions = {}) {
+    this._guard = new ToolRegistryGuard(guardOptions);
+  }
 
   register(tool: ToolDefinition, source = 'core'): void {
     // Pass the tool's declared aliases so the guard both collision-checks them and
@@ -134,7 +141,11 @@ export class ToolRegistry {
 }
 
 export function createDefaultTools(_cwd: string): ToolRegistry {
-  const registry = new ToolRegistry();
+  // PARITY (additive): thread the operator-configured registration-gate knobs
+  // (AMI_RESERVED_TOOL_PREFIXES / AMI_TRUSTED_TOOL_SOURCES) into the registry's guard so
+  // a reserved extra prefix blocks a shadowing non-core tool and a trusted source may
+  // claim a reserved prefix. Empty env → {} → unchanged default behavior.
+  const registry = new ToolRegistry(parseToolRegistryGuardOptions());
 
   // PARITY (additive): the complete default tool pool, listed unconditionally.
   // Conditionally-available subsystems (teammates, workflow scripts, LSP, cron)
@@ -357,7 +368,7 @@ export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from
 export { levenshteinDistance, suggestSimilarPaths, suggestPathCorrection, suggestByBasename, suggestPathUnderCwd } from './path-suggest';
 export type { PathSuggestionKind, PathCorrectionOptions, PathCorrectionResult, BasenameSearchOptions } from './path-suggest';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard, RESERVED_TOOL_PREFIXES } from './tool-registry-guard';
-export type { ToolConflict } from './tool-registry-guard';
+export type { ToolConflict, ToolRegistryGuardOptions } from './tool-registry-guard';
 export {
   capabilityEnabled,
   isTeammatesEnabled,
@@ -373,6 +384,9 @@ export {
   DENY_TOOLS_ENV,
   parseDeniedTools,
   isToolDenied,
+  RESERVED_PREFIXES_ENV,
+  TRUSTED_SOURCES_ENV,
+  parseToolRegistryGuardOptions,
 } from './tool-gates';
 export {
   getToolCategory,
