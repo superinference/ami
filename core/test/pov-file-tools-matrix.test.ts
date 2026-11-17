@@ -302,7 +302,10 @@ describe('fileEditTool.execute – ambiguous match', () => {
 
 describe('fileEditTool.execute – not found', () => {
   it('errors with a hint when old_string is absent and leaves the file intact', async () => {
-    const before = 'alpha\nbeta\ngamma\n';
+    // File content must stay longer than the old_string so the U039 large-needle
+    // short-circuit ("old_string is larger than the entire file") does not fire —
+    // this case exercises the genuine not-found path for an absent needle.
+    const before = 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\n';
     const p = fixture('nomatch.txt', before);
     const r = await fileEditTool.execute(
       { file_path: p, old_string: 'nonexistent string here', new_string: 'x' },

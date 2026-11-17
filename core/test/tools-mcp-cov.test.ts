@@ -476,8 +476,9 @@ describe('lspDiagnosticsTool', () => {
     const res = await lspDiagnosticsTool.execute!({ file_path: '/w/foo.ts' }, ctx());
     assert.equal(res.isError, undefined);
     // With no running LSP server for the file, the tool reports the absence and
-    // points at manual tooling (Claude-parity message).
-    assert.match(res.output, /No LSP server available for \/w\/foo\.ts\./);
+    // points at manual tooling. U052 parity: the message names the file TYPE
+    // ("for file type: .ts") the way Claude does, with the path in parentheses.
+    assert.match(res.output, /No LSP server available for file type: \.ts \(\/w\/foo\.ts\)\./);
   });
 
   it('returns a workspace message when no file_path is provided', async () => {

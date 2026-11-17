@@ -1217,7 +1217,9 @@ describe('fileEditTool – deeper error paths', () => {
       ctx({ cwd: '/dev' }),
     );
     assert.equal(res.isError, true);
-    assert.ok(res.output.includes('Cannot edit device or special file'));
+    // U069 parity: a shared special-file lstat pre-guard in resolveFilePath now
+    // fires BEFORE the edit-stage device check, with a unified message.
+    assert.ok(res.output.includes('is a special file (FIFO/socket/device)'));
   });
 });
 
@@ -1433,7 +1435,9 @@ describe('fileReadTool – binary & range-header & suite logs', () => {
     // cwd=/dev makes "null" resolve to /dev/null — a blocked device.
     const res = await fileReadTool.execute({ file_path: 'null' }, ctx({ cwd: '/dev' }));
     assert.equal(res.isError, true);
-    assert.ok(res.output.includes('Reading device/special files is not allowed'));
+    // U069 parity: the shared special-file lstat pre-guard now rejects FIFO/
+    // socket/device paths before the read-stage check, with a unified message.
+    assert.ok(res.output.includes('is a special file (FIFO/socket/device)'));
   });
 
 });
