@@ -347,6 +347,17 @@ export class CronScheduler {
     if (opts.maxAgeDays !== undefined && (!Number.isInteger(opts.maxAgeDays) || opts.maxAgeDays < 0)) {
       throw new Error(`maxAgeDays must be a non-negative integer (got ${opts.maxAgeDays}); use 0 for unlimited.`);
     }
+    // Durable-teammate orphan guard: a durable job owned by a teammate/sub-agent
+    // would orphan on restart — the teammate does not persist across sessions, so
+    // the job's stored agentId would point at a nonexistent owner that can never
+    // again fire, scope, or authorize it. Reject the request up front (session-only
+    // durable-less jobs are fine for a teammate). Mirrors Claude's CronCreateTool
+    // errorCode-4 "durable cron in teammate context" rejection.
+    if ((opts.durable ?? false) && opts.agentId) {
+      throw new Error(
+        `A durable cron cannot be created by a teammate/sub-agent (agent ${opts.agentId}): it would orphan on restart because the teammate does not persist across sessions. Create it as the team lead, or omit durable to keep it session-only.`,
+      );
+    }
     const recurring = opts.recurring ?? true;
     // Runaway-schedule guard: a recurring job may not fire more often than the floor.
     if (recurring) {
@@ -920,11 +931,27 @@ export class CronScheduler {
 
     const minPlain = min !== '*' && !min.includes('/') && !min.includes(',') && !min.includes('-');
     const hourStepMatch = /^\*\/(\d+)$/.exec(hour);
+    const hourPlain = hour !== '*' && !hour.includes('/') && !hour.includes(',') && !hour.includes('-');
 
     // A specific minute + specific hour reads best as a 12-hour wall-clock time.
-    if (minPlain &&
-        hour !== '*' && !hour.includes('/') && !hour.includes(',') && !hour.includes('-')) {
-      pieces.push(`at ${to12Hour(parseInt(hour, 10), parseInt(min, 10))}`);
+    if (minPlain && hourPlain) {
+      const timeStr = to12Hour(parseInt(hour, 10), parseInt(min, 10));
+      // When a fixed daily time is NOT further restricted by day-of-month/month,
+      // read the whole schedule as a single fluent phrase that leads with the day
+      // context — "every day at 9:00 am", "every Mon at 9:00 am",
+      // "Weekdays at 9:00 am (Mon to Fri)" — instead of the mechanical
+      // "at 9:00 am, on Mon". Mirrors Claude's cronToHuman day+time phrasing while
+      // keeping AMI's lowercase am/pm style and the Mon-to-Fri expansion (superset).
+      if (dom === '*' && mon === '*') {
+        if (dow === '*') return `every day at ${timeStr}`;
+        if (dow === '1-5') return `Weekdays at ${timeStr} (Mon to Fri)`;
+        const singleDow = /^[0-6]$/.exec(dow);
+        if (singleDow) {
+          const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          return `every ${names[parseInt(singleDow[0], 10)]} at ${timeStr}`;
+        }
+      }
+      pieces.push(`at ${timeStr}`);
     } else if (hourStepMatch && minPlain) {
       // "every N hours at :MM": an hour STEP paired with a fixed minute. The :MM
       // suffix is dropped when the minute is :00 (the common top-of-hour case), so
