@@ -8,6 +8,7 @@ import { createDefaultTools } from './index';
 import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
 import { isReadOnlyBashCommand } from './bash-cache';
+import { isTerminalTaskStatus } from '../process-manager';
 import { coerceBool, parseOptionalBool } from '../utils/coerce';
 import { createBoundedAbortController, raiseAbortListenerCap } from '../utils/abort';
 import { isEnvTruthy } from '../analytics';
@@ -470,12 +471,31 @@ export function resolveResumeTarget(target: string): ResumeResolution | undefine
  * agent's registry entry, orphaning it. On collision we append an incrementing
  * numeric suffix (`name-2`, `name-3`, …) so every spawned agent keeps a distinct,
  * addressable identity (mirrors Claude Code's generateUniqueTeammateName).
+ *
+ * STATUS-AWARE RECLAMATION (parity: Claude Code's findTeammateTaskByAgentId prefers
+ * the RUNNING task over a stale killed/completed one, InProcessTeammateTask.tsx:L92-108):
+ * a name whose current holder has already TERMINATED (completed/failed/killed) is
+ * reclaimed verbatim for the new live agent rather than being pushed to a suffixed
+ * alias. Without this, killing `scout` then respawning `scout` produced `scout-2`
+ * while the DEAD `scout` kept the canonical send_message/resume address — so a message
+ * or resume aimed at `scout` routed to the dead instance. Reclaiming the lowest free
+ * OR dead slot keeps the live agent addressable under the name the model expects. The
+ * caller supplies an `isTerminal` status probe (the process manager); with no probe we
+ * cannot prove a holder is dead, so the behavior degrades to pure suffixing.
  */
-export function uniqueAgentName(name: string): string {
-  if (!agentNameRegistry.has(name)) return name;
-  let i = 2;
-  while (agentNameRegistry.has(`${name}-${i}`)) i++;
-  return `${name}-${i}`;
+export function uniqueAgentName(
+  name: string,
+  isTerminal?: (taskId: string) => boolean,
+): string {
+  const existing = agentNameRegistry.get(name);
+  if (existing === undefined) return name;              // free — take the base name
+  if (isTerminal?.(existing)) return name;             // dead holder — reclaim the base name
+  for (let i = 2; ; i++) {
+    const candidate = `${name}-${i}`;
+    const holder = agentNameRegistry.get(candidate);
+    if (holder === undefined) return candidate;         // free suffix
+    if (isTerminal?.(holder)) return candidate;         // dead suffixed holder — reclaim it
+  }
 }
 
 /** Routing-significant characters that must never appear in an agent name: `@`
@@ -3490,7 +3510,13 @@ export const taskTool: ToolDefinition = {
     // fall back to no name rather than register a degenerate key.
     const rawAgentName = input.name as string | undefined;
     const sanitizedName = rawAgentName ? sanitizeAgentName(rawAgentName) : undefined;
-    const agentName = sanitizedName ? uniqueAgentName(sanitizedName) : undefined;
+    // Reclaim the name of a terminated prior agent (status-aware): a dead teammate
+    // must not keep the canonical send_message/resume address while the respawn is
+    // pushed to a suffixed alias. The probe reads the live process-manager status so
+    // only completed/failed/killed holders are reclaimed; running holders still suffix.
+    const agentName = sanitizedName
+      ? uniqueAgentName(sanitizedName, id => isTerminalTaskStatus(context.processManager?.getStatus(id)))
+      : undefined;
 
     // A named agent spawned while a team is active joins that team as a member
     // (see registerTeamMember below). Tell it HOW to collaborate: it is one agent
