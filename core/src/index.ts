@@ -523,8 +523,8 @@ export type {
 } from './lsp';
 
 // --- batch #10 additive parity exports ---
-export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay } from './tools/subagent-relay';
-export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion } from './tools/subagent-relay';
+export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay, buildSubagentIdleEvent, createAgentInvocationLedger, resolveEnableSummarization } from './tools/subagent-relay';
+export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion, RelayIdle, InvocationKind, InvocationEdge, AgentInvocationLedger } from './tools/subagent-relay';
 export { parseEnvInt, parseEnvFloat, parseEnvBool, resolveEnvVar, parseDotenv, loadDotenv, validateBoundedEnvInt, collectEnvLimitDiagnostics, AMI_ENV_INT_LIMITS } from './utils/env';
 export type { DotenvParseOptions, LoadDotenvOptions, EnvIntBounds, EnvIntStatus, BoundedEnvIntResult, EnvLimitSpec, EnvLimitDiagnostic } from './utils/env';
 export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';

@@ -12,7 +12,7 @@ import { coerceBool } from '../utils/coerce';
 import { createBoundedAbortController, raiseAbortListenerCap } from '../utils/abort';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
-import { mapChildToSubagentEvent, attachSubagentUsage } from './subagent-relay';
+import { mapChildToSubagentEvent, attachSubagentUsage, resolveEnableSummarization } from './subagent-relay';
 import {
   collapseActivityRun,
   createActivityDescriptionResolver,
@@ -2059,6 +2059,11 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   };
   const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
   resetBgStall();
+  // Gate live progress-summary generation (parity: Claude's enableSummarization =
+  // coordinator || fork-subagent || sdk-progress). ON by default (AMI superset);
+  // AMI_SUBAGENT_SUMMARIES=off disables it, the mode flags force-enable it. The
+  // tool-use COUNT is always tracked; only the free-text progressSummary is gated.
+  const summariesEnabled = resolveEnableSummarization(process.env);
   // Classified recent tool-activity window (parity: Claude's collapseReadSearch) so
   // the live progressSummary folds a run of consecutive read/search ops into one
   // compact label instead of scrolling a noisy per-file trail. Bounded so it never
@@ -2123,7 +2128,9 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         const collapsed = collapseActivityRun(bgRecentCollapsible);
         context.processManager?.updateEntry(taskId, {
           toolCount: bgToolUseCount,
-          progressSummary: (collapsed ?? summary).slice(0, 80),
+          // Live progress summary is gated by enableSummarization (parity); the
+          // tool count is always surfaced so task_list stays accurate when off.
+          ...(summariesEnabled ? { progressSummary: (collapsed ?? summary).slice(0, 80) } : {}),
         });
         w(`\n▸ ${event.toolName} ${summary}\n`);
       }
