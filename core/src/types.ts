@@ -1286,6 +1286,14 @@ export interface EngineConfig {
   streamIdleTimeoutMs?: number;
   /** RSS threshold (bytes) that emits a one-time memory_warning with recovery steps (default 1.5 GiB). */
   memoryWarningRssBytes?: number;
+  /** Independent ABSOLUTE RSS ceiling (bytes) at which the session is treated as
+   *  CRITICAL — escalating the memory_warning straight to its top tier regardless of
+   *  the (possibly lower) {@link memoryWarningRssBytes} warning threshold. This is a
+   *  second, absolute threshold rather than a value derived from the warning one, so
+   *  an operator can keep an early soft warning while only declaring a hard-critical
+   *  state at a true memory ceiling. Parity: Claude Code's useMemoryUsage two
+   *  independent absolute thresholds (HIGH 1.5 GiB / CRITICAL 2.5 GiB). Default 2.5 GiB. */
+  memoryCriticalRssBytes?: number;
   /** Injectable RSS reader for tests (defaults to process.memoryUsage().rss). */
   memoryUsageReader?: () => number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them, saving prompt tokens. */
