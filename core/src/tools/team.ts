@@ -190,6 +190,12 @@ export interface TeamMember {
    *  `backendType`). Validated against {@link BackendType} on read; an unknown
    *  persisted value is coerced to undefined. */
   backendType?: BackendType;
+  /** Terminal pane id this teammate renders into for a PANE backend (parity:
+   *  Claude Code's per-member `tmuxPaneId`). Used to derive the member's hidden
+   *  state against the team's {@link TeamFile.hiddenPaneIds} set and to remove a
+   *  member by its pane ({@link removeMemberByPaneId}). Absent for an in-process
+   *  teammate (which has no pane). Validated to a non-empty string on read. */
+  tmuxPaneId?: string;
   joinedAt: string;
   /** false => idle/finished/crashed; undefined/true => active. */
   isActive?: boolean;
@@ -217,6 +223,14 @@ export interface TeammateStatus {
    *  TeammateStatus.backendType, built via isPaneBackend — a non-pane/unknown
    *  backend is surfaced as undefined). */
   backendType?: 'tmux' | 'iterm2';
+  /** The teammate's terminal pane id (parity: Claude's TeammateStatus.tmuxPaneId),
+   *  surfaced so a renderer can target the pane. Undefined for an in-process
+   *  teammate. */
+  tmuxPaneId?: string;
+  /** Whether this teammate's pane is hidden in the roster view (parity: Claude's
+   *  TeammateStatus.isHidden, derived from the team's `hiddenPaneIds` set). A
+   *  teammate with no pane id is never hidden. */
+  isHidden: boolean;
   idleSince?: string;
 }
 
@@ -262,6 +276,12 @@ export interface TeamFile {
    *  Claude Code's per-agent `tools` scoping knob). Stored on the team file so a
    *  teammate spawned into the team can be constrained the same way the lead is. */
   teamAllowedTools?: string[];
+  /** Pane ids the user has collapsed/hidden in the roster view (parity: Claude
+   *  Code's team-file `hiddenPaneIds` config knob). A member whose
+   *  {@link TeamMember.tmuxPaneId} is in this set projects to `isHidden: true`
+   *  ({@link getTeammateStatuses}). Validated to a string array on read; a member
+   *  removal scrubs its pane from here ({@link removeMemberByPaneId}). */
+  hiddenPaneIds?: string[];
   members: TeamMember[];
   createdAt: string;
 }
@@ -579,6 +599,7 @@ export function readTeamFile(dir: string): TeamFile | null {
   // backendType via isPaneBackend and coerces unknown values when deserializing).
   // A stale/foreign file may carry an invalid permissionMode or backendType; coerce
   // each bad value to undefined in place rather than trusting it downstream.
+  const isStr = (v: unknown): v is string => typeof v === 'string';
   for (const raw of t.members as unknown[]) {
     if (!raw || typeof raw !== 'object') continue;
     const member = raw as TeamMember;
@@ -588,6 +609,21 @@ export function readTeamFile(dir: string): TeamFile | null {
     if (member.backendType !== undefined && !isBackendType(member.backendType)) {
       member.backendType = undefined;
     }
+    // A pane id must be a non-empty string (parity: Claude only honors a real
+    // tmuxPaneId when deriving isHidden); coerce a non-string/empty to undefined.
+    if (member.tmuxPaneId !== undefined && (!isStr(member.tmuxPaneId) || member.tmuxPaneId.length === 0)) {
+      member.tmuxPaneId = undefined;
+    }
+    // Subscriptions must be an array of strings; drop a malformed value so routing
+    // never trusts a non-list (parity: Claude stores subscriptions as string[]).
+    if (member.subscriptions !== undefined && (!Array.isArray(member.subscriptions) || !member.subscriptions.every(isStr))) {
+      member.subscriptions = undefined;
+    }
+  }
+  // Team-level hiddenPaneIds must be a string array (parity: discovery coerces
+  // `hiddenPaneIds ?? []` into a Set); a corrupt non-array is coerced to undefined.
+  if (t.hiddenPaneIds !== undefined && (!Array.isArray(t.hiddenPaneIds) || !t.hiddenPaneIds.every(isStr))) {
+    t.hiddenPaneIds = undefined;
   }
   return t as TeamFile;
 }
@@ -740,6 +776,7 @@ interface DeclaredMember {
   model?: string;
   permissionMode?: PermissionMode;
   color?: AgentColorName;
+  subscriptions?: string[];
 }
 
 /**
@@ -762,6 +799,7 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
     let model: string | undefined;
     let permRaw: string | undefined;
     let colorRaw: unknown;
+    let subsRaw: unknown;
     if (typeof item === 'string') {
       rawName = item;
     } else if (item && typeof item === 'object') {
@@ -771,6 +809,7 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
       model = typeof o.model === 'string' ? o.model : undefined;
       permRaw = typeof o.permission_mode === 'string' ? o.permission_mode : undefined;
       colorRaw = o.color;
+      subsRaw = o.subscriptions;
     }
     if (!rawName) continue;
     const name = sanitizeAgentName(rawName);
@@ -787,8 +826,17 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
     // 'automatic' value normalizes to undefined so the teammate falls back to the
     // round-robin palette assignment made on spawn.
     const color = parseAgentColor(colorRaw);
+    // Per-member subscriptions (parity: Claude's per-member `subscriptions: string[]`
+    // declaring which topics/channels a teammate receives). Only a clean array of
+    // non-empty strings is kept; anything else is dropped so routing never trusts a
+    // malformed list. An empty result normalizes to undefined.
+    let subscriptions: string[] | undefined;
+    if (Array.isArray(subsRaw)) {
+      const subs = subsRaw.filter((s): s is string => typeof s === 'string' && s.length > 0);
+      if (subs.length > 0) subscriptions = subs;
+    }
     seen.add(name);
-    out.push({ name, agentType, model, permissionMode, color });
+    out.push({ name, agentType, model, permissionMode, color, subscriptions });
   }
   return { members: out };
 }
@@ -910,6 +958,11 @@ export const teamCreateTool: ToolDefinition = {
             model: { type: 'string' },
             permission_mode: { type: 'string' },
             color: { type: 'string', description: `Display color (one of: ${AGENT_COLORS.join(', ')}, or "automatic").` },
+            subscriptions: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Topics/channels this teammate subscribes to for selective message routing.',
+            },
           },
         },
       },
@@ -1029,6 +1082,7 @@ export const teamCreateTool: ToolDefinition = {
           model: m.model,
           permissionMode: m.permissionMode,
           color: m.color,
+          subscriptions: m.subscriptions,
           joinedAt: now,
           isActive: false,
         })),
@@ -1376,9 +1430,71 @@ export function removeTeamMember(nameOrId: string): TeamMember | null {
   if (m.name === TEAM_LEAD_NAME) return null;
   const idx = currentTeam.members.indexOf(m);
   const [removed] = currentTeam.members.splice(idx, 1);
+  if (removed.tmuxPaneId) scrubHiddenPane(removed.tmuxPaneId);
   persistTeam();
   teamDebug(`Removed member ${removed.name} (${removed.agentId}) from team ${currentTeam.name}`);
   return removed;
+}
+
+/**
+ * Drop a pane id from the active team's {@link TeamFile.hiddenPaneIds} set, so a
+ * disband/remove of the member owning that pane never leaves a dangling hidden-pane
+ * entry (parity: Claude Code's `removeMemberFromTeam` scrubs the pane from
+ * hiddenPaneIds). In-memory mutation only — the caller persists. Returns true when
+ * the set actually changed.
+ */
+function scrubHiddenPane(paneId: string): boolean {
+  if (!currentTeam?.hiddenPaneIds) return false;
+  const next = currentTeam.hiddenPaneIds.filter(p => p !== paneId);
+  if (next.length === currentTeam.hiddenPaneIds.length) return false;
+  currentTeam.hiddenPaneIds = next.length > 0 ? next : undefined;
+  return true;
+}
+
+/**
+ * Remove a teammate from the active team keyed by its terminal pane id (parity:
+ * Claude Code's `removeMemberFromTeam(tmuxPaneId)`), ALSO scrubbing that pane from
+ * the team's {@link TeamFile.hiddenPaneIds} set so no dangling hidden entry remains.
+ * Unlike {@link removeTeamMember} (name/agentId keyed), this is the pane-keyed path
+ * the roster uses when a user closes a pane. The lead is never removable. Returns
+ * the removed {@link TeamMember} (persisting the change), or null when there is no
+ * active team or no member owns that pane.
+ */
+export function removeMemberByPaneId(paneId: string): TeamMember | null {
+  if (!currentTeam || !paneId) return null;
+  const m = currentTeam.members.find(mm => mm.tmuxPaneId === paneId);
+  if (!m || m.name === TEAM_LEAD_NAME) return null;
+  const idx = currentTeam.members.indexOf(m);
+  const [removed] = currentTeam.members.splice(idx, 1);
+  scrubHiddenPane(paneId);
+  persistTeam();
+  teamDebug(`Removed member ${removed.name} by pane ${paneId} from team ${currentTeam.name}`);
+  return removed;
+}
+
+/**
+ * Set (or clear) the hidden state of a teammate's pane in the active team (parity:
+ * Claude Code's team-file `hiddenPaneIds` toggle driven from the roster view).
+ * Adding is idempotent (a pane already hidden is not duplicated) and removing a pane
+ * that is not hidden is a no-op. Persists only when the set actually changed.
+ * Returns true when the hidden set changed, false otherwise (including no active
+ * team or an empty pane id).
+ */
+export function setMemberPaneHidden(paneId: string, hidden: boolean): boolean {
+  if (!currentTeam || !paneId) return false;
+  const current = currentTeam.hiddenPaneIds ?? [];
+  const isHidden = current.includes(paneId);
+  if (hidden) {
+    if (isHidden) return false;
+    currentTeam.hiddenPaneIds = [...current, paneId];
+  } else {
+    if (!isHidden) return false;
+    const next = current.filter(p => p !== paneId);
+    currentTeam.hiddenPaneIds = next.length > 0 ? next : undefined;
+  }
+  persistTeam();
+  teamDebug(`${hidden ? 'Hid' : 'Unhid'} pane ${paneId} in team ${currentTeam.name}`);
+  return true;
 }
 
 /**
@@ -1415,6 +1531,9 @@ export function pruneIdleMembers(): TeamMember[] {
  */
 export function getTeammateStatuses(team: TeamFile | null = currentTeam): TeammateStatus[] {
   if (!team) return [];
+  // Build the hidden-pane set ONCE (parity: Claude's `new Set(hiddenPaneIds ?? [])`)
+  // so each member's isHidden is an O(1) membership test rather than a per-member scan.
+  const hidden = new Set(team.hiddenPaneIds ?? []);
   const out: TeammateStatus[] = [];
   for (const m of team.members) {
     if (m.name === TEAM_LEAD_NAME) continue;
@@ -1433,6 +1552,11 @@ export function getTeammateStatuses(team: TeamFile | null = currentTeam): Teamma
       // Surface a PANE backend only (parity: Claude builds status.backendType via
       // isPaneBackend — an in-process/unknown backend projects to undefined).
       backendType: isPaneBackend(m.backendType) ? m.backendType : undefined,
+      tmuxPaneId: m.tmuxPaneId,
+      // A member is hidden only when it HAS a pane and that pane is in the set
+      // (parity: hiddenPaneIds.has(member.tmuxPaneId)); a paneless (in-process)
+      // teammate is never hidden.
+      isHidden: m.tmuxPaneId ? hidden.has(m.tmuxPaneId) : false,
       idleSince: running ? undefined : m.idleSince,
     });
   }
