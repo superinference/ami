@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { formatSize } from './spill-output';
+import { formatUsageClause } from '../process-manager';
 import { agentResultPath } from './task';
 
 /** Default cap on how long task_output({wait:true}) blocks for a task to finish. */
@@ -229,7 +230,11 @@ export const taskOutputTool: ToolDefinition = {
         // (mirrors Claude's "waiting for task" progress line). Emitted each poll
         // with the task id, status, and elapsed time.
         const secs = (result.elapsedMs / 1000).toFixed(0);
-        context.onProgress?.(`waiting for task ${taskId} (${result.status}, ${secs}s elapsed)`);
+        // The "esc to give additional instructions" affordance mirrors Claude
+        // Code's renderToolUseProgressMessage — it tells the user the blocking
+        // wait is interruptible (AMI honours esc→abort at L227), instead of the
+        // wait looking like an opaque hang.
+        context.onProgress?.(`waiting for task ${taskId} (${result.status}, ${secs}s elapsed; esc to give additional instructions)`);
         await new Promise(r => setTimeout(r, WAIT_POLL_INTERVAL_MS));
         result = context.processManager.getOutput(taskId, tail, filterRe, TASK_OUTPUT_READ_BYTES);
       }
@@ -298,6 +303,28 @@ export const taskOutputTool: ToolDefinition = {
             ? `Remediation: inspect the full output at ${taskMeta.outputPath}, fix the cause, then re-run the command.`
             : 'Remediation: review the output above, fix the cause, then re-run the command.',
         );
+      }
+    }
+
+    // Structured worker-result USAGE block (parity with Claude Code's coordinator
+    // result envelope, which documents `usage: { total_tokens, tool_uses,
+    // duration_ms }`). For a TERMINAL agent task, append a single canonical usage
+    // line — duration + total tokens + tool uses — built from the tracked entry's
+    // final totals (resultTokenCount/resultToolCount, falling back to the live
+    // tokenCount/toolCount counters). Reuses `formatUsageClause` so the usage
+    // wording has ONE source shared with the background-completion note (no
+    // duplicate formatter). Emitted only when token/tool stats exist, so a bash
+    // task (no AI usage) does not get a line that merely restates Elapsed.
+    if (result.status !== 'running' && taskMeta) {
+      const usageTokens = taskMeta.resultTokenCount ?? taskMeta.tokenCount;
+      const usageTools = taskMeta.resultToolCount ?? taskMeta.toolCount;
+      if (typeof usageTokens === 'number' || typeof usageTools === 'number') {
+        const clause = formatUsageClause({
+          durationMs: result.elapsedMs,
+          tokenCount: usageTokens,
+          toolCount: usageTools,
+        }).trim();
+        if (clause) lines.push(clause);
       }
     }
 

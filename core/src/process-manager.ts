@@ -416,7 +416,7 @@ export function buildCompletionSummary(
  * unchanged. Pure + exported so the wording has ONE source (No-Duplication rule) and
  * is unit-testable in isolation.
  */
-export function formatUsageClause(event: CompletedTaskEvent): string {
+export function formatUsageClause(event: Pick<CompletedTaskEvent, 'durationMs' | 'tokenCount' | 'toolCount'>): string {
   const parts: string[] = [];
   if (typeof event.durationMs === 'number' && event.durationMs >= 0) {
     parts.push(`ran ${(event.durationMs / 1000).toFixed(1)}s`);
