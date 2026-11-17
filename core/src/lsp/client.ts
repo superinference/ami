@@ -135,6 +135,37 @@ export type LspInitializationStatus =
   | { status: 'success' }
   | { status: 'failed'; error: string };
 
+/**
+ * Aggregate outcome of wiring diagnostic-notification handling across every
+ * language server, mirroring Claude Code's passiveFeedback `HandlerRegistrationResult`
+ * (services/lsp/passiveFeedback.ts L104-L114). Claude registers a
+ * `textDocument/publishDiagnostics` handler on each `LSPServerInstance` in a loop,
+ * isolates per-server failures, and returns this typed object for monitoring/testing.
+ *
+ * AMI dispatches `publishDiagnostics` CENTRALLY (one client-level handler fan-out in
+ * {@link LSPClient.deliverDiagnostics}), so there is no per-instance handler to
+ * register; instead {@link LSPClient.registerDiagnosticHandlers} enumerates the
+ * servers attempted this session, VALIDATES each can actually deliver diagnostics
+ * (live, initialized, readable stdout), isolates a dead/half-open server as a
+ * per-server `registrationError`, and returns this SAME typed shape — consolidating
+ * the already-tracked per-server lifecycle + diagnostic-failure state into Claude's
+ * monitoring schema rather than adding a parallel tracker.
+ */
+export interface HandlerRegistrationResult {
+  /** Total number of servers attempted this session (the enumeration universe). */
+  totalServers: number;
+  /** Number of servers ready to deliver diagnostics (running + initialized + readable). */
+  successCount: number;
+  /** Per-server readiness failures, isolated so one bad server never masks the rest. */
+  registrationErrors: Array<{ serverName: string; error: string }>;
+  /**
+   * Snapshot copy of the consecutive `publishDiagnostics` processing-failure counts
+   * per server (Claude's `diagnosticFailures` map). A copy, so a caller inspecting
+   * the monitoring result cannot mutate the client's live failure tracker.
+   */
+  diagnosticFailures: Map<string, { count: number; lastError: string }>;
+}
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -708,6 +739,84 @@ export class LSPClient implements DiagnosticSource {
   /** Introspection snapshot for every language server attempted this session. */
   getAllServerStatus(): LspServerStatus[] {
     return [...this.serverStatus.keys()].map((lang) => this.getServerStatus(lang)!);
+  }
+
+  /**
+   * Wire diagnostic-notification handling across every language server and report
+   * the aggregate outcome, mirroring Claude Code's
+   * `registerLSPNotificationHandlers` (services/lsp/passiveFeedback.ts L124-L324).
+   *
+   * Claude loops over each server instance, registers a
+   * `textDocument/publishDiagnostics` handler, isolates per-server failures, and
+   * returns a {@link HandlerRegistrationResult}. AMI dispatches publishDiagnostics
+   * CENTRALLY, so an optional `observer` is attached ONCE at the client level (its
+   * fan-out already reaches every server); the per-server loop instead VALIDATES
+   * that each attempted server can actually deliver diagnostics — a live,
+   * initialized connection with a readable stdout channel — and isolates a
+   * crashed/half-open/errored server as a per-server `registrationError` so one bad
+   * server never masks the readiness of the rest. The aggregate "N/M ready" status
+   * is logged (parity with Claude's aggregate report) and the typed result is
+   * returned for monitoring/introspection (surfaced by `/doctor`) and testing. No
+   * second diagnostic tracker is created: `diagnosticFailures` is a snapshot of the
+   * existing per-server consecutive-failure state.
+   */
+  registerDiagnosticHandlers(observer?: NotificationHandler): HandlerRegistrationResult {
+    // Attach the optional extra observer once; the central fan-out delivers to it
+    // for every server (no per-server re-registration, which would double-fire it).
+    if (observer) this.onNotification('textDocument/publishDiagnostics', observer);
+
+    const registrationErrors: Array<{ serverName: string; error: string }> = [];
+    let successCount = 0;
+    // Enumeration universe: every server attempted this session. The retained
+    // status map survives a crash (unlike the live `servers` map), so a server that
+    // failed to start is still counted and reported — the AMI analogue of Claude's
+    // `manager.getAllServers()`.
+    const languages = [...this.serverStatus.keys()];
+    for (const language of languages) {
+      const conn = this.servers.get(language);
+      // Validate the server can DELIVER diagnostics: a live, initialized connection
+      // (the "has onNotification" analogue — a torn-down/crashed server has no live
+      // channel). Isolate a not-ready server as a per-server error and continue.
+      if (!conn || !conn.initialized) {
+        const status = this.serverStatus.get(language);
+        registrationErrors.push({
+          serverName: language,
+          error: status?.lastError ?? `server is ${status?.state ?? 'stopped'}`,
+        });
+        continue;
+      }
+      const stdout = conn.proc.stdout;
+      if (!stdout || stdout.destroyed || conn.proc.exitCode !== null || conn.proc.signalCode !== null) {
+        registrationErrors.push({
+          serverName: language,
+          error: 'server connection is not readable (cannot deliver diagnostics)',
+        });
+        continue;
+      }
+      successCount++;
+    }
+
+    const totalServers = languages.length;
+    // Aggregate status report (parity with Claude's "N/M succeeded, failed …").
+    if (registrationErrors.length > 0) {
+      const failed = registrationErrors.map((e) => `${e.serverName} (${e.error})`).join(', ');
+      logError(
+        'lsp',
+        `LSP diagnostic handler registration: ${successCount}/${totalServers} server(s) ready; not ready: ${failed}`,
+      );
+    } else if (totalServers > 0) {
+      log('lsp', `LSP diagnostic handlers ready for all ${totalServers} server(s)`);
+    }
+
+    return {
+      totalServers,
+      successCount,
+      registrationErrors,
+      // Deep-copy the live failure tracker so the monitoring result is inert.
+      diagnosticFailures: new Map(
+        [...this.diagnosticFailures].map(([lang, v]) => [lang, { ...v }]),
+      ),
+    };
   }
 
   /**

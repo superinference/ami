@@ -5,6 +5,7 @@ export type {
   LspServerState,
   LspServerStatus,
   LspInitializationStatus,
+  HandlerRegistrationResult,
 } from './client';
 export { LspHealthMonitor, collectLspHealthErrors, LSP_POLL_INTERVAL_MS } from './health-monitor';
 export type { LspHealthError, LspHealthMonitorOptions, HealthScheduler } from './health-monitor';

@@ -430,6 +430,7 @@ export type {
   LspServerState,
   LspServerStatus,
   LspInitializationStatus,
+  HandlerRegistrationResult,
   LspHealthError,
   LspHealthMonitorOptions,
   HealthScheduler,
