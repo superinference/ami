@@ -2355,6 +2355,60 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   recordGlobalConfigWrite(target);
 }
 
+/**
+ * The known-default project config written over a file by {@link resetConfigToDefault}.
+ * An empty object means "all built-in defaults" — AMI has no mandatory config keys, so
+ * every setting falls back to its engine default when the file is `{}`. Frozen so the
+ * shared default can never be mutated in place (each write takes a fresh shallow copy).
+ * Parity: Claude Code's InvalidConfigDialog "Reset with default configuration" branch,
+ * which writes `error.defaultConfig` over the broken file.
+ */
+export const DEFAULT_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({});
+
+/** Outcome of a {@link resetConfigToDefault} self-heal. */
+export interface ResetConfigResult {
+  /** The config file that was (re)written. */
+  path: string;
+  /**
+   * Where the previous bytes were quarantined (`<file>.corrupt-<ts>`, content-deduped),
+   * or null when the file was absent or the quarantine write itself failed.
+   */
+  backupPath: string | null;
+  /** True when a pre-existing file's bytes were captured (and backed up) before the reset. */
+  hadExisting: boolean;
+}
+
+/**
+ * Self-heal a config file: QUARANTINE its current bytes (if any) to a
+ * `<file>.corrupt-<ts>` backup, then write {@link DEFAULT_PROJECT_CONFIG} in their
+ * place — so a user whose `config.json` is corrupt (and is therefore being silently
+ * ignored, with `/config set` refusing to overwrite it) can recover in ONE action
+ * instead of hand-editing broken JSON. The previous content is never lost: it is backed
+ * up first (content-deduped by {@link backupCorruptConfig}), then the default is written
+ * through the canonical atomic {@link safeWriteConfig} path (temp+rename, durable flush,
+ * mode preservation, internal-write suppression, symlink write-through). Returns the
+ * quarantine path so a caller can tell the user exactly where their old file went.
+ * Parity: Claude Code's InvalidConfigDialog "Reset with default configuration" branch.
+ */
+export function resetConfigToDefault(filePath: string): ResetConfigResult {
+  // Read through a symlinked config path to its target so the pre-reset snapshot
+  // captures the REAL current bytes (safeWriteConfig writes through the same target).
+  const target = resolveConfigWriteTarget(filePath);
+  let previous: string | null = null;
+  try {
+    if (fsHooks.existsSync(target)) previous = fsHooks.readFileSync(target, 'utf-8') as string;
+  } catch {
+    // Unreadable present file — nothing recoverable to quarantine; still reset it.
+    previous = null;
+  }
+  // Quarantine the prior bytes (deduped against an identical existing quarantine) so a
+  // corrupt config stays recoverable after the reset.
+  const backupPath = previous !== null ? backupCorruptConfig(target, previous) : null;
+  safeWriteConfig(filePath, { ...DEFAULT_PROJECT_CONFIG });
+  coreLog('config', `reset ${filePath} to default config${backupPath ? ` (previous content backed up to ${backupPath})` : ''}`);
+  return { path: filePath, backupPath, hadExisting: previous !== null };
+}
+
 /** Why a {@link updateConfigFile} call did (or did not) persist. */
 export type UpdateConfigReason = 'written' | 'no-change' | 'corrupt';
 
