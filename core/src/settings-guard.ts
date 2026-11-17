@@ -443,6 +443,85 @@ export const TIER_LOCKED_KEYS = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
+// Nested-key (sub-key) granularity for governed settings (parity: Claude Code's
+// settings.ts validNestedKeys — permissions/sandbox/hooks are expanded ONE level
+// deep so a sub-path like `permissions.deny` or `sandbox.allowUnsandboxedCommands`
+// is governed INDEPENDENTLY of its siblings). AMI's flat {@link MANAGED_ONLY_KEYS}
+// / {@link TIER_LOCKED_KEYS} could only lock/manage an ENTIRE top-level key — it
+// could not lock `permissions.deny` while leaving `permissions.allow` overridable.
+// These dotted sets add that granularity; the {@link isManagedOnlyKey} /
+// {@link isTierLockedKey} predicates below unify flat + nested + ancestor lookup so
+// every guard entry point (canOverride / getEffectiveTier / filterManagedKeys /
+// SettingsGuard / the config-tool write guard) honors sub-key governance.
+// ---------------------------------------------------------------------------
+
+/**
+ * Dotted sub-keys that are admin/managed-only even though their top-level
+ * container (`permissions`, `sandbox`) is itself overridable. Each weakens a
+ * security boundary — the bypass-permissions escape hatch and the two sandbox
+ * exemption toggles — so a project/local/env/cli tier must not be able to set it
+ * on itself, mirroring the top-level {@link MANAGED_ONLY_KEYS}. Parity: Claude's
+ * nested `permissions.disableBypassPermissionsMode` /
+ * `sandbox.allowUnsandboxedCommands` managed sub-keys.
+ */
+export const MANAGED_ONLY_NESTED_KEYS = new Set<string>([
+  'permissions.disableBypassPermissionsMode',
+  'sandbox.allowUnsandboxedCommands',
+  'sandbox.autoAllowBashIfSandboxed',
+]);
+
+/**
+ * Dotted sub-keys that are tier-locked: a lower-priority tier cannot override the
+ * value a higher tier set, but (unlike {@link MANAGED_ONLY_NESTED_KEYS}) any tier
+ * may be the authoritative one. `permissions.deny` is the canonical case — a
+ * higher tier's deny-list must not be shadowable by a lower tier editing only the
+ * `deny` sub-key. Parity: Claude's nested-key handling for `permissions.deny`.
+ */
+export const TIER_LOCKED_NESTED_KEYS = new Set<string>([
+  'permissions.deny',
+]);
+
+/**
+ * All dotted ancestors of `key`, nearest-first-excluded → `'a.b.c'` → `['a','a.b']`.
+ * A flat key (no dot) has no ancestors. Used so a sub-key inherits the governance
+ * of a managed/locked CONTAINER key (if the whole `permissions` key were managed,
+ * `permissions.x` is managed too).
+ */
+function dottedAncestors(key: string): string[] {
+  const parts = key.split('.');
+  if (parts.length < 2) return [];
+  const out: string[] = [];
+  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('.'));
+  return out;
+}
+
+/**
+ * True when `key` is governed as managed-only — directly (flat {@link
+ * MANAGED_ONLY_KEYS} or nested {@link MANAGED_ONLY_NESTED_KEYS}) or by inheritance
+ * from a managed-only dotted ancestor. For a flat key this is exactly
+ * `MANAGED_ONLY_KEYS.has(key)`, so existing top-level behavior is unchanged.
+ */
+export function isManagedOnlyKey(key: string): boolean {
+  if (MANAGED_ONLY_KEYS.has(key) || MANAGED_ONLY_NESTED_KEYS.has(key)) return true;
+  return dottedAncestors(key).some(
+    p => MANAGED_ONLY_KEYS.has(p) || MANAGED_ONLY_NESTED_KEYS.has(p),
+  );
+}
+
+/**
+ * True when `key` is tier-locked — directly (flat {@link TIER_LOCKED_KEYS} or
+ * nested {@link TIER_LOCKED_NESTED_KEYS}) or by inheritance from a tier-locked
+ * dotted ancestor. For a flat key this is exactly `TIER_LOCKED_KEYS.has(key)`, so
+ * existing top-level behavior is unchanged.
+ */
+export function isTierLockedKey(key: string): boolean {
+  if (TIER_LOCKED_KEYS.has(key) || TIER_LOCKED_NESTED_KEYS.has(key)) return true;
+  return dottedAncestors(key).some(
+    p => TIER_LOCKED_KEYS.has(p) || TIER_LOCKED_NESTED_KEYS.has(p),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // JSON Schema generation for the settings file (parity: Claude Code's
 // utils/settings/schemaOutput.ts generateSettingsJSONSchema). A published JSON
 // Schema lets editors give autocomplete + live validation for settings.json (via
@@ -592,20 +671,24 @@ const TIER_PRIORITY: Record<SettingsTier, number> = {
 };
 
 export function canOverride(key: string, source: SettingsTier, existing: SettingsTier): boolean {
-  if (MANAGED_ONLY_KEYS.has(key) && source !== 'managed') return false;
-  if (TIER_LOCKED_KEYS.has(key) && TIER_PRIORITY[source] > TIER_PRIORITY[existing]) return false;
+  // Nested-aware: a dotted sub-key (or a sub-key of a managed/locked container) is
+  // governed exactly like a flat key — see {@link isManagedOnlyKey}/{@link
+  // isTierLockedKey}. For a flat key these reduce to the original Set.has checks,
+  // so top-level behavior is identical.
+  if (isManagedOnlyKey(key) && source !== 'managed') return false;
+  if (isTierLockedKey(key) && TIER_PRIORITY[source] > TIER_PRIORITY[existing]) return false;
   return true;
 }
 
 export function getEffectiveTier(key: string, sources: SettingsSource[]): SettingsTier | null {
   if (sources.length === 0) return null;
-  if (MANAGED_ONLY_KEYS.has(key)) {
+  if (isManagedOnlyKey(key)) {
     const managed = sources.find(s => s.tier === 'managed');
     return managed ? managed.tier : null;
   }
   // `sources` is guaranteed non-empty here (the length-0 case returned above),
   // so `sources[0]` is a safe seed and `best` is never null — no `?? null` arm.
-  if (TIER_LOCKED_KEYS.has(key)) {
+  if (isTierLockedKey(key)) {
     let best = sources[0];
     for (const s of sources) {
       if (TIER_PRIORITY[s.tier] < TIER_PRIORITY[best.tier]) {
@@ -629,11 +712,53 @@ export function filterManagedKeys(config: Record<string, unknown>, sourceTier: S
   for (const [key, value] of Object.entries(config)) {
     if (MANAGED_ONLY_KEYS.has(key) && sourceTier !== 'managed') {
       rejected.push(key);
-    } else {
-      filtered[key] = value;
+      continue;
     }
+    // Nested granularity: a top-level CONTAINER (e.g. `permissions`, `sandbox`) is
+    // not itself managed-only, but may hold managed-only SUB-keys. From a non-managed
+    // source, drop just those dotted sub-keys and keep the valid siblings, rather than
+    // passing the whole object through (which would let a project self-set e.g.
+    // `sandbox.allowUnsandboxedCommands`). Parity: Claude's one-level nested-key
+    // expansion of permissions/sandbox/hooks.
+    if (
+      sourceTier !== 'managed' &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      const nested = filterNestedManagedKeys(key, value as Record<string, unknown>);
+      if (nested.rejected.length > 0) {
+        filtered[key] = nested.kept;
+        rejected.push(...nested.rejected);
+        continue;
+      }
+    }
+    filtered[key] = value;
   }
   return { filtered, rejected };
+}
+
+/**
+ * Drop the managed-only dotted sub-keys of a single container object, returning the
+ * kept remainder and the dotted names rejected (e.g. `sandbox.allowUnsandboxedCommands`).
+ * Only descends ONE level (parity with Claude's nested-key expansion); deeper
+ * structure is left intact.
+ */
+function filterNestedManagedKeys(
+  containerKey: string,
+  container: Record<string, unknown>,
+): { kept: Record<string, unknown>; rejected: string[] } {
+  const kept: Record<string, unknown> = {};
+  const rejected: string[] = [];
+  for (const [subKey, subValue] of Object.entries(container)) {
+    const dotted = `${containerKey}.${subKey}`;
+    if (isManagedOnlyKey(dotted)) {
+      rejected.push(dotted);
+    } else {
+      kept[subKey] = subValue;
+    }
+  }
+  return { kept, rejected };
 }
 
 export class SettingsGuard {
@@ -648,7 +773,7 @@ export class SettingsGuard {
     // shape is preserved so each UI can still render it however it likes. Parity:
     // Claude Code's managed/policy-locked rule message ("configured by managed
     // settings and cannot be modified — contact your system administrator").
-    const reason = MANAGED_ONLY_KEYS.has(key)
+    const reason = isManagedOnlyKey(key)
       ? `"${key}" is managed by your organization and cannot be set here — contact your administrator.`
       : `"${key}" is locked at tier "${existing}" and cannot be overridden by "${source}" — set it at the "${existing}" tier or higher.`;
     this._blockedOverrides.push({ key, source, reason });

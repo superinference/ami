@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
-import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
+import { canOverride, isManagedOnlyKey } from '../settings-guard';
 import { listProviders, getAgentModelOptions, resolveModelAlias, validateModel } from '../model-registry';
 import { isSpecialFileStat } from '../path-safety';
 
@@ -215,7 +215,7 @@ export function configToolWriteBlockReason(key: string): string | null {
   // canOverride(project, managed) is false for both MANAGED_ONLY and TIER_LOCKED
   // keys, which is exactly the self-escalation set we must refuse here.
   if (canOverride(key, 'project', 'managed')) return null;
-  if (MANAGED_ONLY_KEYS.has(key)) {
+  if (isManagedOnlyKey(key)) {
     return `"${key}" is a managed-only setting and cannot be changed by the config tool. It is set by your administrator's managed config.`;
   }
   // TIER_LOCKED (security-sensitive) — e.g. permissionMode self-escalation.

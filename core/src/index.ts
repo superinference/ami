@@ -303,6 +303,7 @@ export type { RateLimitInfo } from './rate-limit-parser';
 export { canOverride, getEffectiveTier, filterManagedKeys, SettingsGuard, SETTINGS_TIERS } from './settings-guard';
 export type { SettingsTier, SettingsSource } from './settings-guard';
 export { MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS, isBypassPermissionsModeDisabled, isAllHooksDisabled, isManagedHooksOnly } from './settings-guard';
+export { MANAGED_ONLY_NESTED_KEYS, TIER_LOCKED_NESTED_KEYS, isManagedOnlyKey, isTierLockedKey } from './settings-guard';
 export { DANGEROUS_SHELL_SETTINGS, extractDangerousSettings, hasDangerousSettings, hasDangerousSettingsChanged, formatDangerousSettingsList } from './settings-guard';
 export type { DangerousShellSetting, DangerousSettings, DangerousSettingsInput } from './settings-guard';
 export { getSettingsTierShortName, getSettingsTierDisplayName, getSettingsTierDisplayNameLowercase, getSettingsTierLabels, getManagedSettingsSources } from './settings-guard';
