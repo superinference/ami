@@ -5,7 +5,6 @@ import {
   hasAnyRiskSignal,
   scanConfigRiskSignalsBySource,
   detectConfigEscalationVectors,
-  createTrustLatch,
 } from '../src/safe-mode';
 
 describe('scanConfigRiskSignals — structured per-capability detectors', () => {
@@ -111,38 +110,5 @@ describe('detectConfigEscalationVectors — unchanged high-risk flat set', () =>
     assert.deepEqual(detectConfigEscalationVectors({ hooks: { preToolUse: [{}] } }), []);
     assert.deepEqual(detectConfigEscalationVectors({ permissions: { allow: ['Bash'] } }), []);
     assert.deepEqual(detectConfigEscalationVectors({ mcpServers: { foo: {} } }), []);
-  });
-});
-
-describe('createTrustLatch — asymmetric latch (cache true, re-check false)', () => {
-  it('re-evaluates while untrusted, then latches on the first true', () => {
-    const latch = createTrustLatch();
-    let state = false;
-    let calls = 0;
-    const compute = () => { calls++; return state; };
-
-    assert.equal(latch.isLatched(), false);
-    assert.equal(latch.check(compute), false); // re-check #1
-    assert.equal(latch.check(compute), false); // re-check #2 (not cached)
-    assert.equal(calls, 2);
-
-    state = true;
-    assert.equal(latch.check(compute), true); // computes true → latch
-    assert.equal(calls, 3);
-    assert.equal(latch.isLatched(), true);
-
-    // once latched, the result sticks even if the underlying state flips back
-    state = false;
-    assert.equal(latch.check(compute), true);
-    assert.equal(calls, 3); // compute NOT called again
-  });
-
-  it('reset() clears the latch so it re-evaluates (new session)', () => {
-    const latch = createTrustLatch();
-    assert.equal(latch.check(() => true), true);
-    assert.equal(latch.isLatched(), true);
-    latch.reset();
-    assert.equal(latch.isLatched(), false);
-    assert.equal(latch.check(() => false), false);
   });
 });

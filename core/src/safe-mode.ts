@@ -146,35 +146,6 @@ export function detectConfigEscalationVectors(settings: Record<string, unknown> 
 }
 
 /**
- * Asymmetric trust latch: caches ONLY the trusted (true) result, and keeps
- * re-evaluating while still untrusted. Workspace trust transitions false→true
- * during a session but never back, so once granted it must stick; yet a
- * not-yet-granted state must keep re-checking so mid-session acceptance is picked
- * up on the next call. A plain memoize is wrong here — it would also cache the
- * `false` and never notice acceptance. Mirrors Claude's `_trustAccepted ||= …`.
- */
-export function createTrustLatch(): {
-  check(compute: () => boolean): boolean;
-  isLatched(): boolean;
-  reset(): void;
-} {
-  let latched = false;
-  return {
-    check(compute: () => boolean): boolean {
-      if (latched) return true;
-      latched = compute();
-      return latched;
-    },
-    isLatched(): boolean {
-      return latched;
-    },
-    reset(): void {
-      latched = false;
-    },
-  };
-}
-
-/**
  * Is `cwd` trusted by inheritance — i.e. itself or a descendant of a previously
  * trusted root (e.g. the git-root/original project path the user already
  * accepted)? Mirrors Claude's computeTrustDialogAccepted ancestor/git-root walk,
