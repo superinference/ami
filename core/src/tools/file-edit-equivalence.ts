@@ -1,4 +1,4 @@
-import { fuzzyFindAndReplace } from './fuzzy-match';
+import { fuzzyFindAndReplace, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { normalizeToLf } from './tool-utils';
 
 /**
@@ -34,6 +34,12 @@ export function applyEditsToContent(content: string, edits: FileEditLike[]): str
     }
     const result = fuzzyFindAndReplace(current, oldStr, newStr);
     if (result.error) {
+      // A no-op edit (normalization/reindent/quote-restyling erased the change)
+      // leaves content byte-identical — carry `current` forward unchanged rather
+      // than throwing, so "edit that does nothing" and "no edit" compare equal.
+      if (result.error === NOOP_EDIT_ERROR) {
+        continue;
+      }
       if (edit.replace_all && result.matchCount > 1) {
         current = current.split(oldStr).join(newStr);
         continue;

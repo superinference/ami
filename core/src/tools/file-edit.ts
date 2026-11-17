@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
-import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
+import { fuzzyFindAndReplace, findClosestLines, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
 import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import type { FileEncoding } from './tool-utils';
@@ -837,6 +837,10 @@ async function applySequentialEdits(
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
+      if (result.error === NOOP_EDIT_ERROR) {
+        failed.push(`Edit ${i + 1}: no change — old_string and new_string are equivalent after normalization`);
+        continue;
+      }
       if (result.matchCount === 0) {
         const searchLines = old_string.split('\n');
         const hints = findClosestLines(content, searchLines, 2);
@@ -1253,6 +1257,12 @@ export const fileEditTool: ToolDefinition = {
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
+      if (result.error === NOOP_EDIT_ERROR) {
+        return {
+          output: `Error: the edit to ${resolved} produces no change — old_string and new_string are equivalent after normalization. No edit applied.`,
+          isError: true,
+        };
+      }
       if (result.matchCount === 0) {
         fileCache.delete(resolved);
 

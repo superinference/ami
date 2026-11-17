@@ -182,7 +182,7 @@ export type { AgentModelOption } from './model-registry';
 export type { ValidateModelResult, ModelAlias } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, applyConfigStartupKnobs, applyConfigCaCerts, applyConfigGitignore, applyConfigAutoCompact, applyConfigPlansDirectory, applyConfigAnthropicBetas, resolveAdditionalDirectories, FAST_MODE_BETA, REDACT_THINKING_BETA, CONFIG_ENV_TIERS, loadConfigFileChecked, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, CONFIG_DOC_BASE, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS, loadPersistedSkillUsage, persistSkillUsageStat } from './config';
 export type { ProjectConfig, ConfigEnvLayers, ApplyConfigEnvResult, ConfigDiagnostic, ConfigValueIssue, ConfigSource } from './config';
-export { STRATEGY_NAMES } from './tools/fuzzy-match';
+export { STRATEGY_NAMES, NOOP_EDIT_ERROR } from './tools/fuzzy-match';
 export type { FuzzyResult, StrategyName, MatchPosition } from './tools/fuzzy-match';
 export { categorizePrompt, PROMPT_INTENTS, PROMPT_SCOPES, selectTier, maxTier, PROMPT_TIERS, TIER_RANK, matchesKeepGoingKeyword, matchesNegativeKeyword, getQuerySourceForAgent, getQuerySourceForREPL } from './prompt-categorizer';
 export type { Intent, Scope, PromptCategory, PromptTier, TierSignals } from './prompt-categorizer';

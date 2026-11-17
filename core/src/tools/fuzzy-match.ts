@@ -52,6 +52,17 @@ export function desanitizeMatchString(s: string): string {
   return out;
 }
 
+/**
+ * Error surfaced when an edit locates its target but produces byte-identical
+ * content — a no-op that normalization/reindent/quote-restyling erased (e.g.
+ * replacing `‘b’` with `'b'` when the file's curly typography is preserved, or a
+ * reindent that reproduces the region verbatim). Claude Code rejects such edits
+ * with its post-apply identity check; AMI surfaces the same so a no-op is never
+ * reported as a successful edit. Consumers compare `error === NOOP_EDIT_ERROR`
+ * rather than matching the message text.
+ */
+export const NOOP_EDIT_ERROR = 'new_string produces no change (edit is a no-op after normalization)';
+
 export interface MatchPosition {
   /** Byte offset (character index) in the **original** content. */
   start: number;
@@ -393,22 +404,97 @@ export function reindentReplacement(
 // Quote style preservation
 // ---------------------------------------------------------------------------
 
+const LEFT_DOUBLE_CURLY = '\u201c';
+const RIGHT_DOUBLE_CURLY = '\u201d';
+const LEFT_SINGLE_CURLY = '\u2018';
+const RIGHT_SINGLE_CURLY = '\u2019';
+
+/**
+ * Decide whether the quote at `chars[index]` sits in an OPENING context: it is
+ * at the start of the string, or the preceding character is whitespace, an
+ * opening bracket, or an em/en dash. Everything else is a closing context.
+ *
+ * This is a per-character context test (mirroring Claude Code's `isOpeningContext`)
+ * \u2014 it stays correct even when earlier quotes were skipped, unlike an even/odd
+ * running-parity counter which mis-flips every quote after a skipped/contraction
+ * apostrophe or a bracket-opened quote.
+ */
+function isOpeningContext(chars: string[], index: number): boolean {
+  if (index === 0) return true;
+  const prev = chars[index - 1];
+  return (
+    prev === ' ' ||
+    prev === '\t' ||
+    prev === '\n' ||
+    prev === '\r' ||
+    prev === '(' ||
+    prev === '[' ||
+    prev === '{' ||
+    prev === '\u2014' || // em dash
+    prev === '\u2013' // en dash
+  );
+}
+
+/** Restyle every ASCII `"` in `str` to the context-appropriate curly double quote. */
+function applyCurlyDoubleQuotes(str: string): string {
+  const chars = [...str];
+  const result: string[] = [];
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === '"') {
+      result.push(isOpeningContext(chars, i) ? LEFT_DOUBLE_CURLY : RIGHT_DOUBLE_CURLY);
+    } else {
+      result.push(chars[i]);
+    }
+  }
+  return result.join('');
+}
+
+/**
+ * Restyle every ASCII `'` in `str` to the context-appropriate curly single quote.
+ * An apostrophe flanked by two letters is a contraction (don't, it's) and always
+ * becomes the RIGHT single curly quote, so it never corrupts the open/close state
+ * of surrounding real quotes.
+ */
+function applyCurlySingleQuotes(str: string): string {
+  const chars = [...str];
+  const result: string[] = [];
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "'") {
+      const prev = i > 0 ? chars[i - 1] : undefined;
+      const next = i < chars.length - 1 ? chars[i + 1] : undefined;
+      const prevIsLetter = prev !== undefined && /\p{L}/u.test(prev);
+      const nextIsLetter = next !== undefined && /\p{L}/u.test(next);
+      if (prevIsLetter && nextIsLetter) {
+        // Contraction apostrophe \u2014 always a right single curly quote.
+        result.push(RIGHT_SINGLE_CURLY);
+      } else {
+        result.push(isOpeningContext(chars, i) ? LEFT_SINGLE_CURLY : RIGHT_SINGLE_CURLY);
+      }
+    } else {
+      result.push(chars[i]);
+    }
+  }
+  return result.join('');
+}
+
+/**
+ * When the matched file region uses curly typography but the replacement was
+ * written with ASCII quotes, restyle the replacement's ASCII quotes to curly so
+ * the edit preserves the file's typographic style. A replacement that already
+ * contains curly quotes of that kind is left untouched (the author chose their
+ * own glyphs).
+ */
 function preserveQuoteStyle(original: string, replacement: string): string {
   const hasCurlyDouble = /[\u201c\u201d]/.test(original);
   const hasCurlySingle = /[\u2018\u2019]/.test(original);
-  if (hasCurlyDouble && !replacement.includes('\u201c')) {
-    replacement = replacement.replace(/"/g, (m, offset) => {
-      const beforeCount = replacement.slice(0, offset).split('"').length - 1;
-      return beforeCount % 2 === 0 ? '\u201c' : '\u201d';
-    });
+  let result = replacement;
+  if (hasCurlyDouble && !/[\u201c\u201d]/.test(result)) {
+    result = applyCurlyDoubleQuotes(result);
   }
-  if (hasCurlySingle && !replacement.includes('\u2018')) {
-    replacement = replacement.replace(/'/g, (m, offset) => {
-      const beforeCount = replacement.slice(0, offset).split("'").length - 1;
-      return beforeCount % 2 === 0 ? '\u2018' : '\u2019';
-    });
+  if (hasCurlySingle && !/[\u2018\u2019]/.test(result)) {
+    result = applyCurlySingleQuotes(result);
   }
-  return replacement;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +564,12 @@ export function fuzzyFindAndReplace(
       replacement = preserveQuoteStyle(matchedRegion, replacement);
 
       const newContent = content.slice(0, start) + replacement + content.slice(end);
+      // Post-apply identity check: if normalization/reindent/quote-restyling made
+      // the replacement byte-identical to what was already there, the edit changed
+      // nothing. Surface it as a no-op error instead of a phantom "applied".
+      if (newContent === content) {
+        return { newContent: null, strategy: name, matchCount: 1, error: NOOP_EDIT_ERROR };
+      }
       return { newContent, strategy: name, matchCount: 1, error: null };
     }
 
