@@ -11,6 +11,7 @@
 // Types
 // ---------------------------------------------------------------------------
 
+import type { HookConfigEntry } from './hooks';
 import type { McpServerConfig } from './mcp/manager';
 import type { ThinkingLevel } from './model-capabilities';
 import { isSafeRelativePath } from './skill-catalog';
@@ -125,6 +126,16 @@ export interface SkillDefinition {
    *  defer to {@link disableNonInteractive}. Gated via
    *  {@link isSkillAvailableNonInteractive}. */
   supportsNonInteractive?: boolean;
+  /** Invocation-scoped lifecycle hooks declared in the skill's frontmatter (parity
+   *  with Claude Code's PromptCommand `hooks` + registerFrontmatterHooks). When a
+   *  FORKED skill carries these, they are registered on its sub-engine for the
+   *  duration of the invocation and torn down when the fork finishes — letting an
+   *  individual skill contribute e.g. a preToolUse guard scoped to its own run
+   *  instead of the global/plugin-only hooks AMI previously supported. Parsed from
+   *  SKILL.md frontmatter via {@link parseFrontmatterHooks} (hooks.ts) and stripped
+   *  for untrusted (installed/plugin) tiers by the SkillManager, mirroring how a
+   *  self-granted `auto-allow` permissionMode is refused. */
+  hooks?: HookConfigEntry[];
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
   /** Named agent type a FORKED skill runs as (parity with Claude's PromptCommand
    *  `agent?: string`). When set, the forked sub-engine is bound to this agent's
@@ -252,6 +263,15 @@ export interface AgentDefinition {
    *  (parity with Claude's agent `skills` allowlist). Normalized via
    *  {@link parseAgentSkills}. */
   skills?: string[];
+  /** Agent-lifecycle hooks declared in the agent's frontmatter (parity with Claude
+   *  Code's agent `hooks` field + registerFrontmatterHooks with `isAgent=true`).
+   *  When a NAMED subagent carries these, they are registered on its spawned
+   *  sub-engine for the duration of that agent's run and torn down when it finishes
+   *  — so an individual agent definition can declare its own scoped hooks instead of
+   *  relying on the global/plugin-only hooks surface. Parsed from frontmatter via
+   *  {@link parseFrontmatterHooks} (hooks.ts); REFUSED for plugin-sourced agents
+   *  (a privilege-escalation vector) alongside permission-mode / mcp-servers. */
+  hooks?: HookConfigEntry[];
   /** Restrict which sub-agent *types* this agent may itself spawn via the task
    *  tool (parity with Claude's `allowedAgentTypes` metadata). `undefined`/empty
    *  ⇒ no restriction. Checked with {@link canSpawnAgentType}. */
@@ -515,6 +535,9 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   // skill legitimately using those safe fields through the permission prompt.
   'allowedTools', 'disallowedTools', 'permissionMode', 'autoAllowPatterns',
   'mcpServers', 'mcpAutoAllowPatterns', 'mcpToolGuidance', 'defaultThinkingLevel',
+  // Invocation-scoped frontmatter hooks (declarative config the SkillManager parses
+  // + the sub-engine registers; trust-gated at parse/register time, not auto-run here).
+  'hooks',
 ]);
 
 /**
@@ -933,6 +956,9 @@ export function validateAgentDefinition(
   }
   if (raw.planModeRequired !== undefined && parseBooleanFlag(raw.planModeRequired).invalid) {
     warnings.push(`Invalid planModeRequired "${raw.planModeRequired}" (expected true/false)`);
+  }
+  if (raw.hooks !== undefined && !Array.isArray(raw.hooks)) {
+    warnings.push('Invalid hooks (expected an array of hook config entries)');
   }
 
   if (opts?.knownSkills && raw.skills) {

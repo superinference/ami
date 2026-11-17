@@ -671,6 +671,14 @@ export const skillTool: ToolDefinition = {
         ...(context._parentPermissionRules ?? []),
       ],
       permissionPromptHandler: context._permissionPromptHandler,
+      // Invocation-scoped frontmatter hooks (parity with Claude's registerFrontmatterHooks):
+      // the forked skill's OWN `hooks` plus, when it targets a named agent, that agent's
+      // `hooks`. Registered on the sub-engine for the duration of this fork and torn down
+      // when it shuts down. Skill hooks from untrusted tiers were already stripped at load.
+      ...((() => {
+        const fh = [...(skill?.hooks ?? []), ...(agentDef?.hooks ?? [])];
+        return fh.length > 0 ? { frontmatterHooks: fh } : {};
+      })()),
       abortController: subAbort,
     };
 

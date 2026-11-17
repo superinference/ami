@@ -1725,6 +1725,11 @@ export const taskTool: ToolDefinition = {
     // agent's declared display color, used for the live-roster badge unless the
     // caller passes an explicit per-spawn `color` override below.
     let agentColor: AgentColorName | undefined;
+    // Per-agent frontmatter hooks (parity: Claude's agent `hooks` + registerFrontmatterHooks
+    // with isAgent=true) — registered on the spawned sub-engine for the duration of this
+    // agent's run and torn down when it shuts down. Plugin-sourced agents never carry hooks
+    // (stripped at load), so this is always author-trusted.
+    let agentFrontmatterHooks: import('../hooks').HookConfigEntry[] | undefined;
     let effectiveMode = mode;
 
     if (subagentType && context._skillManager) {
@@ -1751,6 +1756,7 @@ export const taskTool: ToolDefinition = {
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
       agentColor = agentDef.color;
+      agentFrontmatterHooks = agentDef.hooks;
 
       // Per-agent persistent memory (parity: Claude's loadAgentMemoryPrompt).
       // When the agent definition declares a `memory` scope, load/seed its OWN
@@ -2157,6 +2163,9 @@ export const taskTool: ToolDefinition = {
       // swebench stance workflow into a verification-only agent).
       systemPrompt: finalSystemPrompt || undefined,
       tokenBudget: agentTokenBudget || undefined,
+      ...(agentFrontmatterHooks && agentFrontmatterHooks.length > 0
+        ? { frontmatterHooks: agentFrontmatterHooks }
+        : {}),
     };
 
     // fork: thread the parent's REAL conversation history into the child engine as

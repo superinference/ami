@@ -1892,6 +1892,58 @@ export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
   return out;
 }
 
+/**
+ * Parse a skill/agent frontmatter `hooks` value into AMI's flat {@link HookConfigEntry}
+ * array (parity with Claude Code's per-skill/per-agent frontmatter `hooks` field,
+ * registered scoped to the invocation/agent lifecycle by registerFrontmatterHooks).
+ *
+ * Accepts the authoring shapes used across AMI, reusing the single canonical
+ * translators so the two never drift from the on-disk `hooks.json` loader:
+ *   - A JSON STRING (inline or a `|` block scalar) holding either shape below —
+ *     this is how a SKILL.md / agent frontmatter field is authored, mirroring the
+ *     `mcp-servers` / `vars` JSON-string convention, because the line-based
+ *     frontmatter parser surfaces nested config as a raw string. Parsed via
+ *     `JSON.parse`; malformed JSON yields `[]`.
+ *   - AMI's flat array form — `[{ event, hook: {type,...}, matcher? }]` — each entry is
+ *     kept only when it has a string `event` and an object `hook`; the matcher's
+ *     tool-name tokens are translated via {@link translateHookMatcher} so a
+ *     Claude-Code-style `Edit|Write` matcher gates the AMI tools.
+ *   - Claude Code's map-keyed form — `{ PreToolUse: [{ matcher?, hooks: [...] }] }` —
+ *     delegated verbatim to {@link normalizeMapKeyedHooks}.
+ * Any other value (absent/number/boolean) yields `[]` so a malformed `hooks:` block
+ * can never crash the loader or register a garbage hook.
+ */
+export function parseFrontmatterHooks(value: unknown): HookConfigEntry[] {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return []; // malformed JSON authoring → no hooks (never throws)
+    }
+    return parseFrontmatterHooks(parsed);
+  }
+  if (Array.isArray(value)) {
+    const out: HookConfigEntry[] = [];
+    for (const raw of value) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const e = raw as Record<string, unknown>;
+      if (typeof e.event !== 'string' || e.event.trim().length === 0) continue;
+      if (!e.hook || typeof e.hook !== 'object' || Array.isArray(e.hook)) continue;
+      const matcher = typeof e.matcher === 'string' ? translateHookMatcher(e.matcher) : undefined;
+      out.push({
+        event: e.event.trim(),
+        hook: e.hook as HookConfigEntry['hook'],
+        ...(matcher ? { matcher } : {}),
+      });
+    }
+    return out;
+  }
+  return normalizeMapKeyedHooks(value);
+}
+
 export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string }>; shutdown?(): void };
 
 async function runCommandHookAsync(
@@ -2464,6 +2516,39 @@ export class HookManager extends EventEmitter {
         }
       }
     } catch {}
+  }
+
+  /**
+   * Register a set of already-parsed {@link HookConfigEntry}s scoped to THIS engine
+   * instance (parity with Claude Code's registerFrontmatterHooks, which installs a
+   * skill/agent's own frontmatter hooks for the duration of its invocation). The
+   * forked-skill / spawned-subagent sub-engine is a fresh short-lived engine, so a
+   * hook registered here lives exactly as long as that engine — the invocation-scoped
+   * lifecycle boundary — and is torn down naturally when the sub-engine shuts down
+   * (no dangling global hook).
+   *
+   * The same managed kill-switches as {@link loadFromFile} apply: `disableAllHooks`
+   * skips everything, and under `allowManagedHooksOnly` these author-sourced (non-
+   * managed) hooks do NOT register. Each entry is registered through the shared
+   * {@link processHookEntry} path (so event-protection tiers, introspection
+   * descriptors, and matcher gating all behave identically to file-loaded hooks),
+   * defaulting the provenance tier to `project` when the caller left `_source` unset.
+   */
+  registerConfigEntries(entries: readonly HookConfigEntry[], cwd: string): void {
+    if (!entries || entries.length === 0) return;
+    if (this.isAllHooksDisabled()) {
+      coreLog('hooks', 'Skipping frontmatter hooks: disableAllHooks policy / env is set');
+      return;
+    }
+    if (this._allowManagedHooksOnly) {
+      coreLog('hooks', 'Skipping frontmatter hooks: allowManagedHooksOnly policy is set');
+      return;
+    }
+    for (const raw of entries) {
+      if (!raw || typeof raw.event !== 'string' || !raw.hook) continue;
+      const entry: HookConfigEntry = { ...raw, _source: raw._source ?? 'project' };
+      this.processHookEntry(entry, cwd);
+    }
   }
 
   private processHookEntry(entry: HookConfigEntry, cwd: string): void {

@@ -1204,6 +1204,13 @@ export interface EngineConfig {
    *  allowlist. Undefined leaves HTTP hooks unrestricted (SSRF guard + non-2xx
    *  handling always apply regardless). */
   httpHookPolicy?: import('./hooks').HttpHookPolicy;
+  /** Invocation-scoped hooks a forked skill or spawned subagent contributes from its
+   *  OWN definition's frontmatter `hooks` field (parity with Claude Code's
+   *  registerFrontmatterHooks). Registered on this (sub-)engine's HookManager AFTER
+   *  the file-loaded hooks, so they layer on top for the lifetime of the sub-engine
+   *  and are torn down when it shuts down. Threaded by the skill/task tools from
+   *  SkillDefinition.hooks / AgentDefinition.hooks. */
+  frontmatterHooks?: import('./hooks').HookConfigEntry[];
   /** Stance skill name (--skill) — a skill pinned to govern the whole session/run:
    *  its body becomes the system-prompt overlay, plus its tool-scoping, bash
    *  auto-allow, MCP servers, and thinking level. Replaces the old persona. */
