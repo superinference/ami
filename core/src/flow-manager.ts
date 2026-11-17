@@ -14,6 +14,13 @@ export interface FlowInfo {
    *  consumer notify on terminal transition exactly once without tracking seen-state
    *  externally (set via markNotified()). Undefined/false = not yet surfaced. */
   notified?: boolean;
+  /** Wall-clock grace deadline: a terminal flow is retained (lingers in the inspector)
+   *  until this time, then becomes eligible for time-based eviction (pruneExpired()).
+   *  Mirrors Claude's per-task `evictAfter` (completion + PANEL_GRACE_MS) so a just-
+   *  finished row stays readable briefly before vanishing. Set on terminalization and
+   *  re-settable via scheduleEviction() (e.g. 0 = immediate dismiss). Undefined while
+   *  active. */
+  evictAfter?: number;
 }
 
 /**
@@ -37,6 +44,10 @@ export class FlowManager {
   private static readonly DEFAULT_KEY = '__default__';
   /** Cap on retained terminal (non-active) flows so they don't accumulate across a long session. */
   private static readonly MAX_RETAINED_TERMINAL = 20;
+  /** Grace window (ms) a terminal flow lingers before it is eligible for time-based
+   *  eviction. Mirrors Claude's framework `PANEL_GRACE_MS` so a freshly-finished row
+   *  stays readable briefly instead of disappearing the instant it completes. */
+  static readonly TERMINAL_GRACE_MS = 30_000;
 
   getOrCreateActiveFlow(description: string, windowMs = 5000, flowKey: string = FlowManager.DEFAULT_KEY): string {
     const now = Date.now();
@@ -85,8 +96,11 @@ export class FlowManager {
     return this.flows.get(flowId);
   }
 
-  /** All flows, oldest-first (stable ordering for the inspector). */
+  /** All flows, oldest-first (stable ordering for the inspector). Reading also sweeps
+   *  terminal flows whose grace window has elapsed, so lingering rows disappear once
+   *  the inspector next renders them (end-to-end wiring for the grace window). */
   listFlows(): FlowInfo[] {
+    this.pruneExpired();
     return Array.from(this.flows.values()).sort((a, b) => a.createdAt - b.createdAt);
   }
 
@@ -101,6 +115,9 @@ export class FlowManager {
     const anyFailed = statuses.some(isFail);
     flow.status = allFailed ? 'failed' : anyFailed ? 'partial' : 'completed';
     flow.completedAt = Date.now();
+    // Start the linger grace window: the row stays readable until this deadline,
+    // then pruneExpired()/listFlows() may sweep it (mirrors Claude's evictAfter).
+    flow.evictAfter = flow.completedAt + FlowManager.TERMINAL_GRACE_MS;
     // A terminal flow stops being the active target for every key that points at it.
     for (const [key, active] of this.activeByKey) {
       if (active.flowId === flowId) this.activeByKey.delete(key);
@@ -141,6 +158,34 @@ export class FlowManager {
     return Array.from(this.flows.values())
       .filter(f => f.status !== 'active' && !f.notified)
       .sort((a, b) => (a.completedAt ?? a.createdAt) - (b.completedAt ?? b.createdAt));
+  }
+
+  /** FUNCTIONAL: (Re)set a terminal flow's linger grace deadline. `graceMs` ms from
+   *  now (default TERMINAL_GRACE_MS); pass 0 to dismiss immediately (mirrors Claude's
+   *  stopOrDismissAgent evictAfter=0). Only terminal flows can be scheduled — active
+   *  and unknown flows return false and are untouched. */
+  scheduleEviction(flowId: string, graceMs: number = FlowManager.TERMINAL_GRACE_MS): boolean {
+    const flow = this.flows.get(flowId);
+    if (!flow || flow.status === 'active') return false;
+    flow.evictAfter = Date.now() + Math.max(0, graceMs);
+    return true;
+  }
+
+  /** FUNCTIONAL: Evict terminal, unpinned flows whose grace deadline has passed
+   *  (`evictAfter <= now`). Flows still within their grace window, pinned flows (the
+   *  inspector is viewing them), active flows, and terminal flows without a deadline
+   *  are all retained. Returns the ids actually evicted. Invoked on every listFlows()
+   *  and callable directly on a timer tick. */
+  pruneExpired(now: number = Date.now()): string[] {
+    const evicted: string[] = [];
+    for (const flow of this.flows.values()) {
+      if (flow.status === 'active') continue;
+      if (flow.evictAfter === undefined || flow.evictAfter > now) continue;
+      if (this.pinnedFlowIds.has(flow.flowId)) continue;
+      this.flows.delete(flow.flowId);
+      evicted.push(flow.flowId);
+    }
+    return evicted;
   }
 
   reset(): void {

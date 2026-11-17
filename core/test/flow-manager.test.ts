@@ -411,6 +411,85 @@ describe('FlowManager', () => {
     });
   });
 
+  describe('grace-window eviction (evictAfter / linger)', () => {
+    it('terminalizing a flow sets evictAfter to completedAt + grace window', () => {
+      const id = fm.createFlow('t');
+      fm.addAgent(id, 'a');
+      assert.equal(fm.getFlow(id)?.evictAfter, undefined, 'active flow has no evictAfter');
+      fm.updateFlowStatus(id, () => 'completed');
+      const flow = fm.getFlow(id)!;
+      assert.ok(typeof flow.completedAt === 'number');
+      assert.equal(flow.evictAfter, flow.completedAt! + FlowManager.TERMINAL_GRACE_MS,
+        'evictAfter is the completion time plus the grace window');
+    });
+
+    it('pruneExpired evicts terminal flows past their grace deadline, keeps those still within it', () => {
+      const expired = fm.createFlow('expired');
+      fm.addAgent(expired, 'a'); fm.updateFlowStatus(expired, () => 'completed');
+      const lingering = fm.createFlow('lingering');
+      fm.addAgent(lingering, 'b'); fm.updateFlowStatus(lingering, () => 'completed');
+      // Force the first one's deadline into the past; leave the second in its window.
+      fm.getFlow(expired)!.evictAfter = 100;
+      const evicted = fm.pruneExpired(1000);
+      assert.deepEqual(evicted, [expired], 'returns the ids it evicted');
+      assert.equal(fm.getFlow(expired), undefined, 'expired flow removed');
+      assert.ok(fm.getFlow(lingering), 'within-grace flow lingers');
+    });
+
+    it('pruneExpired never evicts a pinned flow even past its deadline', () => {
+      const id = fm.createFlow('pinned');
+      fm.addAgent(id, 'a'); fm.updateFlowStatus(id, () => 'completed');
+      fm.getFlow(id)!.evictAfter = 1;
+      fm.pinFlow(id);
+      const evicted = fm.pruneExpired(1000);
+      assert.deepEqual(evicted, [], 'pinned flow is retained');
+      assert.ok(fm.getFlow(id), 'pinned flow survives grace expiry');
+    });
+
+    it('pruneExpired ignores active flows and flows with no deadline', () => {
+      const active = fm.createFlow('active');
+      const terminalNoDeadline = fm.createFlow('term');
+      fm.addAgent(terminalNoDeadline, 'a'); fm.updateFlowStatus(terminalNoDeadline, () => 'completed');
+      fm.getFlow(terminalNoDeadline)!.evictAfter = undefined;
+      const evicted = fm.pruneExpired(Number.MAX_SAFE_INTEGER);
+      assert.deepEqual(evicted, [], 'nothing without a passed deadline is evicted');
+      assert.ok(fm.getFlow(active));
+      assert.ok(fm.getFlow(terminalNoDeadline));
+    });
+
+    it('scheduleEviction(id, 0) makes a terminal flow immediately evictable', () => {
+      const id = fm.createFlow('dismiss');
+      fm.addAgent(id, 'a'); fm.updateFlowStatus(id, () => 'completed');
+      const now = Date.now();
+      assert.equal(fm.scheduleEviction(id, 0), true, 'returns true for a terminal flow');
+      assert.ok(fm.getFlow(id)!.evictAfter! <= now, 'deadline is now (immediate dismiss)');
+      assert.deepEqual(fm.pruneExpired(now + 1), [id], 'immediately eligible for eviction');
+    });
+
+    it('scheduleEviction defaults to the grace window and rejects active/unknown flows', () => {
+      const active = fm.createFlow('active');
+      assert.equal(fm.scheduleEviction(active), false, 'cannot schedule an active flow');
+      assert.equal(fm.scheduleEviction('flow-nope'), false, 'unknown flow rejected');
+      const id = fm.createFlow('t');
+      fm.addAgent(id, 'a'); fm.updateFlowStatus(id, () => 'completed');
+      const before = Date.now();
+      assert.equal(fm.scheduleEviction(id), true);
+      assert.ok(fm.getFlow(id)!.evictAfter! >= before + FlowManager.TERMINAL_GRACE_MS,
+        'default grace applied');
+    });
+
+    it('listFlows auto-sweeps grace-expired terminal flows (end-to-end wiring)', () => {
+      const gone = fm.createFlow('gone');
+      fm.addAgent(gone, 'a'); fm.updateFlowStatus(gone, () => 'completed');
+      const kept = fm.createFlow('kept');
+      fm.getFlow(gone)!.evictAfter = 1; // deadline in the distant past
+      const listed = fm.listFlows().map(f => f.flowId);
+      assert.ok(!listed.includes(gone), 'expired terminal flow swept on list');
+      assert.ok(listed.includes(kept), 'active flow retained');
+      assert.equal(fm.getFlow(gone), undefined, 'actually removed from the store');
+    });
+  });
+
   describe('integration: time-window grouping', () => {
     it('groups rapid spawns into one flow', () => {
       const flowId = fm.getOrCreateActiveFlow('batch');
