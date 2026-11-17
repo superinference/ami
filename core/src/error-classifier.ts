@@ -459,6 +459,28 @@ export function parseMaxTokensContextOverflow(rawMessage: string): {
   return { inputTokens: parseInt(m[1], 10), maxTokens: parseInt(m[2], 10), contextLimit: parseInt(m[3], 10) };
 }
 
+/**
+ * Detect a DETERMINISTIC 400 "prompt is too long: N tokens > M maximum" error and
+ * return its parsed token counts, or undefined for any other error. This is the
+ * narrow do-not-retry variant: the INPUT (prompt) itself exceeds the context
+ * window, so — unlike the recoverable "input length and `max_tokens` exceed context
+ * limit" 400 (see {@link parseMaxTokensContextOverflow}, fixed by shrinking
+ * max_tokens) or a transient 429/5xx — re-sending the SAME request loops forever.
+ * Accepts an Error (its `.message`) or a raw string. Keyed on the literal
+ * "prompt is too long" phrase so it never swallows the broader context-overflow
+ * phrasings {@link isPromptTooLongMessage} recognizes. Mirrors Claude Code's
+ * `detectPromptTooLong` (utils/permissions/yoloClassifier.ts) — a distinct outcome
+ * so a caller can stop retrying a deterministic failure instead of hammering it.
+ */
+export function detectPromptTooLong(
+  error: string | Error | unknown,
+): { actualTokens: number | undefined; limitTokens: number | undefined } | undefined {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  if (typeof message !== 'string') return undefined;
+  if (!message.toLowerCase().includes('prompt is too long')) return undefined;
+  return parsePromptTooLongTokenCounts(message);
+}
+
 // ---------------------------------------------------------------------------
 // Message-level predicates — re-detect an already-rendered error by its text
 // ---------------------------------------------------------------------------
@@ -1092,6 +1114,57 @@ const ERROR_CATEGORY_TO_STOP_FAILURE_CLASS: Record<ErrorCategory, StopFailureErr
  */
 export function stopFailureErrorClass(error: string | Error | unknown): StopFailureErrorClass {
   return ERROR_CATEGORY_TO_STOP_FAILURE_CLASS[classifyError(error).category];
+}
+
+// ---------------------------------------------------------------------------
+// Config / plugin load-failure categorization — actionable remediation hints
+// ---------------------------------------------------------------------------
+
+/**
+ * The category a config/plugin LOAD failure (clone, read, or parse) falls into,
+ * driving which remediation hint the user sees. Distinct from {@link ErrorCategory}
+ * (which classifies live API errors): a load failure is a local filesystem / git /
+ * JSON problem, not a provider response. Mirrors the network/permissions/config
+ * triage Claude Code performs in `sessionStart.ts` when plugin-hook loading fails.
+ */
+export type LoadFailureCategory = 'network' | 'permissions' | 'config' | 'unknown';
+
+export interface LoadFailureGuidance {
+  category: LoadFailureCategory;
+  /** One-line, actionable remediation hint for the categorized failure. */
+  guidance: string;
+}
+
+/**
+ * Categorize a config/plugin-bundle load failure and return an actionable
+ * remediation hint. A failed clone / network errno (ETIMEDOUT/ENOTFOUND) →
+ * `network`; a filesystem permission errno (EACCES/EPERM / "permission denied") →
+ * `permissions`; a JSON/parse/schema/"invalid" failure → `config`; anything else →
+ * `unknown` with generic guidance. Lets a load catch surface WHY it failed and HOW
+ * to fix it instead of silently dropping the source. Mirrors Claude Code's
+ * sessionStart plugin-hook-load categorized guidance.
+ */
+export function categorizeLoadFailure(error: unknown): LoadFailureGuidance {
+  const raw = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  if (
+    raw.includes('failed to clone') || raw.includes('network') ||
+    raw.includes('etimedout') || raw.includes('enotfound') ||
+    raw.includes('econnrefused') || raw.includes('econnreset')
+  ) {
+    return { category: 'network', guidance: 'This looks like a network issue — check your internet connection (and any proxy) and try again.' };
+  }
+  if (
+    raw.includes('permission denied') || raw.includes('eacces') || raw.includes('eperm')
+  ) {
+    return { category: 'permissions', guidance: 'This looks like a permissions issue — check the file permissions on the plugins directory and your config files.' };
+  }
+  if (
+    raw.includes('invalid') || raw.includes('parse') || raw.includes('json') ||
+    raw.includes('schema') || raw.includes('unexpected token') || raw.includes('unexpected end')
+  ) {
+    return { category: 'config', guidance: 'This looks like a configuration issue — fix the malformed JSON (or schema) in the offending config file.' };
+  }
+  return { category: 'unknown', guidance: 'Fix the plugin/hook configuration or remove the problematic source from your settings.' };
 }
 
 const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {

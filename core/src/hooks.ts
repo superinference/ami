@@ -14,7 +14,7 @@ import {
   type HookSourceKind,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
-import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass } from './error-classifier';
+import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass, categorizeLoadFailure } from './error-classifier';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
 import { verdictRank, wildcardMatch, PERMISSION_TOOL_ALIASES } from './permissions';
@@ -2574,7 +2574,15 @@ export class HookManager extends EventEmitter {
           if (bundle.hooksFile) sources.push({ path: bundle.hooksFile, source: src, kind: 'plugin', pluginName: bundle.name, pluginRoot: bundle.root });
         }
       }
-    } catch { /* plugins module optional */ }
+    } catch (err) {
+      // Plugin discovery failed (optional subsystem) — don't crash the load, but
+      // surface a CATEGORIZED remediation hint (network / permissions / config)
+      // instead of swallowing it silently, so the user can tell WHY plugin hooks
+      // did not load and HOW to fix it. Mirrors Claude Code's sessionStart
+      // plugin-hook-load guidance.
+      const { category, guidance } = categorizeLoadFailure(err);
+      coreLog('hooks', `Failed to load plugin hooks (${category}): ${err instanceof Error ? err.message : String(err)}. ${guidance}`);
+    }
 
     // Org policy: when allowManagedHooksOnly is set, drop every non-managed source
     // so only admin/managed-settings hooks execute. The provenance-based decision
@@ -2665,7 +2673,14 @@ export class HookManager extends EventEmitter {
    * (Claude Code's "silently disables ALL settings from that file" warning).
    */
   private recordConfigError(filePath: string, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
+    const base = err instanceof Error ? err.message : String(err);
+    // Append a CATEGORIZED remediation hint (network / permissions / config) so the
+    // retained error — surfaced via getConfigErrors()/`/hooks` and the `configError`
+    // event — tells the user HOW to fix the malformed source, not just that it
+    // failed. A broken hooks file silently disables every hook it would contribute,
+    // so actionable guidance matters. Mirrors Claude Code's categorized load guidance.
+    const { guidance } = categorizeLoadFailure(err);
+    const message = `${base}. ${guidance}`;
     coreLog('hooks', `Invalid hooks config at ${filePath}: ${message}`);
     this._configErrors.push({ path: filePath, error: message });
     this.emit('configError', { path: filePath, error: message });

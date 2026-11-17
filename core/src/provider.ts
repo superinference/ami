@@ -24,7 +24,7 @@ import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOut
 import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort } from './error-classifier';
+import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong } from './error-classifier';
 import {
   getMTLSConfig,
   getTLSConnectOptions,
@@ -3634,6 +3634,25 @@ export async function* streamChatCompletionWithRetry(
               if (options?.onRetry) options.onRetry(attempt + 1, maxRetries, 0, 400);
               break; // retry with the reduced max_tokens
             }
+          }
+        }
+
+        // Deterministic 400 "prompt is too long: N tokens > M maximum": the INPUT
+        // (the prompt itself), not max_tokens, exceeds the context window, so
+        // re-sending the SAME request loops — distinct from the recoverable
+        // max_tokens-exceed 400 handled just above. Stop immediately with a distinct
+        // non-retry diagnostic naming the token counts, even when a gateway sends
+        // x-should-retry:true (which would otherwise hammer a deterministic failure).
+        // Mirrors Claude Code's detectPromptTooLong special-casing.
+        if (statusCode === 400) {
+          const tooLong = detectPromptTooLong(chunk.error ?? '');
+          if (tooLong) {
+            const counts = tooLong.actualTokens !== undefined && tooLong.limitTokens !== undefined
+              ? ` (${tooLong.actualTokens} > ${tooLong.limitTokens} tokens)`
+              : '';
+            log('api', `API error (prompt too long${counts}): deterministic 400 — not retrying; reduce context (/compact or /clear).`);
+            yield withRequestId(chunk);
+            return;
           }
         }
 
