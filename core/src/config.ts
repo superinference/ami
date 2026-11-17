@@ -1292,6 +1292,19 @@ export interface ConfigDiagnostic {
   issues?: ConfigValueIssue[];
   /** For `unknown-key`: the unrecognized top-level keys (likely typos). */
   unknownKeys?: string[];
+  /**
+   * For a FATAL load failure (`parse-error` / `not-object`) where the file is
+   * skipped ENTIRELY: the recognized ({@link KNOWN_CONFIG_KEYS}) top-level keys the
+   * raw file text was nonetheless trying to set, detected by {@link detectIntendedConfigKeys}
+   * even though the file does not parse. A broken file "fails open" — none of its
+   * settings take effect — so surfacing these tells the user EXACTLY which knobs
+   * (e.g. `safeMode`, `cleanupPeriodDays`, a deny/permissions key) silently lost
+   * their value, instead of leaving a security-bearing setting quietly inert. Absent
+   * when the broken file sets no recognized key. Parity: Claude Code's
+   * `rawSettingsContainsKey` user-intent detection + the InvalidSettingsDialog
+   * "files with errors are skipped entirely" warning.
+   */
+  intendedKeys?: string[];
 }
 
 /** The ProjectConfig enum fields and their allowed values. */
@@ -1415,6 +1428,50 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
  */
 export function findUnknownConfigKeys(config: ProjectConfig): string[] {
   return Object.keys(config).filter(k => !KNOWN_CONFIG_KEYS.has(k));
+}
+
+/**
+ * Best-effort detection of whether the RAW text of a config file sets `key` as a
+ * top-level property — even when the file does NOT parse. A fatal syntax error makes
+ * {@link loadConfigFileChecked} skip the whole file, so the structured config can no
+ * longer be inspected; this operates on the bytes so a user's INTENT survives a
+ * broken file. Two tiers:
+ *
+ *  1. If the text parses to a JSON object, the answer is exact: an own-property check.
+ *  2. Otherwise (unparseable / not-an-object) fall back to a property-name scan: `key`
+ *     appearing as a JSON member name (`"<key>"` followed by `:`, at the start or after
+ *     a `{` / `,` / whitespace). A key that appears only inside a string VALUE does not
+ *     match, keeping false positives low.
+ *
+ * Parity: Claude Code's `rawSettingsContainsKey` (detect user intent even when settings
+ * validation fails — e.g. a configured `cleanupPeriodDays` must not be mistaken for the
+ * default just because an unrelated key is malformed).
+ */
+export function rawConfigContainsKey(raw: string, key: string): boolean {
+  if (!raw || raw.trim() === '') return false;
+  try {
+    const parsed = parseJsonc(raw);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.prototype.hasOwnProperty.call(parsed, key);
+    }
+  } catch {
+    // Unparseable — fall through to the raw property-name scan below.
+  }
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[{,\\s])"${escaped}"\\s*:`).test(raw);
+}
+
+/**
+ * The recognized ({@link KNOWN_CONFIG_KEYS}) top-level keys the RAW text of a config
+ * file appears to set, detected via {@link rawConfigContainsKey} so the result is
+ * meaningful even for a file that fails to parse. Returned SORTED for a stable
+ * diagnostic. Reuses the one canonical key registry (self-updating — a newly-added
+ * knob is detected automatically, no parallel list). Used by {@link loadConfigFileChecked}
+ * to tell the user which settings a broken file silently lost.
+ */
+export function detectIntendedConfigKeys(raw: string): string[] {
+  if (!raw || raw.trim() === '') return [];
+  return [...KNOWN_CONFIG_KEYS].filter(k => rawConfigContainsKey(raw, k)).sort();
 }
 
 /**
@@ -2061,13 +2118,18 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // hint). Distinct from `backupPath`, which quarantines the CORRUPT bytes.
     const good = findMostRecentConfigBackup(configPath);
     const restoreHint = good ? `cp "${good}" "${configPath}"` : undefined;
-    coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}${restoreHint ? ` [restore: ${restoreHint}]` : ''}`);
-    return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath, restoreHint } };
+    // The whole file is skipped — surface which recognized knobs the user was trying to
+    // set so a security-bearing setting (e.g. safeMode) doesn't silently fail open.
+    const intendedKeys = detectIntendedConfigKeys(raw);
+    coreLog('config', `corrupt config at ${configPath}: ${message}${backupPath ? ` (backed up to ${backupPath})` : ''}${restoreHint ? ` [restore: ${restoreHint}]` : ''}${intendedKeys.length > 0 ? ` [lost: ${intendedKeys.join(', ')}]` : ''}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'parse-error', message, backupPath, restoreHint, ...(intendedKeys.length > 0 ? { intendedKeys } : {}) } };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     const message = `Expected a JSON object, got ${describeJsonType(parsed)}`;
-    coreLog('config', `invalid config at ${configPath}: ${message}`);
-    return { config: null, diagnostic: { path: configPath, kind: 'not-object', message } };
+    // A non-object root is skipped entirely too — report the keys it tried to set.
+    const intendedKeys = detectIntendedConfigKeys(raw);
+    coreLog('config', `invalid config at ${configPath}: ${message}${intendedKeys.length > 0 ? ` [lost: ${intendedKeys.join(', ')}]` : ''}`);
+    return { config: null, diagnostic: { path: configPath, kind: 'not-object', message, ...(intendedKeys.length > 0 ? { intendedKeys } : {}) } };
   }
   const config = parsed as ProjectConfig;
   // The file is a valid JSON object, but individual VALUES may still be invalid
