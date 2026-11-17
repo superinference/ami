@@ -3,6 +3,26 @@ import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock, FileLockOptions } from '../utils/file-lock';
+import { log as debugLog } from '../logger';
+
+/**
+ * Lifecycle debug trail (PARITY): Claude Code's task watcher emits a
+ * step-by-step `logForDebugging` trail for the claim/submit/release lifecycle
+ * ('Found available task #N: <subject>', 'Failed to claim task #N: <reason>',
+ * 'releasing claim') — the only way to introspect why an autonomous/teammate
+ * agent did or did not pick up a task. AMI's claim/release/owner mutations were
+ * otherwise silent. This routes those transitions through the shared `log()`
+ * diagnostic channel (component `task-tracker`), so they surface in the debug log
+ * file, via `--debug`/`AMI_DEBUG`, and `--debug-to-stderr`. Best-effort: a logging
+ * failure must never fail a task mutation.
+ */
+function taskDebug(msg: string, data?: Record<string, unknown>): void {
+  try {
+    debugLog('task-tracker', msg, data);
+  } catch {
+    /* diagnostics must never fail the task operation */
+  }
+}
 
 /**
  * Emit a live `task_updated` child event (PARITY): mirrors Claude Code's
@@ -152,6 +172,15 @@ export function deleteTaskList(cwd: string, listId: string): boolean {
 }
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
+
+/**
+ * The non-mutating task_tracker actions. These read the store (or disk) but never
+ * write it, so they are classified read-only per-invocation (see
+ * `taskTrackerTool.isReadOnlyForInput`) — this is the single source of truth for
+ * which actions join the concurrent read batch / auto-allow, mirroring Claude
+ * Code's dedicated read-only TaskList/TaskGet tools.
+ */
+const TASK_READ_ACTIONS = new Set(['list', 'get', 'next', 'status']);
 
 /**
  * Strict task-id parser (PARITY FIX). Claude Code's task tools treat the id as
@@ -565,6 +594,21 @@ export const taskTrackerTool: ToolDefinition = {
     required: ['action'],
   },
   isReadOnly: false,
+  // Per-invocation read-only classification (PARITY): Claude Code ships task
+  // LISTING/GET as dedicated tools that declare isReadOnly()=>true AND
+  // isConcurrencySafe()=>true, so a pure task read joins the concurrent read-only
+  // execution batch and auto-allows without a permission prompt. AMI consolidates
+  // read + write into one task_tracker tool, so the STATIC isReadOnly flag has to
+  // stay false (the tool CAN mutate). This dynamic verdict recovers the lost
+  // boundary: the non-mutating actions ("list", "get", "next", "status") are
+  // reported read-only for THIS call, so the executor batches them concurrently
+  // (tool-executor segments on readOnlyForInputSafe && isToolConcurrencySafe —
+  // which falls back to the read-only verdict) instead of making every task read a
+  // serial write barrier, and the permission layer auto-allows them. Every
+  // mutating action falls through to writable (false). See
+  // core/tools/tool-categories.isToolReadOnlyForInput / isToolConcurrencySafe.
+  isReadOnlyForInput: (input: Record<string, unknown>): boolean =>
+    TASK_READ_ACTIONS.has(input.action as string),
 
   async execute(input, context: ToolContext): Promise<ToolResult> {
     const action = input.action as string;
@@ -887,11 +931,15 @@ export const taskTrackerTool: ToolDefinition = {
           }
           return `Claimed task #${id}: ${task.subject} [in_progress]${task.owner ? ` (owner: ${task.owner})` : ''}`;
         });
-        if (reason === 'task_not_found') return { output: `Error: task #${id} not found. [reason: task_not_found]`, isError: true };
-        if (reason === 'already_claimed') return { output: `Error: task #${id} is already in_progress${detail}. [reason: already_claimed]`, isError: true };
-        if (reason === 'already_resolved') return { output: `Error: task #${id} is already completed. [reason: already_resolved]`, isError: true };
-        if (reason === 'blocked') return { output: `Error: task #${id} is blocked by: ${detail} [reason: blocked]`, isError: true };
-        if (reason === 'agent_busy') return { output: `Error: "${owner}" is already busy with: ${detail} [reason: agent_busy]`, isError: true };
+        if (reason !== null) {
+          taskDebug(`Failed to claim task #${id}: ${reason}`, { owner, detail: detail || undefined });
+          if (reason === 'task_not_found') return { output: `Error: task #${id} not found. [reason: task_not_found]`, isError: true };
+          if (reason === 'already_claimed') return { output: `Error: task #${id} is already in_progress${detail}. [reason: already_claimed]`, isError: true };
+          if (reason === 'already_resolved') return { output: `Error: task #${id} is already completed. [reason: already_resolved]`, isError: true };
+          if (reason === 'blocked') return { output: `Error: task #${id} is blocked by: ${detail} [reason: blocked]`, isError: true };
+          return { output: `Error: "${owner}" is already busy with: ${detail} [reason: agent_busy]`, isError: true };
+        }
+        taskDebug(`Claimed task #${id}: ${claimedSubject}`, { owner: owner || context.agentId });
         emitTaskUpdated(context, id, 'in_progress', claimedSubject);
         return { output: capOutput(out), isError: false };
       }
@@ -933,6 +981,7 @@ export const taskTrackerTool: ToolDefinition = {
         if (alreadyCompleted) {
           return { output: `Error: task #${id} is already completed — nothing to release. [reason: already_resolved]`, isError: true };
         }
+        taskDebug(`Releasing claim on task #${id}: ${releasedSubject}`, { status: releasedStatus });
         emitTaskUpdated(context, id, releasedStatus, releasedSubject);
         return { output: capOutput(out), isError: false };
       }
@@ -942,10 +991,12 @@ export const taskTrackerTool: ToolDefinition = {
         const owner = input.owner as string | undefined;
         const task = findAvailableTask(owner);
         if (!task) {
+          taskDebug('No available task to pick up', { owner });
           return { output: owner
             ? `No available tasks for "${owner}" (nothing pending, unowned, and unblocked).`
             : 'No available tasks (nothing pending, unowned, and unblocked).', isError: false };
         }
+        taskDebug(`Found available task #${task.id}: ${task.subject}`, { owner });
         return { output: capOutput(`Next available task:\n${formatTask(task)}\n\nClaim it with action "claim", task_id "${task.id}".`), isError: false };
       }
 
