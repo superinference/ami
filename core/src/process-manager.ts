@@ -591,6 +591,47 @@ const PROMPT_PATTERNS: RegExp[] = [
   /password:/i,
 ];
 
+/**
+ * One captured message in a background AGENT's live transcript (parity with Claude
+ * Code's BackgroundTaskState.messages). A foregrounded agent's buffer is synced
+ * into the main view ({@link ProcessManager.syncForegroundedMessages}) so the user
+ * sees its conversation live; on a user KILL the buffer is COLLAPSED to just the
+ * final message ({@link ProcessManager.kill}) to release the retained transcript
+ * (parity with Claude Code's spawnInProcess on-kill truncation) while preserving
+ * the last displayed line. Bash/monitor tasks keep no transcript.
+ */
+export interface TaskMessage {
+  /** Who produced the message. */
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  /** The message text, already rendered to a string for display/sync. */
+  content: string;
+  /** Optional wall-clock timestamp (ms epoch) the message was captured. */
+  ts?: number;
+}
+
+/**
+ * Snapshot returned by {@link ProcessManager.syncForegroundedMessages} — the state
+ * the main view needs to mirror the single foregrounded agent (parity with Claude
+ * Code's useSessionBackgrounding sync effect, useSessionBackgrounding.ts:L91-L127).
+ */
+export interface ForegroundSync {
+  /** The foregrounded task id this snapshot describes. */
+  taskId: string;
+  /** The agent's current transcript to render in the main view (a copy). */
+  messages: TaskMessage[];
+  /** True ONLY when the buffer GREW since the last sync — the consumer re-renders
+   *  the transcript only on a change (parity with lastSyncedMessagesLengthRef). */
+  changed: boolean;
+  /** Whether the main view should show its loading spinner (task still running). */
+  isLoading: boolean;
+  /** The agent's abort signal, to adopt as the main-view abort target so Escape
+   *  aborts the foregrounded task (parity). Undefined when the agent has none. */
+  abortSignal?: AbortSignal;
+  /** True when the foreground slot was just CLEARED (the task finished, was aborted,
+   *  is no longer an agent, or vanished) — the consumer restores the normal view. */
+  cleared: boolean;
+}
+
 export interface BackgroundProcess {
   taskId: string;
   pid: number;
@@ -792,6 +833,17 @@ export interface BackgroundProcess {
    * never-yet-idle. Only meaningful for `agent` tasks.
    */
   idle?: boolean;
+  /**
+   * Live transcript buffer for a background AGENT (parity with Claude Code's
+   * BackgroundTaskState.messages). Appended via {@link ProcessManager.appendTaskMessage}
+   * while the agent runs; synced into the main view when the task is foregrounded
+   * ({@link ProcessManager.syncForegroundedMessages}); COLLAPSED to just the final
+   * message when the task is KILLED ({@link ProcessManager.kill}) to release memory
+   * while keeping the last displayed line (a completed/failed agent keeps its full
+   * transcript for the drill view). Undefined for a bash/monitor task, or an agent
+   * that has produced no messages yet.
+   */
+  messages?: TaskMessage[];
 }
 
 /**
@@ -929,6 +981,11 @@ interface InternalProcess extends BackgroundProcess {
    *  true) or reaches a terminal state, so a leader can wait event-driven (no poll)
    *  for a teammate to go idle (parity with Claude Code's `onIdleCallbacks`). */
   _onIdleCallbacks?: Array<() => void>;
+  /** Cursor for {@link ProcessManager.syncForegroundedMessages}: the messages-buffer
+   *  length at the last sync, so a re-sync re-renders ONLY when the buffer grew
+   *  (parity with Claude Code's lastSyncedMessagesLengthRef). Reset when the task is
+   *  (re-)foregrounded / backgrounded / killed. */
+  _lastSyncedMessagesLength?: number;
 }
 
 /** Cap on the retained per-task stderr tail ({@link InternalProcess._stderrTail}). */
@@ -1457,6 +1514,13 @@ export class ProcessManager extends EventEmitter {
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
+    // MEMORY RELEASE (parity with Claude Code's spawnInProcess on-kill truncation,
+    // spawnInProcess.ts:L287-296): a user-KILLED agent releases its retained
+    // transcript — collapse the messages buffer to just the FINAL message (the last
+    // displayed line) instead of pinning the whole conversation in memory. A
+    // completed/failed agent keeps its full transcript (the drill view still shows
+    // what it did); ONLY a kill releases it. No-op for a bash/monitor task.
+    this.releaseKilledTranscript(entry);
     // Close any open pause window into totalPausedMs before freezing the clock so
     // a task killed while stalled keeps correct pause accounting.
     this.settlePause(entry);
@@ -1605,6 +1669,22 @@ export class ProcessManager extends EventEmitter {
    */
   private setEvictDeadline(entry: InternalProcess): void {
     if (entry.endTime !== undefined) entry.evictAfter = entry.endTime + TERMINAL_RETENTION_MS;
+  }
+
+  /**
+   * Collapse a KILLED task's transcript buffer down to just its FINAL message —
+   * the memory-release teardown mirroring Claude Code's spawnInProcess on-kill
+   * truncation (messages → `[messages.at(-1)]`). Preserves the last displayed line
+   * so a drill view still shows where the agent stopped, while dropping the rest of
+   * the retained conversation. Also clears the foreground sync cursor so a later
+   * re-foreground starts fresh. No-op when the task has ≤1 message / no buffer.
+   * Shared one site (No-Duplication rule); only invoked from {@link kill}.
+   */
+  private releaseKilledTranscript(entry: InternalProcess): void {
+    if (entry.messages && entry.messages.length > 1) {
+      entry.messages = [entry.messages[entry.messages.length - 1]];
+    }
+    entry._lastSyncedMessagesLength = undefined;
   }
 
   /** Close any open pause window into totalPausedMs (no-op if not paused). Shared
@@ -2019,13 +2099,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _stderrTail, _maxOutputBytes, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
     return rest;
   }
 
@@ -2270,9 +2350,13 @@ export class ProcessManager extends EventEmitter {
     if (!entry) return false;
     if (this._foregroundedTaskId !== undefined && this._foregroundedTaskId !== taskId) {
       const prev = this.processes.get(this._foregroundedTaskId);
-      if (prev) prev.isBackgrounded = true;
+      if (prev) { prev.isBackgrounded = true; prev._lastSyncedMessagesLength = undefined; }
     }
     entry.isBackgrounded = false;
+    // Reset the sync cursor so the first {@link syncForegroundedMessages} after a
+    // (re-)foreground re-renders the whole transcript (parity: Claude resets
+    // lastSyncedMessagesLengthRef to 0 whenever the foreground slot changes).
+    entry._lastSyncedMessagesLength = undefined;
     this._foregroundedTaskId = taskId;
     return true;
   }
@@ -2288,6 +2372,7 @@ export class ProcessManager extends EventEmitter {
     const entry = this.processes.get(taskId);
     if (!entry) return false;
     entry.isBackgrounded = true;
+    entry._lastSyncedMessagesLength = undefined;
     if (this._foregroundedTaskId === taskId) this._foregroundedTaskId = undefined;
     return true;
   }
@@ -2296,6 +2381,90 @@ export class ProcessManager extends EventEmitter {
    *  undefined when none is (parity with Claude Code's AppState.foregroundedTaskId). */
   getForegroundedTaskId(): string | undefined {
     return this._foregroundedTaskId;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's BackgroundTaskState.messages append):
+   * append a message to a running background AGENT's live transcript buffer (see
+   * {@link BackgroundProcess.messages}). Refuses (returns false) for an unknown
+   * task, a non-`agent` task (bash/monitor keep no transcript), or a
+   * {@link isTerminalTaskStatus terminal} agent — a dead teammate must not accrue
+   * new messages (the isTerminalTaskStatus "inject into dead teammates" guard).
+   * Returns true when the message was buffered.
+   */
+  appendTaskMessage(taskId: string, message: TaskMessage): boolean {
+    const entry = this.processes.get(taskId);
+    if (!entry || entry.kind !== 'agent' || isTerminalTaskStatus(entry.status)) return false;
+    (entry.messages ??= []).push(message);
+    return true;
+  }
+
+  /** A snapshot COPY of a tracked task's live transcript buffer (see
+   *  {@link appendTaskMessage}), or `[]` when the task is unknown / has no messages. */
+  getTaskMessages(taskId: string): TaskMessage[] {
+    const entry = this.processes.get(taskId);
+    return entry?.messages ? entry.messages.slice() : [];
+  }
+
+  /** The abort signal of the currently-foregrounded agent — to adopt as the main-view
+   *  abort target so Escape aborts the foregrounded task (parity with Claude Code's
+   *  `setAbortController(foregroundedTask.abortController)`). Undefined when nothing is
+   *  foregrounded, it isn't an agent, or it carries no signal. */
+  foregroundedAbortSignal(): AbortSignal | undefined {
+    const id = this._foregroundedTaskId;
+    return id !== undefined ? this.processes.get(id)?._abortSignal : undefined;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's useSessionBackgrounding sync effect,
+   * useSessionBackgrounding.ts:L91-L127): compute what the main view must mirror for
+   * the single {@link foregroundTask foregrounded} agent. Returns `null` when nothing
+   * is foregrounded. Otherwise a {@link ForegroundSync} describing:
+   *   - `messages` + `changed`: the agent's transcript, with `changed` true ONLY when
+   *     the buffer GREW since the last sync (dedup via the per-task cursor, parity with
+   *     `lastSyncedMessagesLengthRef`) so the consumer re-renders only on a real change;
+   *   - `isLoading`: true while the agent is `running` (drives the main spinner);
+   *   - `abortSignal`: the agent's signal to adopt as the main-view abort target;
+   *   - `cleared`: true when the foreground slot was just released — the agent VANISHED,
+   *     is no longer an `agent` (type !== 'local_agent' parity), was ABORTED (its signal
+   *     already fired — auto re-background), or reached a TERMINAL state (restore to
+   *     background). On `cleared` the consumer restores the normal view; the foreground
+   *     slot is cleared here (the task is re-backgrounded) so the state stays consistent.
+   */
+  syncForegroundedMessages(): ForegroundSync | null {
+    const taskId = this._foregroundedTaskId;
+    if (taskId === undefined) return null;
+    const entry = this.processes.get(taskId);
+    // Vanished or no longer an agent → clear the foreground slot (parity: Claude's
+    // `foregroundedTask.type !== 'local_agent'` branch resets foregroundedTaskId).
+    if (!entry || entry.kind !== 'agent') {
+      this._foregroundedTaskId = undefined;
+      if (entry) { entry.isBackgrounded = true; entry._lastSyncedMessagesLength = undefined; }
+      return { taskId, messages: [], changed: false, isLoading: false, cleared: true };
+    }
+    const messages = entry.messages ?? [];
+    const changed = messages.length !== (entry._lastSyncedMessagesLength ?? 0);
+    if (changed) entry._lastSyncedMessagesLength = messages.length;
+
+    if (entry.status === 'running') {
+      // Escape-abort detection (parity L101-121): a running task whose abort signal
+      // already fired is auto re-backgrounded and the slot cleared immediately.
+      if (entry._abortSignal?.aborted) {
+        this.backgroundTask(taskId);
+        return { taskId, messages: messages.slice(), changed, isLoading: false, cleared: true };
+      }
+      return {
+        taskId,
+        messages: messages.slice(),
+        changed,
+        isLoading: true,
+        ...(entry._abortSignal ? { abortSignal: entry._abortSignal } : {}),
+        cleared: false,
+      };
+    }
+    // Terminal → restore to background and clear the foreground view (parity L123+).
+    this.backgroundTask(taskId);
+    return { taskId, messages: messages.slice(), changed, isLoading: false, cleared: true };
   }
 
   /**

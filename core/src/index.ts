@@ -204,6 +204,7 @@ export type { RateLimitBucket, RateLimitStatus } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
+export { collectAncestorPids, readParentPidMap, ANCESTOR_WALK_TIMEOUT_MS } from './utils/shell';
 export { estimateTokens, estimateToolSchemaTokens } from './utils/tokens';
 export {
   atomicWriteFileSync,
@@ -230,7 +231,7 @@ export { stripDisplayTags } from './utils/display-tags';
 export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
 export type { PythonPackageManager } from './utils/package-manager';
 export { ProcessManager, TASK_STATUS, TASK_KINDS, TASK_ATTENTION_STATES, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
-export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta } from './process-manager';
+export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta, TaskMessage, ForegroundSync } from './process-manager';
 
 export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE, estimateTextTokens, estimateImageTokens, utf8ByteLength } from './token-estimator';
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';

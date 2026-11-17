@@ -1576,6 +1576,90 @@ function destroyStreams(proc: child_process.ChildProcess): void {
 }
 
 /**
+ * The POSIX `ps` invocation that dumps the whole process table as `pid ppid`
+ * rows. Shared by the descendant ({@link collectProcessTree}) and ancestor
+ * ({@link collectAncestorPids}) process-tree walks so the table-read command has
+ * ONE definition (No-Duplication rule).
+ */
+export const PS_TABLE_CMD = 'ps -A -o pid=,ppid=';
+
+/**
+ * Default hard timeout (ms) for the single process-table read backing the
+ * ancestor walk (parity with Claude Code's getAncestorPidsAsync 3000ms cap), so a
+ * hung `ps`/`wmic` can never stall the caller.
+ */
+export const ANCESTOR_WALK_TIMEOUT_MS = 3000;
+
+/**
+ * Read the system process table once as a child-pid → parent-pid (ppid) map,
+ * bounded by a hard `timeoutMs` on the underlying `ps`/`wmic` invocation. Returns
+ * an EMPTY map (never throws) when the table can't be read — a non-zero exit, a
+ * timeout, or an unparseable table — so callers degrade to "no ancestors known"
+ * rather than crashing. POSIX reads {@link PS_TABLE_CMD} (`pid` then `ppid`);
+ * Windows reads `wmic process get ParentProcessId,ProcessId`, whose two numeric
+ * columns wmic prints in alphabetical order (ParentProcessId then ProcessId).
+ */
+export function readParentPidMap(timeoutMs = ANCESTOR_WALK_TIMEOUT_MS): Map<number, number> {
+  const parentOf = new Map<number, number>();
+  const isWindows = shellHooks.platform() === 'win32';
+  let table: string;
+  try {
+    const cmd = isWindows ? 'wmic process get ParentProcessId,ProcessId' : PS_TABLE_CMD;
+    table = shellHooks.execSync(cmd, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs,
+    }).toString();
+  } catch {
+    return parentOf; // empty — no-throw fallback
+  }
+  for (const line of table.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!match) continue; // skip headers / blank / malformed rows
+    const a = Number(match[1]);
+    const b = Number(match[2]);
+    // POSIX `ps` prints `pid ppid`; wmic prints `ParentProcessId ProcessId`
+    // (alphabetical). Either way, record child → parent.
+    if (isWindows) parentOf.set(b, a);
+    else parentOf.set(a, b);
+  }
+  return parentOf;
+}
+
+/**
+ * Walk the ANCESTOR (parent) chain of `startPid` UPWARD, returning ancestor pids
+ * from immediate parent to furthest ancestor — parity with Claude Code's
+ * getAncestorPidsAsync (genericProcessUtils.ts:L36-L86). Three defensive bounds:
+ *   - a `maxDepth` cap (default 10) so a corrupt/cyclic ppid link can't loop
+ *     forever (a visited-set ALSO breaks a cycle before the cap is reached),
+ *   - a hard per-read `timeoutMs` ({@link ANCESTOR_WALK_TIMEOUT_MS}) via
+ *     {@link readParentPidMap} so a hung `ps`/`wmic` can't stall the caller, and
+ *   - a no-throw fallback to `[]` (unreadable table, `startPid` ≤ 1, or no parent).
+ * Uses ONE process-table snapshot and walks it in-process (not N sequential `ps`
+ * invocations). Stops at a pid ≤ 1 (0 = process group, 1 = init) like the reference.
+ */
+export function collectAncestorPids(
+  startPid: number,
+  maxDepth = 10,
+  timeoutMs = ANCESTOR_WALK_TIMEOUT_MS,
+): number[] {
+  if (!Number.isInteger(startPid) || startPid <= 1 || maxDepth <= 0) return [];
+  const parentOf = readParentPidMap(timeoutMs);
+  if (parentOf.size === 0) return [];
+  const ancestors: number[] = [];
+  const seen = new Set<number>([startPid]);
+  let cur = startPid;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const ppid = parentOf.get(cur);
+    if (ppid === undefined || ppid <= 1 || seen.has(ppid)) break;
+    ancestors.push(ppid);
+    seen.add(ppid);
+    cur = ppid;
+  }
+  return ancestors;
+}
+
+/**
  * Enumerate a process and ALL its descendants (the process TREE) by reading the
  * system process table (`ps`) and walking the ppid graph down from `rootPid`.
  *
@@ -1590,7 +1674,7 @@ function destroyStreams(proc: child_process.ChildProcess): void {
 export function collectProcessTree(rootPid: number): number[] {
   let table: string;
   try {
-    table = shellHooks.execSync('ps -A -o pid=,ppid=', {
+    table = shellHooks.execSync(PS_TABLE_CMD, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString();
