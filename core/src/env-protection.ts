@@ -150,6 +150,7 @@ export const SAFE_ENV_VARS = new Set([
   'MCP_TOOL_TIMEOUT',
   'SUPERINFERENCE_MAX_OUTPUT_TOKENS',
   'SUPERINFERENCE_SUBAGENT_MODEL',
+  'AMI_EXPLORE_MODEL',
   'USE_BUILTIN_RIPGREP',
   // Model-name defaults (identifiers only, not endpoints/auth)
   'SUPERINFERENCE_MODEL',

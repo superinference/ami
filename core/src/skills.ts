@@ -268,6 +268,14 @@ export interface AgentDefinition {
    *  REPLACES the base stance (AMI's existing behavior). Validated/normalized via
    *  {@link parseSystemPromptMode}; honored in the task tool's spawn path. */
   systemPromptMode?: SystemPromptMode;
+  /** Short, strongly-flagged hard constraint reinforced separately from
+   *  {@link systemPrompt} (parity with Claude's `criticalSystemReminder_EXPERIMENTAL`).
+   *  A must-hold rule — e.g. "no project writes", "you MUST end with VERDICT:" — is
+   *  appended to the agent's authoritative system prompt as a conspicuous reminder so
+   *  it does not drift into the surrounding prose. Parsed from a
+   *  `critical-system-reminder`/`criticalSystemReminder` frontmatter key; honored in
+   *  the task tool's spawn path via {@link buildCriticalReminderBlock}. */
+  criticalSystemReminder?: string;
 }
 
 /**

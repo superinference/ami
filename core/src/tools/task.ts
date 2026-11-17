@@ -80,6 +80,20 @@ export function parsePositiveIntInput(raw: unknown): number | undefined {
 export const DEFAULT_FORK_MAX_TURNS = 200;
 
 /**
+ * Recursion guard directive stapled into a `fork` child's first user turn
+ * (mirrors Claude Code's fork boilerplate rule #1 in `buildChildMessage`,
+ * forkSubagent.ts:L178). A fork child inherits the parent's full coding stance —
+ * which tells the model to "default to delegating/forking" — AND, at depth 0,
+ * keeps the `task` tool in its pool. Without an explicit counter-instruction a
+ * fork child would re-fork recursively (an unsupervised fan-out) instead of doing
+ * the work itself. AMI's only other bound is the numeric nesting-depth cap; this
+ * is the call-time behavioral guard independent of depth. The child is told
+ * plainly: you ARE the fork — execute the work directly, do not spawn sub-agents.
+ */
+export const FORK_NO_SUBSPAWN_DIRECTIVE =
+  'You ARE the fork — a worker continuing the parent conversation directly. Your inherited system prompt may say to delegate or fork work; IGNORE that here — it is for the parent. Do NOT spawn sub-agents (no nested fork or task delegation); execute the work yourself with your own tools and report once when you are done.';
+
+/**
  * Git config flags that neutralize arbitrary-code-execution vectors when AMI
  * auto-invokes git on a repository it has not been told is trusted. A malicious
  * `.git/config` can run code via `core.fsmonitor`, `core.hooksPath`, or
@@ -407,6 +421,40 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
   return resolveModelAlias(normalized) ?? requested;
 }
 
+/** Operator override for the model an `explore`-mode sub-agent runs on. Set to a
+ *  model id/alias to force one, or the `inherit` sentinel to keep the parent's
+ *  model (behavior-only knob — mirrors Claude Code's `USER_TYPE==='ant' ? inherit
+ *  : haiku` gate on the explore agent's model). */
+export const EXPLORE_MODEL_ENV = 'AMI_EXPLORE_MODEL';
+
+/**
+ * The model a mode-only `explore` sub-agent should default to when the caller set
+ * no explicit model (no per-call `model`, no agent-def model, no
+ * SUPERINFERENCE_SUBAGENT_MODEL override). Mirrors Claude Code's explore agent,
+ * which pins external runs to the fast/cheap `haiku` model for speed because
+ * read-only exploration does not need the main model's capability. Returns the
+ * resolved fast model id, or `undefined` to keep the parent's model.
+ *
+ * Rules:
+ *  - {@link EXPLORE_MODEL_ENV} wins when set: `inherit` → keep parent (undefined);
+ *    any other value → that model id/alias (alias-resolved).
+ *  - A NON-Claude parent (e.g. a GPT/Gemini run) keeps its own model — forcing a
+ *    Claude `haiku` onto a different provider's session would be wrong. Only a
+ *    Claude-family (or absent) parent is auto-downshifted to the fast model.
+ */
+export function defaultExploreModel(
+  parentModel: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const override = env[EXPLORE_MODEL_ENV]?.trim();
+  if (override) {
+    if (override.toLowerCase() === INHERIT_MODEL_SENTINEL) return undefined;
+    return resolveModelAlias(override) ?? override;
+  }
+  if (parentModel && !/claude/i.test(parentModel)) return undefined;
+  return resolveModelAlias('haiku');
+}
+
 /**
  * Sentinels AMI writes into an assistant message's content when a turn did NOT
  * finish cleanly: the engine's server-error interrupt
@@ -483,6 +531,35 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
  */
 export function selectFinalAnswer(lastTurnText: string | undefined, accumulated: string): string {
   return lastTurnText !== undefined ? lastTurnText : accumulated;
+}
+
+/**
+ * Wrap a named agent's `criticalSystemReminder` into a reinforced constraint block
+ * appended to its authoritative system prompt (mirrors Claude Code's
+ * `criticalSystemReminder_EXPERIMENTAL`, verificationAgent.ts:L150-151). A hard
+ * constraint ("you CANNOT write files", "you MUST end with VERDICT:") belongs in a
+ * short, strongly-flagged reminder distinct from the agent's main prose so the
+ * model does not let it drift; this framing makes it conspicuous. Empty/blank
+ * reminders produce no block.
+ */
+export function buildCriticalReminderBlock(reminder: string | undefined): string {
+  const trimmed = reminder?.trim();
+  return trimmed ? `\n\n[CRITICAL — non-negotiable constraint]\n${trimmed}` : '';
+}
+
+/**
+ * Prompt-cache introspection clause folded into a foreground sub-agent's
+ * completion stats footer (mirrors Claude Code's per-fork cacheRead / cacheHitRate
+ * line, forkedAgent.ts:L606-654). A sub-agent that reuses the parent's cached
+ * prefix is far cheaper; surfacing how many prompt tokens were served from cache —
+ * and the hit rate when known — makes that observable to the parent/model instead
+ * of hidden. Returns an empty string when there is no cache signal (so the footer
+ * is unchanged for providers/runs that report none).
+ */
+export function buildCacheStatsClause(cacheReadTokens: number, cacheHitRate: number | undefined): string {
+  if (!cacheReadTokens && cacheHitRate === undefined) return '';
+  const rate = cacheHitRate !== undefined ? `, ${Math.round(cacheHitRate * 100)}% cache hit` : '';
+  return `, ${cacheReadTokens} cached tokens${rate}`;
 }
 
 /**
@@ -974,6 +1051,10 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'number',
     description: 'Maximum number of agentic turns (API round-trips) for this subagent before it stops. Caps a mode-only general/explore/fork subagent that has no named agent definition to set one. Must be a positive integer.',
   },
+  max_output_tokens: {
+    type: 'number',
+    description: 'Cap the subagent\'s per-request output tokens (sizes the model\'s max_tokens). Useful for bounded delegations — a short summary or a terse report — where a full-length response would waste tokens. Must be a positive integer; omit to inherit the parent\'s output budget.',
+  },
 };
 
 /** Parameters for {@link runBackgroundAgentDrain}. */
@@ -1432,6 +1513,15 @@ export const taskTool: ToolDefinition = {
         }
       }
 
+      // Per-agent `criticalSystemReminder` (parity: Claude's
+      // criticalSystemReminder_EXPERIMENTAL): a short, strongly-flagged hard
+      // constraint appended to the agent's authoritative system prompt so a
+      // must-hold rule (e.g. "no project writes", "end with VERDICT:") stays
+      // conspicuous and does not drift into the agent's main prose.
+      if (agentDef.criticalSystemReminder && agentSystemPrompt) {
+        agentSystemPrompt = `${agentSystemPrompt}${buildCriticalReminderBlock(agentDef.criticalSystemReminder)}`;
+      }
+
       if (agentDef.tools !== undefined) {
         const everything = allTools.getAll();
         if (agentDef.tools.length === 0) {
@@ -1626,6 +1716,25 @@ export const taskTool: ToolDefinition = {
       providerConfig.model = modelOverride;
     } else if (agentModel) {
       providerConfig.model = agentModel;
+    } else if (mode === 'explore' && !subagentType) {
+      // No explicit model anywhere → a read-only mode-only `explore` sub-agent defaults
+      // to the fast/cheap model (parity: Claude's explore agent pins external runs to
+      // haiku for speed). Only downshifts a Claude-family/absent parent; a non-Claude
+      // parent keeps its own model. Operator-overridable via AMI_EXPLORE_MODEL. Skipped
+      // for a named subagent_type, whose own identity/model governs.
+      const fastModel = defaultExploreModel(parentModel);
+      if (fastModel) providerConfig.model = fastModel;
+    }
+
+    // Per-call `max_output_tokens` cap (parity: Claude's ForkedAgentParams.maxOutputTokens
+    // → maxOutputTokensOverride): size the sub-engine's per-request max_tokens so a
+    // bounded delegation (short summary / terse report) cannot emit a full-length
+    // response. Threaded through the provider config's maxTokens, which the engine
+    // already honors as the request output ceiling. A non-positive/garbage value is
+    // ignored (parsePositiveIntInput → undefined) rather than capping at an absurd budget.
+    const requestedMaxOutputTokens = parsePositiveIntInput(input.max_output_tokens);
+    if (requestedMaxOutputTokens !== undefined) {
+      providerConfig.maxTokens = requestedMaxOutputTokens;
     }
 
     // Permission mode priority:
@@ -1745,9 +1854,22 @@ export const taskTool: ToolDefinition = {
     // mode-only, or a per-spawn custom system_prompt) does not need the
     // user-message return directive. Only `fork` with no custom system_prompt —
     // which inherits the full stance as a clone — still needs it to bound it.
-    let effectivePrompt = finalSystemPrompt
-      ? prompt
-      : `${SUBAGENT_RETURN_DIRECTIVE}\n\n---\n\n${prompt}`;
+    // `fork` has no replaceable base system prompt (it inherits the parent's full
+    // coding stance as a clone), so its only bound is the stapled user-message
+    // directive. The fork lead ALSO carries the recursion guard
+    // ({@link FORK_NO_SUBSPAWN_DIRECTIVE}) — a fork child keeps the task tool at
+    // depth 0, and its inherited stance tells it to delegate, so without an explicit
+    // counter-instruction it would re-fork recursively. The guard is appended AFTER
+    // the return directive so the prompt still LEADS with SUBAGENT_RETURN_DIRECTIVE.
+    let effectivePrompt: string;
+    if (finalSystemPrompt) {
+      effectivePrompt = prompt;
+    } else {
+      const lead = mode === 'fork'
+        ? `${SUBAGENT_RETURN_DIRECTIVE}\n\n${FORK_NO_SUBSPAWN_DIRECTIVE}`
+        : SUBAGENT_RETURN_DIRECTIVE;
+      effectivePrompt = `${lead}\n\n---\n\n${prompt}`;
+    }
 
     // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt): prepend the
     // agent's standing instruction ahead of the caller's task prompt on the FIRST
@@ -1873,8 +1995,24 @@ export const taskTool: ToolDefinition = {
     }
     let resultText = '';
 
+    // Shared Subagent lifecycle-hook payload for this foreground spawn. parentSessionId
+    // is the INVOKING engine's session id (context.sessionId) — not the child's taskId —
+    // so a SubagentStart/Stop hook can correlate the subagent boundary back to its real
+    // parent across concurrent/nested runs (parity: Claude's SubagentContext.parentSessionId;
+    // the prior code mis-reported the child id as its own parent). invocationKind
+    // discriminates a fresh `spawn` from a `resume` of an existing agent session (parity:
+    // Claude's invocationKind). Falls back to taskId only in bare/test contexts with no
+    // session id.
+    const subagentHookCtx = {
+      parentSessionId: context.sessionId || taskId,
+      subagentSessionId: subConfig.sessionId || taskId,
+      prompt,
+      mode: effectiveMode,
+      invocationKind: (resumeSessionId ? 'resume' : 'spawn') as 'resume' | 'spawn',
+    };
+
     if (context._hookManager) {
-      context._hookManager.executeSubagentStart({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
+      context._hookManager.executeSubagentStart(subagentHookCtx).catch(() => {});
     }
 
     // Surface this foreground subagent live to the parent engine's UI.
@@ -1886,6 +2024,11 @@ export const taskTool: ToolDefinition = {
 
     let toolUseCount = 0;
     let totalTokens = 0;
+    // Prompt-cache introspection carried into the completion footer (parity: Claude's
+    // per-fork cacheRead / cacheHitRate). Latched from usage_update stats; 0/undefined
+    // when the provider reports no cache signal (clause then omitted).
+    let cacheReadTokens = 0;
+    let cacheHitRate: number | undefined;
     const startedAt = Date.now();
     const recentActivities: string[] = [];
     let exitReason: import('../types').ExitReason | undefined;
@@ -1988,6 +2131,8 @@ export const taskTool: ToolDefinition = {
         }
         if (event.type === 'usage_update') {
           totalTokens = event.stats?.totalTokens ?? totalTokens;
+          cacheReadTokens = event.stats?.cachedPromptTokens ?? cacheReadTokens;
+          if (event.stats?.cacheHitRate !== undefined) cacheHitRate = event.stats.cacheHitRate;
         }
         // The deliverable is the FINAL assistant turn's text (agentToolUtils
         // finalizeAgentTool): record every text-bearing turn so the last one wins,
@@ -2046,7 +2191,7 @@ export const taskTool: ToolDefinition = {
     } catch (err) {
       context.abortSignal.removeEventListener('abort', forwardAbort);
       if (context._hookManager) {
-        context._hookManager.executeSubagentStop({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
+        context._hookManager.executeSubagentStop(subagentHookCtx).catch(() => {});
       }
       const errMsg = err instanceof Error ? err.message : String(err);
       const output = resultText.trim()
@@ -2092,7 +2237,7 @@ export const taskTool: ToolDefinition = {
     context.abortSignal.removeEventListener('abort', forwardAbort);
 
     if (context._hookManager) {
-      context._hookManager.executeSubagentStop({ parentSessionId: taskId, subagentSessionId: subConfig.sessionId || taskId, prompt, mode: effectiveMode }).catch(() => {});
+      context._hookManager.executeSubagentStop(subagentHookCtx).catch(() => {});
     }
 
     if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
@@ -2143,7 +2288,7 @@ export const taskTool: ToolDefinition = {
       ? ''
       : `\nTo continue this agent, call task({ resume: "${agentName || taskId}", prompt: ... }).`;
     return {
-      output: `${body}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens, ${durationS}s]${continueHint}`,
+      output: `${body}\n\n[Agent stats: ${toolUseCount} tool calls, ${totalTokens} tokens${buildCacheStatsClause(cacheReadTokens, cacheHitRate)}, ${durationS}s]${continueHint}`,
       ...(failed ? { isError: true } : {}),
     };
   },

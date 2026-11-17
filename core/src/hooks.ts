@@ -217,6 +217,9 @@ export interface SessionContext {
 }
 
 export interface SubagentContext {
+  /** The INVOKING (parent) engine's session id — lets a hook correlate the
+   *  subagent boundary back to its real parent across concurrent/nested runs
+   *  (Claude Code parity: SubagentContext.parentSessionId). */
   parentSessionId: string;
   subagentSessionId: string;
   prompt: string;
@@ -226,6 +229,9 @@ export interface SubagentContext {
    *  cancellation of in-flight Stop/SubagentStop hook chains). Optional so
    *  non-cancellable call sites may omit it. */
   abortSignal?: AbortSignal;
+  /** Whether this boundary is a fresh `spawn` or a `resume` of an existing agent
+   *  session (Claude Code parity: invocationKind). Absent in bare/test contexts. */
+  invocationKind?: 'spawn' | 'resume';
 }
 
 export interface CompactContext {
