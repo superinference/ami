@@ -1334,6 +1334,14 @@ export interface EngineConfig {
    *  and are torn down when it shuts down. Threaded by the skill/task tools from
    *  SkillDefinition.hooks / AgentDefinition.hooks. */
   frontmatterHooks?: import('./hooks').HookConfigEntry[];
+  /** True when {@link frontmatterHooks} come from a SUBAGENT's own frontmatter (set by
+   *  the task tool): a `stop` hook is remapped to `subagentStop` on registration, since a
+   *  completing subagent fires SubagentStop (parity: Claude Code registerFrontmatterHooks
+   *  `isAgent`). Left false/undefined for forked-skill hooks, which keep `stop`. */
+  frontmatterHooksIsAgent?: boolean;
+  /** Human-readable origin of {@link frontmatterHooks} (e.g. `agent 'reviewer'` /
+   *  `skill 'deploy'`) for the attribution + Stop→SubagentStop conversion debug log. */
+  frontmatterHooksSource?: string;
   /** Stance skill name (--skill) — a skill pinned to govern the whole session/run:
    *  its body becomes the system-prompt overlay, plus its tool-scoping, bash
    *  auto-allow, MCP servers, and thinking level. Replaces the old persona. */

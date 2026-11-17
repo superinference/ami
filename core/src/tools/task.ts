@@ -2575,7 +2575,14 @@ export const taskTool: ToolDefinition = {
       systemPrompt: finalSystemPrompt || undefined,
       tokenBudget: agentTokenBudget || undefined,
       ...(agentFrontmatterHooks && agentFrontmatterHooks.length > 0
-        ? { frontmatterHooks: agentFrontmatterHooks }
+        ? {
+            frontmatterHooks: agentFrontmatterHooks,
+            // isAgent=true: this is a spawned SUBAGENT, so its frontmatter `stop` hook is
+            // remapped to `subagentStop` (a completing subagent fires SubagentStop, not
+            // Stop) — parity with Claude Code's registerFrontmatterHooks(isAgent=true).
+            frontmatterHooksIsAgent: true,
+            frontmatterHooksSource: subagentType ? `agent '${subagentType}'` : 'agent',
+          }
         : {}),
     };
 

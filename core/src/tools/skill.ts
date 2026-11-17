@@ -677,7 +677,12 @@ export const skillTool: ToolDefinition = {
       // when it shuts down. Skill hooks from untrusted tiers were already stripped at load.
       ...((() => {
         const fh = [...(skill?.hooks ?? []), ...(agentDef?.hooks ?? [])];
-        return fh.length > 0 ? { frontmatterHooks: fh } : {};
+        // isAgent=false: a forked skill is not a completing subagent, so its `stop`
+        // hooks stay `stop` (parity with Claude's registerSkillHooks, which never
+        // remaps). Attribute the registration to the skill for the debug/audit log.
+        return fh.length > 0
+          ? { frontmatterHooks: fh, frontmatterHooksSource: `skill '${resolvedName}'` }
+          : {};
       })()),
       abortController: subAbort,
     };

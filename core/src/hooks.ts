@@ -1856,6 +1856,21 @@ export interface HookConfigFile {
 }
 
 /**
+ * Options for {@link HookManager.registerConfigEntries} — parity with Claude Code's
+ * registerFrontmatterHooks `isAgent` + `sourceName` parameters.
+ */
+export interface FrontmatterHookOptions {
+  /** When true the entries came from a SUBAGENT's own frontmatter: a `stop` hook is
+   *  remapped to `subagentStop`, because a completing subagent fires SubagentStop (not
+   *  Stop), mirroring Claude Code's `isAgent` conversion. Skills leave `stop` as-is. */
+  isAgent?: boolean;
+  /** Human-readable origin (e.g. `agent 'reviewer'` / `skill 'deploy'`) used only in
+   *  the debug/introspection log attributing the registered hooks + the Stop→SubagentStop
+   *  conversion to their source (Claude Code's registerFrontmatterHooks `sourceName`). */
+  sourceName?: string;
+}
+
+/**
  * A single file-loaded hook, retained for introspection (Claude Code's per-hook
  * ViewHookMode details): reveals the ACTUAL configured command / prompt / url —
  * not just an aggregate count — so `/hooks` and `--introspect` can show what each
@@ -2800,7 +2815,7 @@ export class HookManager extends EventEmitter {
    * descriptors, and matcher gating all behave identically to file-loaded hooks),
    * defaulting the provenance tier to `project` when the caller left `_source` unset.
    */
-  registerConfigEntries(entries: readonly HookConfigEntry[], cwd: string): void {
+  registerConfigEntries(entries: readonly HookConfigEntry[], cwd: string, options: FrontmatterHookOptions = {}): void {
     if (!entries || entries.length === 0) return;
     if (this.isAllHooksDisabled()) {
       coreLog('hooks', 'Skipping frontmatter hooks: disableAllHooks policy / env is set');
@@ -2810,10 +2825,27 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', 'Skipping frontmatter hooks: allowManagedHooksOnly policy is set');
       return;
     }
+    const sourceName = options.sourceName;
+    const srcSuffix = sourceName ? ` from ${sourceName}` : '';
+    let registered = 0;
     for (const raw of entries) {
       if (!raw || typeof raw.event !== 'string' || !raw.hook) continue;
-      const entry: HookConfigEntry = { ...raw, _source: raw._source ?? 'project' };
+      // isAgent remap (Claude Code registerFrontmatterHooks isAgent=true): a subagent
+      // completing fires SubagentStop, NOT Stop — so an agent's frontmatter `stop` hook
+      // would never run if left as-is. Convert it to `subagentStop` so the hook the
+      // agent declared actually fires on that agent's completion. Skills (isAgent=false)
+      // keep `stop` unchanged.
+      let event = raw.event;
+      if (options.isAgent && event === 'stop') {
+        event = 'subagentStop';
+        coreLog('hooks', `Converting Stop hook to SubagentStop${srcSuffix} (subagents trigger SubagentStop)`);
+      }
+      const entry: HookConfigEntry = { ...raw, event, _source: raw._source ?? 'project' };
       this.processHookEntry(entry, cwd);
+      registered++;
+    }
+    if (registered > 0) {
+      coreLog('hooks', `Registered ${registered} frontmatter hook(s)${srcSuffix}`);
     }
   }
 
