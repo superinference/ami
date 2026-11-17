@@ -1464,6 +1464,27 @@ export function getAgentModelOptions(currentModel?: string): AgentModelOption[] 
   return base;
 }
 
+/**
+ * Canonical display string for an agent / subagent model CHOICE, so every agent
+ * surface (the `/agents` list + detail renderers, any model picker) formats a
+ * stored `model` value the SAME way instead of printing the raw token. Mirrors
+ * Claude Code's `getAgentModelDisplay` (utils/model/agent.ts:L124-L131): an absent
+ * value is the inherit-by-default case ("Inherit from parent (default)"), the
+ * explicit "inherit" sentinel is "Inherit from parent", and a concrete alias / id
+ * is resolved through {@link resolveModelAlias} + {@link getModelDisplayName} to its
+ * friendly name (falling back to the raw id when unrecognized). The SINGLE source
+ * for rendering an agent's model choice — pairs with {@link getAgentModelOptions}
+ * (the selectable catalog) so the picker and the display agree on wording.
+ */
+export function getAgentModelDisplay(model?: string | null): string {
+  const raw = (model ?? '').trim();
+  if (raw === '') return 'Inherit from parent (default)';
+  if (raw.toLowerCase() === 'inherit') return 'Inherit from parent';
+  const canonical = resolveModelAlias(raw) ?? raw;
+  const display = getModelDisplayName(canonical);
+  return display === '' ? raw : display;
+}
+
 export function formatModelList(models: string[], provider: string): string {
   if (models.length === 0) return 'Could not retrieve model list from provider.';
 
