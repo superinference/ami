@@ -469,6 +469,7 @@ const TWO_STEP_SAVE_GUIDANCE = [
   '- Keep each memory file\'s name / description / type fields in sync with its content.',
   '- Update or remove memories that turn out to be wrong or outdated.',
   '- Do not write duplicate memories — check for an existing memory to update before writing a new one.',
+  '- If the user asks you to forget something, use `forget_memory` to find and remove the relevant entry.',
 ].join('\n');
 
 /**
@@ -1315,6 +1316,21 @@ function buildFrontmatter(
 }
 
 /**
+ * Slugify a memory name into its on-disk file-stem. Lower-cased, non-alnum
+ * collapsed to a single `_`, leading/trailing `_` trimmed. Shared by
+ * {@link MemoryManager.saveMemory} (which derives the write filename) and
+ * {@link MemoryManager.deleteMemory} (which resolves which file to remove) so the
+ * two never drift into subtly different normalisations (No-Duplication Rule).
+ */
+export function memoryFileSlug(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .toLowerCase();
+}
+
+/**
  * Resolve a non-clobbering memory file path. Two DISTINCT memory names can
  * normalize to the same `safeName` (e.g. `Foo Bar` and `Foo:Bar` both →
  * `foo_bar`), and {@link MemoryManager.saveMemory} overwrites by filename — so
@@ -2005,11 +2021,7 @@ export class MemoryManager {
     const memoryDir = scope === 'team' ? path.join(baseDir, 'team') : baseDir;
     ensureMemoryDirMode(memoryDir);
 
-    const safeName = name
-      .replace(/[^a-zA-Z0-9_-]/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '')
-      .toLowerCase();
+    const safeName = memoryFileSlug(name);
 
     const filename = `${safeName}.md`;
     // Non-destructive write: never clobber an UNRELATED memory whose distinct name
@@ -2075,6 +2087,87 @@ export class MemoryManager {
       } catch { /* unreadable — skip */ }
     }
     return sections.join('\n\n');
+  }
+
+  /**
+   * Delete a stored memory by name — the write-side inverse of
+   * {@link saveMemory}. Backs the `forget_memory` tool so the model can honour a
+   * "forget X" request instead of only being told to "remove outdated memories"
+   * with no way to do it (parity with Claude Code's extractMemories "if they ask
+   * you to forget something, find and remove the relevant entry" affordance).
+   *
+   * Removes the topic file(s) matching `name` in BOTH the private root and the
+   * shared `team/` sub-directory (a memory may exist under either scope), matching
+   * by the file's frontmatter `name` (case/whitespace-normalised, the same key
+   * {@link resolveNonClobberingPath} uses for update-in-place) with a slugged
+   * filename fallback. Also prunes the one-line pointer from the always-loaded
+   * `MEMORY.md` index so a deleted memory never lingers in context. The MEMORY.md
+   * index itself is never treated as a deletable memory. Returns the list of
+   * removed entries (path + scope) — empty when no memory matched.
+   */
+  deleteMemory(name: string): { path: string; scope: MemoryScope }[] {
+    const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const target = norm(name);
+    const slug = memoryFileSlug(name);
+    const baseDir = this.getMemoryDir();
+    const removed: { path: string; scope: MemoryScope }[] = [];
+    const removedFilenames: { file: string; scope: MemoryScope }[] = [];
+
+    const scopes: { scope: MemoryScope; dir: string }[] = [
+      { scope: 'private', dir: baseDir },
+      { scope: 'team', dir: path.join(baseDir, 'team') },
+    ];
+    for (const { scope, dir } of scopes) {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue; // scope dir doesn't exist yet
+      }
+      for (const file of entries) {
+        if (!file.endsWith('.md') || file === MEMORY_INDEX_FILENAME) continue;
+        const filePath = path.join(dir, file);
+        let matched = false;
+        try {
+          const { frontmatter } = parseFrontmatter(fs.readFileSync(filePath, 'utf-8'), filePath);
+          if (norm(frontmatter.name || '') === target) matched = true;
+        } catch (err) {
+          logUnexpectedReadError(err, filePath);
+        }
+        // Filename fallback covers a legacy/un-parseable file whose stem still
+        // matches the requested name's slug (e.g. `foo.md` / `foo-2.md`).
+        if (!matched) {
+          const base = file.replace(/\.md$/, '');
+          if (base === slug || base.replace(/-\d+$/, '') === slug) matched = true;
+        }
+        if (!matched) continue;
+        try {
+          fs.unlinkSync(filePath);
+          removed.push({ path: filePath, scope });
+          removedFilenames.push({ file, scope });
+        } catch (err) {
+          logUnexpectedReadError(err, filePath);
+        }
+      }
+    }
+
+    // Prune the index pointers for every removed file so MEMORY.md (loaded every
+    // turn) never points at a memory that no longer exists.
+    if (removedFilenames.length > 0) {
+      const indexPath = path.join(baseDir, MEMORY_INDEX_FILENAME);
+      let existing = '';
+      try { existing = fs.readFileSync(indexPath, 'utf-8'); } catch { /* no index */ }
+      if (existing) {
+        const pointers = removedFilenames.map(
+          ({ file, scope }) => `(${scope === 'team' ? `team/${file}` : file})`,
+        );
+        const kept = existing.split('\n').filter(line => !pointers.some(p => line.includes(p)));
+        fs.writeFileSync(indexPath, kept.join('\n'), { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+        try { fs.chmodSync(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+      }
+    }
+
+    return removed;
   }
 
   /**

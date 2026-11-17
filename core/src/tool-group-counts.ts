@@ -135,7 +135,7 @@ export function classifyToolGroupKind(
 ): ToolGroupKind {
   if (ABSORBED_TOOLS.has(toolName)) return 'absorbed';
   if (toolName === 'read_memory') return 'memoryRead';
-  if (toolName === 'write_memory') return 'memoryWrite';
+  if (toolName === 'write_memory' || toolName === 'forget_memory') return 'memoryWrite';
   if (toolName.startsWith('mcp__') && parseMcpToolName(toolName)) return 'mcpCall';
   if (READ_TOOLS.has(toolName)) return 'read';
   if (SEARCH_TOOLS.has(toolName)) {

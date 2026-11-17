@@ -8,6 +8,7 @@ import { globTool } from './glob';
 import { listDirTool } from './list-dir';
 import { readMemoryTool } from './read-memory';
 import { writeMemoryTool } from './write-memory';
+import { forgetMemoryTool } from './forget-memory';
 import { webFetchTool } from './web-fetch';
 import { webSearchTool } from './web-search';
 import { notebookEditTool } from './notebook-edit';
@@ -179,6 +180,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     endConversationTool,
     readMemoryTool,
     writeMemoryTool,
+    forgetMemoryTool,
     taskTool,
     sendMessageTool,
     teamCreateTool,
@@ -207,6 +209,7 @@ export { globTool } from './glob';
 export { listDirTool } from './list-dir';
 export { readMemoryTool } from './read-memory';
 export { writeMemoryTool } from './write-memory';
+export { forgetMemoryTool } from './forget-memory';
 export { webFetchTool } from './web-fetch';
 export { webSearchTool } from './web-search';
 export { notebookEditTool } from './notebook-edit';
