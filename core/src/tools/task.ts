@@ -1004,6 +1004,63 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
 }
 
 /**
+ * Drop `tool` (tool_result) messages whose `tool_call_id` no longer matches any
+ * assistant tool_call in the transcript — ORPHANED tool results. This is the exact
+ * complement of {@link filterIncompleteToolCalls}: that pass removes an assistant
+ * turn when ANY of its tool_calls is unanswered, which strands the tool_results of
+ * its OTHER (answered) calls — a result block with no preceding tool_use. A provider
+ * rejects an orphaned tool_result just as it rejects an orphaned tool_use, so the
+ * seed must be reconciled in BOTH directions before it is replayed. Mirrors Claude
+ * Code's `filterOrphanedToolResults` (resumeAgent.ts:L70-74), the sibling of its
+ * `filterUnresolvedToolUses`.
+ */
+export function filterOrphanedToolResults(messages: Message[]): Message[] {
+  const calledIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls) {
+      for (const tc of m.tool_calls) calledIds.add(tc.id);
+    }
+  }
+  return messages.filter(m => {
+    if (m.role === 'tool' && m.tool_call_id) return calledIds.has(m.tool_call_id);
+    return true;
+  });
+}
+
+/**
+ * Reconcile a persisted/parent transcript into an API-valid seed before it is
+ * replayed into a `fork` child or a resumed sub-engine. Applies the full
+ * sanitization pipeline in order: drop a trailing interrupted assistant turn
+ * ({@link stripIncompleteTrailingMessages}), drop assistant turns with an unanswered
+ * tool_use ({@link filterIncompleteToolCalls}), then drop the tool_results that
+ * dropping those turns ORPHANED ({@link filterOrphanedToolResults}). The last step
+ * is what the prior fork seed (which only ran the first two) omitted, leaking an
+ * orphaned-tool_result into the child's provider request. Mirrors Claude Code's
+ * resume/fork transcript reconciliation (`filterUnresolvedToolUses` +
+ * `filterOrphanedToolResults`, resumeAgent.ts:L70-74) so the child never inherits a
+ * half-answered tool exchange.
+ */
+export function sanitizeTranscriptForReplay(messages: Message[]): Message[] {
+  return filterOrphanedToolResults(
+    filterIncompleteToolCalls(stripIncompleteTrailingMessages(messages)),
+  );
+}
+
+/**
+ * Whether a sub-agent's final deliverable text is an INTERRUPTED/synthetic ending
+ * rather than a clean answer — it carries one of the in-band interrupt sentinels
+ * ({@link INCOMPLETE_ASSISTANT_SENTINEL_RE}: a server-error or tool-call interrupt).
+ * A run that ends on such a message was CANCELLED mid-flight, not completed; the
+ * parent must treat it as a failure (so it does not act on a truncated half-answer),
+ * mirroring Claude Code's post-loop check that re-throws `AbortError` when the final
+ * message is a synthetic interruption (AgentTool.tsx:L1205-1218). AMI messages carry
+ * no `stop_reason`, so the in-band sentinel is the discriminator.
+ */
+export function isInterruptedFinalText(text: string | undefined): boolean {
+  return typeof text === 'string' && INCOMPLETE_ASSISTANT_SENTINEL_RE.test(text);
+}
+
+/**
  * Pick a sub-agent's returned deliverable: the text of its FINAL assistant turn
  * (`lastTurnText`) when one carried text, else the accumulated text fallback.
  * Mirrors Claude Code's `finalizeAgentTool` (agentToolUtils.ts:L297-317), which
@@ -1044,6 +1101,44 @@ export function buildCacheStatsClause(cacheReadTokens: number, cacheHitRate: num
   if (!cacheReadTokens && cacheHitRate === undefined) return '';
   const rate = cacheHitRate !== undefined ? `, ${Math.round(cacheHitRate * 100)}% cache hit` : '';
   return `, ${cacheReadTokens} cached tokens${rate}`;
+}
+
+/** Max recent tool activities retained for the live-progress trail (parity: Claude
+ *  Code's MAX_RECENT_ACTIVITIES window on a backgrounded task's progress object). */
+export const MAX_RECENT_ACTIVITIES = 5;
+
+/**
+ * One-line label for a tool call recorded into a sub-agent's recent-activity trail:
+ * the tool name plus a short, single-line summary of its most salient input
+ * (`bash(git status)`, `file_read(src/app.ts)`), mirroring Claude Code's progress
+ * `recentActivities` entries which carry the tool name AND its input. The input hint
+ * is the first present of the common salient fields (command / file_path / path /
+ * pattern / query / url), trimmed, de-newlined, and capped so the trail stays compact.
+ * Returns bare `tool:<name>` when no salient input field is present.
+ */
+export function describeActivity(toolName: string, input: Record<string, unknown> | undefined): string {
+  const salient = ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'description'];
+  let hint: string | undefined;
+  if (input) {
+    for (const k of salient) {
+      const v = input[k];
+      if (typeof v === 'string' && v.trim()) { hint = v; break; }
+    }
+  }
+  if (!hint) return `tool:${toolName}`;
+  const compact = hint.replace(/\s+/g, ' ').trim().slice(0, 40);
+  return `${toolName}(${compact})`;
+}
+
+/**
+ * Render a sub-agent's recent-activity trail into a human-readable clause for a
+ * completion/stall notice (parity: surfacing Claude Code's progress
+ * `recentActivities` so the last few tool actions are observable). Returns an empty
+ * string when there is nothing to show, so callers can append unconditionally.
+ */
+export function buildRecentActivityTrail(activities: readonly string[]): string {
+  if (activities.length === 0) return '';
+  return ` Recent activity: ${activities.join(', ')}.`;
 }
 
 /**
@@ -1553,6 +1648,24 @@ export function applyPlanRequirement(mode: string, planRequired: boolean): strin
  */
 export function buildPlanRequiredNotice(): string {
   return 'PLAN MODE REQUIRED: You are running read-only. Investigate, then return a concrete, step-by-step implementation plan for this task. Do NOT edit files, write files, or run mutating shell commands — those tools are denied in this mode and any such attempt will fail. Hand the plan back for review; implementation happens only after it is approved.';
+}
+
+/**
+ * STRUCTURAL read-only-bash boundary for a plan-required subagent (parity: Claude
+ * Code's planAgent, which keeps bash for read-only investigation — ls, git
+ * status/log/diff, find, grep, cat, head, tail — but prohibits mutating shell
+ * commands, planAgent.ts:L47-48). A plan-required spawn already clamps its permission
+ * mode to `plan` ({@link applyPlanRequirement}), so a mutating bash command is denied
+ * at the permission layer; this adds DEFENSE IN DEPTH by swapping the raw `bash` tool
+ * for the {@link wrapExploreReadOnlyBash} variant that structurally REFUSES any
+ * command the canonical classifier cannot prove side-effect-free — so even in an
+ * auto-approving/yolo parent context a plan agent can never mutate the tree. Reuses
+ * the SAME read-only-bash wrapper as explore mode (no second guard). A no-op when
+ * `planRequired` is false, so default behavior is unchanged. Other tools pass through.
+ */
+export function applyPlanReadOnlyBash(tools: ToolDefinition[], planRequired: boolean): ToolDefinition[] {
+  if (!planRequired) return tools;
+  return tools.map(t => (t.name === 'bash' ? wrapExploreReadOnlyBash(t) : t));
 }
 
 /** Valid values for the per-spawn `system_prompt_mode` knob — the single canonical
@@ -2820,6 +2933,13 @@ export const taskTool: ToolDefinition = {
       planRequired,
     );
 
+    // Plan-required STRUCTURAL read-only-bash boundary (parity: Claude's planAgent
+    // keeps bash for read-only investigation but refuses mutating commands). The
+    // `plan` permission clamp above already denies mutations at the permission layer;
+    // this swaps the raw bash tool for the read-only-guarded variant so a plan agent
+    // cannot mutate even under an auto-approving parent. No-op when not plan-required.
+    tools = applyPlanReadOnlyBash(tools, planRequired);
+
     // ui#13: a mode-only sub-agent (no named subagent_type) runs on a dedicated LEAN
     // system prompt that REPLACES the full coding stance, so it returns its result and
     // STOPS instead of over-working. `fork` is exempt (an explicit context-inheriting
@@ -2915,7 +3035,7 @@ export const taskTool: ToolDefinition = {
     // transcript is API-valid (the engine re-validates/heals it on construction).
     // Parity: Claude's buildForkedMessages + filterIncompleteToolCalls.
     if (mode === 'fork' && context._parentMessages && context._parentMessages.length > 0) {
-      const seeded = filterIncompleteToolCalls(stripIncompleteTrailingMessages(context._parentMessages));
+      const seeded = sanitizeTranscriptForReplay(context._parentMessages);
       if (seeded.length > 0) subConfig.initialMessages = seeded;
     }
 
@@ -3320,8 +3440,11 @@ export const taskTool: ToolDefinition = {
         }
         if (event.type === 'tool_use_start') {
           toolUseCount++;
-          recentActivities.push(`tool:${event.toolName}`);
-          if (recentActivities.length > 5) recentActivities.shift();
+          // Record a name+input activity label (parity: Claude's progress
+          // recentActivities carry the tool name AND its input), bounded to the most
+          // recent MAX_RECENT_ACTIVITIES so the trail stays compact.
+          recentActivities.push(describeActivity(event.toolName, event.input));
+          if (recentActivities.length > MAX_RECENT_ACTIVITIES) recentActivities.shift();
           // Capture the tool call for the handoff safety review (yolo/auto only).
           const cmd = event.input?.command;
           handoffActions.push({ tool: event.toolName, command: typeof cmd === 'string' ? cmd : undefined });
@@ -3383,7 +3506,9 @@ export const taskTool: ToolDefinition = {
       // plus the truncation notice — not the intermediate narration.
       deliverable = selectFinalAnswer(lastTurnText, resultText);
       if (stalled) {
-        deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]`;
+        // Surface the last few tool actions (parity: Claude's recentActivities) so a
+        // stalled agent's final state is observable instead of opaque.
+        deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]${buildRecentActivityTrail(recentActivities)}`;
       } else if (exitReason === 'max_turns') {
         // Distinguish a turn-capped partial result from a clean completion so the
         // parent/UI does not mistake a truncated run for a finished one.
@@ -3463,8 +3588,12 @@ export const taskTool: ToolDefinition = {
 
     // A stall-kill or an abort is a FAILURE, not a successful result — surface it
     // so the parent does not treat a cancelled/timed-out run as a finished one
-    // (mirrors Claude's AbortError-on-abort semantics).
-    const failed = stalled || exitReason === 'abort' || sawAbortError;
+    // (mirrors Claude's AbortError-on-abort semantics). A run whose FINAL deliverable
+    // is an interrupted/synthetic message (server-error / tool-call interrupt) was
+    // cancelled mid-flight too, even without an explicit abort event — treat it as a
+    // failure so the parent does not act on a truncated half-answer (parity: Claude's
+    // post-loop synthetic-final re-throw, AgentTool.tsx:L1205-1218).
+    const failed = stalled || exitReason === 'abort' || sawAbortError || isInterruptedFinalText(deliverable);
 
     context._emitChild?.({
       type: 'subagent_result', nodeId: taskId, depth: relayDepth,
