@@ -674,11 +674,18 @@ export const skillTool: ToolDefinition = {
     }
 
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
-    if (skill?.model) {
+    if (skill?.model && skill.model !== 'inherit') {
       // Carry the session's [1m] 1M-context marker across the skill model override
       // when the target family supports it — a raw overwrite would silently drop an
       // `opus[1m]` session to the 200k window and trip autocompact. See
       // resolveSkillModelOverride.
+      //
+      // `model: inherit` is a sentinel meaning "run with the parent/session model"
+      // (parity with Claude's loadSkillsDir, which normalizes frontmatter.model ===
+      // 'inherit' to undefined). The loader already normalizes it away, so this is a
+      // defense-in-depth guard for a programmatically-built skill: it must NOT reach
+      // resolveSkillModelOverride (which would set the bogus model id 'inherit') and
+      // must fall through to the agent/session model like a model-less skill.
       providerConfig.model = resolveSkillModelOverride(skill.model, providerConfig.model || '');
     } else if (agentDef?.model && agentDef.model !== 'inherit') {
       // The skill did not pin a model → fall back to the target agent's model.
