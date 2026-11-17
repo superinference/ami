@@ -839,16 +839,40 @@ export function withRequestIdDebugTrace(
 ): typeof globalThis.fetch {
   const base = baseFetch ?? globalThis.fetch;
   return (async (input: any, init?: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    let pathname = '<unknown>';
     try {
       const url = requestUrl(input as string | URL | { url?: unknown });
       const headers = new Headers(init?.headers as Record<string, string> | undefined);
       const id = headers.get(REQUEST_ID_HEADER);
-      const pathname = url ? new URL(url).pathname : '<unknown>';
+      pathname = url ? new URL(url).pathname : '<unknown>';
       log('api', `[API REQUEST] ${pathname}${id ? ` ${REQUEST_ID_HEADER}=${id}` : ''} source=${source}`);
     } catch {
       // Never let tracing crash the fetch.
     }
-    return base(input, init);
+    // Complete the request→response→error trace triad: forward the provider-SDK
+    // transport RESPONSE status and any transport ERROR to the same debug sink the
+    // request line uses (routed to stderr when isDebugToStderr()). Mirrors Claude
+    // Code's createStderrLogger INFO/ERROR legs (services/api/client.ts:L73-86),
+    // adapted to AMI's fetch-wrapper layer so a timeout/5xx/dropped connection is
+    // visible in the same trace as its request. A non-ok status is logged at WARN
+    // so it surfaces even when the level is raised above `debug`. All logging is
+    // best-effort and NEVER perturbs the live request or masks the real error.
+    try {
+      const res = await base(input, init);
+      try {
+        log('api', `[API RESPONSE] ${pathname} status=${res.status} source=${source}`, undefined, res.ok ? 'debug' : 'warn');
+      } catch {
+        // Tracing must not perturb the returned response.
+      }
+      return res;
+    } catch (err) {
+      try {
+        logError('api', `[API ERROR] ${pathname} source=${source}: ${err instanceof Error ? err.message : String(err)}`);
+      } catch {
+        // Never let tracing mask the original transport failure.
+      }
+      throw err;
+    }
   }) as typeof globalThis.fetch;
 }
 
