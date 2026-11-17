@@ -4,7 +4,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { updateConfigFile, validateConfigJson, stripJsoncComments, getGlobalConfigPath, type ProjectConfig } from '../config';
 import { THINKING_LEVELS } from '../model-capabilities';
 import { canOverride, MANAGED_ONLY_KEYS, TIER_LOCKED_KEYS } from '../settings-guard';
-import { listProviders, MODEL_ALIASES, resolveModelAlias, validateModel } from '../model-registry';
+import { listProviders, getAgentModelOptions, resolveModelAlias, validateModel } from '../model-registry';
 import { isSpecialFileStat } from '../path-safety';
 
 /**
@@ -324,9 +324,12 @@ export function generateModelSection(
     const providerLines = providers
       .filter((p) => p.models.length > 0)
       .map((p) => `  - ${p.id}: ${p.models.join(', ')}`);
-    const aliasLines = MODEL_ALIASES.map((a) => {
-      const target = resolveModelAlias(a);
-      return target ? `${a} -> ${target}` : a;
+    // Derive the alias listing from the shared agent-model catalog so the tool
+    // description offers exactly the aliases (with friendly labels) the model
+    // picker does — one source, no hand-maintained copy.
+    const aliasLines = getAgentModelOptions().map((o) => {
+      const target = resolveModelAlias(o.value);
+      return target ? `${o.value} -> ${target} (${o.label})` : `${o.value} (${o.label})`;
     });
     return (
       '\n\n## Model\n' +

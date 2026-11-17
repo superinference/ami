@@ -198,11 +198,8 @@ export async function listModels(config: ProviderConfig): Promise<ModelInfo[]> {
   }
 
   try {
-    if (provider === 'google') {
-      return await listGeminiModels(config);
-    }
-    // OpenAI-compatible: OpenAI, Ollama, OpenRouter
-    return await listOpenAIModels(config);
+    // Coalesced: concurrent callers for the same endpoint share one /models walk.
+    return await fetchProviderModels(provider, config);
   } catch (err) {
     // Fallback to static list if API call fails
     log('modelCapabilities', `[modelCapabilities] fetch failed: ${diagnoseModelDiscovery(err, provider)}`);
@@ -310,9 +307,8 @@ export async function listModelsDiagnostic(
   }
 
   try {
-    const models = provider === 'google'
-      ? await listGeminiModels(config)
-      : await listOpenAIModels(config);
+    // Coalesced: concurrent callers for the same endpoint share one /models walk.
+    const models = await fetchProviderModels(provider, config);
     return {
       models,
       diagnostic: models.length > 0
@@ -371,6 +367,34 @@ async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
     id: m.name.replace('models/', ''),
     name: m.displayName,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// In-flight listing coalescing — mirrors Claude Code's `sequential()`-guarded,
+// null-rechecked background model-string init (utils/model/modelStrings.ts:
+// L102-L134): multiple concurrent callers (a startup preconnect AND a `/model`
+// invocation, say) must not each fire a provider `/models` request. A fetch that
+// is still pending for the SAME provider+baseUrl+apiKey is shared by every
+// concurrent caller and cleared the instant it settles — so the network walk (and
+// its on-disk capability-cache write) runs ONCE per concurrent burst, while a call
+// that arrives AFTER it settles still re-fetches (coalescing in-flight work only,
+// never a stale permanent memoization). Both listModels and listModelsDiagnostic
+// route through this single guard so the de-duplication is consistent everywhere.
+// ---------------------------------------------------------------------------
+const inFlightListings = new Map<string, Promise<ModelInfo[]>>();
+
+function fetchProviderModels(provider: string, config: ProviderConfig): Promise<ModelInfo[]> {
+  // Key on the full credential+endpoint tuple so different providers, base URLs,
+  // or keys never share a listing (correctness over aggressiveness).
+  const key = `${provider}:::${config.baseUrl ?? ''}:::${config.apiKey ?? ''}`;
+  const existing = inFlightListings.get(key);
+  if (existing) return existing;
+  const pending = (provider === 'google'
+    ? listGeminiModels(config)
+    : listOpenAIModels(config)
+  ).finally(() => { inFlightListings.delete(key); });
+  inFlightListings.set(key, pending);
+  return pending;
 }
 
 // Models that have already validated (provider+baseUrl+id) are never re-probed.
@@ -986,6 +1010,50 @@ export function getModelMetadata(
     description: getModelDescription(resolved),
     upgrade: getNewerVersionHint(resolved),
   };
+}
+
+/** One selectable row in the agent/model-choice catalog. */
+export interface AgentModelOption {
+  /** The value a selection persists — a short family alias, or a custom full id. */
+  value: string;
+  /** Friendly display label ("Opus 4.6") for the row. */
+  label: string;
+  /** Optional one-line description shown under the label. */
+  description?: string;
+}
+
+/**
+ * Curated agent-model option catalog: one {value,label,description} row per
+ * accepted family alias (the single {@link MODEL_ALIASES} set), with the human
+ * copy resolved through {@link getModelDisplayName} / {@link getModelDescription}
+ * (no parallel label table). When `currentModel` is a concrete id that is NOT one
+ * of the alias values — a custom or pinned full model id — it is injected at the
+ * HEAD of the list labeled "Current model (custom ID)", so an edit flow round-trips
+ * that custom id instead of silently overwriting it with an alias. Mirrors Claude
+ * Code's getAgentModelOptions + ModelSelector custom-id injection
+ * (components/agents/ModelSelector.tsx:L21-L38). The SINGLE source of the agent
+ * model-choice catalog — consumed by the config tool's model section so the model
+ * sees the same alias set the picker offers (consolidation: replaces the inline
+ * MODEL_ALIASES listing the config tool built by hand).
+ */
+export function getAgentModelOptions(currentModel?: string): AgentModelOption[] {
+  const base: AgentModelOption[] = MODEL_ALIASES.map((alias) => {
+    const canonical = resolveModelAlias(alias) ?? alias;
+    const description = getModelDescription(canonical);
+    const row: AgentModelOption = { value: alias, label: getModelDisplayName(canonical) };
+    if (description) row.description = description;
+    return row;
+  });
+  const current = (currentModel ?? '').trim();
+  // A custom/pinned full id (not one of the alias values) rounds-trips as its own
+  // head-of-list option so selecting it again preserves the exact id.
+  if (current !== '' && !base.some(o => o.value === current)) {
+    return [
+      { value: current, label: getModelDisplayName(current), description: 'Current model (custom ID)' },
+      ...base,
+    ];
+  }
+  return base;
 }
 
 export function formatModelList(models: string[], provider: string): string {

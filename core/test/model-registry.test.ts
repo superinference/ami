@@ -369,3 +369,88 @@ describe('formatModelList — additional coverage', () => {
     assert.equal(lines.length, 31);
   });
 });
+
+// ---------------------------------------------------------------------------
+// In-flight listing coalescing (gap: concurrency-guarded, de-duplicated model
+// listing — parity with Claude Code's sequential()-guarded background init).
+// Concurrent callers for the same endpoint must share ONE /models request; a
+// later call (after the first settled) must re-fetch.
+// ---------------------------------------------------------------------------
+import { listModelsDiagnostic, getAgentModelOptions, MODEL_ALIASES } from '../src/model-registry';
+
+describe('listModels — in-flight coalescing', () => {
+  let server: http.Server;
+  let port: number;
+  let requestCount = 0;
+
+  before(async () => {
+    const s = http.createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      if (req.url === '/models') {
+        requestCount++;
+        // Small delay so a concurrent second caller would race in without coalescing.
+        await new Promise<void>(r => setTimeout(r, 25));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>(resolve => { s.listen(0, '127.0.0.1', () => resolve()); });
+    server = s;
+    port = (s.address() as { port: number }).port;
+  });
+
+  after(() => { server.close(); });
+
+  it('coalesces concurrent listings into one request, then re-fetches later', async () => {
+    const config = cfg({ baseUrl: `http://127.0.0.1:${port}`, apiKey: 'test-key' });
+    requestCount = 0;
+    // Two concurrent callers for the SAME endpoint → exactly one network walk.
+    const [a, b] = await withCleanEnvAsync(() =>
+      Promise.all([listModelsDiagnostic(config), listModelsDiagnostic(config)]),
+    );
+    assert.equal(requestCount, 1, 'concurrent callers must share a single /models request');
+    assert.deepEqual(a.models.map(m => m.id), ['gpt-4o', 'gpt-4o-mini']);
+    assert.deepEqual(b.models.map(m => m.id), a.models.map(m => m.id));
+    // A caller arriving AFTER the first settled must re-fetch (in-flight only).
+    const c = await withCleanEnvAsync(() => listModelsDiagnostic(config));
+    assert.equal(requestCount, 2, 'a later call must not reuse a settled listing');
+    assert.deepEqual(c.models.map(m => m.id), ['gpt-4o', 'gpt-4o-mini']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getAgentModelOptions — curated agent-model catalog (parity with Claude's
+// getAgentModelOptions + ModelSelector custom-id injection).
+// ---------------------------------------------------------------------------
+describe('getAgentModelOptions', () => {
+  it('returns one row per accepted alias with a friendly label', () => {
+    const opts = getAgentModelOptions();
+    assert.deepEqual(opts.map(o => o.value), [...MODEL_ALIASES]);
+    // Family aliases carry a one-line description resolved from the canonical id.
+    const opus = opts.find(o => o.value === 'opus');
+    assert.ok(opus);
+    assert.equal(opus!.label, 'Opus 4');
+    assert.ok(opus!.description && opus!.description.length > 0);
+  });
+
+  it('injects an unknown custom id at the head as "Current model (custom ID)"', () => {
+    const opts = getAgentModelOptions('my-org/custom-llm-v9');
+    assert.equal(opts[0].value, 'my-org/custom-llm-v9');
+    assert.equal(opts[0].description, 'Current model (custom ID)');
+    // The base alias set still follows the injected custom row.
+    assert.deepEqual(opts.slice(1).map(o => o.value), [...MODEL_ALIASES]);
+  });
+
+  it('does not inject when the current model is already an alias value', () => {
+    const opts = getAgentModelOptions('opus');
+    assert.deepEqual(opts.map(o => o.value), [...MODEL_ALIASES]);
+  });
+
+  it('ignores an empty / whitespace current model', () => {
+    assert.deepEqual(getAgentModelOptions('   ').map(o => o.value), [...MODEL_ALIASES]);
+    assert.deepEqual(getAgentModelOptions().map(o => o.value), [...MODEL_ALIASES]);
+  });
+});
