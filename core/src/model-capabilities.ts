@@ -1402,6 +1402,24 @@ export function modelSupportsMaxEffort(modelId: string): boolean {
 }
 
 /**
+ * Whether the current MAIN-LOOP model is capable of driving a secondary
+ * advisor/architect model. Mirrors Claude Code's `modelSupportsAdvisor`
+ * (utils/advisor.ts:L88-L96), which gates the advisor tool on the Opus/Sonnet
+ * 4.6+ generations (`opus-4-6`/`sonnet-4-6` and newer). AMI applies the same
+ * version-aware family match — Opus or Sonnet with major≥5, or major 4 minor≥6 —
+ * so a bare `claude-sonnet-4` (4.0) or a 3.x model is NOT advisor-capable and the
+ * `/architect` secondary model is reported as INACTIVE rather than silently doing
+ * nothing. The id may carry a gateway prefix, so the match is unanchored; Haiku,
+ * non-Claude ids, and empty/non-string inputs are never advisor-capable.
+ */
+export function modelSupportsAdvisor(modelId: string): boolean {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const v = parseClaudeVersion(modelId);
+  if (!v || (v.family !== 'opus' && v.family !== 'sonnet')) return false;
+  return v.major >= 5 || (v.major === 4 && v.minor >= 6);
+}
+
+/**
  * Whether the model defaults to adaptive thinking and REJECTS a request to turn
  * reasoning off (`thinking: { type:'disabled' }`). Resolves from the model's
  * detected {@link ModelCapabilities} `alwaysOnThinking` flag (the 5.x Claude line);
