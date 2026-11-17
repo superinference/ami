@@ -176,8 +176,10 @@ describe('Critic.evaluate() — stream error', () => {
     server.close();
   });
 
-  it('returns fail-closed default when stream throws', async () => {
-    const critic = new Critic(0.05, 0.10);
+  it('returns fail-closed default when the stream surfaces an HTTP error', async () => {
+    // maxRetries:0 so the 500 error chunk surfaces immediately (no backoff) — the retry
+    // behavior itself is covered by the dedicated transient-retry test below.
+    const critic = new Critic(0.05, 0.10, undefined, '', { maxRetries: 0, baseDelayMs: 0 });
     const provider = {
       baseUrl: `http://127.0.0.1:${port}/v1`,
       apiKey: 'test-key',
@@ -189,11 +191,11 @@ describe('Critic.evaluate() — stream error', () => {
     assert.equal(result.approved, false);
     assert.equal(result.score, 0.0);
     assert.ok(result.reason!.includes('Critic evaluation failed'));
-    // FUNCTIONAL: an HTTP-500 stream yields no usable content (the provider surfaces it
-    // without throwing), so this is reviewer UNAVAILABILITY — distinct from a rejection.
-    // RED (pre-fix): unavailable undefined. GREEN: unavailable=true with an error code.
+    // FUNCTIONAL (parity): the critic now routes through the shared retry wrapper, which
+    // surfaces an HTTP failure as a terminal error chunk. That is reviewer UNAVAILABILITY
+    // (stream_error), distinct from a substantive rejection.
     assert.equal(result.unavailable, true);
-    assert.equal(result.errorCode, 'malformed_response');
+    assert.equal(result.errorCode, 'stream_error');
   });
 
   it('flags errorCode "aborted" when the abort signal fired', async () => {

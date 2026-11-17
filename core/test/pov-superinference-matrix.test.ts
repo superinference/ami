@@ -37,7 +37,11 @@ async function* throwingStream(): AsyncGenerator<{ type: string; text?: string }
   throw new Error('network exploded');
 }
 
-const PROVIDER = {} as any;
+// Critic.evaluate() now routes the auxiliary call through the shared retry wrapper,
+// whose provider inference requires real-ish config fields (the engine always supplies
+// a resolved ProviderConfig in production). The DI stream seam still short-circuits any
+// network I/O.
+const PROVIDER = { apiKey: 'sk-test', model: 'test-model', baseUrl: 'http://127.0.0.1:1/v1' } as any;
 function makeCritic(text: string, alpha = 0.05, beta = 0.1) {
   return new Critic(alpha, beta, fakeStreamOf(text) as any);
 }
