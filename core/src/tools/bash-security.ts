@@ -1,3 +1,4 @@
+import { win32 as win32Path } from 'node:path';
 import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, analyzeCommandStructure } from './bash-parser';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
@@ -1624,7 +1625,7 @@ export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
  * (utils/bash/parser.ts, utils/bash/bashParser.ts: return null / block on any
  * throw instead of treating an unparseable command as safe).
  */
-export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform }): SecurityCheckResult {
+export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform; cwd?: string }): SecurityCheckResult {
   try {
     return evaluateBashSecurity(command, options);
   } catch {
@@ -1635,7 +1636,7 @@ export function validateBashSecurity(command: string, options?: { detachedMode?:
   }
 }
 
-function evaluateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform }): SecurityCheckResult {
+function evaluateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform; cwd?: string }): SecurityCheckResult {
   // Measure the UTF-8 BYTE length, not `.length` (UTF-16 code units): a BMP
   // character (CJK etc.) is one code unit but up to three UTF-8 bytes, so
   // `.length` under-reports by up to 3× and would let a long multibyte command
@@ -1747,7 +1748,7 @@ function evaluateBashSecurity(command: string, options?: { detachedMode?: boolea
   // metadata dir (hooks/config/objects/refs/HEAD/index), core.hooksPath overrides,
   // and root-level HEAD/objects/refs plants that make git run attacker hooks.
   {
-    const gitInternal = detectGitInternalWrite(command, platform);
+    const gitInternal = detectGitInternalWrite(command, platform, options?.cwd);
     if (gitInternal.blocked) {
       return fail(CHECK_IDS.GIT_INTERNAL_WRITE, gitInternal.reason!);
     }
@@ -4892,9 +4893,113 @@ function normalizeWin32PathComponents(path: string): string {
     .join('/');
 }
 
+/**
+ * Canonicalize a PowerShell/Windows path ARGUMENT to the real filesystem path
+ * the shell would open, so a git-internal target cannot dodge the matcher via PS
+ * arg idioms that all resolve to the same file. Superset of
+ * {@link normalizeWin32PathComponents}: applies the structural strips first, then
+ * the NTFS per-component trailing-space/dot strip. Mirrors the reference
+ * normalizeGitPathArg (PowerShellTool/gitSafety.ts L48-87). Win32-only — the
+ * caller gates on platform. Input is already forward-slash-converted by the
+ * caller (`\` → `/`), so the fully-qualified `Microsoft.PowerShell.Core\FileSystem::`
+ * provider prefix arrives with `/` separators.
+ */
+function normalizePsGitPathArg(arg: string): string {
+  let s = arg;
+  // (a) colon-bound parameter prefix: a leading PS dash-char (`-`, en/em-dash,
+  //     horizontal-bar) or forward-slash (PS 5.1 `/Path:value`) followed by a
+  //     `name:value` — extract the colon-bound value (bug #28). A plain absolute
+  //     POSIX path (`/etc/hosts`) has no `:` and is left intact.
+  if (s.length > 0 && (s[0] === '-' || s[0] === '\u2013' || s[0] === '\u2014' || s[0] === '\u2015' || s[0] === '/')) {
+    const colon = s.indexOf(':', 1);
+    if (colon > 0) s = s.slice(colon + 1);
+  }
+  // (b) surrounding quotes and (c) backtick escapes.
+  s = s.replace(/^['"]|['"]$/g, '');
+  s = s.replace(/`/g, '');
+  // (d) PS provider-qualified prefix: `FileSystem::path` and the fully-qualified
+  //     `Microsoft.PowerShell.Core\FileSystem::path` (slashes post-conversion).
+  // eslint-disable-next-line security/detect-unsafe-regex -- the repeated segment `[A-Za-z0-9_.]+` and its `/` separator are disjoint (class excludes `/`); the group is bounded to {0,3} and anchored to a literal `FileSystem::`, so matching is linear with no ambiguous overlap
+  s = s.replace(/^(?:[A-Za-z0-9_.]+\/){0,3}FileSystem::/i, '');
+  // (e) drive-relative `C:foo` (NO separator after the colon) is cwd-relative on
+  //     that drive → strip the drive. Absolute `C:/foo` (WITH a separator) is
+  //     preserved by the negative lookahead for the cwd-resolution pass.
+  s = s.replace(/^[A-Za-z]:(?![/\\])/, '');
+  return normalizeWin32PathComponents(s);
+}
+
+/**
+ * Resolve a path that re-enters cwd through the parent (`../<cwd-basename>/…`) to
+ * its cwd-relative form. posix normalization preserves a leading `..` with no cwd
+ * context, so `../project/HEAD` (cwd=…/project) stays `../project/HEAD` and misses
+ * the bare-repo prefix match even though PowerShell resolves it to `HEAD` at
+ * runtime (check/use divergence). Iteratively strips `../<cwd-basename>/` pairs
+ * (case-insensitive, matching Windows FS semantics) and maps the exact
+ * `../<cwd-basename>` to `.`. Mirrors the reference resolveCwdReentry
+ * (PowerShellTool/gitSafety.ts L22-38).
+ */
+function resolveCwdReentry(normalized: string, cwd: string): string {
+  if (!normalized.startsWith('../')) return normalized;
+  const parts = cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  const cwdBase = (parts[parts.length - 1] || '').toLowerCase();
+  if (!cwdBase) return normalized;
+  const prefix = '../' + cwdBase + '/';
+  let s = normalized;
+  while (s.toLowerCase().startsWith(prefix)) s = s.slice(prefix.length);
+  if (s.toLowerCase() === '../' + cwdBase) return '.';
+  return s;
+}
+
+/**
+ * Resolve a path that ESCAPES cwd (leading `../` or an absolute/drive form)
+ * against the real cwd and, if it lands back INSIDE cwd, return the cwd-relative
+ * remainder (lower-cased, matching Windows case-insensitivity) for bare-repo
+ * prefix matching; return null when it is genuinely external. This is the SOLE
+ * guard for the bare-repo HEAD attack expressed as `<cwd>/HEAD`,
+ * `..\<cwd-basename>\HEAD`, or `C:\<full-cwd>\HEAD`, because the per-segment
+ * `.git` matcher deliberately excludes bare `HEAD`. Mirrors the reference
+ * resolveEscapingPathToCwdRelative (PowerShellTool/gitSafety.ts L91-122).
+ */
+function resolveEscapingPathToCwdRelative(n: string, cwd: string): string | null {
+  const c = cwd.replace(/\//g, '\\');
+  const abs = win32Path.resolve(c, n.replace(/\//g, '\\'));
+  const cwdWithSep = c.endsWith('\\') ? c : c + '\\';
+  const absLower = abs.toLowerCase();
+  const cwdLower = c.toLowerCase();
+  const cwdSepLower = cwdWithSep.toLowerCase();
+  if (absLower === cwdLower) return '.';
+  if (!absLower.startsWith(cwdSepLower)) return null;
+  return abs.slice(cwdWithSep.length).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Resolve a normalized PS path arg against cwd for bare-repo matching: the
+ * cwd-reentry form takes precedence (it rewrites to a cwd-relative path), then
+ * the escaping/absolute form. Returns the cwd-relative path, or null if the arg
+ * is genuinely external to cwd.
+ */
+function resolveGitPathAgainstCwd(n: string, cwd: string): string | null {
+  const reentered = resolveCwdReentry(n, cwd);
+  if (reentered !== n) return reentered.replace(/^\.\//, '');
+  return resolveEscapingPathToCwdRelative(n, cwd);
+}
+
+/** True when a cwd-resolved path lands on a git-internal metadata name (bare-repo attack). */
+function matchesResolvedGitInternal(n: string): boolean {
+  const low = n.toLowerCase();
+  if (low === 'head' || low === '.git') return true;
+  if (low.startsWith('.git/')) return true;
+  if (/^git~\d+(?:\/|$)/.test(low)) return true;
+  for (const p of ['objects', 'refs', 'hooks']) {
+    if (low === p || low.startsWith(p + '/')) return true;
+  }
+  return false;
+}
+
 export function detectGitInternalWrite(
   command: string,
   platform: NodeJS.Platform = process.platform,
+  cwd?: string,
 ): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
 
@@ -4905,11 +5010,13 @@ export function detectGitInternalWrite(
 
   const targets = collectWriteTargets(stripped).map(t => t.replace(/\\/g, '/'));
   const win32 = platform === 'win32';
-  // On Windows, also match the CreateFileW-normalized form so trailing-dot/space
-  // variants (`.git./hooks`, `.git /hooks`) that resolve to the same file cannot
-  // slip past the literal `.git/` matcher.
+  // On Windows, also match the PS/NTFS-canonical form so trailing-dot/space
+  // variants (`.git./hooks`, `.git /hooks`) AND PowerShell arg idioms (colon-bound
+  // params `/Path:.git`, the `FileSystem::` provider prefix, drive-relative `C:.git`,
+  // backtick escapes) that resolve to the same file cannot slip past the literal
+  // `.git/` matcher. normalizePsGitPathArg is a superset of the trailing-strip.
   const matchForms = (t: string): string[] =>
-    win32 ? [t, normalizeWin32PathComponents(t)] : [t];
+    win32 ? [t, normalizePsGitPathArg(t)] : [t];
 
   // 2. Writes into any .git/ metadata directory.
   for (const t of targets) {
@@ -4928,6 +5035,17 @@ export function detectGitInternalWrite(
         const n = form.replace(/^\.\//, '');
         if (/^HEAD$/.test(n) || /^(?:objects|refs)\//.test(n)) {
           return { blocked: true, reason: `write to bare-repo git-internal path "${t}" before a git invocation can execute planted hooks` };
+        }
+      }
+      // On Windows, also resolve cwd-reentry (`../<cwd-basename>/HEAD`) and
+      // escaping/absolute (`C:\<cwd>\HEAD`) forms against the real cwd — these
+      // re-enter cwd at runtime but posix normalization alone cannot reconcile
+      // them, so a bare-repo HEAD/objects/refs/hooks plant would otherwise evade
+      // the prefix match (gitSafety.ts resolveCwdReentry/resolveEscapingPath).
+      if (win32 && cwd) {
+        const resolved = resolveGitPathAgainstCwd(normalizePsGitPathArg(t), cwd);
+        if (resolved !== null && matchesResolvedGitInternal(resolved)) {
+          return { blocked: true, reason: `write to bare-repo git-internal path "${t}" (resolves inside cwd) before a git invocation can execute planted hooks` };
         }
       }
     }

@@ -1440,7 +1440,7 @@ export const bashTool: ToolDefinition = {
       return { output: `Error: ${forcePush}`, isError: true };
     }
 
-    const secCheck = validateBashSecurity(command, { detachedMode: context.detachedMode });
+    const secCheck = validateBashSecurity(command, { detachedMode: context.detachedMode, cwd: context.cwd });
     if (!secCheck.safe) {
       return {
         output: `Error: ${secCheck.message}`,
