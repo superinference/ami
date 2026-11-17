@@ -203,6 +203,21 @@ export interface ProjectConfig {
    * every launch. A user-level, cross-project signal (lives in global config only).
    */
   skillUsage?: Record<string, SkillUsageStat>;
+  /**
+   * Glob/path patterns for instruction (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md /
+   * `*.local.md`) files to EXCLUDE from the auto-loaded memory context (parity:
+   * Claude Code's `claudeMdExcludes` setting / `isClaudeMdExcluded`). A user can opt
+   * specific instruction files out of loading — e.g. a vendored
+   * `"**\/node_modules/**\/CLAUDE.md"` or an oversized legacy `"docs/OLD.md"` — without
+   * deleting them. Previously AMI only honored excludes from the ephemeral
+   * `AMI_MEMORY_EXCLUDES` env var; this field lets the choice be persisted as
+   * project/user config. Patterns ACCUMULATE across config layers and are UNIONED with
+   * the env-var list (both are honored). Team-managed `.ami/rules/` files are never
+   * excludable (those are the project's enforced rules). Consumed by
+   * {@link resolveConfiguredMemoryExcludes} and the memory loader's
+   * `resolveMemoryExcludes`.
+   */
+  memoryExcludes?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +689,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['deniedMcpServers', 'string[]'],
   ['disabledMcpServers', 'string[]'], ['enabledMcpServers', 'string[]'],
   ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
-  ['sandboxExcludedCommands', 'string[]'],
+  ['sandboxExcludedCommands', 'string[]'], ['memoryExcludes', 'string[]'],
   ['superinference', 'object'], ['managedMcpServers', 'object'],
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
@@ -1647,6 +1662,11 @@ export function mergeConfigs(
     if (layer.managedMcpServers !== undefined) merged.managedMcpServers = layer.managedMcpServers;
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
     if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = mergeConfigArray(merged.sandboxExcludedCommands, layer.sandboxExcludedCommands);
+    // Instruction-file exclude globs ACCUMULATE across layers (a higher layer adds
+    // more exclusions, never removes a lower layer's) — parity with Claude's
+    // claudeMdExcludes list-merge; unioned with the AMI_MEMORY_EXCLUDES env list at
+    // load time by {@link resolveConfiguredMemoryExcludes}.
+    if (layer.memoryExcludes !== undefined) merged.memoryExcludes = mergeConfigArray(merged.memoryExcludes, layer.memoryExcludes);
     // env merges key-wise across layers (higher-priority layers override single
     // keys rather than replacing the whole block).
     if (layer.env !== undefined) merged.env = { ...merged.env, ...layer.env };
@@ -1740,6 +1760,32 @@ export function mergeConfigs(
   }
 
   return merged;
+}
+
+/**
+ * Resolve the effective {@link ProjectConfig.memoryExcludes} for a workspace by
+ * merging the full config waterfall (managed > global > project > local — CLI/env
+ * carry no `memoryExcludes`) and returning the accumulated exclude-glob list (empty
+ * when none is configured). The memory loader UNIONS this with the
+ * `AMI_MEMORY_EXCLUDES` env list, so both the persisted config knob and the one-shot
+ * env override are honored. Kept in the config layer (not memory.ts) so there is ONE
+ * place that reads the config files and applies the merge semantics. Parity: Claude
+ * Code resolving `claudeMdExcludes` from the settings waterfall for `isClaudeMdExcluded`.
+ */
+export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
+  let managed: ProjectConfig | null = null;
+  // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
+  // memory-exclude lookup must never abort memory loading over it — treat it as absent.
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return merged.memoryExcludes ?? [];
 }
 
 // ---------------------------------------------------------------------------

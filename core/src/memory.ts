@@ -14,6 +14,7 @@ import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
 import { scanForSecrets } from './tools/tool-utils';
+import { resolveConfiguredMemoryExcludes } from './config';
 
 /**
  * Home-abbreviated path for log/diagnostic lines. Memory diagnostics name the
@@ -500,13 +501,22 @@ export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): 
 const MEMORY_EXCLUDES_ENV = 'AMI_MEMORY_EXCLUDES';
 
 /**
- * Parse {@link MEMORY_EXCLUDES_ENV} into a glob pattern list (empty when unset).
- * Matched against instruction-file paths by {@link isInstructionExcluded}.
+ * Resolve the effective instruction-file exclude globs: the {@link MEMORY_EXCLUDES_ENV}
+ * env list UNIONED with any `configExcludes` (the persisted
+ * {@link ProjectConfig.memoryExcludes} resolved from the config waterfall). Both
+ * sources are honored (env is a one-shot override, config is the persisted choice);
+ * duplicates are collapsed while preserving first-seen order. Matched against
+ * instruction-file paths by {@link isInstructionExcluded}.
  */
-export function resolveMemoryExcludes(env: NodeJS.ProcessEnv = process.env): string[] {
+export function resolveMemoryExcludes(
+  env: NodeJS.ProcessEnv = process.env,
+  configExcludes: string[] = [],
+): string[] {
   const raw = env[MEMORY_EXCLUDES_ENV];
-  if (!raw || !raw.trim()) return [];
-  return raw.split(/[,:;]+/).map(s => s.trim()).filter(s => s.length > 0);
+  const envList = raw && raw.trim()
+    ? raw.split(/[,:;]+/).map(s => s.trim()).filter(s => s.length > 0)
+    : [];
+  return [...new Set([...envList, ...configExcludes])];
 }
 
 /**
@@ -1426,12 +1436,28 @@ export class MemoryManager {
    *  Defaults to the real `fsp.readdir`; tests may replace it to drive Dirent
    *  shape fallbacks (e.g. missing `parentPath`). */
   _readdir: typeof fsp.readdir = fsp.readdir;
+  /** Lazily-resolved, per-instance cache of the config-sourced instruction-file
+   *  exclude globs ({@link ProjectConfig.memoryExcludes}) for {@link cwd}. */
+  private _configMemoryExcludes: string[] | null = null;
 
   constructor(cwd: string) {
     this.cwd = cwd;
   }
 
   setHookCallback(cb: (event: string, data: any) => void): void { this._hookCallback = cb; }
+
+  /**
+   * The effective instruction-file exclude globs for this workspace: the config
+   * waterfall's {@link ProjectConfig.memoryExcludes} UNIONED with the
+   * `AMI_MEMORY_EXCLUDES` env list. Resolved once per instance (the config read is
+   * memoized by {@link resolveConfiguredMemoryExcludes}'s loaders) and reused across
+   * the three instruction-discovery passes. */
+  private memoryExcludes(): string[] {
+    if (this._configMemoryExcludes === null) {
+      this._configMemoryExcludes = resolveConfiguredMemoryExcludes(this.cwd);
+    }
+    return resolveMemoryExcludes(process.env, this._configMemoryExcludes);
+  }
 
   /**
    * Load project instructions from the workspace root and parent directories.
@@ -1534,7 +1560,7 @@ export class MemoryManager {
 
   loadProjectInstructions(): string {
     const sections: string[] = [];
-    const excludes = resolveMemoryExcludes();
+    const excludes = this.memoryExcludes();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
@@ -1782,7 +1808,7 @@ export class MemoryManager {
    */
   private collectInstructionFilePaths(): string[] {
     const found = new Set<string>();
-    const excludes = resolveMemoryExcludes();
+    const excludes = this.memoryExcludes();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
@@ -2962,7 +2988,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     }
 
     // 2. Project-level instruction files
-    const excludes = resolveMemoryExcludes();
+    const excludes = this.memoryExcludes();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
