@@ -27,7 +27,8 @@ import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions'
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent } from '../skills';
+import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot } from '../skills';
+import { withFrontmatterHookPluginRoot } from '../hooks';
 import { buildAgentMemoryPrompt } from '../memory';
 import { log } from '../logger';
 
@@ -2339,7 +2340,11 @@ export const taskTool: ToolDefinition = {
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
       agentColor = agentDef.color;
-      agentFrontmatterHooks = agentDef.hooks;
+      // Stamp the agent's bundle/base root onto its command hooks so a
+      // `${CLAUDE_PLUGIN_ROOT}`-referencing agent hook resolves its bundled asset
+      // path (parity with Claude's agent `baseDir` → registerFrontmatterHooks plugin
+      // root). Returns a cloned list — never mutates the cached agentDef.hooks.
+      agentFrontmatterHooks = withFrontmatterHookPluginRoot(agentDef.hooks, agentPluginRoot(agentDef));
 
       // Per-agent persistent memory (parity: Claude's loadAgentMemoryPrompt).
       // When the agent definition declares a `memory` scope, load/seed its OWN

@@ -292,6 +292,16 @@ export interface AgentDefinition {
   /** When a higher-priority same-named agent shadows this one, the winner's
    *  source. Undefined on the active (winning) agent. */
   overriddenBy?: AgentSource;
+  /** The agent bundle's root directory — its on-disk provenance base (parity with
+   *  Claude Code's agent `baseDir`). For a PLUGIN agent this is the plugin bundle
+   *  root so the agent's bundled assets resolve under a stable path regardless of
+   *  the session cwd; for a disk agent it is the directory the `.md` lives in. It is
+   *  exported to the agent's frontmatter {@link hooks} as `CLAUDE_PLUGIN_ROOT` (and
+   *  the `AMI_PLUGIN_ROOT` alias) so a hook command can reference
+   *  `${CLAUDE_PLUGIN_ROOT}/scripts/x.sh`. Resolved — with a fallback to the agent's
+   *  own on-disk directory — via {@link agentPluginRoot}; mirrors the skill
+   *  {@link SkillDefinition.skillRoot} / {@link skillPluginRoot} pair. */
+  baseDir?: string;
   /** Orchestrator delegation hint — the "when should the parent pick this agent"
    *  cue, distinct from `description` (parity with Claude's agent `whenToUse`).
    *  Parsed from a `when-to-use`/`when_to_use` frontmatter key. */
@@ -1233,6 +1243,29 @@ export function skillPluginRoot(
     return skill.skillRoot.trim();
   }
   const fp = skill.filePath;
+  if (typeof fp !== 'string' || fp.startsWith('<') || !fp.includes('/')) return undefined;
+  const slash = fp.lastIndexOf('/');
+  const dir = fp.slice(0, slash);
+  return dir.length > 0 ? dir : undefined;
+}
+
+/**
+ * Resolve the base directory an AGENT exports to its frontmatter `!`-blocks /
+ * hooks as `CLAUDE_PLUGIN_ROOT` (parity with Claude Code's agent `baseDir`). The
+ * agent analogue of {@link skillPluginRoot}: returns the agent's explicit
+ * {@link AgentDefinition.baseDir} when it is a non-empty string; otherwise falls
+ * back to the directory of its real on-disk {@link AgentDefinition.filePath} (a
+ * `<builtin>`/in-memory sentinel or a bare filename yields no directory). Returns
+ * `undefined` when neither is available, so a caller can skip the
+ * `${CLAUDE_PLUGIN_ROOT}` substitution. Never throws.
+ */
+export function agentPluginRoot(
+  agent: Pick<AgentDefinition, 'baseDir' | 'filePath'>,
+): string | undefined {
+  if (typeof agent.baseDir === 'string' && agent.baseDir.trim().length > 0) {
+    return agent.baseDir.trim();
+  }
+  const fp = agent.filePath;
   if (typeof fp !== 'string' || fp.startsWith('<') || !fp.includes('/')) return undefined;
   const slash = fp.lastIndexOf('/');
   const dir = fp.slice(0, slash);

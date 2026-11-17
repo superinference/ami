@@ -1244,6 +1244,44 @@ export function substitutePluginRoot(text: string, pluginRoot: string | undefine
     .replace(/\$AMI_PLUGIN_ROOT\b/g, pluginRoot);
 }
 
+/**
+ * Stamp a bundle/base `pluginRoot` onto a skill's / agent's invocation-scoped
+ * frontmatter {@link HookConfigEntry} list so its `command` hooks can resolve
+ * `${CLAUDE_PLUGIN_ROOT}` (and the `$AMI_PLUGIN_ROOT` alias) in both the command
+ * text and the hook's environment when the sub-engine runs them — parity with how
+ * PLUGIN-FILE command hooks already carry their bundle root (the `pluginRoot` field
+ * set at hooks-file load). Previously a frontmatter hook declared inside a SKILL.md
+ * / agent `.md` (registered via {@link HookManager.registerConfigEntries}) had NO
+ * plugin root, so a `${CLAUDE_PLUGIN_ROOT}/scripts/x.sh` hook silently failed to
+ * resolve its bundled asset path.
+ *
+ * Returns a NEW array with the relevant command hooks shallow-cloned (never mutates
+ * the cached definition's `hooks`): a `command` hook that does NOT already declare
+ * its own `pluginRoot` gets `root`; a hook that already has one, every non-command
+ * hook, and malformed entries are passed through untouched. A blank/`undefined`
+ * `root`, or an empty list, returns the input unchanged. The resolved root comes
+ * from {@link agentPluginRoot} (agents) / `skillPluginRoot` (skills) in `skills.ts`.
+ */
+export function withFrontmatterHookPluginRoot(
+  hooks: readonly HookConfigEntry[] | undefined,
+  root: string | undefined,
+): HookConfigEntry[] | undefined {
+  if (!hooks || hooks.length === 0) return hooks as HookConfigEntry[] | undefined;
+  const trimmed = typeof root === 'string' ? root.trim() : '';
+  if (trimmed.length === 0) return hooks as HookConfigEntry[];
+  return hooks.map((entry) => {
+    const hook = entry?.hook;
+    if (
+      hook &&
+      hook.type === 'command' &&
+      (typeof hook.pluginRoot !== 'string' || hook.pluginRoot.trim().length === 0)
+    ) {
+      return { ...entry, hook: { ...hook, pluginRoot: trimmed } };
+    }
+    return entry;
+  });
+}
+
 export function serializeHookEvent(obj: Record<string, unknown>): string {
   const out: Record<string, unknown> = { ...obj };
   if (typeof obj.event === 'string') {

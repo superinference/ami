@@ -2,7 +2,8 @@ import { dirname } from 'node:path';
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig } from '../types';
 import { createDefaultTools } from './index';
 import { SessionManager } from '../session';
-import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules, parseMcpServerWildcard, isMcpToolOfServer, mcpToolNamespacePrefix, deriveMcpToolAllowlist } from '../skills';
+import { type SkillDefinition, type SkillManagerLike, type AgentDefinition, isStanceSkill, sanitizeSkillArgs, missingSkillArgumentMessage, redactSkillArgs, isSkillAvailableNonInteractive, SAFE_SKILL_PROPERTIES, scopedToolAllowRules, parseMcpServerWildcard, isMcpToolOfServer, mcpToolNamespacePrefix, deriveMcpToolAllowlist, skillPluginRoot, agentPluginRoot } from '../skills';
+import { withFrontmatterHookPluginRoot } from '../hooks';
 import { normalizeToolName, wildcardMatch } from '../permissions';
 import { buildSkillSandboxCeiling } from './scoped-permissions';
 import { resolveSkillModelOverride } from '../model-capabilities';
@@ -719,7 +720,14 @@ export const skillTool: ToolDefinition = {
       // `hooks`. Registered on the sub-engine for the duration of this fork and torn down
       // when it shuts down. Skill hooks from untrusted tiers were already stripped at load.
       ...((() => {
-        const fh = [...(skill?.hooks ?? []), ...(agentDef?.hooks ?? [])];
+        // Stamp each source's bundle/base root onto its command hooks so a
+        // `${CLAUDE_PLUGIN_ROOT}`-referencing hook resolves its bundled asset path:
+        // skill hooks use the skill's root, the targeted agent's hooks use the
+        // agent's root (parity with Claude's skillRoot/baseDir → registerFrontmatterHooks).
+        const fh = [
+          ...(withFrontmatterHookPluginRoot(skill?.hooks, skill ? skillPluginRoot(skill) : undefined) ?? []),
+          ...(withFrontmatterHookPluginRoot(agentDef?.hooks, agentDef ? agentPluginRoot(agentDef) : undefined) ?? []),
+        ];
         // isAgent=false: a forked skill is not a completing subagent, so its `stop`
         // hooks stay `stop` (parity with Claude's registerSkillHooks, which never
         // remaps). Attribute the registration to the skill for the debug/audit log.
