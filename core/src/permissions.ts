@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
+import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
@@ -5442,10 +5443,13 @@ export class PermissionManager {
     const filePath = permissionDestinationPath(cwd, destination);
     if (!filePath) return { ok: true }; // session / cliArg are in-memory only
     try {
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const rules = this.rules.filter(r => r.source === destination);
-      fs.writeFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', 'utf-8');
+      // Crash-safe, owner-only persist (temp + fsync + atomic rename, mode 0o600)
+      // via the ONE canonical atomic writer — a crash / ENOSPC mid-write can never
+      // leave a truncated permissions file that loadRules then silently discards,
+      // and the file (which can hold deny patterns describing the project) is not
+      // world-readable. Mirrors Claude's writeFileSyncAndFlush_DEPRECATED + 0o600.
+      atomicWriteFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -5464,13 +5468,14 @@ export class PermissionManager {
       return { ok: false, error: 'managed-rules-only lockdown: permission rules are controlled by policy and cannot be persisted' };
     }
     try {
-      const dirPath = path.join(cwd, '.ami');
-      if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-      }
-      const filePath = path.join(dirPath, 'permissions.json');
+      const filePath = path.join(cwd, '.ami', 'permissions.json');
       const data = { mode: this.mode, rules: this.rules };
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      // Crash-safe, owner-only persist (temp + fsync + atomic rename, mode 0o600):
+      // a half-written permissions.json would be silently dropped by loadRules'
+      // catch, wiping every "don't ask again" rule, and the file is not left
+      // world-readable. Uses the ONE canonical atomic writer (utils/fs-atomic),
+      // which also creates `.ami/` 0o700 — no separate mkdir needed.
+      atomicWriteFileSync(filePath, JSON.stringify(data, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
