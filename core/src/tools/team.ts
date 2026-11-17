@@ -37,6 +37,24 @@ const ENV_AGENT_ID = 'AMI_TEAMMATE_AGENT_ID';
 const ENV_AGENT_NAME = 'AMI_TEAMMATE_AGENT_NAME';
 const ENV_TEAM_NAME = 'AMI_TEAMMATE_TEAM_NAME';
 const ENV_COLOR = 'AMI_TEAMMATE_COLOR';
+/** Env-var fallback for the per-teammate plan-mode-required gate (parity: Claude
+ *  Code's `CLAUDE_CODE_PLAN_MODE_REQUIRED`). A spawned teammate process inherits
+ *  the "must plan before writing code" enforcement through this when no in-process
+ *  ALS / dynamic context carries it. */
+const ENV_PLAN_MODE_REQUIRED = 'AMI_TEAMMATE_PLAN_MODE_REQUIRED';
+
+/**
+ * Parse a boolean-ish env var the same way the rest of core does
+ * (`1`/`true`/`yes`/`on` are truthy; everything else falsey). Returns undefined for
+ * an unset/empty value so the env layer never shadows a bound dynamic/ALS flag —
+ * only fills in when nothing higher in the precedence chain supplied a value.
+ */
+function envBool(name: string): boolean | undefined {
+  const v = envIdentity(name);
+  if (v === undefined) return undefined;
+  const l = v.toLowerCase();
+  return l === '1' || l === 'true' || l === 'yes' || l === 'on';
+}
 
 /**
  * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
@@ -388,12 +406,17 @@ export function getSelfColor(): AgentColorName | undefined {
 /**
  * This process's resolved plan-mode-required flag (parity: Claude Code's
  * `isPlanModeRequired`), following the identity precedence chain in-process
- * {@link TeammateContext} (AsyncLocalStorage) > runtime {@link DynamicTeamContext}.
- * Defaults to false when no teammate identity is bound — a standalone session is
+ * {@link TeammateContext} (AsyncLocalStorage) > runtime {@link DynamicTeamContext} >
+ * the `AMI_TEAMMATE_PLAN_MODE_REQUIRED` env var (parity: Claude's
+ * `CLAUDE_CODE_PLAN_MODE_REQUIRED` fallback, so a spawned teammate process inherits
+ * the gate). Defaults to false when nothing is bound — a standalone session is
  * never forced into plan mode.
  */
 export function getSelfPlanModeRequired(): boolean {
-  return getTeammateContext()?.planModeRequired ?? dynamicTeamContext?.planModeRequired ?? false;
+  return getTeammateContext()?.planModeRequired
+    ?? dynamicTeamContext?.planModeRequired
+    ?? envBool(ENV_PLAN_MODE_REQUIRED)
+    ?? false;
 }
 
 /**
@@ -578,21 +601,39 @@ function persistTeam(): void {
  * degrades gracefully instead of throwing on a missing or corrupt team file.
  */
 export function readTeamFile(dir: string): TeamFile | null {
+  const file = teamFilePath(dir);
   let raw: string;
   try {
-    raw = fs.readFileSync(teamFilePath(dir), 'utf8');
-  } catch {
-    return null; // missing / unreadable
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    // ENOENT is the clean "no team here yet" case — degrade to null silently.
+    // Any OTHER read error (EACCES/permission, EISDIR, I/O) is an unexpected
+    // condition worth a diagnostic before degrading (parity: Claude's readTeamFile
+    // treats ENOENT as a clean null and logs non-ENOENT errors). The team concept
+    // still degrades to null so a resume never throws on an unreadable file.
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ENOENT') {
+      teamDebug(`readTeamFile: unreadable team file ${file} (${code ?? 'unknown error'}) — degrading to null`);
+    }
+    return null;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null; // corrupt JSON
+    // Corrupt JSON is distinct from a missing file: the file exists but is damaged
+    // (partial write, hand-edit). Log it so the lifecycle is observable, then
+    // degrade to null rather than throwing (parity: ENOENT-vs-corruption distinction).
+    teamDebug(`readTeamFile: corrupt JSON in ${file} — degrading to null`);
+    return null;
   }
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!parsed || typeof parsed !== 'object') {
+    teamDebug(`readTeamFile: non-object team file ${file} — degrading to null`);
+    return null;
+  }
   const t = parsed as Partial<TeamFile>;
   if (typeof t.name !== 'string' || typeof t.leadAgentId !== 'string' || !Array.isArray(t.members)) {
+    teamDebug(`readTeamFile: invalid team file shape in ${file} (missing name/leadAgentId/members) — degrading to null`);
     return null; // wrong shape
   }
   // Boundary validation of persisted enum fields (parity: Claude validates
@@ -910,7 +951,13 @@ export const teamCreateTool: ToolDefinition = {
     'teammates via task({ name }); (4) assign tasks by owner; (5) teammates complete tasks and go idle between ' +
     'turns (idle is normal — an idle teammate still receives messages and wakes on one; be patient); (6) ' +
     'coordinate via send_message (teammate messages arrive automatically — do not poll); (7) gracefully shut ' +
-    'teammates down with a shutdown_request via send_message, then team_delete once all have exited.',
+    'teammates down with a shutdown_request via send_message, then team_delete once all have exited.\n' +
+    '\n' +
+    'Member discovery & addressing: the team file records every member (name, agentId, agentType) under its ' +
+    '`members` list — this is how teammates discover each other. ALWAYS refer to a teammate by its human NAME ' +
+    '(the name you spawned it with) — for send_message `to` and for a task `owner` — NEVER by its internal ' +
+    'agentId. Pre-declare known teammates up front with the `members` input so the lead can assign them before ' +
+    'they are spawned.',
   inputSchema: {
     type: 'object',
     properties: {
