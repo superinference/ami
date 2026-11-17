@@ -9,7 +9,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import type { SessionFact } from './session-memory';
-import { log as coreLog } from './logger';
+import { log as coreLog, logForDiagnosticsNoPII } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
@@ -2047,34 +2047,70 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       all = all.filter(m => !isSuppressedToolReference(m, recentTools));
     }
 
-    if (all.length <= maxResults) return all;
-
+    // Candidate denominator for the recall-shape diagnostic is the post-filter
+    // set (what the selector actually chose FROM), computed once up front so the
+    // telemetry denominator matches the pool across every selection branch.
+    const candidateCount = all.length;
     const queryTokens = tokenize(query);
-    if (queryTokens.length === 0) return all.slice(0, maxResults);
 
-    const N = all.length;
-    const docFreq = new Map<string, number>();
-    const allMemTexts = all.map(m => `${m.name || ''} ${m.description || ''} ${m.content}`);
-    for (const text of allMemTexts) {
-      const unique = new Set(tokenize(text));
-      for (const t of unique) {
-        docFreq.set(t, (docFreq.get(t) || 0) + 1);
+    let selected: MemoryEntry[];
+    if (all.length <= maxResults) {
+      // Fewer candidates than the budget — every one is surfaced.
+      selected = all;
+    } else if (queryTokens.length === 0) {
+      // No query signal to rank by — fall back to the first N (load order).
+      selected = all.slice(0, maxResults);
+    } else {
+      const N = all.length;
+      const docFreq = new Map<string, number>();
+      const allMemTexts = all.map(m => `${m.name || ''} ${m.description || ''} ${m.content}`);
+      for (const text of allMemTexts) {
+        const unique = new Set(tokenize(text));
+        for (const t of unique) {
+          docFreq.set(t, (docFreq.get(t) || 0) + 1);
+        }
       }
+
+      const idfMap = new Map<string, number>();
+      for (const qt of queryTokens) {
+        const df = docFreq.get(qt) || 0;
+        idfMap.set(qt, Math.log((N - df + 0.5) / (df + 0.5) + 1));
+      }
+
+      const scored = all.map((mem, i) => ({
+        mem,
+        score: computeRelevanceScore(allMemTexts[i], queryTokens, idfMap),
+      }));
+
+      scored.sort((a, b) => b.score - a.score);
+      selected = scored.slice(0, maxResults).map(s => s.mem);
     }
 
-    const idfMap = new Map<string, number>();
-    for (const qt of queryTokens) {
-      const df = docFreq.get(qt) || 0;
-      idfMap.set(qt, Math.log((N - df + 0.5) / (df + 0.5) + 1));
-    }
+    this.logRecallShape(candidateCount, selected, queryTokens.length);
+    return selected;
+  }
 
-    const scored = all.map((mem, i) => ({
-      mem,
-      score: computeRelevanceScore(allMemTexts[i], queryTokens, idfMap),
-    }));
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, maxResults).map(s => s.mem);
+  /**
+   * Emit a PII-free memory recall-shape diagnostic for one {@link selectRelevantMemories}
+   * call. Parity with Claude Code's `logMemoryRecallShape`
+   * (memdir/findRelevantMemories.ts): the event fires on EVERY recall — including
+   * one that ran but selected nothing — because the selection-rate denominator
+   * needs the "ran, picked nothing" case, which is encoded with a `-1` age
+   * sentinel so it is distinguishable from "recall never ran" (no event at all).
+   *
+   * Routed through {@link logForDiagnosticsNoPII}, the machine-monitored,
+   * NO-PII JSONL health channel (a no-op unless `AMI_DIAGNOSTICS_FILE` is set):
+   * only coarse counts + a freshness age are recorded — never memory paths,
+   * bodies, names, or the query text — honoring that channel's PII contract.
+   */
+  private logRecallShape(candidateCount: number, selected: MemoryEntry[], queryTokenCount: number): void {
+    logForDiagnosticsNoPII('info', 'memory_recall', {
+      candidates: candidateCount,
+      selected: selected.length,
+      // -1 sentinel: "recall ran but selected nothing" vs. a real freshest-age.
+      topAgeDays: selected.length > 0 ? (selected[0]?.ageDays ?? 0) : -1,
+      queryTokens: queryTokenCount,
+    });
   }
 
   /**
