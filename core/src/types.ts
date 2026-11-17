@@ -1,3 +1,4 @@
+import { relative, isAbsolute } from 'node:path';
 import type { SuperInferenceConfig } from './superinference/types';
 import type { ToolCapabilityCeiling } from './tools/scoped-permissions';
 import type { RateLimitTrackerOptions } from './rate-limiter';
@@ -1986,6 +1987,12 @@ export interface EngineConfig {
    *  subsequent runs once the user has accepted it. Parity: `skipAutoPermissionPrompt`
    *  (components/AutoModeOptInDialog.tsx). */
   skipAutoPermissionPrompt?: boolean;
+  /** Explicit column width for the inline diff preview shown in a file-edit permission
+   *  prompt. When unset, the width is derived from the verbose flag by
+   *  {@link resolveDiffPreviewWidth} ({@link VERBOSE_DIFF_PREVIEW_WIDTH} vs
+   *  {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: Claude's
+   *  `NotebookEditPermissionRequest` `verbose ? 120 : 80` diff width. */
+  diffPreviewWidth?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -2254,6 +2261,42 @@ export interface EngineSubmitOptions {
    * by the Read tool for PDFs.
    */
   documents?: DocumentContent[];
+  /**
+   * Per-turn total output-token budget for this submit. When set, the engine sizes
+   * the request `max_tokens` against the remaining budget and decrements it across
+   * context-manager compaction boundaries ({@link nextTaskBudgetRemaining}) so a long,
+   * multi-compaction turn stays under the ceiling. Parity: Claude's query-time
+   * `taskBudget: { total }` with server-side `task_budget.remaining` countdown
+   * (query.ts beta `task-budgets-2026-03-13`).
+   */
+  taskBudget?: TaskBudget;
+}
+
+/**
+ * A per-turn output-token budget carried on {@link EngineSubmitOptions.taskBudget}.
+ * `total` is the ceiling for the whole turn; the engine tracks a separate remaining
+ * figure that is decremented at each compaction boundary. Parity: Claude's
+ * `OutputConfig.task_budget` ({ total, remaining }).
+ */
+export interface TaskBudget {
+  /** Total output-token ceiling for the turn. */
+  total: number;
+}
+
+/**
+ * Compute the remaining output-token budget after a context-manager compaction.
+ * Mirrors Claude's per-compact carryover
+ * `remaining = max(0, (remaining ?? total) - preCompactContextTokens)` (query.ts):
+ * the first compaction subtracts from `total`, each subsequent one from the prior
+ * remaining, and the result never goes negative. Pure.
+ */
+export function nextTaskBudgetRemaining(
+  budget: TaskBudget,
+  preCompactContextTokens: number,
+  currentRemaining?: number,
+): number {
+  const base = currentRemaining ?? budget.total;
+  return Math.max(0, base - Math.max(0, preCompactContextTokens));
 }
 
 export interface ContextFile {
@@ -2476,4 +2519,163 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// w96 parity primitives — pure, dependency-light building blocks. Each mirrors a
+// specific Claude Code behavior; display/rendering stays in the cli layer, these
+// only derive/validate data.
+// ---------------------------------------------------------------------------
+
+/** Resolved inputs for {@link isInferenceConfigImmediate}. Keeps the decision a
+ *  pure, side-effect-free function — the caller resolves the privileged-user flag
+ *  and any experiment override from the environment. */
+export interface InferenceConfigImmediacy {
+  /** Persisted/config toggle ({@link EngineConfig.immediateInferenceConfig}). */
+  configEnabled?: boolean;
+  /** Privileged internal user. Parity: `process.env.USER_TYPE === 'ant'`. */
+  privilegedUser?: boolean;
+  /** Experiment / feature-flag override. Parity:
+   *  `getFeatureValue_CACHED_MAY_BE_STALE('tengu_immediate_model_command')`. */
+  experimentEnabled?: boolean;
+}
+
+/**
+ * Whether inference-config commands (`/model`, `/thinking`, `/fast`) should apply
+ * immediately to an in-flight turn rather than deferring to turn end. Matches
+ * Claude's `shouldInferenceConfigCommandBeImmediate()`: a privileged user OR an
+ * enabled experiment forces it on; otherwise the persisted config toggle decides
+ * (default OFF). Pure.
+ */
+export function isInferenceConfigImmediate(r: InferenceConfigImmediacy = {}): boolean {
+  return r.privilegedUser === true || r.experimentEnabled === true || r.configEnabled === true;
+}
+
+// --- Diff-preview width (parity: NotebookEditPermissionRequest `verbose ? 120 : 80`) ---
+
+/** Diff-preview column width used in verbose mode. Parity: Claude's `120`. */
+export const VERBOSE_DIFF_PREVIEW_WIDTH = 120;
+/** Diff-preview column width used in compact (non-verbose) mode. Parity: Claude's `80`. */
+export const COMPACT_DIFF_PREVIEW_WIDTH = 80;
+
+/**
+ * Column width for the inline diff preview in a file-edit permission prompt. An
+ * explicit {@link EngineConfig.diffPreviewWidth} override wins; otherwise the width
+ * follows the verbose flag ({@link VERBOSE_DIFF_PREVIEW_WIDTH} vs
+ * {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: Claude's `verbose ? 120 : 80`. Pure.
+ */
+export function resolveDiffPreviewWidth(
+  verbose: boolean,
+  config?: Pick<EngineConfig, 'diffPreviewWidth'>,
+): number {
+  const override = config?.diffPreviewWidth;
+  if (typeof override === 'number' && Number.isFinite(override) && override > 0) return override;
+  return verbose ? VERBOSE_DIFF_PREVIEW_WIDTH : COMPACT_DIFF_PREVIEW_WIDTH;
+}
+
+// --- Symlink disclosure in the edit-approval prompt (parity: ShowInIDEPrompt.tsx) ---
+
+/** Informed-consent disclosure describing that a file-edit target is a symlink
+ *  pointing somewhere other than the literal edit path. Parity: Claude's
+ *  `ShowInIDEPrompt` `symlinkTarget` note. */
+export interface SymlinkEditDisclosure {
+  /** Realpath the edited symlink resolves to. */
+  target: string;
+  /** True when the resolved target is OUTSIDE the working directory. */
+  outsideWorkspace: boolean;
+  /** Pre-rendered warning note for the permission prompt. */
+  note: string;
+}
+
+/**
+ * Build the symlink-target disclosure for a file-edit permission prompt. Returns
+ * `undefined` when there is no symlink target or it resolves to the same path being
+ * edited (not a redirecting symlink). Otherwise mirrors Claude's wording: a target
+ * that escapes the working directory ⇒
+ * `"This will modify <target> (outside working directory) via a symlink"`, an
+ * in-workspace target ⇒ `"Symlink target: <target>"`. Pure.
+ */
+export function describeSymlinkEdit(
+  editPath: string,
+  symlinkTarget: string | null | undefined,
+  cwd: string,
+): SymlinkEditDisclosure | undefined {
+  if (!symlinkTarget || symlinkTarget === editPath) return undefined;
+  const rel = relative(cwd, symlinkTarget);
+  const outsideWorkspace = rel === '' ? false : rel.startsWith('..') || isAbsolute(rel);
+  const note = outsideWorkspace
+    ? `This will modify ${symlinkTarget} (outside working directory) via a symlink`
+    : `Symlink target: ${symlinkTarget}`;
+  return { target: symlinkTarget, outsideWorkspace, note };
+}
+
+// --- Worker/subagent attribution badge (parity: WorkerBadge.tsx) ---
+
+/** Identity of a non-primary swarm worker/subagent requesting a permission, so a
+ *  prompt can render a colored `● @name` badge. Parity: Claude's `WorkerBadge`
+ *  props ({ name, color }). */
+export interface WorkerAttribution {
+  /** Display name of the requesting worker (rendered as `@name`). */
+  name: string;
+  /** Theme/ANSI color for the badge dot + name. */
+  color?: string;
+}
+
+/**
+ * Whether a permission prompt should show a worker-attribution badge. The badge is
+ * shown ONLY when the request originates from a named, non-primary subagent — the
+ * primary session never badges itself. Parity: Claude renders `WorkerBadge` only for
+ * swarm workers. Pure.
+ */
+export function shouldShowWorkerBadge(
+  requestingAgent: WorkerAttribution | undefined,
+  isPrimary: boolean,
+): requestingAgent is WorkerAttribution {
+  return !isPrimary && !!requestingAgent && requestingAgent.name.trim() !== '';
+}
+
+// --- In-REPL startup notification queue (parity: context/notifications.tsx) ---
+
+/** Default auto-dismiss timeout for a {@link ReplNotification}. Parity: Claude's
+ *  `DEFAULT_TIMEOUT_MS = 8000`. */
+export const DEFAULT_NOTIFICATION_TIMEOUT_MS = 8000;
+
+/** Priority tier of a {@link ReplNotification}. Parity: Claude's notification
+ *  `Priority`. */
+export type NotificationPriority = 'low' | 'medium' | 'high' | 'immediate';
+
+/** A transient in-REPL startup notification. Parity: Claude's `Notification`
+ *  (context/notifications.tsx) minus the React-specific JSX variant. */
+export interface ReplNotification {
+  /** Stable identity; a later notification with the same key folds over the earlier. */
+  key: string;
+  /** Message text to display. */
+  text: string;
+  /** Display priority; `'immediate'` bypasses the queue to the front. */
+  priority: NotificationPriority;
+  /** Auto-dismiss timeout (ms); defaults to {@link DEFAULT_NOTIFICATION_TIMEOUT_MS}. */
+  timeoutMs?: number;
+  /** Keys of queued/displayed notifications this one invalidates (removes). */
+  invalidates?: string[];
+}
+
+/** Effective auto-dismiss timeout for a notification. Parity: `timeoutMs ?? DEFAULT_TIMEOUT_MS`. */
+export function resolveNotificationTimeout(n: Pick<ReplNotification, 'timeoutMs'>): number {
+  return n.timeoutMs ?? DEFAULT_NOTIFICATION_TIMEOUT_MS;
+}
+
+/**
+ * Compute the next notification queue after an incoming notification arrives,
+ * mirroring Claude's queue semantics: the incoming notification's `invalidates`
+ * keys are dropped from the queue; an existing entry with the SAME key is folded
+ * (replaced) by the incoming one; an `'immediate'` notification jumps to the front,
+ * any other is appended. Pure — returns a new array, never mutates `existing`.
+ */
+export function planNotificationQueue(
+  existing: readonly ReplNotification[],
+  incoming: ReplNotification,
+): ReplNotification[] {
+  const invalid = new Set(incoming.invalidates ?? []);
+  const kept = existing.filter((n) => n.key !== incoming.key && !invalid.has(n.key));
+  return incoming.priority === 'immediate' ? [incoming, ...kept] : [...kept, incoming];
 }
