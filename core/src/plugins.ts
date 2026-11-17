@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { isSafeSegment } from './skill-catalog';
 import { parseFrontmatter, parseFrontmatterList } from './memory';
 import { validateLspServerConfig, type LspServerConfig } from './lsp/config';
@@ -1910,6 +1911,36 @@ export function generatePluginId(authorName: string, name: string, prefix?: Plug
   const author = sanitizePluginIdSegment(authorName);
   const sanitizedName = sanitizePluginIdSegment(name);
   return prefix ? `${prefix}.${author}.${sanitizedName}` : `${author}.${sanitizedName}`;
+}
+
+/**
+ * Normalize a plugin's git-subdir path EXACTLY as Claude Code's version/cache-key
+ * encoder does (Claude parity: calculatePluginVersion's git-subdir branch,
+ * pluginVersioning.ts L63-88), byte-for-byte: (1) backslash → forward slash, (2)
+ * strip ONE leading `./`, (3) strip ALL trailing `/`. The result is what gets
+ * hashed into a git-subdir plugin's version, so the normalization must stay
+ * identical across every producer of that version (no second spelling).
+ */
+export function normalizePluginSubdirPath(subdirPath: string): string {
+  return subdirPath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+}
+
+/**
+ * Hash a plugin's git-subdir path into the short digest Claude Code folds into a
+ * git-subdir plugin's version/cache key (Claude parity: calculatePluginVersion
+ * L63-88 — `createHash('sha256').update(normPath).digest('hex').substring(0, 8)`).
+ * Two plugins living at different subdirs of the SAME monorepo commit share a
+ * SHA, so without this suffix they collide at `cache/<m>/<p>/<sha>/` and serve
+ * each other's trees; the path hash disambiguates them. The path is normalized
+ * via {@link normalizePluginSubdirPath} first so the digest is stable across
+ * `\`/`/`, a `./` prefix, and trailing slashes. Pure + deterministic.
+ */
+export function hashPluginSubdirPath(subdirPath: string): string {
+  const norm = normalizePluginSubdirPath(subdirPath);
+  return crypto.createHash('sha256').update(norm).digest('hex').substring(0, 8);
 }
 
 /**
