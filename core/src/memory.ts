@@ -563,6 +563,28 @@ export function resolveMemoryExtraGuidelines(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * Opt-in env flag gating whether instruction files (CLAUDE.md / AGENTS.md /
+ * SUPERINFERENCE.md …) from ADDITIONAL directories — the extra roots a user grants
+ * read access to via `--add-dir` / `--context-file` (the engine's
+ * `allowedReadRoots`), beyond cwd and its parents — also contribute their
+ * instructions to the system prompt. Parity with Claude Code's
+ * `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` (utils/claudemd.ts): a granted
+ * read-access dir does NOT silently inject its instruction file by default — the
+ * user must opt in with a truthy value. When OFF, the additional directories still
+ * grant tool read-access (unchanged) but add nothing to the prompt.
+ */
+const ADDITIONAL_INSTRUCTION_DIRS_ENV = 'AMI_ADDITIONAL_DIRECTORIES_CLAUDE_MD';
+
+/**
+ * Whether {@link MemoryManager.loadProjectInstructions} should also load instruction
+ * files from the constructor-supplied additional directories. Default OFF; enabled
+ * by a truthy {@link ADDITIONAL_INSTRUCTION_DIRS_ENV} value ({@link isEnvTruthy}).
+ */
+export function additionalInstructionDirsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[ADDITIONAL_INSTRUCTION_DIRS_ENV]);
+}
+
+/**
  * Classify an fs read/stat/mkdir failure as the EXPECTED "does not exist" case.
  * `ENOENT` (missing file/dir) and `ENOTDIR` (a parent segment is a file) are the
  * normal "no memory yet" fallbacks and are handled silently. Any OTHER errno
@@ -1685,9 +1707,18 @@ export class MemoryManager {
   /** Lazily-resolved, per-instance cache of the config-sourced instruction-file
    *  exclude globs ({@link ProjectConfig.memoryExcludes}) for {@link cwd}. */
   private _configMemoryExcludes: string[] | null = null;
+  /** Absolute ADDITIONAL instruction directories (the engine's `allowedReadRoots`
+   *  — dirs granted via `--add-dir` / `--context-file`). Loaded into the prompt only
+   *  when {@link additionalInstructionDirsEnabled}. Empty when none supplied. */
+  private _additionalInstructionDirs: string[];
 
-  constructor(cwd: string) {
+  constructor(cwd: string, opts?: { additionalInstructionDirs?: readonly string[] }) {
     this.cwd = cwd;
+    // Absolutize + de-duplicate once; a relative entry is resolved against cwd so
+    // the later discovery/exclude passes compare canonical paths.
+    this._additionalInstructionDirs = [
+      ...new Set((opts?.additionalInstructionDirs ?? []).map(d => path.resolve(d))),
+    ];
   }
 
   setHookCallback(cb: (event: string, data: any) => void): void { this._hookCallback = cb; }
@@ -1807,6 +1838,9 @@ export class MemoryManager {
   loadProjectInstructions(): string {
     const sections: string[] = [];
     const excludes = this.memoryExcludes();
+    // Instruction files already pushed — so an ADDITIONAL directory that happens to
+    // equal cwd or one of its scanned parents never double-loads the same file.
+    const loaded = new Set<string>();
     let currentDir = path.resolve(this.cwd);
     const root = path.parse(currentDir).root;
     let depth = 0;
@@ -1821,6 +1855,7 @@ export class MemoryManager {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
           if (raw) {
+            loaded.add(found);
             const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             const relativePath = path.relative(this.cwd, found) || path.basename(found);
             // Per-source provenance/trust label (parity: Claude Code's getClaudeMds
@@ -1856,6 +1891,7 @@ export class MemoryManager {
           if (fs.statSync(localPath).isFile()) {
             const raw = fs.readFileSync(localPath, 'utf-8').trim();
             if (raw) {
+              loaded.add(localPath);
               const content = this.resolveAtImports(sanitizeContent(raw, localPath), localPath);
               const relativePath = path.relative(this.cwd, localPath) || path.basename(localPath);
               // Local variants (CLAUDE.local.md / SUPERINFERENCE.local.md) are the
@@ -1888,6 +1924,38 @@ export class MemoryManager {
       if (isGitRoot(currentDir)) break;
       currentDir = parentDir;
       depth++;
+    }
+
+    // ADDITIONAL directories (parity: Claude Code's CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+    // branch). When opted in and the project tier is enabled, each extra read-root the
+    // user granted via `--add-dir` / `--context-file` contributes its highest-priority
+    // instruction file too — deduped against what the cwd/parent walk already loaded,
+    // exclude-list honored, @-imports resolved. A granted dir that adds no instruction
+    // file (or is already loaded) contributes nothing. Off by default.
+    if (projectEnabled && this._additionalInstructionDirs.length > 0
+        && additionalInstructionDirsEnabled()) {
+      for (const dir of this._additionalInstructionDirs) {
+        const found = this.findInstructionFile(dir);
+        if (!found || loaded.has(found) || isInstructionExcluded(found, excludes)) continue;
+        try {
+          const raw = fs.readFileSync(found, 'utf-8').trim();
+          if (!raw) continue;
+          loaded.add(found);
+          const content = this.resolveAtImports(sanitizeContent(raw, found), found);
+          const relativePath = path.relative(this.cwd, found) || found;
+          const label = `(added dir) ${relativePath} (${PROVENANCE_PROJECT})`;
+          sections.push(`## ${label}\n\n${content}`);
+          // Distinct load reason so a hook can tell an --add-dir instruction file
+          // apart from a cwd/parent one (parity: Claude's additional-directory branch).
+          if (this._hookCallback) this._hookCallback('instructionsLoaded', {
+            filePath: found,
+            loadReason: 'additional_directory',
+            memoryType: 'Project',
+          });
+        } catch (err) {
+          logUnexpectedReadError(err, found);
+        }
+      }
     }
 
     return sections.join('\n\n');
@@ -2089,6 +2157,15 @@ export class MemoryManager {
       if (isGitRoot(currentDir)) break;
       currentDir = parentDir;
       depth++;
+    }
+    // Mirror the additional-directory instruction files loadProjectInstructions pulls
+    // in (parity: when opted in via AMI_ADDITIONAL_DIRECTORIES_CLAUDE_MD) so an
+    // oversized/unreadable instruction file in an --add-dir root is diagnosed too.
+    if (this._additionalInstructionDirs.length > 0 && additionalInstructionDirsEnabled()) {
+      for (const dir of this._additionalInstructionDirs) {
+        const extra = this.findInstructionFile(dir);
+        if (extra && !isInstructionExcluded(extra, excludes)) found.add(extra);
+      }
     }
     for (const base of [path.join(os.homedir(), '.ami'), path.join(os.homedir(), '.claude')]) {
       const g = this.findInstructionFile(base);
@@ -2809,6 +2886,50 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       }
     } catch { /* no team dir yet */ }
     return { private: priv, team };
+  }
+
+  /**
+   * Whether the workspace is inside a git repository — the cwd or any ancestor
+   * carries a `.git` entry (a directory in a normal clone, a `gitdir:` pointer FILE
+   * in a linked worktree / submodule; both recognized by {@link isGitRoot}). Parity
+   * with Claude Code's `projectIsInGitRepo` (utils/git.ts): used to describe whether
+   * editing the project instruction file is version-controlled/shared or purely
+   * local. Walks to the filesystem root (unbounded by the instruction-scan depth) so
+   * a repo rooted several levels up is still detected.
+   */
+  projectIsInGitRepo(): boolean {
+    let dir = path.resolve(this.cwd);
+    for (;;) {
+      if (isGitRoot(dir)) return true;
+      const parent = path.dirname(dir);
+      if (parent === dir) return false;
+      dir = parent;
+    }
+  }
+
+  /**
+   * Describe the project instruction file for the `/memory` surface, branching the
+   * verb on git membership (parity with Claude Code's MemoryFileSelector
+   * `${isGit ? 'Checked in at' : 'Saved in'} ./CLAUDE.md`): a checked-in file's
+   * edits are version-controlled/shared, a non-repo file's edits are purely local.
+   * Returns the discovered file's relative path, the `checkedIn` boolean, and a
+   * ready-to-render description. `null` when the workspace has no project
+   * instruction file at its root (nothing to describe).
+   */
+  describeProjectMemory(): { path: string; relativePath: string; checkedIn: boolean; description: string } | null {
+    const found = this.findInstructionFile(path.resolve(this.cwd));
+    if (!found) return null;
+    const relativePath = path.relative(this.cwd, found) || path.basename(found);
+    const display = relativePath.startsWith('.') || path.isAbsolute(relativePath)
+      ? relativePath
+      : `./${relativePath}`;
+    const checkedIn = this.projectIsInGitRepo();
+    return {
+      path: found,
+      relativePath: display,
+      checkedIn,
+      description: `${checkedIn ? 'Checked in at' : 'Saved in'} ${display}`,
+    };
   }
 
   /**
