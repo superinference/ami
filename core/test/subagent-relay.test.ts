@@ -35,7 +35,8 @@ describe('mapChildToSubagentEvent', () => {
 
   it('maps tool_use_result → subagent_progress(tool) with the verb + status glyph', () => {
     assert.equal((map({ type: 'tool_use_result', toolCallId: 'c', toolName: 'bash', output: 'ok', isError: false }) as any).detail, 'Running ✓');
-    assert.equal((map({ type: 'tool_use_result', toolCallId: 'c', toolName: 'bash', output: 'x', isError: true }) as any).detail, 'Running ✗');
+    // On failure the bounded failure reason (first output line) is appended after the glyph.
+    assert.equal((map({ type: 'tool_use_result', toolCallId: 'c', toolName: 'bash', output: 'x', isError: true }) as any).detail, 'Running ✗ — x');
     const r = map({ type: 'tool_use_result', toolCallId: 'c', toolName: 'grep', output: 'ok', isError: false });
     assert.equal(r?.type === 'subagent_progress' && r.lastToolName, 'grep');
   });
@@ -58,7 +59,8 @@ describe('mapChildToSubagentEvent', () => {
   it('does not relay unrelated events', () => {
     assert.equal(map({ type: 'usage_update', stats: {} as any }), null);
     assert.equal(map({ type: 'done', totalTurns: 1, exitReason: 'completed' }), null);
-    assert.equal(map({ type: 'tool_use_progress', toolCallId: 'c', data: 'x' }), null);
+    // tool_use_progress IS relayed now (see the dedicated live-progress test).
+    assert.equal(map({ type: 'tool_use_progress', toolCallId: 'c', data: '   ' }), null);
   });
 
   it('tags with the provided nodeId and depth', () => {

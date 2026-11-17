@@ -1235,6 +1235,15 @@ export function reconcileSessionMode(
   return { changed: true, target: stored, warning };
 }
 
+/**
+ * The kind of live activity a relayed `subagent_progress` event describes. The
+ * base kinds (`text`/`thinking`/`tool`) carry the sub-agent's streamed prose,
+ * reasoning, and tool calls; `error`/`retry` surface failure + retry liveness on
+ * the roster the moment they happen (parity: Claude Code's AgentTool relaying a
+ * sub-agent's error/retry so the roster reflects it instead of appearing frozen).
+ */
+export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry';
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -1287,7 +1296,7 @@ export type EngineEvent =
        *  but differ in type. Lets a roster surface the classification at a glance. Parity:
        *  Claude's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
       taskType?: string }
-  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string;
+  | { type: 'subagent_progress'; nodeId: string; depth: number; activity: SubagentActivity; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string;
       /** A concise mid-turn progress summary for the sub-agent's work so far (a forked
        *  summarizer phrase emitted periodically), distinct from the per-step `detail`
        *  activity line — lets a roster show "what this agent is accomplishing" rather

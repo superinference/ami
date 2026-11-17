@@ -14,11 +14,11 @@ const map = (e: EngineEvent) => mapChildToSubagentEvent(e, 'agent-1', 2);
  * ---------------------------------------------------------------- */
 describe('mapChildToSubagentEvent — parity hardening', () => {
   // FIX 1: error events are surfaced live (previously dropped → returned null).
-  it('relays error events as a flagged text activity', () => {
+  it('relays error events as a dedicated error activity', () => {
     const r = map({ type: 'error', error: 'boom failed' });
     assert.ok(r, 'error event must be relayed, not dropped');
     assert.equal(r.type, 'subagent_progress');
-    assert.equal(r.type === 'subagent_progress' && r.activity, 'text');
+    assert.equal(r.type === 'subagent_progress' && r.activity, 'error');
     assert.equal(r.type === 'subagent_progress' && r.detail, '⚠ boom failed');
     assert.equal(r.type === 'subagent_progress' && r.nodeId, 'agent-1');
     assert.equal(r.type === 'subagent_progress' && r.depth, 2);

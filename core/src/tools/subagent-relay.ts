@@ -84,15 +84,51 @@ export function summarizeToolInput(toolName: string, input: unknown): string {
 }
 
 /**
+ * Max characters of relayed child output (streamed text / thinking, live tool
+ * progress, error text) surfaced on the parent roster in a single progress tick.
+ * Parity: Claude Code bounds relayed preview text (truncateForPreview) BEFORE it
+ * crosses the agent boundary so a chatty or run-away child can't flood the
+ * parent's roster/stream with an unbounded blob.
+ */
+export const MAX_RELAY_PREVIEW_CHARS = 500;
+
+/**
+ * Clamp a relayed preview string to {@link MAX_RELAY_PREVIEW_CHARS}, appending a
+ * single ellipsis when truncated. Internal spacing is otherwise preserved (the
+ * caller decides whether to collapse whitespace first).
+ */
+export function clampRelayPreview(text: string, max = MAX_RELAY_PREVIEW_CHARS): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * First non-empty line of a failed tool's output, bounded to a short slice for the
+ * roster's error detail. Parity: Claude Code appends a bounded failure reason to a
+ * sub-agent tool-error row (not just a ✗ glyph) so the roster conveys WHY it failed.
+ * Returns '' when the output has no printable content.
+ */
+export function summarizeErrorOutput(output: string, max = 120): string {
+  const firstLine = output.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  return firstLine.length > max ? `${firstLine.slice(0, max - 1)}…` : firstLine;
+}
+
+/**
  * Pure mapper: translate a child sub-engine's EngineEvent into a parent-facing
  * `subagent_progress` event tagged with the child's node id + depth, or null for
  * events that should not be relayed (everything the live roster doesn't render).
  * Kept pure + separate from task.ts so the relay policy is fully unit-testable.
  *
- * PARITY (additive): Claude Code's Task tool surfaces a sub-agent's failures to the
- * parent as they happen, not only in the final summary. This mapper now relays
- * `error` events live (as a flagged `text` activity) and drops whitespace-only
- * text/thinking deltas so the roster doesn't flicker blank lines mid-stream.
+ * PARITY (additive): Claude Code's Task tool surfaces a sub-agent's failures,
+ * retries, and in-flight tool progress to the parent as they happen, not only in
+ * the final summary. This mapper relays:
+ *  - `error` live as an `error` activity (bounded) so a failing child isn't silent;
+ *  - `retry_attempt` / `error_classified` as a `retry` activity so a recovering
+ *    child reflects liveness instead of appearing frozen;
+ *  - `tool_use_progress` as a bounded `text` activity so a long-running child tool
+ *    (e.g. a slow `bash`) surfaces live output instead of going dark;
+ *  - a failed `tool_use_result` with a bounded failure reason, not just a ✗ glyph;
+ * and drops whitespace-only deltas / empty progress so the roster never flickers
+ * blank lines, with ALL relayed free text clamped via {@link clampRelayPreview}.
  */
 export function mapChildToSubagentEvent(
   child: EngineEvent,
@@ -102,13 +138,23 @@ export function mapChildToSubagentEvent(
   switch (child.type) {
     case 'text_delta':
       // PARITY: drop whitespace-only deltas (blank roster flicker) but relay the
-      // raw text verbatim so internal spacing between streamed tokens is preserved.
+      // text with internal spacing preserved, bounded so a run-away child can't
+      // flood the parent roster in one tick (clampRelayPreview).
       return child.text && child.text.trim()
-        ? { type: 'subagent_progress', nodeId, depth, activity: 'text', detail: child.text }
+        ? { type: 'subagent_progress', nodeId, depth, activity: 'text', detail: clampRelayPreview(child.text) }
         : null;
     case 'thinking_delta':
       return child.text && child.text.trim()
-        ? { type: 'subagent_progress', nodeId, depth, activity: 'thinking', detail: child.text }
+        ? { type: 'subagent_progress', nodeId, depth, activity: 'thinking', detail: clampRelayPreview(child.text) }
+        : null;
+    case 'tool_use_progress':
+      // PARITY (additive): surface a long-running child tool's live output on the
+      // parent roster instead of going dark until completion. Relayed as a bounded
+      // `text` activity — a progress tick is streamed output of an ALREADY-counted
+      // tool, not a new tool start, so mapping it to `tool` would double-count it in
+      // the roster's tool tally. Empty chunks drop like blank text/thinking deltas.
+      return child.data && child.data.trim()
+        ? { type: 'subagent_progress', nodeId, depth, activity: 'text', detail: clampRelayPreview(child.data) }
         : null;
     case 'tool_use_start': {
       // Omit the internal synthetic-output tool from the activity preview — it is a
@@ -124,24 +170,44 @@ export function mapChildToSubagentEvent(
         lastToolName: child.toolName,
       };
     }
-    case 'tool_use_result':
+    case 'tool_use_result': {
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
       // Same verb as the matching start (parity: Claude's toolSummary verb) plus the
       // outcome glyph, e.g. "Running ✓" / "Searching ✗"; lastToolName keeps identity.
+      // On failure, append a bounded first-line slice of the output so the roster
+      // conveys WHY it failed (parity: Claude's tool-error detail), not just a ✗.
+      const reason = child.isError ? summarizeErrorOutput(child.output) : '';
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
-        detail: `${toolVerb(child.toolName)} ${child.isError ? '✗' : '✓'}`,
+        detail: `${toolVerb(child.toolName)} ${child.isError ? '✗' : '✓'}${reason ? ` — ${reason}` : ''}`,
         lastToolName: child.toolName,
       };
+    }
     case 'error':
       // PARITY: surface the sub-agent's error on the live roster the moment it
-      // happens (previously the parent only saw it in the final summary text).
+      // happens, as a dedicated `error` activity (previously the parent only saw it
+      // in the final summary text). Bounded so a huge stack trace can't flood the row.
       return child.error && child.error.trim()
         ? {
-            type: 'subagent_progress', nodeId, depth, activity: 'text',
-            detail: `⚠ ${child.error.replace(/\s+/g, ' ').trim()}`,
+            type: 'subagent_progress', nodeId, depth, activity: 'error',
+            detail: clampRelayPreview(`⚠ ${child.error.replace(/\s+/g, ' ').trim()}`),
           }
         : null;
+    case 'retry_attempt':
+      // PARITY: a transient retry is liveness, not a freeze — surface the attempt so
+      // the roster shows the child is recovering (bridge/sdkProgress retry relay).
+      return {
+        type: 'subagent_progress', nodeId, depth, activity: 'retry',
+        detail: `retry ${child.attempt}/${child.maxRetries}${child.delayMs ? ` in ${child.delayMs}ms` : ''}`,
+      };
+    case 'error_classified':
+      // PARITY: surface a classified error's category + whether a retry follows. A
+      // retrying classification reads as `retry` liveness; a terminal one as `error`.
+      return {
+        type: 'subagent_progress', nodeId, depth,
+        activity: child.willRetry ? 'retry' : 'error',
+        detail: `${child.category}${child.willRetry ? ' (retrying)' : ''}`,
+      };
     default:
       return null;
   }
