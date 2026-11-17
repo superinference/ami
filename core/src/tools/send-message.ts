@@ -1671,7 +1671,13 @@ export const sendMessageTool: ToolDefinition = {
     'The lead can assign work with a "task_assignment" (taskId, subject, description) or ask a teammate to switch ' +
     'permission posture with a "mode_set_request" (mode); a teammate reports it has finished its turn with an ' +
     '"idle_notification" (optional idleReason/completedTaskId/completedStatus/summary) sent to the lead. Approving a ' +
-    'plan may carry a "permissionMode" the teammate inherits on exiting plan-mode.',
+    'plan may carry a "permissionMode" the teammate inherits on exiting plan-mode.\n' +
+    '\n' +
+    'Cross-session delivery: "to" may be a local peer address "uds:<socket-path>" instead of a bare teammate ' +
+    'name, to reach an agent running in a SEPARATE session/process. Only PLAIN TEXT crosses a session ' +
+    'boundary — structured control messages (shutdown/plan/permission/mode/task) are session-local and ' +
+    'cannot be sent cross-session. A reachable local peer is alive and will process your message: there is ' +
+    'no busy state to wait on — the message enqueues and drains at the receiver\'s next tool round.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1794,8 +1800,13 @@ export const sendMessageTool: ToolDefinition = {
           JSON.stringify({ from, text: content, summary: summaryXS || undefined, timestamp: Date.now() }),
         );
         const sTag = summaryXS ? ` — "${summaryXS}"` : '';
+        // Cross-session delivery is a distinct transport from the in-session
+        // mailbox; emit the same gated lifecycle trace so an out-of-process
+        // delivery is observable alongside in-session ones (off by default).
+        traceMailbox('deliver', { to: addr.target, from, via: 'uds' });
         return { output: `Message delivered to local peer "${toRaw}"${sTag} [from: ${from}] (${content.length} chars)` };
       } catch (e) {
+        traceMailbox('cross-session delivery failed', { to: addr.target, from, scheme: addr.scheme });
         return { output: `Error: failed to deliver to local peer "${toRaw}": ${(e as Error).message}`, isError: true };
       }
     }
