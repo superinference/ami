@@ -57,6 +57,27 @@ function runGit(cwd: string, args: string[]): { code: number; stdout: string } |
   return { code: res.status, stdout: res.stdout.trim() };
 }
 
+/**
+ * Authoritative "is this path ignored by git?" predicate — delegates the whole
+ * question to `git check-ignore` so ALL ignore sources resolve with git's real
+ * precedence: nested `.gitignore` files, `.git/info/exclude`, and the GLOBAL
+ * gitignore (`core.excludesFile`) — none of which the in-process glob/ignore
+ * matchers can see. `filePath` may be absolute or relative to `cwd`.
+ *
+ * Exit-code branching mirrors Claude Code's `isPathGitignored`:
+ *   0   → path is ignored        → true
+ *   1   → path is not ignored    → false
+ *   128 → `cwd` is not a git repo → false (fail OPEN — never spuriously hide a
+ *          path just because there is no repo)
+ * A spawn failure (git missing / timeout → `runGit` returns null) also fails
+ * open. Uses the shared no-shell {@link runGit} runner (injection-safe, hard
+ * timeout, `--no-optional-locks` so it never disturbs a concurrent index lock).
+ */
+export function isPathGitignored(filePath: string, cwd: string): boolean {
+  const res = runGit(cwd, ['--no-optional-locks', 'check-ignore', '--quiet', '--', filePath]);
+  return res?.code === 0;
+}
+
 /** `127.0.0.1` / `::1` / `localhost` (optionally with a `:port` suffix). */
 function isLocalHost(host: string): boolean {
   const bare = host.replace(/:\d+$/, '');

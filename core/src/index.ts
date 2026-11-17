@@ -183,7 +183,7 @@ export {
   OWNER_ONLY_DIR_MODE,
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
-export { getGitBranch } from './utils/git';
+export { getGitBranch, isPathGitignored } from './utils/git';
 export {
   expandPath,
   isPathSafe,
