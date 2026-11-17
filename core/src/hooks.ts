@@ -3009,6 +3009,11 @@ export class HookManager extends EventEmitter {
    *  Injectable so tests can exercise the HTTP-hook success/non-2xx paths against
    *  a loopback mock server that the real validator would (correctly) block. */
   private _validateUrlSafety: typeof validateUrlSafety = validateUrlSafety;
+  /** Fetch used for HTTP hooks routed through an env-var proxy (HTTP(S)_PROXY,
+   *  honoring NO_PROXY). Defaults lazily to the canonical provider proxy/mTLS
+   *  dispatcher wrapper (no second proxy implementation); injectable so tests can
+   *  exercise the proxied branch without standing up a real forward proxy. */
+  private _proxiedHookFetch: typeof fetch | undefined;
   private _callbackHooks: Map<string, HookCallback[]> = new Map();
   /** Per-callback timeout (ms) for in-process ('function') hooks, keyed by the
    *  callback. Unset callbacks use DEFAULT_CALLBACK_HOOK_TIMEOUT_MS. */
@@ -3242,6 +3247,10 @@ export class HookManager extends EventEmitter {
   /** Override the HTTP-hook SSRF validator (tests only; defaults to the shared
    *  web-utils validateUrlSafety). */
   setUrlSafetyValidator(fn: typeof validateUrlSafety): void { this._validateUrlSafety = fn; }
+
+  /** Override the proxied-HTTP-hook fetch (tests only; defaults lazily to the
+   *  provider proxy/mTLS dispatcher wrapper via {@link runHttpHook}). */
+  setProxiedHookFetch(fn: typeof fetch | undefined): void { this._proxiedHookFetch = fn; }
 
   registerCallback(event: string, callback: HookCallback, timeoutMs?: number, meta?: RuntimeHookMeta): () => void {
     const hooks = this._callbackHooks.get(event) || [];
@@ -6040,27 +6049,9 @@ export class HookManager extends EventEmitter {
       return onFail();
     }
 
-    // (2) SSRF guard — resolve + validate the hostname, reusing the shared
-    // web-utils validator (blocks private/link-local/metadata IPs) and pin the
-    // resolved IP to stop DNS-rebinding (TOCTOU). Loopback is allowed (local dev
-    // webhook servers), matching Claude Code's ssrfGuardedLookup. No separate impl.
-    const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
-    if ('error' in safety) {
-      // User-facing, code-tagged block message (Claude Code's ssrfError): always
-      // inform why the hook was refused — fail-closed DENY when onFailure:block,
-      // otherwise a non-blocking SYSTEM notice so the target is never silently
-      // dropped (the affordance Claude surfaces to the user).
-      const msg = formatHttpHookBlockedMessage(config.url, safety.error);
-      coreLog('hooks', msg);
-      if (outcome) outcome.success = false;
-      return config.onFailure === 'block' ? `DENY:${msg}` : `SYSTEM:${msg}`;
-    }
-
-    const url = new URL(config.url);
-    const client = url.protocol === 'https:' ? https : http;
-
-    // (3) Header env-var interpolation, gated by the hook's allowedEnvVars ∩ the
-    // global httpHookAllowedEnvVars setting.
+    // (2) Header env-var interpolation, gated by the hook's allowedEnvVars ∩ the
+    // global httpHookAllowedEnvVars setting. Built BEFORE the transport split so the
+    // direct AND the proxied paths share the exact same interpolated/sanitized set.
     const envAllow = new Set(
       (config.allowedEnvVars ?? []).filter(v => (this._httpHookPolicy.httpHookAllowedEnvVars ?? []).includes(v)),
     );
@@ -6074,11 +6065,54 @@ export class HookManager extends EventEmitter {
       );
     }
 
-    // (5) Cancellation + hard timeout as ONE combined signal (the canonical
+    // (3) Cancellation + hard timeout as ONE combined signal (the canonical
     // combineHookAbort): the request is torn down on parent/user cancel OR the
     // per-hook timeout, matching command/prompt/agent hooks.
     const timeoutMs = resolveHookTimeoutMs(config.timeout, DEFAULT_HTTP_HOOK_TIMEOUT_MS);
     const abort = combineHookAbort(signal, timeoutMs);
+
+    // (4) Env-var proxy routing (HTTP(S)_PROXY, honoring NO_PROXY) — Claude Code's
+    // execHttpHook routes the POST through a configured proxy and, in that case,
+    // SKIPS the local SSRF/pinned-DNS guard: the proxy performs DNS for the target
+    // and enforces its own egress allowlist (applying the guard would instead
+    // validate the proxy's own — possibly private, e.g. 10.0.0.1:3128 — address and
+    // wrongly block a corporate proxy). The URL allowlist above still applies. The
+    // proxy URL + dispatcher come from the canonical provider helpers (no second
+    // proxy implementation), loaded lazily to avoid a static import of the AI-SDK
+    // stack from this leaf hook module. The cheap env-presence gate (the SAME gate
+    // the canonical withProxyDispatcher uses) short-circuits the common no-proxy
+    // case so an unproxied http hook never pays the provider-import cost.
+    const anyProxyEnv = !!(
+      process.env.https_proxy ?? process.env.HTTPS_PROXY ??
+      process.env.http_proxy ?? process.env.HTTP_PROXY
+    );
+    if (anyProxyEnv) {
+      const { resolveProxyForUrl } = await import('./provider');
+      if (resolveProxyForUrl(process.env, config.url)) {
+        coreLog('hooks', `HTTP hook POST to ${config.url} (via env-var proxy)`);
+        return this.runHttpHookViaProxy(config, eventData, headers, abort, timeoutMs, onFail, onFailWith);
+      }
+    }
+
+    // (5) SSRF guard (direct connections only) — resolve + validate the hostname,
+    // reusing the shared web-utils validator (blocks private/link-local/metadata
+    // IPs) and pin the resolved IP to stop DNS-rebinding (TOCTOU). Loopback is
+    // allowed (local dev webhook servers), matching Claude Code's ssrfGuardedLookup.
+    const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
+    if ('error' in safety) {
+      // User-facing, code-tagged block message (Claude Code's ssrfError): always
+      // inform why the hook was refused — fail-closed DENY when onFailure:block,
+      // otherwise a non-blocking SYSTEM notice so the target is never silently
+      // dropped (the affordance Claude surfaces to the user).
+      const msg = formatHttpHookBlockedMessage(config.url, safety.error);
+      coreLog('hooks', msg);
+      if (outcome) outcome.success = false;
+      abort.cleanup();
+      return config.onFailure === 'block' ? `DENY:${msg}` : `SYSTEM:${msg}`;
+    }
+
+    const url = new URL(config.url);
+    const client = url.protocol === 'https:' ? https : http;
     // Introspection: log the outbound request target before any I/O (Claude Code's
     // execHttpHook `logForDebugging("Hooks: HTTP hook POST to <url>")`).
     coreLog('hooks', `HTTP hook POST to ${config.url}`);
@@ -6121,6 +6155,61 @@ export class HookManager extends EventEmitter {
       req.write(eventData);
       req.end();
     });
+  }
+
+  /**
+   * POST an HTTP hook through a configured env-var proxy (Claude Code's
+   * execHttpHook proxy branch). The request is routed through the canonical
+   * provider proxy/mTLS dispatcher wrapper ({@link withProxyDispatcher}) rather
+   * than the raw http/https client — so there is ONE proxy implementation shared
+   * with the model transport, not a second one here. The SSRF/pinned-DNS guard is
+   * deliberately NOT applied: the proxy performs DNS for the target and enforces
+   * its own egress allowlist (see the reordered gate in {@link runHttpHook}).
+   * `redirect:'manual'` is the fetch equivalent of the direct path's
+   * `maxRedirects:0`, keeping the redirect-based-SSRF-bypass protection.
+   */
+  private async runHttpHookViaProxy(
+    config: HttpHookConfig,
+    eventData: string,
+    headers: Record<string, string>,
+    abort: ReturnType<typeof combineHookAbort>,
+    timeoutMs: number,
+    onFail: () => string,
+    onFailWith: (detail: string) => string,
+  ): Promise<string> {
+    const failDetail = (err?: Error): string =>
+      abort.timedOut() ? `timed out after ${timeoutMs}ms`
+        : abort.aborted() ? 'request cancelled'
+          : (err?.message || 'transport error');
+    try {
+      // Default lazily to the provider proxy/mTLS dispatcher wrapper; a wrapper is
+      // only installed when a proxy/mTLS env is present (it is here, by construction)
+      // so it routes the request through the undici ProxyAgent. undici absent → the
+      // wrapper is a no-op passthrough, which still succeeds for a reachable target.
+      let doFetch = this._proxiedHookFetch;
+      if (!doFetch) {
+        const { withProxyDispatcher } = await import('./provider');
+        doFetch = withProxyDispatcher(undefined, process.env) ?? fetch;
+      }
+      const res = await doFetch(config.url, {
+        method: 'POST',
+        headers,
+        body: eventData,
+        signal: abort.signal,
+        redirect: 'manual', // == direct path's maxRedirects:0 (redirect-SSRF guard)
+      });
+      abort.cleanup();
+      const body = await res.text();
+      coreLog('hooks', `HTTP hook response status ${res.status}, body length ${body.length}`);
+      if (res.status < 200 || res.status >= 300) {
+        coreLog('hooks', `HTTP hook non-2xx (${res.status})`);
+        return onFail();
+      }
+      return sanitizeHookOutput(body);
+    } catch (err) {
+      abort.cleanup();
+      return onFailWith(failDetail(err instanceof Error ? err : undefined));
+    }
   }
 
   private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: { success: boolean }): Promise<string> {
