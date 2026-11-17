@@ -2807,6 +2807,92 @@ export class McpManager extends EventEmitter {
   }
 
   /**
+   * Resolve the IDE the reserved `ide` server is currently wired to by matching
+   * its persisted config against a freshly-detected editor list (Claude-parity
+   * `findCurrentIDE`, ide.tsx:L208-219). Reads the live `ide` server config,
+   * guards its transport to an IDE discriminant (`sse-ide` / `ws-ide`), then
+   * linear-scans `availableIDEs` for the entry whose `url` is identical — the
+   * url-identity reconciliation that drives the `/mcp` IDE badge's "already
+   * connected" preselection and the disconnect path. Returns `null` when no `ide`
+   * server is wired, it is not an IDE transport, or no detected editor matches.
+   */
+  findCurrentIde(availableIDEs: DetectedIdeInfo[]): DetectedIdeInfo | null {
+    const config = this.configs.get(IDE_MCP_SERVER_NAME);
+    if (!config || (config.transport !== 'sse-ide' && config.transport !== 'ws-ide')) {
+      return null;
+    }
+    for (const ide of availableIDEs) {
+      if (ide.url === config.url) return ide;
+    }
+    return null;
+  }
+
+  /**
+   * Connect (or re-point) the reserved `ide` MCP server to a detected editor and
+   * resolve once the handshake reaches a terminal state, the core analogue of
+   * Claude Code's IDECommandFlow connect state machine (ide.tsx:L515-604). Any
+   * existing `ide` server is torn down first (re-point semantics), then the
+   * editor is registered over the transport its URL implies
+   * ({@link ideTransportForUrl}) with its `ideName` (and a bearer `authToken`
+   * header when the endpoint requires one) and connected. The connect races a
+   * {@link IDE_CONNECTION_TIMEOUT_MS} fallback so a server that never answers
+   * yields a `timeout` result instead of hanging — the outer ceiling Claude's
+   * `setTimeout(onDone, …)` provides.
+   *
+   * (Claude's `isFirstCheckRef` stale-snapshot skip, ide.tsx:L529/536-539/594, is
+   * a React-effect re-render artifact — it ignores the first post-dispatch render
+   * because the store still holds the pre-config client. Core awaits the real
+   * handshake promise directly, so there is no stale snapshot to skip.)
+   */
+  async connectIde(ide: DetectedIdeInfo, opts: IdeConnectOptions = {}): Promise<IdeConnectResult> {
+    // Re-point semantics: drop any editor already wired to the `ide` slot so the
+    // new selection replaces it (Claude deletes `dynamicMcpConfig.ide` first).
+    if (this.clients.has(IDE_MCP_SERVER_NAME) || this.pendingServers.has(IDE_MCP_SERVER_NAME) || this.configs.has(IDE_MCP_SERVER_NAME)) {
+      this.removeServer(IDE_MCP_SERVER_NAME);
+    }
+    const config: McpServerConfig = {
+      command: '',
+      transport: ideTransportForUrl(ide.url),
+      url: ide.url,
+      ideName: ide.name,
+      ...(ide.authToken ? { headers: { Authorization: `Bearer ${ide.authToken}` } } : {}),
+    };
+    this.addServer(IDE_MCP_SERVER_NAME, config);
+
+    const timeoutMs = opts.timeoutMs ?? IDE_CONNECTION_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+    const outcome = await Promise.race([
+      this.connectServer(IDE_MCP_SERVER_NAME).then(() => 'connected' as const, () => 'failed' as const),
+      timeout,
+    ]);
+    if (timer) clearTimeout(timer);
+
+    if (outcome === 'connected') return { outcome, message: `Connected to ${ide.name}.` };
+    if (outcome === 'failed') return { outcome, message: `Failed to connect to ${ide.name}.` };
+    return { outcome: 'timeout', message: `Connection to ${ide.name} timed out.` };
+  }
+
+  /**
+   * Disconnect the reserved `ide` MCP server (Claude-parity IDECommandFlow
+   * disconnect leg, ide.tsx:L562-586): tears down the live transport and forgets
+   * the server WITHOUT triggering the close-driven auto-reconnect (Claude nulls
+   * the client `onclose`; {@link removeServer} flags an intentional disconnect to
+   * the same end). Returns `disconnected:false` with "No IDE selected." when no
+   * editor was wired, else `disconnected:true` with "Disconnected from <name>."
+   */
+  disconnectIde(): { disconnected: boolean; message: string } {
+    if (!this.clients.has(IDE_MCP_SERVER_NAME) && !this.pendingServers.has(IDE_MCP_SERVER_NAME) && !this.configs.has(IDE_MCP_SERVER_NAME)) {
+      return { disconnected: false, message: 'No IDE selected.' };
+    }
+    const ideName = getMcpIdeName(this.configs.get(IDE_MCP_SERVER_NAME)) ?? 'IDE';
+    this.removeServer(IDE_MCP_SERVER_NAME);
+    return { disconnected: true, message: `Disconnected from ${ideName}.` };
+  }
+
+  /**
    * The on-disk path of a server's persisted OAuth token file (keyed on the server
    * NAME *and* a hash of its connection config, matching Claude's `getServerKey`).
    * Single source of truth so {@link addServer} (which writes/reads it) and
@@ -3763,6 +3849,65 @@ export function resolveIdeMcpEndpoint(env: NodeJS.ProcessEnv = process.env): { u
   const port = parseInt(raw, 10);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
   return { url: `http://127.0.0.1:${port}/sse` };
+}
+
+/**
+ * A code editor AMI can connect to as the reserved `ide` MCP server
+ * (Claude-parity `DetectedIDEInfo`, utils/ide.ts): the editor's display `name`
+ * and the `url` of the MCP endpoint it exposes, plus the optional `authToken`
+ * the endpoint requires and whether the editor is `ideRunningInWindows` (used by
+ * a WSL caller for path translation). This is the input to the interactive
+ * connect flow ({@link McpManager.connectIde}) and the reconciliation lookup
+ * ({@link McpManager.findCurrentIde}).
+ */
+export interface DetectedIdeInfo {
+  /** Human-readable editor name (e.g. "VS Code", "JetBrains"). */
+  name: string;
+  /** MCP endpoint URL the editor exposes (an sse `http(s)://` or ws `ws(s)://`). */
+  url: string;
+  /** Bearer token the endpoint requires, when the editor gated it. */
+  authToken?: string;
+  /** True when the editor runs on the Windows host of a WSL session. */
+  ideRunningInWindows?: boolean;
+}
+
+/**
+ * The IDE transport discriminant implied by an endpoint URL's scheme: a
+ * WebSocket endpoint (`ws://` / `wss://`) is a `ws-ide`, anything else (an
+ * `http(s)://` SSE endpoint) is an `sse-ide`. The `-ide` suffix only tags
+ * provenance + an {@link McpServerConfig.ideName}; {@link canonicalMcpTransport}
+ * maps it back to the base wire transport. Divergence from Claude Code
+ * (ide.tsx:L585, which tests only `startsWith('ws:')` and so mis-tags a `wss://`
+ * endpoint as `sse-ide`): AMI also recognizes `wss://` so a secure WebSocket IDE
+ * connects over its real transport.
+ */
+export function ideTransportForUrl(url: string): 'sse-ide' | 'ws-ide' {
+  return url.startsWith('ws:') || url.startsWith('wss:') ? 'ws-ide' : 'sse-ide';
+}
+
+/**
+ * How long {@link McpManager.connectIde} waits for the reserved `ide` server to
+ * reach a terminal state before reporting a `timeout` (Claude-parity
+ * `IDE_CONNECTION_TIMEOUT_MS`, ide.tsx:L507). The connect itself has its own
+ * bounded retry/backoff; this is the outer ceiling the UI shows a result by.
+ */
+export const IDE_CONNECTION_TIMEOUT_MS = 35000;
+
+/**
+ * Terminal outcome of an interactive IDE connect ({@link McpManager.connectIde}):
+ * `connected` (handshake succeeded), `failed` (handshake rejected), or `timeout`
+ * (no terminal state within {@link IDE_CONNECTION_TIMEOUT_MS}). `message` is the
+ * ready-to-display sentence, matching Claude Code's IDECommandFlow wording.
+ */
+export interface IdeConnectResult {
+  outcome: 'connected' | 'failed' | 'timeout';
+  message: string;
+}
+
+/** Options for {@link McpManager.connectIde}. */
+export interface IdeConnectOptions {
+  /** Override the {@link IDE_CONNECTION_TIMEOUT_MS} outer ceiling (ms). */
+  timeoutMs?: number;
 }
 
 /**
