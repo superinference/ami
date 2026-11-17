@@ -11,6 +11,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UsageStats } from './types';
 import { isEssentialTrafficOnly } from './analytics';
+import { getContextWindow, getModelMaxOutputTokens } from './model-capabilities';
+
+/**
+ * Per-request execution speed tier. A `fast` (premium) request can be billed at an
+ * elevated pricing tier — mirrors Claude's `usage.speed` → fast-mode cost tier. AMI
+ * maps Anthropic's `service_tier: 'priority'` to `'fast'`. Absent/`medium`/`slow`
+ * price at the model's standard rate.
+ */
+export type ModelSpeed = 'fast' | 'medium' | 'slow';
 
 /**
  * Extended stats that include prompt caching information.
@@ -57,19 +66,39 @@ export interface ModelCostUsage {
   requestCount: number;
   /** Server-side web_search requests billed against THIS model (for a per-model breakdown). */
   webSearchRequests: number;
+  /**
+   * This model's total context window (tokens), resolved from model-capabilities — lets the
+   * Usage view annotate each model's window alongside its spend. Mirrors Claude's per-model
+   * `contextWindow` on the usage record. Undefined when the model is unknown to capabilities.
+   */
+  contextWindow?: number;
+  /**
+   * This model's max-output-token ceiling, resolved from model-capabilities. Undefined when
+   * the model has no known output cap (callers then show only the context window).
+   */
+  maxOutputTokens?: number;
 }
 
 // ---------------------------------------------------------------------------
 // Pricing: [inputPerMillion, outputPerMillion, cachedInputPerMillion | null,
-//           cacheWritePerMillion? | null]
+//           cacheWritePerMillion? | null,
+//           fastInputPerMillion? | null, fastOutputPerMillion? | null]
 //
 // The optional 4th slot is a MODEL-SPECIFIC cache-write (cache_creation) price.
 // Providers' cache-write multiplier is not uniformly 1.25x (Anthropic 5m TTL),
 // so when the gateway advertises one we honor it; absent, we fall back to the
 // global CACHE_WRITE_PRICE_RATIO. Legacy 3-element entries are still valid.
+//
+// The optional 5th/6th slots are an ELEVATED-SPEED (fast / priority) pricing tier:
+// a `fast` request is billed at fastInput/fastOutput instead of the standard rate,
+// mirroring Claude's speed-dependent cost tier (getOpus46CostTier(fastMode)). When
+// absent, a fast request prices at the standard rate (no premium). Cached/cache-write
+// derive from the fast input rate at the same ratios when not themselves explicit.
 // ---------------------------------------------------------------------------
 
-type PricingEntry = [number, number, number | null, (number | null)?];
+type PricingEntry = [
+  number, number, number | null, (number | null)?, (number | null)?, (number | null)?,
+];
 
 // Fallback table used when the gateway fetch fails or hasn't completed yet.
 const FALLBACK_PRICING: Record<string, PricingEntry> = {
@@ -156,6 +185,10 @@ interface GatewayModel {
     input_cache_read?: string;
     /** Per-token cache-WRITE (cache_creation) price, when the gateway advertises one. */
     input_cache_write?: string;
+    /** Per-token ELEVATED-SPEED (fast / priority service-tier) input price, when advertised. */
+    input_priority?: string;
+    /** Per-token ELEVATED-SPEED (fast / priority service-tier) output price, when advertised. */
+    output_priority?: string;
   };
 }
 
@@ -189,16 +222,24 @@ async function fetchLivePricing(): Promise<void> {
       const cacheWrite = m.pricing.input_cache_write
         ? perTokenToPerMillion(m.pricing.input_cache_write)
         : null;
+      const fastInput = m.pricing.input_priority
+        ? perTokenToPerMillion(m.pricing.input_priority)
+        : null;
+      const fastOutput = m.pricing.output_priority
+        ? perTokenToPerMillion(m.pricing.output_priority)
+        : null;
 
       if (isNaN(input) || isNaN(output) || (cached !== null && isNaN(cached)) ||
-          (cacheWrite !== null && isNaN(cacheWrite))) continue;
+          (cacheWrite !== null && isNaN(cacheWrite)) ||
+          (fastInput !== null && isNaN(fastInput)) ||
+          (fastOutput !== null && isNaN(fastOutput))) continue;
 
       // Store under both the full id ("openai/gpt-4o") and the model name ("gpt-4o")
-      map[m.id] = [input, output, cached, cacheWrite];
+      map[m.id] = [input, output, cached, cacheWrite, fastInput, fastOutput];
       const slash = m.id.indexOf('/');
       if (slash !== -1) {
         const shortName = m.id.slice(slash + 1);
-        if (!map[shortName]) map[shortName] = [input, output, cached, cacheWrite];
+        if (!map[shortName]) map[shortName] = [input, output, cached, cacheWrite, fastInput, fastOutput];
       }
     }
 
@@ -335,6 +376,8 @@ export class CostTracker {
     cachedPromptTokens?: number;
     cacheCreationTokens?: number;
     webSearchRequests?: number;
+    /** Execution speed of this request; `'fast'` bills at the model's premium tier when it has one. */
+    speed?: ModelSpeed;
   }, model?: string): void {
     const activeModel = model ?? this.model;
     const cachedTokens = usage.cachedPromptTokens ?? 0;
@@ -353,7 +396,7 @@ export class CostTracker {
       cacheCreationTokens,
       completionTokens: usage.completionTokens,
       webSearchRequests,
-    }, this.model);
+    }, this.model, usage.speed);
     this.stats.totalCost += cost;
     this.stats.requestCount++;
 
@@ -382,7 +425,8 @@ export class CostTracker {
     if (activeModel && !isPricedModel(activeModel)) this._unknownModels.add(activeModel);
 
     if (cachedTokens > 0) {
-      const [inputPPM, , cachedPPM] = matchPricing(activeModel, this.model);
+      const [stdInputPPM, , cachedPPM, , fastInputPPM] = matchPricing(activeModel, this.model);
+      const inputPPM = usage.speed === 'fast' && fastInputPPM != null ? fastInputPPM : stdInputPPM;
       const fullPriceCost = (cachedTokens / 1_000_000) * inputPPM;
       const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
       const cachedCost = (cachedTokens / 1_000_000) * actualCachedPPM;
@@ -422,7 +466,16 @@ export class CostTracker {
       : 0;
 
     const byModel: Record<string, ModelCostUsage> = {};
-    for (const [model, u] of this._byModel) byModel[model] = { ...u };
+    for (const [model, u] of this._byModel) {
+      // Annotate each per-model rollup with its context window / max-output ceiling so the
+      // Usage view can show each model's limits next to its spend (mirrors Claude's per-model
+      // contextWindow/maxOutputTokens on the usage record).
+      byModel[model] = {
+        ...u,
+        contextWindow: getContextWindow(model),
+        maxOutputTokens: getModelMaxOutputTokens(model).default,
+      };
+    }
 
     return {
       ...this.stats,
@@ -500,8 +553,21 @@ export function estimateUsageCost(
    * unknown-model fallback to the default model's cost. Omit to keep the generic fallback.
    */
   fallbackModel?: string,
+  /**
+   * Per-request execution speed. When `'fast'` AND the model advertises an elevated-speed
+   * (priority) tier, the request is billed at that premium tier — mirrors Claude's
+   * speed-dependent cost tier (getOpus46CostTier(fastMode)). Absent / `'medium'` / `'slow'`
+   * bills at the standard rate.
+   */
+  speed?: ModelSpeed,
 ): number {
-  const [inputPPM, outputPPM, cachedPPM, cacheWritePPM] = matchPricing(model, fallbackModel);
+  const [stdInputPPM, stdOutputPPM, cachedPPM, cacheWritePPM, fastInputPPM, fastOutputPPM] =
+    matchPricing(model, fallbackModel);
+  // Elevated-speed (fast/priority) tier: only when the request is fast AND the model
+  // actually advertises a fast tier, otherwise fall back to the standard rate.
+  const useFast = speed === 'fast' && fastInputPPM != null && fastOutputPPM != null;
+  const inputPPM = useFast ? fastInputPPM : stdInputPPM;
+  const outputPPM = useFast ? fastOutputPPM : stdOutputPPM;
   const actualCachedPPM = cachedPPM ?? inputPPM * CACHED_PRICE_RATIO;
   // Prefer a model-specific cache-write price; fall back to the global 1.25x ratio.
   const actualCacheWritePPM = cacheWritePPM ?? inputPPM * CACHE_WRITE_PRICE_RATIO;
