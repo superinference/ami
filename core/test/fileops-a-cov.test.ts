@@ -30,14 +30,11 @@ import type { ToolContext } from '../src/types';
 
 let tmpDir: string;
 
-// filesRead is left UNSET by default so the read-before-edit guard (which has its
-// own dedicated tests in tools-file-edit.test.ts) does not mask these
-// edit-internals tests; the few tests that assert on filesRead membership pass an
-// explicit Set override.
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     cwd: tmpDir,
     abortSignal: new AbortController().signal,
+    filesRead: new Set<string>(),
     ...overrides,
   };
 }
@@ -86,7 +83,7 @@ describe('fileEditTool – create / overwrite success paths', () => {
     const fp = path.join(tmpDir, 'over.txt');
     const old = Array.from({ length: 30 }, (_, i) => `old${i}`).join('\n');
     fs.writeFileSync(fp, old);
-    const context = ctx({ filesRead: new Set() });
+    const context = ctx();
     // H10: an existing non-empty file must be read before it can be overwritten.
     context.filesRead!.add(fp);
     const res = await fileEditTool.execute(
@@ -120,11 +117,10 @@ describe('fileEditTool – create / overwrite success paths', () => {
 });
 
 describe('fileEditTool – single replace success paths', () => {
-  it('performs an exact replace on a previously-read file (stays in filesRead)', async () => {
+  it('performs an exact replace on an existing file (reads into filesRead + cache)', async () => {
     const fp = path.join(tmpDir, 'r.txt');
     fs.writeFileSync(fp, 'hello world\nsecond line\n');
-    // Read-before-edit: the file must have been read before an in-place replace.
-    const context = ctx({ filesRead: new Set([fp]) });
+    const context = ctx();
     const res = await fileEditTool.execute(
       { file_path: fp, old_string: 'hello world', new_string: 'goodbye world' },
       context,
@@ -493,7 +489,7 @@ describe('fileReadTool – text reads', () => {
     const fp = path.join(tmpDir, 'plain.txt');
     const body = Array.from({ length: 60 }, (_, i) => `content line number ${i} with enough text to pad`).join('\n');
     fs.writeFileSync(fp, body);
-    const context = ctx({ filesRead: new Set() });
+    const context = ctx();
     const res = await fileReadTool.execute({ file_path: fp }, context);
     assert.equal(res.isError, undefined);
     assert.ok(res.output.includes('[type: text'));

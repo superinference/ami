@@ -68,7 +68,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
     const file = writeAmiConfig('{ "model": "gpt" }');
     const result = await fileEditTool.execute(
       { file_path: file, old_string: '"model": "gpt"', new_string: '"model": "gpt", "maxTurns": "lots"' },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     assert.equal(result.isError, true, result.output);
     assert.match(result.output, /settings schema/);
@@ -81,7 +81,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
     const file = writeAmiConfig('{ "model": "gpt" }');
     const result = await fileEditTool.execute(
       { file_path: file, old_string: '"model": "gpt"', new_string: '"model": "gpt", "modle": "x"' },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     assert.equal(result.isError, true, result.output);
     assert.match(result.output, /unknown key "modle"/);
@@ -97,7 +97,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
         old_string: '"model": "gpt"',
         new_string: '"model": "gpt", "env": { "X": "1" }, "maxTurns": "bad"',
       },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     assert.equal(result.isError, true, result.output);
     assert.match(result.output, /do not modify the "env" block/);
@@ -107,7 +107,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
     const file = writeAmiConfig('{ "model": "gpt" }');
     const result = await fileEditTool.execute(
       { file_path: file, old_string: '"model": "gpt"', new_string: '"model": "claude", "maxTurns": 5' },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     assert.ok(!result.isError, result.output);
     assert.match(fs.readFileSync(file, 'utf-8'), /"maxTurns": 5/);
@@ -117,7 +117,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
     const file = writeAmiConfig('{ "maxTurns": "bad" }');
     const result = await fileEditTool.execute(
       { file_path: file, old_string: '"maxTurns": "bad"', new_string: '"maxTurns": "still-bad", "modle": "x"' },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     // Schema guard must NOT block a file that was already invalid.
     assert.ok(!result.isError, result.output);
@@ -128,7 +128,7 @@ describe('fileEditTool – AMI settings-file schema validation', () => {
     fs.writeFileSync(file, '{ "model": "gpt" }');
     const result = await fileEditTool.execute(
       { file_path: file, old_string: '"model": "gpt"', new_string: '"model": "gpt", "maxTurns": "bad"' },
-      ctx({ filesRead: new Set([file]) }),
+      ctx(),
     );
     // Plain config.json (not AMI settings) is only JSON-syntax-checked.
     assert.ok(!result.isError, result.output);

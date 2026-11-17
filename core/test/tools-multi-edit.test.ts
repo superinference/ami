@@ -239,7 +239,7 @@ describe('fileEditTool – relative paths', () => {
 // ---------------------------------------------------------------------------
 
 describe('fileEditTool – safety guards', () => {
-  it('errors on a multi-edit of a non-empty file that was not read first', async () => {
+  it('auto-reads and allows edit when file not in filesRead', async () => {
     const file = path.join(tmpDir, 'guarded.ts');
     fs.writeFileSync(file, 'content\n');
     const filesRead = new Set<string>();
@@ -249,10 +249,8 @@ describe('fileEditTool – safety guards', () => {
       edits: [{ old_string: 'content', new_string: 'changed' }],
     }, ctx({ filesRead }));
 
-    // Read-before-edit guard: an edits[] batch must not blind-mutate an unread file.
-    assert.ok(result.isError, 'editing an unread file must error');
-    assert.ok(result.output.includes('must file_read'));
-    assert.equal(fs.readFileSync(file, 'utf-8'), 'content\n', 'file must be untouched');
+    assert.ok(!result.isError, 'auto-read must allow edit without prior file_read');
+    assert.ok(filesRead.has(file), 'auto-read must track file in filesRead');
   });
 
   it('allows edit when file is in filesRead', async () => {

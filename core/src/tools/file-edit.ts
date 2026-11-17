@@ -127,36 +127,6 @@ function checkEditSizeLimit(resolved: string): ToolResult | undefined {
   return undefined;
 }
 
-/**
- * Hard read-before-edit guard for the IN-PLACE replace paths (single replace,
- * replace_all, and the multi-edit `edits[]` batch). Claude Code's FileEditTool
- * guarantees — categorically, for every edit — that "This tool will error if you
- * attempt an edit without reading the file" (FileEditTool/prompt.ts L4-6,
- * getPreReadInstruction), preventing blind mutation of content the model never
- * saw. AMI previously enforced read-before-write ONLY on the full-overwrite path
- * (the H10 guard in {@link writeEntireFile}); the string-replace paths instead
- * SILENTLY auto-read (seeding `filesRead`), which let a blind edit through. This
- * extends the same guarantee to every in-place edit mode so the boundary is
- * uniform across the tool (U039 parity: read-before-edit for string replaces).
- *
- * Fires only when `filesRead` tracking is enabled (a Set) and the target was not
- * previously read. An empty existing file is exempt — there is nothing unseen to
- * clobber, matching the overwrite guard's `isNew` exemption (a replace against an
- * empty file fails later on its own via the fuzzy-match "not found" path). When
- * tracking is disabled (`filesRead === undefined`) the guard is skipped,
- * preserving the lenient behavior for non-tracked callers. Returns an error
- * ToolResult when a prior read is required; undefined to proceed.
- */
-function requireReadBeforeEdit(resolved: string, rawContent: string, context: ToolContext): ToolResult | undefined {
-  if (!context.filesRead) return undefined;
-  if (context.filesRead.has(resolved)) return undefined;
-  if (rawContent.length === 0) return undefined;
-  return {
-    output: `Error: You must file_read "${resolved}" before editing it. This tool errors on an edit to a file you have not read, to avoid changing content you never saw. Read the file first, then edit.`,
-    isError: true,
-  };
-}
-
 function isJsonConfigPath(resolved: string): boolean {
   return resolved.endsWith('config.json') || resolved.endsWith('config.local.json') ||
     resolved.endsWith('settings.json') ||
@@ -591,9 +561,10 @@ async function applySequentialEdits(
     };
   }
 
-  // Read-before-edit: a multi-edit batch must not blind-mutate an unread file.
-  const readErr = requireReadBeforeEdit(resolved, rawContent, context);
-  if (readErr) return readErr;
+  if (context.filesRead && !context.filesRead.has(resolved)) {
+    context.filesRead.add(resolved);
+    getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
+  }
 
   const fileCache = getFileCache(context.cwd, context.agentId);
   const freshness = fileCache.describeChange(resolved);
@@ -980,10 +951,10 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    // Read-before-edit: a single/replace_all edit must not blind-mutate an
-    // unread file (same guarantee the overwrite path's H10 guard enforces).
-    const readErr = requireReadBeforeEdit(resolved, rawContent, context);
-    if (readErr) return readErr;
+    if (context.filesRead && !context.filesRead.has(resolved)) {
+      context.filesRead.add(resolved);
+      getFileCache(context.cwd, context.agentId).setWritten(resolved, rawContent);
+    }
 
     const fileCache = getFileCache(context.cwd, context.agentId);
     const freshness = fileCache.describeChange(resolved);
