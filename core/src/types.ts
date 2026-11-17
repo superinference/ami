@@ -922,7 +922,8 @@ export const ENGINE_EVENT_TYPES = [
   'checkpoint_created', 'analytics_summary', 'superinference_state',
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
-  'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update', 'done',
+  'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
+  'mcp_resource_update', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1033,6 +1034,12 @@ export type EngineEvent =
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: 'text' | 'thinking' | 'tool'; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string }
   | { type: 'subagent_result'; nodeId: string; depth: number; success: boolean; summary: string; tokens: number; status?: TaskTerminalStatus; toolUses?: number; durationMs?: number }
   | { type: 'todo_update'; todos: TodoItemView[] }
+  /** An MCP server pushed a resource-update (`notifications/resources/updated`) or
+   *  resource-list-change (`notifications/resources/list_changed`) notification.
+   *  Carries server provenance so the user has an audit trail of WHICH server
+   *  changed WHAT (and why, for a list change). Parity: Claude's
+   *  `UserResourceUpdateMessage`. `uri` is empty for a whole-list change. */
+  | { type: 'mcp_resource_update'; server: string; uri: string; reason?: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**

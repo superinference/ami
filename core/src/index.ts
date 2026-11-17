@@ -43,6 +43,8 @@ export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES
 export type { McpTransport, McpUrlElicitation } from './mcp/client';
 export { MCP_SERVER_STATES, matchMcpAutoAllow, isValidCallbackPort, resolveMcpOAuthRedirect } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
+export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './mcp/resource-update-notice';
+export type { McpResourceUpdateNotice, McpResourceNoticeBuffer, McpResourceEventSource } from './mcp/resource-update-notice';
 export { getMcpServerLogPath, logMcpError, logMcpDebug, sanitizeMcpLogSegment, mcpLogDateStamp } from './mcp/log-sink';
 export { classifyMcpToolForCollapse, normalizeCollapseToolName } from './mcp/classify-collapse';
 export type { McpCollapseClass } from './mcp/classify-collapse';

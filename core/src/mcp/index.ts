@@ -7,6 +7,8 @@ export type {
 } from './client';
 export { McpManager, findMcpConfigPaths, findMcpConfigScopes, mcpScopeLabel, MCP_SCOPE_ORDER, resolveDisabledMcpServers } from './manager';
 export type { McpServerConfig, McpServerStatus, McpConfigError, McpServerScope } from './manager';
+export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './resource-update-notice';
+export type { McpResourceUpdateNotice, McpResourceNoticeBuffer, McpResourceEventSource } from './resource-update-notice';
 export {
   generatePkce, generateState, parseWwwAuthenticate, wellKnown,
   discoverProtectedResource, discoverAuthServer, registerClient,
