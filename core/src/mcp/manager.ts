@@ -426,6 +426,12 @@ export interface McpServerConfig {
   requestTimeout?: number;
   connectTimeout?: number;
   autoConnect?: boolean;
+  /**
+   * When false, disable the client's automatic reconnect retry loop for this
+   * server (a caller/supervisor owns recovery). Defaults to true. Parity with
+   * Claude Code's `WebSocketTransportOptions.autoReconnect`.
+   */
+  autoReconnect?: boolean;
   transport?: 'stdio' | 'sse' | 'http' | 'ws' | 'wss';
   url?: string;
   containerConfig?: ContainerConfig;
@@ -1164,6 +1170,7 @@ export class McpManager extends EventEmitter {
       headers: config.headers ? resolveEnvVars(config.headers) : undefined,
       requestTimeout: config.requestTimeout ?? (config.containerConfig ? 60000 : 30000),
       connectTimeout: config.connectTimeout ?? (config.containerConfig ? 120000 : getMcpConnectTimeout()),
+      autoReconnect: config.autoReconnect,
       rootPaths: this.rootPaths,
       oauth,
     });
@@ -1181,8 +1188,12 @@ export class McpManager extends EventEmitter {
       // network stream should recover immediately, not wait for the next 30s
       // health-check ping (which skips non-ready clients). Guarded so an intentional
       // teardown (stop/remove/disable) or a replaced client never reconnects.
-      const t = this.configs.get(name)?.transport;
+      const cfg = this.configs.get(name);
+      const t = cfg?.transport;
+      // A server pinned autoReconnect:false owns its own recovery — never auto-drive
+      // a reconnect for it (parity with Claude's autoReconnect=false → go to closed).
       if (isRemoteMcpTransport(t)
+        && cfg?.autoReconnect !== false
         && !this._intentionalDisconnect.has(name)
         && this.clients.get(name) === client
         && !this.isDisabled(name)) {

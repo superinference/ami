@@ -5,6 +5,40 @@ import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { findExecutable } from '../utils/which';
+import { getMTLSConfig, getSecureTLSConnectOptions } from '../utils/mtls';
+
+/**
+ * TLS connect-options handed to a WebSocket factory for a `wss://` MCP server —
+ * client cert/key/passphrase/CA plus a secure protocol floor (parity with Claude
+ * Code's `getWebSocketTLSOptions` returning `tls.ConnectionOptions`). The runtime
+ * global `WebSocket` ignores the extra argument; a `ws`-package-backed factory
+ * (injected by a host that needs mTLS) applies it so mutual-TLS / custom-CA trust
+ * reaches WebSocket transports, not just HTTP/SSE.
+ */
+export interface McpWebSocketTlsOptions {
+  cert?: string;
+  key?: string;
+  passphrase?: string;
+  ca?: string;
+  minVersion: 'TLSv1' | 'TLSv1.1' | 'TLSv1.2' | 'TLSv1.3';
+}
+
+/**
+ * Resolve the TLS connect options for a WebSocket MCP connection. A `wss://` URL
+ * yields the mTLS material + a secure protocol floor (always at least
+ * `{ minVersion }`), so a `ws`-package-backed factory presents the client cert and
+ * trusts a private CA exactly like the HTTP/SSE transports. A plaintext `ws://`
+ * URL carries no TLS, so this returns `undefined`. Parity with Claude Code's
+ * `getWebSocketTLSOptions` (utils/mtls.ts), reusing AMI's single mTLS source
+ * (`getMTLSConfig`/`getSecureTLSConnectOptions`) rather than a parallel loader.
+ */
+export function resolveMcpWebSocketTlsOptions(
+  url: string,
+  env: NodeJS.ProcessEnv = process.env,
+): McpWebSocketTlsOptions | undefined {
+  if (!url.startsWith('wss')) return undefined;
+  return getSecureTLSConnectOptions(getMTLSConfig(env), env);
+}
 
 export const MCP_TRANSPORTS = ['stdio', 'sse', 'http', 'ws', 'wss'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
@@ -23,7 +57,7 @@ export interface McpWebSocketLike {
   addEventListener(type: string, listener: (ev: unknown) => void): void;
   removeEventListener(type: string, listener: (ev: unknown) => void): void;
 }
-export type McpWebSocketFactory = (url: string) => McpWebSocketLike;
+export type McpWebSocketFactory = (url: string, tlsOptions?: McpWebSocketTlsOptions) => McpWebSocketLike;
 
 /** `WebSocket.OPEN` readyState (1) — same numeric value in every runtime. */
 export const MCP_WS_OPEN = 1;
@@ -138,6 +172,39 @@ export const DEFAULT_MCP_TOOL_HEARTBEAT_INTERVAL_MS = 30000;
 export function getMcpToolHeartbeatIntervalMs(): number {
   const n = parseInt(process.env.MCP_TOOL_HEARTBEAT_INTERVAL_MS ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_MCP_TOOL_HEARTBEAT_INTERVAL_MS;
+}
+
+/**
+ * Default interval (ms) between keep-alive pings on a `ws`/`wss` MCP transport
+ * (parity with Claude Code's WebSocketTransport DEFAULT_KEEPALIVE_INTERVAL, 5min).
+ * A WebSocket behind an idle-timeout proxy/load-balancer is silently dropped after
+ * minutes of inactivity; a periodic MCP `ping` keeps the path warm AND doubles as
+ * dead-connection detection (a failed ping tears the socket down so the normal
+ * close→reconnect path runs). Cleared the instant the socket closes/disconnects.
+ */
+export const DEFAULT_MCP_WS_KEEPALIVE_INTERVAL_MS = 300000;
+
+/**
+ * Resolve the WebSocket keep-alive ping interval. `MCP_WS_KEEPALIVE_INTERVAL_MS`
+ * (positive integer) tunes how often the keep-alive ping fires; absent/invalid
+ * falls back to {@link DEFAULT_MCP_WS_KEEPALIVE_INTERVAL_MS}. A tuning knob, no
+ * trust boundary crossed.
+ */
+export function getMcpWsKeepaliveIntervalMs(): number {
+  const n = parseInt(process.env.MCP_WS_KEEPALIVE_INTERVAL_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MCP_WS_KEEPALIVE_INTERVAL_MS;
+}
+
+/**
+ * Env gate that SUPPRESSES the WebSocket keep-alive ping when set truthy (parity
+ * with Claude Code's `isEnvTruthy(CLAUDE_CODE_REMOTE)` skipping keepalive frames
+ * because an outer session-activity heartbeat already covers idle-timeout). When a
+ * host embeds AMI behind its own heartbeat it sets `AMI_REMOTE=1` so the transport
+ * does not add a redundant ping. Truthy = `1`/`true`/`yes`/`on` (case-insensitive).
+ */
+export function isMcpWsKeepaliveSuppressed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.AMI_REMOTE?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 export function boundMcpResponse(
@@ -440,6 +507,10 @@ export function validateMcpNotificationParams(
       if (!isObj(params) || !isTokenId(params.requestId))
         return { ok: false, error: `${method}: params.requestId must be a string or number` };
       return { ok: true };
+    case 'notifications/elicitation/complete':
+      if (!isObj(params) || typeof params.elicitationId !== 'string' || params.elicitationId.length === 0)
+        return { ok: false, error: `${method}: params.elicitationId must be a non-empty string` };
+      return { ok: true };
     default:
       return { ok: true };
   }
@@ -662,6 +733,16 @@ export class McpClient extends EventEmitter {
 
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  /**
+   * When false, {@link reconnect} does NOT run its automatic retry loop — it tears
+   * the connection down and throws at once so a caller that owns its own recovery
+   * (e.g. an external supervisor/poll loop) is not fighting a second reconnect
+   * driver. Defaults to true. Parity with Claude Code's
+   * `WebSocketTransportOptions.autoReconnect`.
+   */
+  private readonly autoReconnectEnabled: boolean;
+  /** Keep-alive ping timer for a live `ws`/`wss` transport (null otherwise). */
+  private wsKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Wall-clock give-up budget (ms) for the client-level {@link reconnect} loop. */
   private readonly reconnectGiveUpMs: number;
   /**
@@ -746,9 +827,17 @@ export class McpClient extends EventEmitter {
      */
     reconnectGiveUpMs?: number;
     /**
+     * When false, disable the automatic {@link reconnect} retry loop (a caller with
+     * its own recovery mechanism opts out). Defaults to true. Parity with Claude
+     * Code's `WebSocketTransportOptions.autoReconnect`.
+     */
+    autoReconnect?: boolean;
+    /**
      * Factory for the WebSocket used by the `ws`/`wss` transport. Defaults to the
      * runtime's global `WebSocket` (Node 20+/Bun/undici). Injectable so tests can
-     * drive the transport without a real socket.
+     * drive the transport without a real socket. Receives resolved
+     * {@link McpWebSocketTlsOptions} for a `wss://` URL so a `ws`-package factory can
+     * apply mTLS/custom-CA trust.
      */
     webSocketFactory?: McpWebSocketFactory;
   }) {
@@ -763,6 +852,7 @@ export class McpClient extends EventEmitter {
     this.oauth = options.oauth;
     this.httpStreamLivenessTimeout = options.httpStreamLivenessTimeout ?? HTTP_STREAM_LIVENESS_TIMEOUT_MS;
     this.reconnectGiveUpMs = options.reconnectGiveUpMs ?? HTTP_STREAM_RECONNECT_GIVE_UP_MS;
+    this.autoReconnectEnabled = options.autoReconnect ?? true;
     this.webSocketFactory = options.webSocketFactory;
   }
 
@@ -790,6 +880,8 @@ export class McpClient extends EventEmitter {
   }
   /** The retained tail of the stdio server's stderr (most recent lines last). */
   get stderrTail(): string[] { return [...this._stderrTail]; }
+  /** False when the automatic {@link reconnect} retry loop is disabled (caller-owned recovery). */
+  get autoReconnect(): boolean { return this.autoReconnectEnabled; }
 
   /**
    * Resolve how the stdio server process is launched. When
@@ -901,7 +993,11 @@ export class McpClient extends EventEmitter {
       this._state = 'error';
       throw new Error('MCP WebSocket transport unavailable: no global WebSocket in this runtime');
     }
-    const ws = this.webSocketFactory ? this.webSocketFactory(url) : new (factory as new (u: string) => McpWebSocketLike)(url);
+    // Resolve TLS connect options (client cert/CA + secure floor) for a wss:// URL
+    // so a ws-package-backed factory applies mTLS exactly like the HTTP transports;
+    // the runtime global WebSocket ignores the extra argument.
+    const tlsOptions = resolveMcpWebSocketTlsOptions(url);
+    const ws = this.webSocketFactory ? this.webSocketFactory(url, tlsOptions) : new (factory as new (u: string) => McpWebSocketLike)(url);
     this.ws = ws;
 
     // Phase 1 — wait for the socket to open (bounded by the connect timeout).
@@ -944,6 +1040,41 @@ export class McpClient extends EventEmitter {
       this.disconnect();
       throw err;
     }
+    // The socket is live + handshaked: start the keep-alive ping so an idle-timeout
+    // proxy/LB does not silently drop it (and a failed ping forces a reconnect).
+    this.startWsKeepalive();
+  }
+
+  /**
+   * Start a periodic keep-alive ping on the live WebSocket transport. Each tick
+   * sends an MCP `ping` request (bounded by the request timeout) and on failure
+   * tears the socket down so the normal close→reconnect path runs. Suppressed when
+   * {@link isMcpWsKeepaliveSuppressed} (an outer heartbeat already covers idle
+   * timeout). The interval is unref'd so it never keeps the event loop alive.
+   */
+  private startWsKeepalive(): void {
+    this.stopWsKeepalive();
+    if (isMcpWsKeepaliveSuppressed()) return;
+    const timer = setInterval(() => {
+      if (this._state !== 'ready' || this.ws?.readyState !== MCP_WS_OPEN) return;
+      this.ping().catch(() => {
+        // A failed keep-alive ping means the socket is dead; close it so the
+        // close handler's reconnect path runs instead of pinging into the void.
+        const sock = this.ws;
+        this.ws = null;
+        if (sock) { try { sock.close(); } catch { /* already gone */ } }
+      });
+    }, getMcpWsKeepaliveIntervalMs());
+    timer.unref?.();
+    this.wsKeepaliveTimer = timer;
+  }
+
+  /** Stop the WebSocket keep-alive ping timer (idempotent). */
+  private stopWsKeepalive(): void {
+    if (this.wsKeepaliveTimer) {
+      clearInterval(this.wsKeepaliveTimer);
+      this.wsKeepaliveTimer = null;
+    }
   }
 
   /** Route one inbound WebSocket frame (a complete JSON-RPC message or batch). */
@@ -968,6 +1099,7 @@ export class McpClient extends EventEmitter {
   private handleWsClose(): void {
     if (this.hasTriggeredClose) return;
     this.hasTriggeredClose = true;
+    this.stopWsKeepalive();
     const uptimeMs = this.uptime;
     this._state = 'disconnected';
     this.ws = null;
@@ -1352,6 +1484,12 @@ export class McpClient extends EventEmitter {
 
   async reconnect(): Promise<void> {
     this.disconnect();
+    // autoReconnect disabled: the caller owns recovery, so do not run the retry
+    // loop — fail fast after the teardown above (parity with Claude Code going
+    // straight to 'closed' when WebSocketTransportOptions.autoReconnect is false).
+    if (!this.autoReconnectEnabled) {
+      throw new Error('MCP automatic reconnection is disabled (autoReconnect=false)');
+    }
     // Our own teardown above flips the abort flag; clear it so THIS run can retry.
     this.reconnectAborted = false;
     const startTime = Date.now();
@@ -1452,6 +1590,7 @@ export class McpClient extends EventEmitter {
     if (this.hasTriggeredClose && !this.process) return;
     const wasConnected = this._state === 'ready' || this._state === 'connecting';
     this.hasTriggeredClose = true;
+    this.stopWsKeepalive();
     this.closeHttpStream();
 
     // Tear down a WebSocket transport's live socket.
@@ -2309,6 +2448,16 @@ export class McpClient extends EventEmitter {
     if (notification.method === 'notifications/prompts/list_changed') {
       this._prompts = [];
       this.emit('prompts-changed');
+    }
+
+    // Out-of-band URL elicitation completed: the server confirms the user finished
+    // the browser step for a `-32042`/url-mode elicitation. Surface the id so a
+    // frontend can flip the matching waiting-state prompt to completed (parity with
+    // Claude Code's ElicitationCompleteNotificationSchema handler setting
+    // `completed: true` on the queued elicitation).
+    if (notification.method === 'notifications/elicitation/complete') {
+      const params = notification.params as { elicitationId?: string } | undefined;
+      if (params?.elicitationId) this.emit('elicitation-complete', params.elicitationId);
     }
 
     if (notification.method === 'notifications/message') {
