@@ -1614,7 +1614,28 @@ const MAX_AUTO_APPROVE_LENGTH = 10_000;
  */
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 
+/**
+ * Public entry point for the bash-command safety gate. Wraps the full validator
+ * battery in a FAIL-CLOSED try/catch: if any validator throws — a type-unsafe
+ * caller passing a non-string, stack exhaustion on pathologically-nested syntax,
+ * or any other unexpected error — the command is BLOCKED rather than letting the
+ * exception propagate and skip the gate entirely. A thrown validator must never
+ * be a path to auto-approval. Mirrors Claude Code's parser fail-closed contract
+ * (utils/bash/parser.ts, utils/bash/bashParser.ts: return null / block on any
+ * throw instead of treating an unparseable command as safe).
+ */
 export function validateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform }): SecurityCheckResult {
+  try {
+    return evaluateBashSecurity(command, options);
+  } catch {
+    return fail(
+      CHECK_IDS.VALIDATOR_EXCEPTION,
+      'Command could not be safely analyzed (the safety validators threw) — blocked fail-closed',
+    );
+  }
+}
+
+function evaluateBashSecurity(command: string, options?: { detachedMode?: boolean; worktreeIsolation?: boolean; relaxDetachedValidators?: boolean; platform?: NodeJS.Platform }): SecurityCheckResult {
   // Measure the UTF-8 BYTE length, not `.length` (UTF-16 code units): a BMP
   // character (CJK etc.) is one code unit but up to three UTF-8 bytes, so
   // `.length` under-reports by up to 3× and would let a long multibyte command
@@ -3383,6 +3404,35 @@ export function detectPersistenceCommands(command: string): { blocked: boolean; 
     return { blocked: true, reason: 'Register/New/Set-ScheduledTask installs or modifies a Windows scheduled task — potential persistence vector' };
   }
 
+  // --- SysV / OpenRC init-service registration ---
+  // Parallel to the systemctl-enable guard above, the non-systemd init managers
+  // register a service to auto-start at boot: `update-rc.d svc defaults`
+  // (Debian), `chkconfig svc on` (RHEL), `rc-update add svc` (OpenRC/Alpine).
+  // The removal/disable forms (remove, off, del) are cleanup and stay allowed.
+  if (/(?:^|[\s;|&(])update-rc\.d\b/.test(stripped) && !/\b(?:remove|disable)\b/.test(stripped)) {
+    return { blocked: true, reason: 'update-rc.d registers a boot-time init service — potential persistence vector' };
+  }
+  if (/(?:^|[\s;|&(])chkconfig\b[^;|&\n]*\son\b/.test(stripped)) {
+    return { blocked: true, reason: 'chkconfig <service> on enables a boot-time service — potential persistence vector' };
+  }
+  if (/(?:^|[\s;|&(])rc-update\s+add\b/.test(stripped)) {
+    return { blocked: true, reason: 'rc-update add registers an OpenRC boot-time service — potential persistence vector' };
+  }
+
+  // --- systemd transient units & user-service lingering ---
+  // `systemd-run` launches an arbitrary command as a transient systemd unit
+  // (optionally scheduled via --on-calendar/--on-active), escaping the agent's
+  // process tree and establishing a persistent/scheduled task. `loginctl
+  // enable-linger` lets a user's systemd services keep running (and auto-start)
+  // with no active login — a persistence enabler. The read-only/disable forms
+  // (loginctl show/disable-linger) stay allowed.
+  if (/(?:^|[\s;|&(])systemd-run\b/.test(stripped)) {
+    return { blocked: true, reason: 'systemd-run launches a transient (optionally scheduled) systemd unit — potential persistence vector' };
+  }
+  if (/(?:^|[\s;|&(])loginctl\s+enable-linger\b/.test(stripped)) {
+    return { blocked: true, reason: 'loginctl enable-linger keeps user services running without an active login — potential persistence vector' };
+  }
+
   return { blocked: false };
 }
 
@@ -3453,8 +3503,23 @@ const CONTAINER_RUNTIME_RE = /\b(docker|podman)\b/;
 // eslint-disable-next-line security/detect-unsafe-regex -- \s+ then \b are disjoint lookahead anchors
 const CONTAINER_RUN_RE = /\b(docker|podman)\s+(?:container\s+)?run\b/;
 
+// `nsenter` joins another process's namespaces. The canonical container→host
+// escape is `nsenter -t 1 -m -p …` (enter PID 1's mount/pid namespaces on the
+// host), and more generally targeting any process (`-t`/`--target`) or entering
+// a specific namespace (`-m`/`-u`/`-i`/`-n`/`-p`/`-U`/`-C`/`-T` and long forms)
+// breaks the sandbox boundary. It has no benign use for an autonomous coding
+// agent. (Claude's readOnlyValidation flags the same setns/unshare/mount
+// namespace operations as never-read-only — readOnlyValidation.ts L1108.)
+const NSENTER_ESCAPE_RE =
+  /\bnsenter\b[^\n]*?\s(?:-t\b|--target\b|--(?:mount|uts|ipc|net|pid|user|cgroup|time)\b|--all\b|-a\b)/;
+
 export function detectContainerEscape(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
+
+  // nsenter namespace entry — a container→host escape independent of docker/podman.
+  if (/\bnsenter\b/.test(stripped) && NSENTER_ESCAPE_RE.test(stripped)) {
+    return { blocked: true, reason: 'nsenter joins another process/namespace (e.g. the host PID 1 namespaces) — a container-to-host escape' };
+  }
 
   // Only check docker/podman commands
   if (!CONTAINER_RUNTIME_RE.test(stripped)) return { blocked: false };
@@ -3579,11 +3644,17 @@ export function detectBase64ShellPipe(command: string): { blocked: boolean; reas
 export function detectPrivilegeEscalation(command: string): { blocked: boolean; reason?: string } {
   const stripped = stripInvisibleUnicode(command);
 
-  // --- sudo ---
-  // Block any use of sudo — the agent should never escalate privileges.
-  // Match sudo as a standalone command (not part of other words like "pseudonym").
-  if (/(?:^|[\s;|&])sudo(?:\s|$)/.test(stripped)) {
-    return { blocked: true, reason: 'sudo usage blocked — agent must not escalate privileges' };
+  // --- privilege-escalation front-ends (sudo and its alternatives) ---
+  // The agent must never escalate privileges. Block sudo AND its modern/
+  // alternative front-ends, each matched as a standalone command (not part of
+  // another word like "pseudonym" or "menu"). Parity with Claude Code's
+  // privilege-escalation prefix denylist (BashTool/bashPermissions.ts blocks
+  // `sudo`, `doas`, `pkexec` from ever being a permission prefix). `run0`
+  // (systemd's sudo successor) and `su` are blocked as the same root-escalation
+  // vector — an additive superset hardening beyond Claude's three.
+  const privEsc = /(?:^|[\s;|&(])(sudo|doas|pkexec|run0|su)(?=\s|$)/.exec(stripped);
+  if (privEsc) {
+    return { blocked: true, reason: `${privEsc[1]} usage blocked — agent must not escalate privileges` };
   }
 
   // --- chmod: setuid/setgid bits ---
