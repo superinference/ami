@@ -3,6 +3,29 @@ import { isTerminalTaskStatus } from '../process-manager';
 import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
 import { isTeammatesEnabled } from './tool-gates';
 import { processSandboxPermissionResponse } from './sandbox-permission-registry';
+import { log as coreLog } from '../logger';
+
+// --- Gated lifecycle diagnostic trace ---------------------------------------
+// The teammate mailbox is a multi-agent coordination surface where "my message
+// never arrived" / "the shutdown wasn't re-sent" failures are otherwise invisible.
+// Mirrors Claude Code's InProcessBackend `logForDebugging('[InProcessBackend] ...')`
+// opt-in lifecycle trace (utils/swarm/backends/InProcessBackend.ts): every delivery
+// and handshake transition emits one terse, prefixed line through AMI's CANONICAL
+// logger (reused — not a second logging facility, per the no-duplication rule) at
+// VERBOSE level, so it is OFF by default (the logger's default min level is 'debug')
+// and only surfaces when a developer/CI sets AMI_DEBUG_LOG_LEVEL=verbose (optionally
+// narrowed with AMI_DEBUG_COMPONENTS=teammate-mailbox). No-op cost beyond the
+// logger's leading level check when disabled.
+const MAILBOX_TRACE_COMPONENT = 'teammate-mailbox';
+
+/**
+ * Emit one gated, verbose lifecycle-trace line for a mailbox transition. Always
+ * routes through the canonical {@link coreLog} (which performs the level/component
+ * gating); callers never guard it, so each transition is a single terse statement.
+ */
+function traceMailbox(event: string, data?: Record<string, unknown>): void {
+  coreLog(MAILBOX_TRACE_COMPONENT, event, data, 'verbose');
+}
 
 interface AgentMessage {
   /**
@@ -1497,6 +1520,7 @@ function enqueue(to: string, msg: AgentMessage): void {
       const [waiter] = waiters.splice(idx, 1);
       if (!msg.id) { msg.id = nextMessageId(); }
       waiter.resolve(msg);
+      traceMailbox('deliver', { to, from: msg.from, source: msg.source, via: 'waiter' });
       notifyMailbox(to);
       return;
     }
@@ -1504,6 +1528,7 @@ function enqueue(to: string, msg: AgentMessage): void {
   const box = mailboxes.get(to) ?? [];
   appendCapped(box, msg);
   mailboxes.set(to, box);
+  traceMailbox('deliver', { to, from: msg.from, source: msg.source, via: 'queue', depth: box.length });
   notifyMailbox(to);
 }
 
@@ -1832,6 +1857,7 @@ export const sendMessageTool: ToolDefinition = {
           // purge/reset.
           const existing = outstandingShutdowns.get(toRaw);
           if (existing) {
+            traceMailbox('shutdown skipped (already requested)', { to: toRaw, id: existing });
             return { output: `Shutdown already requested for ${toRaw} (id: ${existing}) — not re-sent (idempotent).` };
           }
           // Auto-generate a structured request id when the model omits one, and
@@ -1846,6 +1872,7 @@ export const sendMessageTool: ToolDefinition = {
           // Open the handshake: record the outstanding request keyed by the bare
           // teammate name so a re-send is guarded until the teammate responds.
           outstandingShutdowns.set(toRaw, reqId);
+          traceMailbox('shutdown requested', { to: toRaw, id: reqId, from });
           return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]`, metadata: { ...requestCorrelation(reqId, toRaw) } };
         }
         case 'shutdown_response': {
@@ -2081,6 +2108,7 @@ export const sendMessageTool: ToolDefinition = {
       if (recipients.length === 0) {
         return { output: 'No teammates to broadcast to (no other agents are reachable).' };
       }
+      traceMailbox('broadcast', { from, recipients: recipients.length });
       return { output: `Broadcast sent to ${recipients.length} agent(s): ${recipients.join(', ')}` };
     }
 
