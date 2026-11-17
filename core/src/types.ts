@@ -1296,6 +1296,15 @@ export interface EngineConfig {
   /** Maximum transient error retries (connection resets, 502/503/529). Default: 5.
    *  Env: SUPERINFERENCE_MAX_TRANSIENT_RETRIES. */
   maxTransientRetries?: number;
+  /** Number of CONSECUTIVE capacity-overload errors (HTTP 503/529, "overloaded")
+   *  the engine rides out on the SAME model before switching to a fallback model.
+   *  An overload is usually transient, so switching models on the first 529 is
+   *  premature; the engine retries up to this many times first, then falls back.
+   *  A genuine model-unavailable (e.g. `model_not_found`) is unaffected and still
+   *  falls back immediately. Default: 3. Env: SUPERINFERENCE_MAX_529_RETRIES
+   *  (CLAUDE_CODE_MAX_529_RETRIES accepted as an alias). Parity: Claude Code's
+   *  MAX_529_RETRIES threshold before FallbackTriggeredError. */
+  max529RetriesBeforeFallback?: number;
   /** Maximum delay cap for transient error backoff, in ms. Default: 30 000 (30s).
    *  Env: SUPERINFERENCE_TRANSIENT_RETRY_MAX_DELAY_MS. */
   transientRetryMaxDelayMs?: number;

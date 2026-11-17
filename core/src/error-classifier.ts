@@ -187,6 +187,16 @@ export interface ClassifiedError {
   shouldFallback: boolean;
   suggestedDelay?: number;
   /**
+   * True only for a transient capacity OVERLOAD (HTTP 503/529, "overloaded",
+   * "capacity") — distinct from a genuine model-unavailable (e.g. `model_not_found`),
+   * which is also `model_unavailable`/`shouldFallback` but is NOT an overload.
+   * An overload usually clears on its own, so the engine retries the SAME model a
+   * few times (config `max529RetriesBeforeFallback`, default 3) before switching to
+   * a fallback model, instead of switching on the first 529. Parity: Claude Code's
+   * MAX_529_RETRIES consecutive-529 threshold before FallbackTriggeredError.
+   */
+  overloaded?: boolean;
+  /**
    * For context_overflow: how many tokens the prompt is over the limit, parsed
    * from the server's authoritative "… N tokens > M maximum" message. Lets
    * reactive compaction jump past multiple groups in one retry.
@@ -692,7 +702,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
         return { category: 'server_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 3000 };
       case 503:
       case 529:
-        return { category: 'model_unavailable', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000 };
+        return { category: 'model_unavailable', message: msg, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000, overloaded: true };
       default:
         // Generic status fallback: any other 5xx (504 gateway timeout, 507/508,
         // Cloudflare 520-527, 599, …) is a transient server/gateway failure —
@@ -858,16 +868,20 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
     return { category: 'content_filter', message: errorString, retryable: false, shouldCompact: false, shouldFallback: false };
   }
 
-  // Model unavailable / overloaded — retryable, should try fallback model
-  if (
+  // Model unavailable / overloaded — retryable, should try fallback model. A
+  // transient capacity overload (503/529/"overloaded"/"capacity") is flagged
+  // `overloaded` so the engine retries the same model a few times before switching;
+  // a genuine `model_not_found` is NOT an overload and still falls back immediately.
+  const overloadSignal =
     /\bHTTP\s+503\b/i.test(errorString) ||
     /\bHTTP\s+529\b/i.test(errorString) ||
     lower.includes('overloaded') ||
-    lower.includes('capacity') ||
+    lower.includes('capacity');
+  const modelNotFound =
     lower.includes('model_not_found') ||
-    lower.includes('model not found')
-  ) {
-    return { category: 'model_unavailable', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000 };
+    lower.includes('model not found');
+  if (overloadSignal || modelNotFound) {
+    return { category: 'model_unavailable', message: errorString, retryable: true, shouldCompact: false, shouldFallback: true, suggestedDelay: 10000, ...(overloadSignal ? { overloaded: true } : {}) };
   }
 
   // Server error — retryable, may benefit from fallback.
