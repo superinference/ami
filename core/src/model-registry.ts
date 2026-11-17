@@ -122,6 +122,16 @@ export function detectProvider(config: ProviderConfig): string {
   // Env-based detection for vertex
   if (process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.CLAUDE_CODE_USE_VERTEX) return 'anthropic-vertex';
 
+  // Explicit opt-in toggle for the Azure/Microsoft Foundry route (parity with Claude
+  // Code's getAPIProvider CLAUDE_CODE_USE_FOUNDRY, utils/model/providers.ts:L11-L12).
+  // AMI represents Foundry as the `azure-openai` provider — model-capabilities'
+  // getApiProviderClass maps azure-openai → the 'foundry' provider class. engine-factory
+  // already recognizes these vars for the API-preconnect skip; routing here makes the
+  // toggle actually SELECT the provider instead of only disabling preconnect, closing
+  // the inconsistency. Honors both the Claude-compatible var and AMI's own convention
+  // (mirrors the bedrock/vertex toggles above).
+  if (process.env.CLAUDE_CODE_USE_FOUNDRY || process.env.SUPERINFERENCE_USE_FOUNDRY) return 'azure-openai';
+
   // API key patterns
   if (key.startsWith('sk-ant-')) return 'anthropic';
   if (key.startsWith('AIza')) return 'google';
@@ -575,6 +585,16 @@ export const MODEL_ENV_TOGGLES = [
     description: "AMI-convention alias of CLAUDE_CODE_USE_BEDROCK; either selects the amazon-bedrock provider.",
   },
   {
+    env: 'CLAUDE_CODE_USE_FOUNDRY',
+    affects: 'provider-routing',
+    description: 'Route to the Azure/Microsoft Foundry endpoint (AMI azure-openai provider) from the explicit toggle, independent of credential sniffing (parity with Claude Code getAPIProvider).',
+  },
+  {
+    env: 'SUPERINFERENCE_USE_FOUNDRY',
+    affects: 'provider-routing',
+    description: 'AMI-convention alias of CLAUDE_CODE_USE_FOUNDRY; either selects the azure-openai (Foundry) provider.',
+  },
+  {
     env: 'CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP',
     affects: 'model-remap',
     description: 'Opt out of the deprecated→successor model remap — suppresses both the startup settings migration and the /model "did you mean" suggestion (parity with Claude Code useModelMigrationNotifications).',
@@ -800,14 +820,41 @@ function matchModelPattern(id: string): { name: string; family: ModelFamily } | 
 }
 
 /**
+ * Reverse of `applyModelOverride` (common/provider-config): given a
+ * provider-specific override STRING that was swapped in from the settings
+ * `modelOverrides` map (e.g. an opaque Bedrock inference-profile ARN) and that
+ * same map, return the CANONICAL first-party model id it was an override for — so
+ * the UI can display the clean "claude-opus-4-6" instead of the raw ARN the
+ * engine actually sends. Scans the override VALUES (not keys) for an exact match
+ * and returns the matching canonical key; returns the input unchanged when there
+ * is no override map or no value matches. Mirrors Claude Code's
+ * resolveOverriddenModel (utils/model/modelStrings.ts:L78-L100) — the single
+ * inverse of the forward apply, so the display path and the send path stay in
+ * lockstep (no parallel ARN→name table).
+ */
+export function resolveOverriddenModel(
+  modelString: string,
+  overrides: Record<string, string> | undefined,
+): string {
+  if (!overrides) return modelString;
+  for (const [canonicalId, override] of Object.entries(overrides)) {
+    if (override === modelString) return canonicalId;
+  }
+  return modelString;
+}
+
+/**
  * Friendly, human-readable display name for a model id ("Sonnet 4.6",
  * "GPT-4o"). Recognizes dated snapshots, gateway prefixes, and the `[1m]`
  * long-context suffix (rendered as " (1M context)"). Falls back to the raw id so
  * the return value is ALWAYS a non-empty, user-presentable string for any known
- * OR custom model — the marketing-label-for-a-raw-id affordance.
+ * OR custom model — the marketing-label-for-a-raw-id affordance. When `overrides`
+ * (the settings `modelOverrides` map) is supplied, a raw override string (e.g. a
+ * Bedrock ARN) is first mapped back to its canonical id via
+ * {@link resolveOverriddenModel} so the override's clean family name is shown.
  */
-export function getModelDisplayName(modelId: string): string {
-  const id = (modelId ?? '').trim();
+export function getModelDisplayName(modelId: string, overrides?: Record<string, string>): string {
+  const id = resolveOverriddenModel((modelId ?? '').trim(), overrides);
   if (id === '') return '';
   const { base, is1m } = splitOneMillionSuffix(id);
   const hit = matchModelPattern(base);
@@ -875,11 +922,18 @@ export function getNewerVersionHint(modelId: string): string | undefined {
  * ModelOption `{ label, description }` so a picker row can show a human label + a
  * sub-line (and an upgrade nudge) instead of a bare id.
  */
-export function getModelMetadata(modelId: string): { displayName: string; description?: string; upgrade?: string } {
+export function getModelMetadata(
+  modelId: string,
+  overrides?: Record<string, string>,
+): { displayName: string; description?: string; upgrade?: string } {
+  // Resolve a settings-override string (e.g. a Bedrock ARN) back to its canonical
+  // id ONCE, so the description + upgrade hint also key off the clean id rather
+  // than the opaque override the engine sends to the provider.
+  const resolved = resolveOverriddenModel((modelId ?? '').trim(), overrides);
   return {
-    displayName: getModelDisplayName(modelId),
-    description: getModelDescription(modelId),
-    upgrade: getNewerVersionHint(modelId),
+    displayName: getModelDisplayName(resolved),
+    description: getModelDescription(resolved),
+    upgrade: getNewerVersionHint(resolved),
   };
 }
 
