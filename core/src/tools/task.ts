@@ -18,7 +18,7 @@ import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions'
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName } from '../skills';
+import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent } from '../skills';
 import { buildAgentMemoryPrompt } from '../memory';
 
 /**
@@ -292,6 +292,88 @@ export function resetAgentRegistry(): void {
   agentMetaRegistry.clear();
 }
 
+/** On-disk snapshot of the agent registries so a `resume` can resolve a
+ *  previously-spawned agent across PROCESS RESTARTS (parity: Claude's
+ *  readAgentMetadata / getAgentTranscript, which resolve a resumable agent from the
+ *  on-disk store rather than an in-memory map). Written per project-state dir. */
+interface PersistedAgentRegistry {
+  names?: Record<string, string>;      // agentName -> taskId
+  sessions?: Record<string, string>;   // taskId -> sub-engine sessionId
+  cwds?: Record<string, string>;       // taskId -> working dir (worktree / cwd override)
+  meta?: Record<string, AgentMeta>;    // taskId -> recorded identity/defaults
+}
+
+/** Absolute path of the durable agent-registry snapshot for a project (cwd). */
+export function agentRegistryPath(cwd: string): string {
+  return path.join(projectStateDir(cwd), 'agent-registry.json');
+}
+
+/**
+ * Persist the current agent registries for `cwd` so a later process can `resume` an
+ * agent spawned in a prior run (durable cross-process resume). Best-effort — a write
+ * failure never breaks a spawn. Called after each spawn records its session/identity.
+ */
+export function persistAgentRegistry(cwd: string): void {
+  try {
+    const data: PersistedAgentRegistry = {
+      names: Object.fromEntries(agentNameRegistry),
+      sessions: Object.fromEntries(agentSessionRegistry),
+      cwds: Object.fromEntries(agentCwdRegistry),
+      meta: Object.fromEntries(agentMetaRegistry),
+    };
+    fs.mkdirSync(projectStateDir(cwd), { recursive: true });
+    fs.writeFileSync(agentRegistryPath(cwd), JSON.stringify(data));
+  } catch { /* best-effort persistence — never fail a spawn on a write error */ }
+}
+
+/**
+ * Rehydrate the in-memory agent registries from `cwd`'s persisted snapshot so a
+ * `resume` works after a process restart. LIVE in-memory entries win over the
+ * snapshot (an agent spawned in THIS process is authoritative over a stale record).
+ * Best-effort — a missing/corrupt snapshot leaves the in-memory maps untouched.
+ */
+export function rehydrateAgentRegistry(cwd: string): void {
+  let data: PersistedAgentRegistry;
+  try {
+    data = JSON.parse(fs.readFileSync(agentRegistryPath(cwd), 'utf-8')) as PersistedAgentRegistry;
+  } catch { return; }
+  for (const [k, v] of Object.entries(data.names ?? {})) if (!agentNameRegistry.has(k)) agentNameRegistry.set(k, v);
+  for (const [k, v] of Object.entries(data.sessions ?? {})) if (!agentSessionRegistry.has(k)) agentSessionRegistry.set(k, v);
+  for (const [k, v] of Object.entries(data.cwds ?? {})) if (!agentCwdRegistry.has(k)) agentCwdRegistry.set(k, v);
+  for (const [k, v] of Object.entries(data.meta ?? {})) if (!agentMetaRegistry.has(k)) agentMetaRegistry.set(k, v);
+}
+
+/** The resolution of a `resume` target to the sub-engine session (+ identity) to reload. */
+export interface ResumeResolution {
+  /** The sub-engine sessionId whose saved transcript the resume reloads. */
+  sessionId: string;
+  /** The isolated worktree / cwd the agent last ran in (restored on resume), if any. */
+  cwd?: string;
+  /** The canonical taskId the target resolved to (keys agentMetaRegistry for identity restore). */
+  resolvedId: string;
+}
+
+/**
+ * Resolve a `resume` target — an agent NAME, a taskId, OR a raw sessionId — to the
+ * sub-engine session to reload. Mirrors Claude Code's resume, which resolves a
+ * resumable agent from the on-disk store and accepts the agent id directly. A raw
+ * sessionId is accepted by reverse-scanning the taskId→sessionId index so a caller
+ * holding only the persisted sessionId can still continue the run. Call
+ * {@link rehydrateAgentRegistry} first so cross-process targets are visible. Returns
+ * `undefined` when the target matches no known name / taskId / sessionId.
+ */
+export function resolveResumeTarget(target: string): ResumeResolution | undefined {
+  const resolvedId = agentNameRegistry.get(target) ?? target;
+  const sessionId = agentSessionRegistry.get(resolvedId);
+  if (sessionId) return { sessionId, cwd: agentCwdRegistry.get(resolvedId), resolvedId };
+  // Raw sessionId: the target IS a sessionId some agent ran under — resume on it
+  // directly, restoring that agent's recorded worktree/cwd and identity.
+  for (const [taskId, sid] of agentSessionRegistry) {
+    if (sid === target) return { sessionId: sid, cwd: agentCwdRegistry.get(taskId), resolvedId: taskId };
+  }
+  return undefined;
+}
+
 /**
  * Resolve a caller-supplied agent `name` to a UNIQUE addressable name. The task
  * tool documents `name` as "must be unique" (it is the send_message / resume
@@ -354,6 +436,95 @@ export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   'plan_mode', 'workflow', 'AskUserQuestion', 'task_output', 'task_kill',
 ]);
+
+/**
+ * Extra tools DENIED to any NON-built-in (user/project/plugin) agent definition, on
+ * top of the universal {@link ALL_AGENT_DISALLOWED_TOOLS} floor. Mirrors Claude Code's
+ * `CUSTOM_AGENT_DISALLOWED_TOOLS`, which `filterToolsForAgent` subtracts whenever an
+ * agent's `source !== 'built-in'` (i.e. a definition loaded from a possibly untrusted
+ * cloned repo's `.ami/agents/` or `.claude/agents/`). Such a definition must not be
+ * able to grant ITSELF a stricter class of powerful tools regardless of what its own
+ * `tools` whitelist (even `['*']`) requests — in particular the nested-spawn `task`
+ * tool, so an untrusted agent cannot fan out an unsupervised recursion of further
+ * agents (Claude denies AgentTool to non-ant agents the same way). Built-in agents
+ * are trusted and keep the full set; this floor is additive and cannot be overridden
+ * by an agent-def allowlist. Applied via {@link applyCustomAgentDenylist}.
+ */
+export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
+  ...ALL_AGENT_DISALLOWED_TOOLS,
+  'task',
+]);
+
+/**
+ * Subtract {@link CUSTOM_AGENT_DISALLOWED_TOOLS} from a resolved tool set when the
+ * agent definition is NOT built-in (parity: Claude's source-trust tool gate). A
+ * built-in agent is trusted and keeps its tools unchanged; a user/project/plugin
+ * definition — which may originate from an untrusted repo — is floored so its own
+ * `tools` whitelist cannot grant it a denied powerful tool. Returns the (possibly
+ * narrowed) tool list; MCP tools are never in the denylist so they always survive.
+ */
+export function applyCustomAgentDenylist(
+  tools: ToolDefinition[],
+  agent: Pick<import('../skills').AgentDefinition, 'source'>,
+): ToolDefinition[] {
+  if (isBuiltInAgent(agent)) return tools;
+  return tools.filter(t => !CUSTOM_AGENT_DISALLOWED_TOOLS.has(t.name));
+}
+
+/**
+ * Link a child subagent's {@link AbortController} to the PARENT turn's abort signal so
+ * a parent abort CASCADES to the child (parity: Claude's `createChildAbortController`
+ * in `registerAsyncAgent`). Applied to BOTH the foreground AND the background /
+ * auto-backgrounded spawn paths — previously only the foreground path forwarded the
+ * parent abort, leaving a detached background subagent (and its nested grandchildren)
+ * orphaned to run until an explicit `task_kill`, the stall timeout, or engine
+ * shutdown when the spawning turn aborted. If the parent is already aborted the child
+ * is aborted immediately. Returns an UNLINK function the caller invokes when the child
+ * finishes (foreground teardown, or the background drain's finally) so a completed
+ * agent does not leak its listener until the next parent abort.
+ */
+export function linkChildAbortToParent(parent: AbortSignal, child: AbortController): () => void {
+  const reasonOf = (s: AbortSignal) => (s as { reason?: unknown }).reason;
+  if (parent.aborted) {
+    child.abort(reasonOf(parent));
+    return () => { /* nothing to unlink — never attached */ };
+  }
+  const forward = () => child.abort(reasonOf(parent));
+  parent.addEventListener('abort', forward, { once: true });
+  return () => parent.removeEventListener('abort', forward);
+}
+
+/**
+ * Relative restrictiveness of each permission mode (higher = MORE permissive /
+ * dangerous). Drives {@link clampPermissionMode}: `bypassPermissions` auto-approves
+ * everything, `auto-allow` auto-approves tool calls, `acceptEdits` auto-approves edits,
+ * `ask` prompts, `plan` blocks mutations until approval, and `deny-all` rejects
+ * everything — ordered least→most restrictive accordingly.
+ */
+const PERMISSION_MODE_RANK: Record<string, number> = {
+  'deny-all': 0,
+  'plan': 1,
+  'ask': 2,
+  'acceptEdits': 3,
+  'auto-allow': 4,
+  'bypassPermissions': 5,
+};
+
+/**
+ * Clamp a requested subagent permission mode so it can only make the subagent MORE
+ * restrictive than its parent, never escalate past the parent's stance (parity:
+ * Claude's runAgent permission clamp — an agent definition's permissionMode is not
+ * honored when it would be more permissive than the parent's mode). When `parentMode`
+ * is unknown (bare/test contexts that do not thread it) the requested mode is returned
+ * unchanged, so this is a purely additive hardening that never regresses existing
+ * behavior. An unknown mode string is treated as the interactive `ask` baseline.
+ */
+export function clampPermissionMode(requested: string, parentMode: string | undefined): string {
+  if (!parentMode) return requested;
+  const reqRank = PERMISSION_MODE_RANK[requested] ?? PERMISSION_MODE_RANK.ask;
+  const parRank = PERMISSION_MODE_RANK[parentMode] ?? PERMISSION_MODE_RANK.ask;
+  return reqRank > parRank ? parentMode : requested;
+}
 
 /**
  * Explicit allowlist (SOURCE OF TRUTH) of the tools an ASYNC / background
@@ -1275,6 +1446,9 @@ interface BackgroundDrainParams {
   effectiveCwd: string;
   isolation: string | undefined;
   subAbort: AbortController;
+  /** Unlink the parent→child abort cascade when the background run finishes, so a
+   *  completed background agent does not leak its parent-abort listener. */
+  unlinkParentAbort?: () => void;
   /** Output already accumulated by a foreground run before it was auto-backgrounded,
    *  preserved so promotion never loses work. */
   initialOutput?: string;
@@ -1396,6 +1570,9 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
     context.processManager?.killTasksForAgent(taskId);
     // Release-on-finish: drop this sub-agent's isolated file cache.
     releaseFileCache(effectiveCwd, taskId);
+    // Unlink the parent→child abort cascade now the background run is over, so a
+    // finished background agent does not leak its parent-abort listener.
+    p.unlinkParentAbort?.();
   }
   try { fs.closeSync(fd); } catch { /* already closed */ }
   if (!result) {
@@ -1534,6 +1711,15 @@ export const taskTool: ToolDefinition = {
     const prompt = input.prompt as string;
     const mode = (input.mode as string) || 'general';
     const resumeTarget = input.resume as string | undefined;
+    // Durable cross-process resume (parity: Claude's readAgentMetadata /
+    // getAgentTranscript): the taskId/name→session index is persisted to the project
+    // state dir and rehydrated here, so a `resume` resolves an agent spawned in a
+    // PRIOR process (AMI's in-memory maps are otherwise process-lifetime only).
+    // Live in-memory entries still win over the snapshot.
+    if (resumeTarget) rehydrateAgentRegistry(context.cwd);
+    // Resolve the resume target — name, taskId, OR raw sessionId — up front so both
+    // the identity restore and the session/cwd resolution below read ONE resolution.
+    const resumeResolution = resumeTarget ? resolveResumeTarget(resumeTarget) : undefined;
     // Resume identity restore (parity: Claude Code's resumeAgent metadata restore,
     // resumeAgent.ts:L99-114): when resuming an agent and the resume call does not
     // re-supply its identity/defaults, fall back to what the ORIGINAL spawn ran
@@ -1541,8 +1727,8 @@ export const taskTool: ToolDefinition = {
     // agentMetaRegistry — instead of silently re-deriving a generic general-purpose
     // agent with a fresh label. The authoritative session/cwd resolution still
     // happens in the resume block below; this only restores the identity fields.
-    const resumeMeta = resumeTarget
-      ? agentMetaRegistry.get(agentNameRegistry.get(resumeTarget) ?? resumeTarget)
+    const resumeMeta = resumeResolution
+      ? agentMetaRegistry.get(resumeResolution.resolvedId)
       : undefined;
     const subagentType = (input.subagent_type as string | undefined) ?? resumeMeta?.agentType;
     const taskDescription = (input.description as string | undefined) ?? resumeMeta?.description;
@@ -1641,10 +1827,7 @@ export const taskTool: ToolDefinition = {
     // resume continues on the same files instead of reverting to the parent cwd.
     let resumeCwd: string | undefined;
     if (resumeTarget) {
-      const resolvedId = agentNameRegistry.get(resumeTarget) || resumeTarget;
-      resumeSessionId = agentSessionRegistry.get(resolvedId);
-      resumeCwd = agentCwdRegistry.get(resolvedId);
-      if (!resumeSessionId) {
+      if (!resumeResolution) {
         const known = [...agentSessionRegistry.keys()];
         return {
           output: `Error: no resumable agent found for "${resumeTarget}". ` +
@@ -1652,6 +1835,8 @@ export const taskTool: ToolDefinition = {
           isError: true,
         };
       }
+      resumeSessionId = resumeResolution.sessionId;
+      resumeCwd = resumeResolution.cwd;
     }
 
     // Enforce session and concurrency caps before any spawn work
@@ -1749,7 +1934,17 @@ export const taskTool: ToolDefinition = {
       }
       agentModel = agentDef.model;
       agentMaxTurns = agentDef.maxTurns;
-      agentPermissionMode = agentDef.permissionMode;
+      // A NON-built-in (user/project/plugin) agent definition — which may come from an
+      // untrusted cloned repo — may TIGHTEN but never ESCALATE the subagent's permission
+      // mode past the parent's live stance (parity: Claude's runAgent permission clamp +
+      // source-trust gate). A repo-local `.ami/agents/*.md` declaring
+      // `permission-mode: auto-allow` therefore cannot auto-approve every tool call when
+      // the parent session is in `ask` / detached `deny-all`. Built-in agents are trusted
+      // and keep their declared mode. The clamp is a no-op when the parent mode is not
+      // threaded (bare/test contexts), so it never regresses existing behavior.
+      agentPermissionMode = agentDef.permissionMode && !isBuiltInAgent(agentDef)
+        ? clampPermissionMode(agentDef.permissionMode, context._parentPermissionMode)
+        : agentDef.permissionMode;
       agentTokenBudget = agentDef.autoCompactWindow;
       agentBackgroundDefault = agentDef.background === true;
       agentIsolationDefault = agentDef.isolation;
@@ -1854,6 +2049,12 @@ export const taskTool: ToolDefinition = {
       } else {
         tools = filterToolsForAgent(allTools.getAll(), 'general', currentDepth, maxDepth);
       }
+      // Source-trust floor: a NON-built-in agent definition cannot grant itself a
+      // denied powerful tool (incl. the nested-spawn `task`) via its own `tools`
+      // whitelist (parity: Claude's CUSTOM_AGENT_DISALLOWED_TOOLS on source !==
+      // 'built-in'). Applied AFTER the agent's own tools/disallowedTools resolution so
+      // no allowlist (even `['*']`) can reintroduce them; built-in agents are unaffected.
+      tools = applyCustomAgentDenylist(tools, agentDef);
       effectiveMode = 'general';
     } else if (mode === 'explore') {
       tools = filterToolsForAgent(allTools.getAll(), 'explore', currentDepth, maxDepth);
@@ -1944,10 +2145,14 @@ export const taskTool: ToolDefinition = {
     }
 
     const subAbort = new AbortController();
-    const forwardAbort = () => subAbort.abort();
-    if (!runInBackground) {
-      context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
-    }
+    // Cascade a parent-turn abort to the subagent for BOTH foreground AND background
+    // spawns (parity: Claude's createChildAbortController in registerAsyncAgent). The
+    // prior code linked ONLY the foreground path, leaving a detached background
+    // subagent (and its nested grandchildren) orphaned to keep running until an
+    // explicit task_kill, the stall timeout, or engine shutdown when the spawning turn
+    // aborted. unlinkParentAbort is invoked on foreground teardown and inside the
+    // background drain's finally so a completed agent never leaks its listener.
+    const unlinkParentAbort = linkChildAbortToParent(context.abortSignal, subAbort);
 
     // An explicit per-call `isolation` wins; otherwise fall back to the agent
     // definition's `isolation` default (parity: Claude's agent isolation field).
@@ -2297,6 +2502,9 @@ export const taskTool: ToolDefinition = {
       // Record this agent's identity/defaults so a later `resume` restores them when
       // the resume call names none (parity: Claude's resumeAgent metadata restore).
       recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
+      // Persist the registry snapshot so this agent is resumable from a LATER process
+      // (durable cross-process resume — parity: Claude's on-disk agent metadata).
+      persistAgentRegistry(context.cwd);
       // If a team is active, a named teammate joins it as an active member so the
       // team-delete guard can see it and refuse to disband while it runs.
       if (agentName && getCurrentTeam()) {
@@ -2330,7 +2538,7 @@ export const taskTool: ToolDefinition = {
       const subEngine = context._engineFactory(subConfig);
       runBackgroundAgentDrain({
         context, subEngine, effectivePrompt, taskId, outputPath, label,
-        effectiveCwd, isolation, subAbort,
+        effectiveCwd, isolation, subAbort, unlinkParentAbort,
       }).catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nOutput file: ${outputPath} (its streamed transcript is appended here live).\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. To check progress mid-flight WITHOUT blocking, call task_output({ task_id: "${taskId}" }) (no wait) or tail the output file. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
@@ -2353,6 +2561,9 @@ export const taskTool: ToolDefinition = {
     // Record this agent's identity/defaults so a later `resume` restores them when
     // the resume call names none (parity: Claude's resumeAgent metadata restore).
     recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
+    // Persist the registry snapshot so this agent is resumable from a LATER process
+    // (durable cross-process resume — parity: Claude's on-disk agent metadata).
+    persistAgentRegistry(context.cwd);
     if (agentName && getCurrentTeam()) {
       registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
     }
@@ -2544,7 +2755,7 @@ export const taskTool: ToolDefinition = {
         }
         runBackgroundAgentDrain({
           context, subEngine, iterator, firstPending: pendingNext, taskId, outputPath, label,
-          effectiveCwd, isolation, subAbort,
+          effectiveCwd, isolation, subAbort, unlinkParentAbort,
           initialOutput: resultText, initialToolUseCount: toolUseCount, initialTokens: totalTokens, startedAt,
         }).catch(() => {});
         context._emitChild?.({
@@ -2565,7 +2776,7 @@ export const taskTool: ToolDefinition = {
         deliverable += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]`;
       }
     } catch (err) {
-      context.abortSignal.removeEventListener('abort', forwardAbort);
+      unlinkParentAbort();
       if (context._hookManager) {
         context._hookManager.executeSubagentStop(subagentHookCtx).catch(() => {});
       }
@@ -2610,7 +2821,7 @@ export const taskTool: ToolDefinition = {
         }
       }
     }
-    context.abortSignal.removeEventListener('abort', forwardAbort);
+    unlinkParentAbort();
 
     if (context._hookManager) {
       context._hookManager.executeSubagentStop(subagentHookCtx).catch(() => {});

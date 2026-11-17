@@ -553,6 +553,11 @@ export interface ToolContext {
   _parentThinking?: ThinkingConfig;
   /** Parent engine's permission rules, forwarded to subagents so deny rules are inherited. */
   _parentPermissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
+  /** Parent engine's LIVE permission mode (the resolved stance, incl. yolo/propagation).
+   *  Forwarded so the task tool can CLAMP a spawned subagent's permission mode: a custom
+   *  (non-built-in) agent definition may tighten but never ESCALATE past the parent's
+   *  stance. Parity: Claude's runAgent permission clamp + source-trust gate. */
+  _parentPermissionMode?: string;
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
   /** Test-only dependency seam for web_search (mock HTTP getter / SSRF validator /
