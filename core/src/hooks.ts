@@ -18,6 +18,7 @@ import {
   type HookTier,
 } from './hook-protection';
 import { isRestrictedToPluginOnly } from './plugin-only-policy';
+import { sanitizePluginIdSegment } from './plugins';
 import { stopFailureErrorClass, STOP_FAILURE_ERROR_CLASSES, type StopFailureErrorClass, categorizeLoadFailure } from './error-classifier';
 import { stripBom, resolveWorkspaceTrustAccepted } from './config';
 import { clearCwdEnvFiles, invalidateSessionEnvCache, sessionEnvDirPath, hookEnvFragmentPath } from './session-environment';
@@ -1332,13 +1333,60 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
  * Returns the string unchanged when `pluginRoot` is empty. Canonical — reused by
  * every command-hook call site; never re-implement the substitution per site.
  */
+/**
+ * Replace the `${NAME}` and bare `$NAME` (word-bounded) forms of each var name in
+ * `names` with `value`. Single engine behind {@link substitutePluginRoot} and
+ * {@link substitutePluginData} so the two plugin-variable substitutions share ONE
+ * implementation (no per-var copy of the replacement logic). The `$NAME`-form uses
+ * the function replacement so a `value` containing `$`-patterns is inserted
+ * literally (never re-interpreted as a `$1` back-reference).
+ */
+function replacePluginVar(text: string, names: readonly string[], value: string): string {
+  let out = text;
+  for (const name of names) {
+    out = out
+      .replace(new RegExp(`\\$\\{${name}\\}`, 'g'), () => value)
+      .replace(new RegExp(`\\$${name}\\b`, 'g'), () => value);
+  }
+  return out;
+}
+
 export function substitutePluginRoot(text: string, pluginRoot: string | undefined): string {
   if (!pluginRoot || !text) return text;
-  return text
-    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot)
-    .replace(/\$\{AMI_PLUGIN_ROOT\}/g, pluginRoot)
-    .replace(/\$CLAUDE_PLUGIN_ROOT\b/g, pluginRoot)
-    .replace(/\$AMI_PLUGIN_ROOT\b/g, pluginRoot);
+  return replacePluginVar(text, ['CLAUDE_PLUGIN_ROOT', 'AMI_PLUGIN_ROOT'], pluginRoot);
+}
+
+/**
+ * Substitute a plugin bundle's PERSISTENT per-plugin data directory into a
+ * command-hook string. Replaces `${CLAUDE_PLUGIN_DATA}` (and the AMI-native
+ * `${AMI_PLUGIN_DATA}` alias, plus the bare `$CLAUDE_PLUGIN_DATA`/`$AMI_PLUGIN_DATA`
+ * forms) with `dataDir`, so a plugin command hook can read/write a stable scratch
+ * directory that survives across sessions and is separate from the read-only bundle
+ * root (`${CLAUDE_PLUGIN_ROOT}`) — Claude Code's CLAUDE_PLUGIN_DATA substitution
+ * (utils/hooks.ts getPluginDataDir). Returns the string unchanged when `dataDir`
+ * is empty. Canonical — reused by the command-hook call site alongside
+ * {@link substitutePluginRoot}; never re-implement the substitution per site.
+ */
+export function substitutePluginData(text: string, dataDir: string | undefined): string {
+  if (!dataDir || !text) return text;
+  return replacePluginVar(text, ['CLAUDE_PLUGIN_DATA', 'AMI_PLUGIN_DATA'], dataDir);
+}
+
+/**
+ * Resolve the deterministic, persistent per-plugin data directory for a plugin
+ * command hook whose bundle lives at `pluginRoot` (Claude Code's getPluginDataDir).
+ * Keyed by the sanitized basename of the bundle root so the same plugin always maps
+ * to the same `~/.ami/plugin-data/<id>` directory regardless of the session cwd, and
+ * two different plugins never collide. Returns `undefined` when `pluginRoot` is empty
+ * or its basename sanitizes to nothing (so a hook with no bundle gets no data dir
+ * and no `${CLAUDE_PLUGIN_DATA}` substitution). The directory is NOT created here —
+ * callers that export it to a hook create it best-effort first.
+ */
+export function resolvePluginDataDir(pluginRoot: string | undefined): string | undefined {
+  if (!pluginRoot || !pluginRoot.trim()) return undefined;
+  const id = sanitizePluginIdSegment(path.basename(pluginRoot.trim()));
+  if (!id) return undefined;
+  return path.join(os.homedir(), '.ami', 'plugin-data', id);
 }
 
 /**
@@ -5390,12 +5438,26 @@ export class HookManager extends EventEmitter {
         // the hook can reference files co-located with its bundle regardless of the
         // session cwd (Claude Code plugin-hook env/substitution + skillRoot parity).
         const pluginRoot = config.pluginRoot;
+        // A plugin command hook also gets a PERSISTENT per-plugin data directory
+        // (Claude Code's CLAUDE_PLUGIN_DATA / getPluginDataDir): a stable scratch
+        // dir, separate from the read-only bundle root, that survives across
+        // sessions so a hook can cache state (`~/.ami/plugin-data/<id>`).
+        const pluginDataDir = resolvePluginDataDir(pluginRoot);
         if (pluginRoot) {
           hookEnv.CLAUDE_PLUGIN_ROOT = pluginRoot;
           hookEnv.AMI_PLUGIN_ROOT = pluginRoot;
         }
-        const command = substitutePluginRoot(config.command, pluginRoot);
-        const args = config.args?.map(a => substitutePluginRoot(a, pluginRoot));
+        if (pluginDataDir) {
+          // Create the data dir best-effort so a hook's `> $CLAUDE_PLUGIN_DATA/x`
+          // write does not fail on a missing parent (fail-open: a mkdir error just
+          // leaves the dir absent, same as before this feature).
+          try { fs.mkdirSync(pluginDataDir, { recursive: true }); } catch { /* best-effort */ }
+          hookEnv.CLAUDE_PLUGIN_DATA = pluginDataDir;
+          hookEnv.AMI_PLUGIN_DATA = pluginDataDir;
+          coreLog('hooks', `Command hook plugin data dir: ${pluginDataDir}`);
+        }
+        const command = substitutePluginData(substitutePluginRoot(config.command, pluginRoot), pluginDataDir);
+        const args = config.args?.map(a => substitutePluginData(substitutePluginRoot(a, pluginRoot), pluginDataDir));
         try {
           const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler);
           // Claude Code exit-code contract:
