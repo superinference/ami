@@ -419,12 +419,13 @@ describe('findMcpConfigPaths', () => {
 });
 
 describe('MCP_TRANSPORTS', () => {
-  it('contains all 5 transport types (stdio, sse, http, ws, wss)', () => {
-    assert.equal(MCP_TRANSPORTS.length, 5);
+  it('contains all 6 transport types (stdio, sse, http, ws, wss, inprocess)', () => {
+    assert.equal(MCP_TRANSPORTS.length, 6);
     assert.ok(MCP_TRANSPORTS.includes('stdio'));
     assert.ok(MCP_TRANSPORTS.includes('sse'));
     assert.ok(MCP_TRANSPORTS.includes('http'));
     assert.ok(MCP_TRANSPORTS.includes('ws'));
     assert.ok(MCP_TRANSPORTS.includes('wss'));
+    assert.ok(MCP_TRANSPORTS.includes('inprocess'));
   });
 });

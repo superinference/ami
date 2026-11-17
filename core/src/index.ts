@@ -40,7 +40,9 @@ export type {
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
 export { boundMcpResponse, validateMcpBufferSize, DEFAULT_MCP_MAX_RESPONSE_BYTES, MCP_TRANSPORTS, MCP_CLIENT_STATES, MCP_TERMINAL_ERROR_CODES, MCP_ELICITATION_ACTIONS, MCP_ELICITATION_MODES, MCP_LOG_LEVELS, McpRpcError, McpAuthError, MCP_URL_ELICITATION_REQUIRED_CODE, MAX_MCP_URL_ELICITATION_RETRIES, extractUrlElicitations } from './mcp/client';
-export type { McpTransport, McpUrlElicitation } from './mcp/client';
+export type { McpTransport, McpUrlElicitation, McpIdeSelection, McpIdeAtMention, McpSelectionPoint, McpSelectionChangedParams } from './mcp/client';
+export { createLinkedTransportPair } from './mcp/in-process-transport';
+export type { InProcessTransport } from './mcp/in-process-transport';
 export { MCP_SERVER_STATES, matchMcpAutoAllow, isValidCallbackPort, resolveMcpOAuthRedirect } from './mcp/manager';
 export type { McpServerState } from './mcp/manager';
 export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './mcp/resource-update-notice';

@@ -1,5 +1,5 @@
 import { McpClient, McpToolSchema, McpResource, McpPrompt, McpPromptMessage, McpClientState, McpTerminalError, McpSessionExpiredError, MCP_PROTOCOL_VERSION, getMcpConnectTimeout } from './client';
-import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage } from './client';
+import type { McpElicitationRequest, McpElicitationResult, McpSamplingRequest, McpSamplingResult, McpLogMessage, McpIdeSelection, McpIdeAtMention } from './client';
 import { McpOAuthSession, FileOAuthTokenStore, mcpTokenFileName, mcpCredentialKey } from './oauth';
 import type { McpOAuthProvider, AuthorizeFn, FetchLike, XaaConfig } from './oauth';
 import {
@@ -1411,6 +1411,12 @@ export class McpManager extends EventEmitter {
       coreLog('mcp', `Pagination cap hit for ${name} on ${method} (${count} items)`);
       this.emit('pagination-capped', name, method, count);
     });
+    // IDE-as-MCP-server editor context: surface the normalized current selection /
+    // at-mention on the manager's public bus (parity with Claude Code's
+    // useIdeSelection / useIdeAtMentioned) so a frontend can fold the user's editor
+    // context into the turn.
+    client.on('ide-selection', (sel: McpIdeSelection) => this.emit('ide-selection', name, sel));
+    client.on('ide-at-mentioned', (m: McpIdeAtMention) => this.emit('ide-at-mentioned', name, m));
     client.on('notification-error', (method: string, err: Error) => {
       coreLog('mcp', `Notification handler error for ${name} on ${method}: ${err.message}`);
       this.emit('notification-error', name, method, err);

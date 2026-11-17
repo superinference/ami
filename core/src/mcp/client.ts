@@ -6,6 +6,7 @@ import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { findExecutable } from '../utils/which';
 import { getMTLSConfig, getSecureTLSConnectOptions } from '../utils/mtls';
+import type { InProcessTransport } from './in-process-transport';
 
 /**
  * TLS connect-options handed to a WebSocket factory for a `wss://` MCP server —
@@ -40,7 +41,7 @@ export function resolveMcpWebSocketTlsOptions(
   return getSecureTLSConnectOptions(getMTLSConfig(env), env);
 }
 
-export const MCP_TRANSPORTS = ['stdio', 'sse', 'http', 'ws', 'wss'] as const;
+export const MCP_TRANSPORTS = ['stdio', 'sse', 'http', 'ws', 'wss', 'inprocess'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 
 /**
@@ -511,9 +512,119 @@ export function validateMcpNotificationParams(
       if (!isObj(params) || typeof params.elicitationId !== 'string' || params.elicitationId.length === 0)
         return { ok: false, error: `${method}: params.elicitationId must be a non-empty string` };
       return { ok: true };
+    case 'selection_changed': {
+      // IDE-as-MCP-server editor selection (parity with Claude Code's
+      // `SelectionChangedSchema` in hooks/useIdeSelection.ts). `selection` is
+      // nullable/optional; when present both endpoints must carry numeric line &
+      // character. `text`/`filePath` are optional strings.
+      if (!isObj(params)) return { ok: false, error: `${method}: params must be an object` };
+      const sel = params.selection;
+      if (sel !== undefined && sel !== null) {
+        if (!isObj(sel)) return { ok: false, error: `${method}: params.selection must be an object or null` };
+        for (const key of ['start', 'end'] as const) {
+          const pt = sel[key];
+          if (!isObj(pt) || !isNum(pt.line) || !isNum(pt.character))
+            return { ok: false, error: `${method}: params.selection.${key} must have numeric line and character` };
+        }
+      }
+      if (params.text !== undefined && typeof params.text !== 'string')
+        return { ok: false, error: `${method}: params.text must be a string` };
+      if (params.filePath !== undefined && typeof params.filePath !== 'string')
+        return { ok: false, error: `${method}: params.filePath must be a string` };
+      return { ok: true };
+    }
+    case 'at_mentioned': {
+      // IDE-as-MCP-server at-mention (parity with Claude Code's `AtMentionedSchema`
+      // in hooks/useIdeAtMentioned.ts): a required `filePath` plus optional 0-based
+      // `lineStart`/`lineEnd` the handler normalizes to 1-based.
+      if (!isObj(params) || typeof params.filePath !== 'string' || params.filePath.length === 0)
+        return { ok: false, error: `${method}: params.filePath must be a non-empty string` };
+      if (params.lineStart !== undefined && !isNum(params.lineStart))
+        return { ok: false, error: `${method}: params.lineStart must be a number` };
+      if (params.lineEnd !== undefined && !isNum(params.lineEnd))
+        return { ok: false, error: `${method}: params.lineEnd must be a number` };
+      return { ok: true };
+    }
     default:
       return { ok: true };
   }
+}
+
+/**
+ * A point in an IDE editor selection: 0-based `line` and `character`, exactly as
+ * an IDE-as-MCP-server emits them in a `selection_changed` notification (parity
+ * with Claude Code's `SelectionPoint` in hooks/useIdeSelection.ts).
+ */
+export interface McpSelectionPoint {
+  line: number;
+  character: number;
+}
+
+/**
+ * Raw `params` of a `selection_changed` IDE notification. `selection` is `null`
+ * when the editor has no active range. Mirrors Claude Code's `SelectionData`.
+ */
+export interface McpSelectionChangedParams {
+  selection: { start: McpSelectionPoint; end: McpSelectionPoint } | null;
+  text?: string;
+  filePath?: string;
+}
+
+/**
+ * Normalized IDE selection emitted on the client's `ide-selection` event (parity
+ * with Claude Code's `IDESelection`). `lineStart` stays 0-based (matching Claude's
+ * `selectionChangeHandler`); `lineCount` is the number of fully-selected lines.
+ */
+export interface McpIdeSelection {
+  lineCount: number;
+  lineStart?: number;
+  text?: string;
+  filePath?: string;
+}
+
+/**
+ * Normalized IDE at-mention emitted on the client's `ide-at-mentioned` event with
+ * 1-based line numbers (parity with Claude Code's `IDEAtMentioned`).
+ */
+export interface McpIdeAtMention {
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+}
+
+/**
+ * Convert a validated `selection_changed` payload into a normalized
+ * {@link McpIdeSelection}, mirroring Claude Code's `selectionChangeHandler`
+ * (hooks/useIdeSelection.ts): `lineCount = end.line - start.line + 1`, decremented
+ * by one when the selection ends on the first character of a line (so a trailing
+ * caret at column 0 does not count its line). Returns `null` when the payload
+ * carries no concrete start/end range, so a caret-only/empty event emits nothing.
+ */
+export function normalizeIdeSelection(params: McpSelectionChangedParams): McpIdeSelection | null {
+  const sel = params.selection;
+  if (sel?.start && sel?.end) {
+    const { start, end } = sel;
+    let lineCount = end.line - start.line + 1;
+    if (end.character === 0) lineCount--;
+    return { lineCount, lineStart: start.line, text: params.text, filePath: params.filePath };
+  }
+  return null;
+}
+
+/**
+ * Normalize a validated `at_mentioned` payload, converting the IDE's 0-based
+ * `lineStart`/`lineEnd` to the 1-based line numbers AMI presents to the user/model
+ * — adding 1 only to a defined value (parity with Claude Code's
+ * hooks/useIdeAtMentioned.ts:L57-61).
+ */
+export function normalizeIdeAtMention(
+  params: { filePath: string; lineStart?: number; lineEnd?: number },
+): McpIdeAtMention {
+  return {
+    filePath: params.filePath,
+    lineStart: params.lineStart !== undefined ? params.lineStart + 1 : undefined,
+    lineEnd: params.lineEnd !== undefined ? params.lineEnd + 1 : undefined,
+  };
 }
 
 /**
@@ -718,6 +829,8 @@ export class McpClient extends EventEmitter {
   private sseUrl: string | null = null;
   /** The live WebSocket for a `ws`/`wss` transport (null on other transports). */
   private ws: McpWebSocketLike | null = null;
+  /** The linked client-side transport for an `inprocess` transport (null otherwise). */
+  private inProcessTransport: InProcessTransport | null = null;
   /** Factory for the WebSocket, injectable for tests; defaults to the runtime global. */
   private readonly webSocketFactory?: McpWebSocketFactory;
   private readonly command: string;
@@ -1043,6 +1156,56 @@ export class McpClient extends EventEmitter {
     // The socket is live + handshaked: start the keep-alive ping so an idle-timeout
     // proxy/LB does not silently drop it (and a failed ping forces a reconnect).
     this.startWsKeepalive();
+  }
+
+  /**
+   * In-process transport (`inprocess`) — parity with Claude Code's
+   * InProcessTransport / SdkControlTransport pair. Drives the standard initialize
+   * handshake over a caller-provided {@link InProcessTransport} (typically the
+   * client end of a {@link createLinkedTransportPair} whose server end is wired to
+   * an in-process MCP server object), so a host embedding AMI can register a tool
+   * server that runs in the SAME process — no subprocess, no socket. Inbound
+   * messages route through the SAME dispatcher the stdio/http/ws transports use, so
+   * server→client requests and notifications are handled identically.
+   */
+  async connectInProcess(transport: InProcessTransport): Promise<void> {
+    if (this._state === 'ready') return;
+    this._state = 'connecting';
+    this.transport = 'inprocess';
+    this.hasTriggeredClose = false;
+    this.inProcessTransport = transport;
+
+    // Route inbound frames (each already a parsed JSON-RPC message object) through
+    // the shared dispatcher; a peer close tears this client down like any transport.
+    transport.onmessage = (msg) => this.routeMessage(msg as JsonRpcResponse | JsonRpcNotification);
+    transport.onclose = () => this.handleInProcessClose();
+    transport.onerror = (err) => this.emit('stderr', `MCP in-process transport error: ${err.message}`);
+    await transport.start();
+
+    const connectPromise = this.performInitialize();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const t = setTimeout(() => reject(new Error(`MCP connection timed out after ${this.connectTimeout}ms`)), this.connectTimeout);
+      t.unref?.();
+    });
+    try {
+      await Promise.race([connectPromise, timeoutPromise]);
+    } catch (err) {
+      this._state = 'error';
+      this.disconnect();
+      throw err;
+    }
+  }
+
+  /** Handle a peer close of the in-process transport: reject pending work, emit `close`. */
+  private handleInProcessClose(): void {
+    if (this.hasTriggeredClose) return;
+    this.hasTriggeredClose = true;
+    const uptimeMs = this.uptime;
+    this._state = 'disconnected';
+    this.inProcessTransport = null;
+    this.connectionStartTime = null;
+    this.rejectAllPending(new Error('MCP in-process transport closed'));
+    this.emit('close', null, uptimeMs);
   }
 
   /**
@@ -1598,6 +1761,13 @@ export class McpClient extends EventEmitter {
       const sock = this.ws;
       this.ws = null;
       try { sock.close(); } catch { /* already closed */ }
+    }
+
+    // Tear down an in-process transport's linked pair (symmetric + idempotent).
+    if (this.inProcessTransport) {
+      const tr = this.inProcessTransport;
+      this.inProcessTransport = null;
+      void tr.close().catch(() => { /* already closed */ });
     }
 
     const proc = this.process;
@@ -2263,6 +2433,16 @@ export class McpClient extends EventEmitter {
   }
 
   private writeMessage(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {
+    // In-process transport: hand the message object straight to the linked peer.
+    if (this.transport === 'inprocess') {
+      if (!this.inProcessTransport || this.inProcessTransport.closed) {
+        throw new Error('MCP in-process transport is closed');
+      }
+      // send() delivers on a microtask and surfaces a delivery fault via onerror;
+      // the sync closed-guard above already covers the "not writable" contract.
+      void this.inProcessTransport.send(msg).catch(() => { /* surfaced via onerror */ });
+      return;
+    }
     // WebSocket transport: each message is one discrete frame (no newline framing).
     if ((this.transport === 'ws' || this.transport === 'wss') && this.ws) {
       if (this.ws.readyState !== MCP_WS_OPEN) {
@@ -2286,6 +2466,11 @@ export class McpClient extends EventEmitter {
    * the same endpoint. With neither available this is a safe no-op.
    */
   private respondToServerRequest(id: number, payload: { result: unknown } | { error: { code: number; message: string } }): void {
+    // In-process: the reply is delivered to the linked peer.
+    if (this.transport === 'inprocess' && this.inProcessTransport && !this.inProcessTransport.closed) {
+      try { this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse); } catch { /* peer gone */ }
+      return;
+    }
     // WebSocket: the reply is a frame on the same socket.
     if ((this.transport === 'ws' || this.transport === 'wss') && this.ws) {
       try { this.writeMessage({ jsonrpc: '2.0', id, ...payload } as JsonRpcResponse); } catch { /* socket gone */ }
@@ -2478,6 +2663,22 @@ export class McpClient extends EventEmitter {
           cb({ percent, message: params.message });
         }
       }
+    }
+
+    // IDE-as-MCP-server editor-context notifications (parity with Claude Code's
+    // useIdeSelection / useIdeAtMentioned). Params are already validated above;
+    // normalize and surface as typed events a frontend/engine can consume to add
+    // the user's current editor selection / at-mention to the turn context.
+    if (notification.method === 'selection_changed') {
+      const sel = normalizeIdeSelection(notification.params as unknown as McpSelectionChangedParams);
+      if (sel) this.emit('ide-selection', sel);
+    }
+
+    if (notification.method === 'at_mentioned') {
+      this.emit(
+        'ide-at-mentioned',
+        normalizeIdeAtMention(notification.params as unknown as { filePath: string; lineStart?: number; lineEnd?: number }),
+      );
     }
 
     this.emit('notification', notification.method, notification.params);
