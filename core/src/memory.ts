@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import {
   projectStateDir,
   canonicalGitRoot,
+  projectSlug,
+  resolveConfigDir,
   expandConfigDir,
   isDangerousStorageRoot,
 } from './reference-journal';
@@ -9,6 +11,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import type { SessionFact } from './session-memory';
+import type { AgentMemoryScope } from './skills';
 import { log as coreLog, logForDiagnosticsNoPII } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
@@ -1477,6 +1480,146 @@ function computeRelevanceScore(memoryText: string, queryTokens: string[], idfMap
   }
 
   return score;
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent persistent memory (parity: Claude Code AgentTool/agentMemory.ts).
+// A spawned agent that declares a `memory` scope in its definition gets its OWN
+// file-based memory store, namespaced by agent type and separate from the global
+// auto-memory. Scopes: `user` (cross-project, global config dir), `project`
+// (committed to VCS under <repo>/.ami/agent-memory/), `local` (project+machine,
+// NOT checked in — <repo>/.ami/agent-memory-local/, redirectable to a mount).
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment variable redirecting LOCAL-scope agent memory to an external mount
+ * (parity: Claude Code's `CLAUDE_CODE_REMOTE_MEMORY_DIR`). When set, local agent
+ * memory persists to `<dir>/projects/<project-slug>/agent-memory-local/<agentType>/`
+ * — namespaced per project so one mount can serve many repos — instead of the
+ * in-repo `.ami/agent-memory-local/`. Only local scope is redirected; `user` and
+ * `project` scopes keep their fixed homes.
+ */
+export const AGENT_REMOTE_MEMORY_DIR_ENV = 'AMI_REMOTE_MEMORY_DIR';
+
+const AGENT_MEMORY_DIRNAME = 'agent-memory';
+const AGENT_MEMORY_LOCAL_DIRNAME = 'agent-memory-local';
+const AGENT_MEMORY_DISPLAY_NAME = 'Persistent Agent Memory';
+
+/**
+ * Sanitize an agent type name for use as a single on-disk directory component.
+ * Parity with Claude Code's `sanitizeAgentTypeForPath`: colons (invalid on
+ * Windows, used by plugin-namespaced agent types like `my-plugin:my-agent`) map
+ * to dashes. AMI additionally neutralizes path separators and `..` traversal runs
+ * so an attacker-controlled agent type can never escape its memory directory.
+ */
+export function sanitizeAgentTypeForPath(agentType: string): string {
+  return agentType
+    .replace(/:/g, '-')
+    .replace(/[/\\]/g, '-')
+    .replace(/\.{2,}/g, '-');
+}
+
+/** Resolve the LOCAL-scope agent memory dir, honoring {@link AGENT_REMOTE_MEMORY_DIR_ENV}. */
+function localAgentMemoryDir(dirName: string, gitRoot: string, env: NodeJS.ProcessEnv): string {
+  const remote = env[AGENT_REMOTE_MEMORY_DIR_ENV];
+  if (remote && remote.trim() !== '') {
+    return path.join(remote.trim(), 'projects', projectSlug(gitRoot), AGENT_MEMORY_LOCAL_DIRNAME, dirName);
+  }
+  return path.join(gitRoot, '.ami', AGENT_MEMORY_LOCAL_DIRNAME, dirName);
+}
+
+/**
+ * Absolute directory holding a given agent type's persistent memory for `scope`.
+ * Parity with Claude Code's `getAgentMemoryDir`. `project`/`local` scopes key on
+ * the CANONICAL git root (not raw cwd) so every worktree of a repo shares one
+ * agent-memory store rather than fragmenting it per-worktree (AMI's memory-keying
+ * convention; a superset over Claude's raw-cwd keying).
+ */
+export function getAgentMemoryDir(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const dirName = sanitizeAgentTypeForPath(agentType);
+  const gitRoot = canonicalGitRoot(cwd);
+  switch (scope) {
+    case 'user':
+      return path.join(resolveConfigDir(env), AGENT_MEMORY_DIRNAME, dirName);
+    case 'project':
+      return path.join(gitRoot, '.ami', AGENT_MEMORY_DIRNAME, dirName);
+    case 'local':
+      return localAgentMemoryDir(dirName, gitRoot, env);
+  }
+}
+
+/** Absolute path to an agent type's MEMORY.md entrypoint for `scope`. */
+export function getAgentMemoryEntrypoint(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(getAgentMemoryDir(agentType, scope, cwd, env), MEMORY_INDEX_FILENAME);
+}
+
+const AGENT_MEMORY_SCOPE_NOTE: Record<AgentMemoryScope, string> = {
+  user: '- This memory is user-scope and applies across every project — keep learnings general, not project-specific.',
+  project: '- This memory is project-scope and shared with your team via version control — tailor learnings to this project.',
+  local: '- This memory is local-scope (NOT checked into version control) — tailor learnings to this project and this machine.',
+};
+
+/**
+ * Build the "Persistent Agent Memory" prompt block for a memory-enabled agent
+ * (parity: Claude Code's `loadAgentMemoryPrompt` + `buildMemoryPrompt`). Seeds
+ * the agent-memory directory (best-effort mkdir), reads and size-caps the existing
+ * MEMORY.md entrypoint, and assembles the save/type/persistence guidance (reusing
+ * the SAME guidance constants as the global auto-memory prompt — no duplicate
+ * copy) plus a scope-specific note. Synchronous: it runs at agent-spawn time while
+ * the subagent's system prompt is assembled.
+ */
+export function buildAgentMemoryPrompt(
+  agentType: string,
+  scope: AgentMemoryScope,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const memoryDir = getAgentMemoryDir(agentType, scope, cwd, env);
+  // Seed the directory so the agent's first write_memory finds it; a read-only /
+  // unwritable mount is logged by ensureMemoryDirMode and tolerated here (the
+  // write tool recreates parent dirs), so a bad mount never strands the spawn.
+  try { ensureMemoryDirMode(memoryDir); } catch { /* best effort — tolerated */ }
+
+  let entrypointContent = '';
+  try {
+    entrypointContent = fs.readFileSync(path.join(memoryDir, MEMORY_INDEX_FILENAME), 'utf-8');
+  } catch { /* no entrypoint yet */ }
+
+  const lines: string[] = [
+    `# ${AGENT_MEMORY_DISPLAY_NAME}`,
+    '',
+    `You have a persistent, file-based memory system for the \`${agentType}\` agent at \`${abbreviateHome(memoryDir)}\`. Build it up across runs so future spawns start already carrying the context they need.`,
+    AGENT_MEMORY_SCOPE_NOTE[scope],
+    '',
+    MEMORY_TYPES_GUIDANCE,
+    '',
+    WHAT_NOT_TO_SAVE_GUIDANCE,
+    '',
+    '### Saving a memory',
+    'Lead feedback/project memories with the rule/fact, then a **Why:** line and a **How to apply:** line. Use this frontmatter:',
+    MEMORY_FRONTMATTER_EXAMPLE,
+    '',
+    TWO_STEP_SAVE_GUIDANCE,
+    '',
+    PERSISTENCE_GUIDANCE,
+    '',
+    `## ${MEMORY_INDEX_FILENAME}`,
+    '',
+    entrypointContent.trim()
+      ? truncateEntrypointContent(entrypointContent)
+      : `Your ${MEMORY_INDEX_FILENAME} is currently empty. When you save new memories, they will appear here.`,
+  ];
+  return lines.join('\n');
 }
 
 export class MemoryManager {

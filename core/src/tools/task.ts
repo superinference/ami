@@ -19,6 +19,7 @@ import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel } from '
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName } from '../skills';
+import { buildAgentMemoryPrompt } from '../memory';
 
 /**
  * Open flags for a sub-agent's output-capture file. `O_NOFOLLOW` refuses to open
@@ -1750,6 +1751,20 @@ export const taskTool: ToolDefinition = {
       agentEffort = agentDef.effort;
       agentInitialPrompt = agentDef.initialPrompt;
       agentColor = agentDef.color;
+
+      // Per-agent persistent memory (parity: Claude's loadAgentMemoryPrompt).
+      // When the agent definition declares a `memory` scope, load/seed its OWN
+      // file-based memory store — namespaced by agent type, separate from the
+      // global auto-memory — and PREPEND it to the authoritative system prompt so
+      // the spawned agent starts already carrying its durable cross-run context.
+      // Keyed on the parent's cwd (its canonical git root), not the eventual
+      // worktree, so every spawn of this agent in the repo shares one store.
+      if (agentDef.memory) {
+        const agentMemoryBlock = buildAgentMemoryPrompt(subagentType, agentDef.memory, context.cwd);
+        agentSystemPrompt = agentSystemPrompt
+          ? `${agentMemoryBlock}\n\n${agentSystemPrompt}`
+          : agentMemoryBlock;
+      }
 
       // Preload the bodies of the skills this agent declares (parity: Claude's
       // runAgent skill preloading) into its authoritative system prompt, so the
