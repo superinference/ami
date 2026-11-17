@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { execSync as childExecSync } from 'child_process';
 import type { Message, ProviderConfig, SessionId, UserMessage, AssistantMessage } from './types';
 import { asSessionId } from './types';
-import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot } from './reference-journal';
+import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDir } from './reference-journal';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
@@ -433,6 +433,11 @@ export interface SessionListEntry {
   pr?: { number: number; url: string; repository?: string };
   /** Worktree path the session was last inside, when it is currently in one. */
   worktree?: string;
+  /** The originating project directory (cwd) the session belongs to, when
+   *  recorded — lets a cross-project/worktree-spanning listing show WHICH directory
+   *  each session came from (parity: Claude's SessionInfo.cwd, falling back to the
+   *  project path). Populated from {@link Session.projectPath}. */
+  projectPath?: string;
   /** Invocation surface that last wrote the session, when recorded. */
   entrypoint?: string;
   /** How the session is being run ({@link SessionKind}) — lets the picker tell a
@@ -503,6 +508,26 @@ export function filterSessionsByPr<T extends { pr?: { number: number } }>(
   const prNumber = parsePrIdentifier(filter);
   if (prNumber === null) return [];
   return entries.filter(e => e.pr?.number === prNumber);
+}
+
+/**
+ * Canonical "most-recent first" ordering for session list entries: sort by
+ * recorded `date` descending, breaking ties on the session id (the newer id — ids
+ * embed a monotonic timestamp+sequence — sorts first) so a paginated or merged
+ * listing is deterministic across calls. The ONE comparator shared by
+ * {@link SessionManager.list} and the cross-project aggregator
+ * ({@link SessionManager.listAcrossProjects}) so a single-project and an
+ * all-projects listing can never diverge in their ordering rules (§0b.6).
+ */
+export function compareSessionEntriesByDate(
+  a: { id: SessionId | string; date?: string },
+  b: { id: SessionId | string; date?: string },
+): number {
+  const bTime = b.date ? new Date(b.date).getTime() : 0;
+  const aTime = a.date ? new Date(a.date).getTime() : 0;
+  const byTime = (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+  if (byTime !== 0) return byTime;
+  return String(b.id).localeCompare(String(a.id));
 }
 
 /** Single-quote a string for safe embedding in a POSIX shell command: wrap in
@@ -899,6 +924,16 @@ export class SessionManager {
     /** Keep only sessions linked to a PR, per {@link PrFilter} (true = any PR, a
      *  number = that PR, a string = parsed via {@link parsePrIdentifier}). */
     filterByPr?: PrFilter;
+    /** Keep only sessions whose recorded {@link Session.gitBranch} equals this
+     *  branch — the data-model side of the resume picker's branch-scope toggle
+     *  (parity: Claude's LogSelector Ctrl+B `branchFilterEnabled`
+     *  `log.gitBranch === currentBranch`). A session with no recorded branch never
+     *  matches an active branch filter. */
+    filterByBranch?: string;
+    /** Keep only sessions whose recorded {@link Session.tag} equals this tag — the
+     *  data-model side of the resume picker's per-#tag tab (parity: Claude's TagTabs
+     *  per-tag filtering). An empty/whitespace value is ignored (no constraint). */
+    filterByTag?: string;
   } = {}): SessionListEntry[] {
     const files = this.listFiles();
 
@@ -968,6 +1003,7 @@ export class SessionManager {
         mode: session.mode,
         pr: session.pr,
         worktree: session.worktreeState ? session.worktreeState.worktreePath : undefined,
+        projectPath: session.projectPath,
         entrypoint: session.entrypoint,
         kind: session.kind,
         permissionMode: session.settings?.permissionMode,
@@ -976,26 +1012,51 @@ export class SessionManager {
       });
     }
 
+    // Branch / tag scope filters (parity: Claude's LogSelector Ctrl+B branch filter
+    // and TagTabs per-#tag filtering) — applied over the parsed entries before the
+    // PR filter. An entry with no recorded branch/tag never matches an active filter.
+    let scoped = entries;
+    if (opts.filterByBranch !== undefined) {
+      const branch = opts.filterByBranch;
+      scoped = scoped.filter(e => e.gitBranch === branch);
+    }
+    if (opts.filterByTag !== undefined && opts.filterByTag.trim() !== '') {
+      const tag = opts.filterByTag;
+      scoped = scoped.filter(e => e.tag === tag);
+    }
+
     // PR scope filter (parity: Claude's filteredLogs PR filter) — applied after the
     // read pass so the single {@link filterSessionsByPr} acceptance boundary is reused.
     const filtered = opts.filterByPr !== undefined
-      ? filterSessionsByPr(entries, opts.filterByPr)
-      : entries;
+      ? filterSessionsByPr(scoped, opts.filterByPr)
+      : scoped;
 
-    // Sort by date descending (most recent first). FUNCTIONAL: break ties on the
-    // session id so a paginated list() (limit/offset) over sessions sharing a
-    // timestamp returns a stable, deterministic window across calls instead of
-    // one that reflects the underlying readdir/stat order. Session ids embed a
-    // monotonic timestamp+sequence, so the newer id sorts first — matching the
-    // recency ordering callers expect.
-    filtered.sort((a, b) => {
-      const bTime = b.date ? new Date(b.date).getTime() : 0;
-      const aTime = a.date ? new Date(a.date).getTime() : 0;
-      const byTime = (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
-      if (byTime !== 0) return byTime;
-      return String(b.id).localeCompare(String(a.id));
-    });
+    // Sort by date descending (most recent first), ties broken on id for a stable,
+    // deterministic paginated window — via the shared {@link compareSessionEntriesByDate}
+    // comparator (reused by the cross-project aggregator so ordering never diverges).
+    filtered.sort(compareSessionEntriesByDate);
     return filtered;
+  }
+
+  /**
+   * Enumerate the distinct {@link Session.tag}s in this store with a per-tag count,
+   * most-used first (ties broken alphabetically). Backs the resume picker's tab
+   * strip — an `All` tab plus one `#tag` tab per tag (parity: Claude's TagTabs tab
+   * model). Reads inline JSON only (no blob rehydration) via the same cheap read
+   * {@link list} uses, so building the tab set over a large store stays cheap; a
+   * session with no tag is ignored. The returned `tag` values can be passed back as
+   * {@link list}'s `filterByTag` to realize the selected tab.
+   */
+  listTags(): Array<{ tag: string; count: number }> {
+    const counts = new Map<string, number>();
+    for (const file of this.listFiles()) {
+      const s = this.readSessionFile(file, false);
+      if (!s || typeof s.tag !== 'string' || !s.tag) continue;
+      counts.set(s.tag, (counts.get(s.tag) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => (b.count - a.count) || a.tag.localeCompare(b.tag));
   }
 
   /**
@@ -1249,6 +1310,103 @@ export class SessionManager {
     return this.sessionDir;
   }
 
+  /** The GLOBAL projects root — `<configDir>/projects` — holding one per-cwd-slug
+   *  subdir of project state. Static so cross-project listing can enumerate every
+   *  project's session store without a cwd-bound manager (parity: Claude's
+   *  getProjectsDir). */
+  static projectsRoot(env: NodeJS.ProcessEnv = process.env): string {
+    return path.join(resolveConfigDir(env), 'projects');
+  }
+
+  /**
+   * Enumerate every project's `sessions` directory under the global projects root
+   * (parity: Claude's gatherAllCandidates — the set scanned when a listing's `dir`
+   * is omitted). Each returned path backs a dir-scoped {@link SessionManager}. A
+   * missing/unreadable projects root yields `[]`; a project slug with no `sessions`
+   * subdir is skipped.
+   */
+  static listProjectSessionDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+    const root = SessionManager.projectsRoot(env);
+    let slugs: string[];
+    try {
+      slugs = fs.readdirSync(root);
+    } catch {
+      return [];
+    }
+    const dirs: string[] = [];
+    for (const slug of slugs) {
+      const dir = path.join(root, slug, 'sessions');
+      try {
+        if (fs.statSync(dir).isDirectory()) dirs.push(dir);
+      } catch { /* not a dir / stat race — skip */ }
+    }
+    return dirs;
+  }
+
+  /**
+   * List sessions across MULTIPLE project session stores (parity: Claude's
+   * all-projects / cross-project resume listing — `listSessionsImpl` with `dir`
+   * omitted, and the picker's `showAllProjects` scope).
+   *
+   * With `dirs` omitted every project's sessions dir under the global projects root
+   * is scanned ({@link listProjectSessionDirs}); pass an explicit set to scope the
+   * aggregation (e.g. Claude's `dir` option). Each store is read via a dir-scoped
+   * manager so every entry carries its own {@link SessionListEntry.projectPath}
+   * (which directory it belongs to). The per-store filters (`includeSidechain`,
+   * `dropEmpty`, `excludeId`, `filterByPr`, `filterByBranch`, `filterByTag`) are
+   * forwarded to each {@link list} call; the merged result is sorted most-recent
+   * first via the shared {@link compareSessionEntriesByDate} comparator and the
+   * `offset`/`limit` window is applied to the MERGED list (so pagination spans
+   * projects, not per-store). A broken store is skipped, never aborting the sweep.
+   */
+  static listAcrossProjects(opts: {
+    dirs?: string[];
+    env?: NodeJS.ProcessEnv;
+    limit?: number;
+    offset?: number;
+    includeSidechain?: boolean;
+    dropEmpty?: boolean;
+    excludeId?: string;
+    filterByPr?: PrFilter;
+    filterByBranch?: string;
+    filterByTag?: string;
+  } = {}): SessionListEntry[] {
+    const env = opts.env ?? process.env;
+    const dirs = opts.dirs ?? SessionManager.listProjectSessionDirs(env);
+    const perStore = {
+      includeSidechain: opts.includeSidechain,
+      dropEmpty: opts.dropEmpty,
+      excludeId: opts.excludeId,
+      filterByPr: opts.filterByPr,
+      filterByBranch: opts.filterByBranch,
+      filterByTag: opts.filterByTag,
+    };
+    const merged: SessionListEntry[] = [];
+    const seen = new Set<string>();
+    for (const dir of dirs) {
+      let entries: SessionListEntry[];
+      try {
+        // Dir-scoped manager: the cwd is irrelevant for listing (gitBranch is never
+        // resolved on the read path), so the override alone targets the store.
+        entries = new SessionManager('', dir).list(perStore);
+      } catch {
+        continue; // one broken store must not abort the cross-project sweep
+      }
+      for (const e of entries) {
+        // Dedup by id across stores (a session manually copied between projects).
+        const idKey = String(e.id);
+        if (seen.has(idKey)) continue;
+        seen.add(idKey);
+        merged.push(e);
+      }
+    }
+    merged.sort(compareSessionEntriesByDate);
+    const offset = opts.offset !== undefined && opts.offset > 0 ? opts.offset : 0;
+    return opts.limit === undefined
+      ? merged.slice(offset)
+      : merged.slice(offset, offset + Math.max(0, opts.limit));
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
@@ -1485,6 +1643,17 @@ export interface GetSessionMessagesOptions {
   limit?: number;
   /** Number of messages to skip from the start (for pagination). */
   offset?: number;
+  /** Drop subagent sidechain messages (`isSidechain`), so only the main-thread
+   *  conversation is returned. Default `false`. Parity: Claude's `getSessionMessages`
+   *  excluding sidechain (sub-agent) sessions from the reconstructed transcript. */
+  excludeSidechain?: boolean;
+  /** Reconstruct the conversation by walking the `parentUuid` links to the newest
+   *  non-sidechain leaf (via {@link buildConversationChain}) before filtering, so a
+   *  branched/forked transcript linearizes to its main thread in chronological
+   *  order instead of being read as a flat array. Default `false` (the stored order
+   *  is used as-is). Parity: Claude's "builds the conversation chain via parentUuid
+   *  links" in `getSessionMessages`. */
+  buildChain?: boolean;
 }
 
 /**
@@ -1496,7 +1665,13 @@ export interface GetSessionMessagesOptions {
  * (includeSystemMessages / limit / offset).
  */
 export function getSessionMessages(messages: Message[], opts: GetSessionMessagesOptions = {}): Message[] {
-  let out = opts.includeSystemMessages ? messages.slice() : messages.filter(m => m.role !== 'system');
+  // Optionally linearize the parentUuid DAG to the newest main-thread leaf first,
+  // so a branched/forked transcript resolves to its real conversation chain (reuses
+  // the shared {@link buildConversationChain} walk — no duplicated leaf selection).
+  let base = opts.buildChain ? buildConversationChain(messages) : messages;
+  // Optionally drop subagent sidechain turns so only the main conversation remains.
+  if (opts.excludeSidechain) base = base.filter(m => !m.isSidechain);
+  let out = opts.includeSystemMessages ? base.slice() : base.filter(m => m.role !== 'system');
   const offset = opts.offset !== undefined && opts.offset > 0 ? opts.offset : 0;
   if (offset > 0) out = out.slice(offset);
   if (opts.limit !== undefined) out = out.slice(0, Math.max(0, opts.limit));
