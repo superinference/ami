@@ -278,6 +278,11 @@ export const lspDiagnosticsTool: ToolDefinition = {
         description: 'When false, return only a count summary (and severity breakdown) instead of the full per-diagnostic listing. Defaults to true (full detail).',
       },
     },
+    // PARITY (additive): strict-object gating (Claude's LSP `z.strictObject`) —
+    // a hallucinated/typo'd parameter (e.g. `path`, `file`, `severty`) is a hard
+    // InputValidationError via the shared tool-input validator, not silently
+    // dropped. Keeps the three LSP tools' input contracts strict and consistent.
+    additionalProperties: false,
   },
   outputSchema: LSP_OUTPUT_SCHEMA,
   isReadOnly: true,
@@ -440,6 +445,11 @@ export const lspReferencesTool: ToolDefinition = {
       file_path: { type: 'string', description: 'Optional file path to narrow the search.' },
     },
     required: ['symbol'],
+    // PARITY (additive): strict-object gating (Claude's LSP `z.strictObject`) —
+    // reject unknown keys (e.g. `line`, `character`, `symbolName`) so a caller
+    // that meant the position-based `lsp` tool is told loudly instead of having
+    // the stray argument silently ignored by the text-indexed search.
+    additionalProperties: false,
   },
   outputSchema: LSP_OUTPUT_SCHEMA,
   isReadOnly: true,

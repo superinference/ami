@@ -336,6 +336,12 @@ export const lspTool: ToolDefinition = {
       character: { type: 'number', description: 'Character offset (1-based, as shown in editors).' },
     },
     required: ['operation', 'file_path'],
+    // PARITY (additive): strict-object gating — Claude Code's LSP schemas use
+    // `z.strictObject` (schemas.ts), which rejects any key outside the declared
+    // set so a hallucinated/typo'd parameter (e.g. `operaton`, `filePath`,
+    // `position`) is a hard InputValidationError, not a silently-dropped field.
+    // The shared tool-input validator enforces this once the schema opts in.
+    additionalProperties: false,
   },
   isReadOnly: true,
   isConcurrencySafe: true,
