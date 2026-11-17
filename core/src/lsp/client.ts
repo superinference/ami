@@ -44,6 +44,11 @@ import {
   type DiagnosticSource,
   type PublishDiagnosticsParams,
 } from './diagnostic-tracking';
+import {
+  LspHealthMonitor,
+  type HealthScheduler,
+  type LspHealthError,
+} from './health-monitor';
 
 /** LSP transient error: server state changed mid-request (e.g. still indexing). */
 const LSP_CONTENT_MODIFIED = -32801;
@@ -203,6 +208,15 @@ export class LSPClient implements DiagnosticSource {
    * passiveFeedback `diagnosticFailures` map. Surfaced in the per-server status.
    */
   private diagnosticFailures: Map<string, { count: number; lastError: string }> = new Map();
+  /**
+   * Background health-poll loop (lazily created on the first successful init). The
+   * lazy LSP client only (re)checks a server when a tool touches a matching file;
+   * this loop re-checks on a fixed interval so a server that crashes BETWEEN tool
+   * calls — i.e. after a successful launch — is still surfaced, and gives up once
+   * the client has definitively failed. Parity with Claude Code's
+   * useLspInitializationNotification polling. See {@link startHealthMonitoring}.
+   */
+  private healthMonitor?: LspHealthMonitor;
 
   /** Baseline/diff tracker reading diagnostics from this client. */
   readonly diagnostics = new DiagnosticTracker(this);
@@ -243,11 +257,31 @@ export class LSPClient implements DiagnosticSource {
     const list = this.notificationHandlers.get(method) ?? [];
     list.push(handler);
     this.notificationHandlers.set(method, list);
+    this.logLazyHandler('notification', method);
   }
 
   /** Register a handler for a server→client request method. */
   onRequest(method: string, handler: RequestHandler): void {
     this.requestHandlers.set(method, handler);
+    this.logLazyHandler('request', method);
+  }
+
+  /**
+   * Lazy-handler affordance (parity with Claude Code's LSPClient "Queued … handler
+   * (connection not ready)" / "Applied queued … handler" debug hints): AMI applies
+   * client-level handlers at dispatch time rather than queuing them per connection,
+   * so a handler registered BEFORE any server is connected is not lost — but the
+   * ordering was previously invisible. Emit a debug line noting the handler will
+   * apply once a server initializes, making the lazy-init flow observable.
+   */
+  private logLazyHandler(kind: 'notification' | 'request', method: string): void {
+    if (this.isConnected()) return;
+    log(
+      'lsp',
+      `[LSP] ${kind} handler "${method}" registered before any server is connected; it will apply once a server initializes`,
+      undefined,
+      'debug',
+    );
   }
 
   private configFor(language: string): LspServerConfig | undefined {
@@ -331,9 +365,15 @@ export class LSPClient implements DiagnosticSource {
     }
 
     // Supply-chain guard: never let npx auto-fetch a server from the registry.
+    // A violating config is a MISCONFIGURATION the operator must see — record it
+    // on the server status AND surface it through the shared error logger (read by
+    // `/doctor`) instead of swallowing it silently. Parity with Claude Code's LSP
+    // discovery, which never throws (LSP is optional) but logs every failure "to
+    // improve the feature" rather than failing invisibly.
     try {
       assertNoAutoFetch(config);
-    } catch {
+    } catch (e) {
+      this.recordError(language, (e as Error).message);
       return false;
     }
 
@@ -370,6 +410,13 @@ export class LSPClient implements DiagnosticSource {
         this.recordError(language, `LSP server "${language}" command not found: ${config.command}`);
         return false;
       }
+
+      // Lifecycle introspection: a "starting" debug line so the on-demand launch
+      // of a language server is observable (which binary, with which args) — the
+      // AMI analogue of Claude Code's per-server load logging. Pairs with the
+      // `initialized` line below and the `command not found` error above so a
+      // started / missing / failed server is distinguishable in the debug log.
+      log('lsp', `[LSP ${language}] starting server (command=${config.command} ${(config.args ?? []).join(' ')})`.trimEnd(), undefined, 'debug');
 
       const proc = this._spawn(config.command, config.args ?? [], {
         cwd: config.workspaceFolder ?? cwd,
@@ -485,6 +532,10 @@ export class LSPClient implements DiagnosticSource {
       // Successful handshake: reset restartCount and mark the server running.
       this.setStatus(language, { state: 'running', startTime: Date.now(), restartCount: 0, lastError: undefined, exitCode: undefined });
       log('lsp', `LSP server "${language}" initialized`);
+      // A server is now live — start the background health-poll loop (idempotent)
+      // so a post-startup crash between tool calls is caught instead of leaving a
+      // silently-dead server. `shutdown()` stops it.
+      this.startHealthMonitoring();
       return true;
     } catch (e) {
       // A `shutdown()` that killed the server mid-handshake surfaces here as a
@@ -674,6 +725,38 @@ export class LSPClient implements DiagnosticSource {
     }
     if (error) return { status: 'failed', error };
     return { status: 'not-started' };
+  }
+
+  /**
+   * Start the background LSP health-poll loop (idempotent). Driven by this
+   * client's own {@link getInitializationStatus}/{@link getAllServerStatus}, it
+   * re-checks health on a fixed interval ({@link LspHealthMonitor}) so a server
+   * that crashes AFTER a successful launch is still surfaced, deduped per source,
+   * and gives up once the client has definitively failed. Started automatically on
+   * the first successful handshake; callers (and tests) may also start it with a
+   * custom `onError` sink and/or an injectable scheduler. The default sink routes
+   * to the shared error logger (read by `/doctor`).
+   */
+  startHealthMonitoring(onError?: (error: LspHealthError) => void, scheduler?: HealthScheduler): void {
+    if (!this.healthMonitor) {
+      this.healthMonitor = new LspHealthMonitor({
+        getStatus: () => this.getInitializationStatus(),
+        getServers: () => this.getAllServerStatus(),
+        onError,
+        scheduler,
+      });
+    }
+    this.healthMonitor.start();
+  }
+
+  /** Stop the background health-poll loop (idempotent). */
+  stopHealthMonitoring(): void {
+    this.healthMonitor?.stop();
+  }
+
+  /** True while the background health-poll loop is active. Introspection seam. */
+  isHealthMonitoringActive(): boolean {
+    return this.healthMonitor?.isRunning() ?? false;
   }
 
   // ---- inbound message framing / dispatch -------------------------------
@@ -1134,6 +1217,9 @@ export class LSPClient implements DiagnosticSource {
   }
 
   shutdown(): void {
+    // Stop the background health-poll loop first — teardown must not keep polling
+    // the state it is about to clear (and the loop must never outlive the client).
+    this.stopHealthMonitoring();
     // Bump the init generation FIRST so any handshake still in flight observes the
     // change on its next `await` and abandons itself (via `abandonStale`) instead
     // of resolving into the state we are about to clear.
@@ -1146,8 +1232,26 @@ export class LSPClient implements DiagnosticSource {
     if (this.servers.size > 0) {
       log('lsp', `[LSP] shutting down ${this.servers.size} language server(s): ${[...this.servers.keys()].join(', ')}`, undefined, 'debug');
     }
-    for (const [language, conn] of this.servers) {
-      this.gracefulStop(language, conn, openUris);
+    // Collect each server's graceful-stop promise so their outcomes can be
+    // aggregated. AMI's teardown stays NON-blocking (the client-level state is
+    // cleared synchronously below, a superset of Claude Code's awaited-throwing
+    // `LSPServerManager.shutdown`), but — rather than swallowing a stuck/zombie
+    // server the way the old per-process `try { kill() } catch {}` did — every
+    // per-server stop is settled via `Promise.allSettled` and any failures are
+    // aggregated into ONE reported error ("Failed to stop N LSP server(s): …").
+    const stops = [...this.servers].map(([language, conn]) => ({
+      language,
+      promise: this.gracefulStop(language, conn, openUris),
+    }));
+    if (stops.length > 0) {
+      void Promise.allSettled(stops.map((s) => s.promise)).then((results) => {
+        const failures = results.flatMap((r, i) =>
+          r.status === 'rejected' ? [`${stops[i].language}: ${(r.reason as Error)?.message ?? String(r.reason)}`] : [],
+        );
+        if (failures.length > 0) {
+          logError('lsp', `Failed to stop ${failures.length} LSP server(s): ${failures.join('; ')}`);
+        }
+      });
     }
     // Client-level state clears synchronously so `isConnected()` et al. reflect the
     // stop immediately; each server entry is removed as its graceful stop settles.
@@ -1172,8 +1276,13 @@ export class LSPClient implements DiagnosticSource {
    * synchronously, and the handshake proceeds to `exit`+kill whether the `shutdown`
    * request succeeds, errors, or times out. A never-initialized server (handshake
    * never completed) is just killed.
+   *
+   * Returns a promise that RESOLVES once the process has been (force-)killed and
+   * REJECTS if the kill itself throws — so {@link shutdown} can aggregate which
+   * servers failed to stop (parity with Claude Code's per-server stop outcomes).
    */
-  private gracefulStop(language: string, conn: ServerConn, openUris: string[]): void {
+  private gracefulStop(language: string, conn: ServerConn, openUris: string[]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
     // Flip initialized off first so `isConnected()` is false immediately and no
     // new request races the teardown.
     conn.initialized = false;
@@ -1204,7 +1313,7 @@ export class LSPClient implements DiagnosticSource {
 
     if (!conn.proc.pid) {
       detach();
-      try { conn.proc.kill(); } catch { /* already dead */ }
+      try { conn.proc.kill(); resolve(); } catch (e) { reject(e as Error); }
       return;
     }
 
@@ -1224,12 +1333,13 @@ export class LSPClient implements DiagnosticSource {
       detach();
       this.rawNotify(conn, 'exit', null);
       const timer = setTimeout(() => {
-        try { conn.proc.kill(); } catch { /* already dead */ }
+        try { conn.proc.kill(); resolve(); } catch (e) { reject(e as Error); }
       }, EXIT_GRACE_MS);
       if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
     };
     const shutdownTimeout = this.configFor(language)?.shutdownTimeout ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
     this.rawRequest(conn, 'shutdown', null, shutdownTimeout).then(finish, finish);
+    });
   }
 }
 

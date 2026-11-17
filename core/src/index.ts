@@ -411,6 +411,9 @@ export {
   MAX_DIAGNOSTICS_PER_FILE,
   MAX_TOTAL_DIAGNOSTICS,
   MAX_DIAGNOSTICS_SUMMARY_CHARS,
+  LspHealthMonitor,
+  collectLspHealthErrors,
+  LSP_POLL_INTERVAL_MS,
 } from './lsp';
 export type {
   LspServerConfig,
@@ -419,6 +422,9 @@ export type {
   LspServerState,
   LspServerStatus,
   LspInitializationStatus,
+  LspHealthError,
+  LspHealthMonitorOptions,
+  HealthScheduler,
   Diagnostic,
   DiagnosticFile,
   DiagnosticSource,
