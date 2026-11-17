@@ -5,6 +5,7 @@ import * as os from 'os';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './privacy-level';
 import { isSafeSegment } from './skill-catalog';
+import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), 'superinference', 'core');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
@@ -372,6 +373,8 @@ export function __resetLoggerForTest(): void {
   inMemoryErrors = [];
   lastApiRequest = null;
   debugFilterCache.clear();
+  for (const writer of diagnosticsWriters.values()) writer.dispose();
+  diagnosticsWriters.clear();
 }
 
 /**
@@ -717,20 +720,78 @@ export function shouldSurfaceToTelemetry(level: LogLevel): boolean {
  * cannot be split by embedded newlines. Mirrors Claude Code's
  * `logForDiagnosticsNoPII`.
  */
+/**
+ * Append one JSONL line to `file`, self-healing a missing parent directory with a
+ * single mkdir + retry. Shared by the diagnostics buffered writer's sink so the
+ * batched and immediate paths recover identically. Best-effort — a persistent
+ * failure is swallowed (a diagnostics write must never break the run).
+ */
+function appendDiagnosticsRaw(file: string, content: string): void {
+  try {
+    fsHooks.appendFileSync(file, content);
+  } catch {
+    // The directory may not exist yet — create it and retry once.
+    try {
+      fsHooks.mkdirSync(path.dirname(file), { recursive: true });
+      fsHooks.appendFileSync(file, content);
+    } catch {}
+  }
+}
+
+// Per-path batched writers for the diagnostics channel. Keyed by destination file
+// so concurrent channels (unusual, but supported) don't share a buffer. By
+// default each writer is in immediate mode (every record hits disk at once, same
+// as before); `AMI_DIAGNOSTICS_BUFFERED` opts into coalesced batching to cut
+// syscalls on a high-volume diagnostics stream, with `flush()` draining on exit.
+const diagnosticsWriters = new Map<string, BufferedWriter>();
+let exitFlushRegistered = false;
+
+/** Resolve a positive-integer env knob, falling back to `fallback` when unset/invalid. */
+function getPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return fallback;
+}
+
+function getDiagnosticsWriter(file: string): BufferedWriter {
+  let writer = diagnosticsWriters.get(file);
+  if (!writer) {
+    const buffered = isEnvTruthy(process.env.AMI_DIAGNOSTICS_BUFFERED);
+    writer = createBufferedWriter({
+      writeFn: (content) => appendDiagnosticsRaw(file, content),
+      flushIntervalMs: getPositiveIntEnv('AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS', 1000),
+      maxBufferSize: getPositiveIntEnv('AMI_DIAGNOSTICS_MAX_BUFFER', 100),
+      immediateMode: !buffered,
+    });
+    diagnosticsWriters.set(file, writer);
+    // Register a one-time exit hook the first time a batching writer exists so a
+    // buffered tail is flushed synchronously before the process ends.
+    if (buffered && !exitFlushRegistered) {
+      exitFlushRegistered = true;
+      process.once('exit', flushDiagnosticsWriters);
+    }
+  }
+  return writer;
+}
+
+/**
+ * Synchronously flush every open diagnostics writer's buffered tail to disk.
+ * Introspection/diagnostic surface for the batched diagnostics channel: a caller
+ * (or the process-exit hook) can force a drain so no batched record is lost.
+ */
+export function flushDiagnosticsWriters(): void {
+  for (const writer of diagnosticsWriters.values()) writer.flush();
+}
+
 export function logForDiagnosticsNoPII(level: LogLevel, event: string, data?: Record<string, unknown>): void {
   const file = (process.env.AMI_DIAGNOSTICS_FILE ?? process.env.CLAUDE_CODE_DIAGNOSTICS_FILE)?.trim();
   if (!file) return;
   const entry = { timestamp: new Date().toISOString(), level, event, data: data ?? {} };
   const line = JSON.stringify(entry) + '\n';
-  try {
-    fsHooks.appendFileSync(file, line);
-  } catch {
-    // The directory may not exist yet — create it and retry once.
-    try {
-      fsHooks.mkdirSync(path.dirname(file), { recursive: true });
-      fsHooks.appendFileSync(file, line);
-    } catch {}
-  }
+  getDiagnosticsWriter(file).write(line);
 }
 
 export function recordDiagnostic(level: LogLevel, event: string, data?: Record<string, unknown>): void {

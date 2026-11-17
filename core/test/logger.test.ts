@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII } from '../src/logger';
+import { log, logToolCall, logApiCall, logApiResponse, logError, getLogPath, getInMemoryErrors, fsHooks, __resetLoggerForTest, parseDebugFilter, extractDebugCategories, shouldShowDebugCategories, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters } from '../src/logger';
 
 // ---------------------------------------------------------------------------
 // getLogPath
@@ -1355,6 +1355,105 @@ describe('diagnostics channel integration', () => {
       assert.ok(started);
       assert.ok(completed);
       assert.ok(typeof completed.data.duration_ms === 'number');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Batched diagnostics writer (AMI_DIAGNOSTICS_BUFFERED + flushDiagnosticsWriters)
+// ---------------------------------------------------------------------------
+describe('batched diagnostics channel', () => {
+  const ORIG = { ...process.env };
+  afterEach(() => {
+    mock.restoreAll();
+    __resetLoggerForTest();
+    delete process.env.AMI_DIAGNOSTICS_FILE;
+    delete process.env.AMI_DIAGNOSTICS_BUFFERED;
+    delete process.env.AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS;
+    delete process.env.AMI_DIAGNOSTICS_MAX_BUFFER;
+    process.env = { ...ORIG };
+  });
+
+  it('default (unbuffered) writes each record to disk immediately', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-im-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    try {
+      logForDiagnosticsNoPII('info', 'a');
+      // Visible on disk synchronously, no flush needed.
+      assert.equal(fs.readFileSync(file, 'utf-8').trim().split('\n').length, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('buffered mode batches records and defers the write until flushDiagnosticsWriters()', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-buf-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    process.env.AMI_DIAGNOSTICS_BUFFERED = '1';
+    process.env.AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS = '100000';
+    try {
+      logForDiagnosticsNoPII('info', 'a');
+      logForDiagnosticsNoPII('warn', 'b');
+      // Nothing on disk yet — the records sit in the buffer.
+      assert.equal(fs.existsSync(file), false);
+      flushDiagnosticsWriters();
+      const lines = fs.readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      assert.deepEqual(lines.map((e) => e.event), ['a', 'b']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('buffered mode auto-flushes once the record-count bound is crossed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-ov-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    process.env.AMI_DIAGNOSTICS_BUFFERED = '1';
+    process.env.AMI_DIAGNOSTICS_MAX_BUFFER = '2';
+    process.env.AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS = '100000';
+    try {
+      logForDiagnosticsNoPII('info', 'a');
+      logForDiagnosticsNoPII('info', 'b'); // crosses maxBufferSize=2 -> deferred flush
+      await new Promise((r) => setImmediate(r));
+      const lines = fs.readFileSync(file, 'utf-8').trim().split('\n');
+      assert.equal(lines.length, 2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('invalid numeric env knobs fall back to the defaults', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-env-'));
+    const file = path.join(dir, 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    process.env.AMI_DIAGNOSTICS_BUFFERED = '1';
+    process.env.AMI_DIAGNOSTICS_MAX_BUFFER = 'not-a-number';
+    process.env.AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS = '-5';
+    try {
+      // With defaults (maxBuffer=100) two records stay buffered until an explicit flush.
+      logForDiagnosticsNoPII('info', 'a');
+      assert.equal(fs.existsSync(file), false);
+      flushDiagnosticsWriters();
+      assert.ok(fs.existsSync(file));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('buffered sink self-heals a missing parent directory on flush', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-diag-heal-'));
+    const file = path.join(dir, 'nested', 'deep', 'diag.jsonl');
+    process.env.AMI_DIAGNOSTICS_FILE = file;
+    process.env.AMI_DIAGNOSTICS_BUFFERED = '1';
+    process.env.AMI_DIAGNOSTICS_FLUSH_INTERVAL_MS = '100000';
+    try {
+      logForDiagnosticsNoPII('info', 'a');
+      flushDiagnosticsWriters();
+      assert.ok(fs.existsSync(file));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
