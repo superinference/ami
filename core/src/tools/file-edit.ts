@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { fuzzyFindAndReplace, findClosestLines } from './fuzzy-match';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { suggestPathUnderCwd } from './path-suggest';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { coerceBool } from '../utils/coerce';
@@ -22,6 +22,55 @@ const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 const EDIT_DIFF_MAX_BYTES = 16_384;
 
 /**
+ * Size ceiling, in bytes, past which the overwrite path STOPS computing a
+ * line-by-line diff and degrades to a size-only summary. Even though the
+ * rendered diff is already output-capped at {@link EDIT_DIFF_MAX_BYTES}, the
+ * underlying {@link buildUnifiedDiff}/{@link buildStructuredPatch} still split
+ * BOTH the whole old and new contents into per-line arrays — an O(file) memory +
+ * CPU cost that is wasteful for a many-MB file whose diff nobody can read anyway.
+ * Mirrors Claude Code's MAX_SCAN_BYTES, which degrades a whole-file write to the
+ * plain "create" view "rather than OOMing on a diff of a multi-GB file". The hard
+ * 1 GiB {@link MAX_EDIT_FILE_SIZE} cap still rejects genuinely huge files first;
+ * this bounds the diff work for everything under it.
+ */
+const EDIT_DIFF_SCAN_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
+
+/**
+ * Indirection seam for the pre-write file-history backup, matching the
+ * {@link lspHooks} pattern. Production calls the real {@link trackFileHistory};
+ * tests swap `track` to deterministically inject a concurrent on-disk
+ * modification DURING the backup's await, exercising the post-backup staleness
+ * re-check (the atomicity guard that closes the check→write race window).
+ * Behavior is unchanged in production.
+ */
+export const fileHistoryHooks: { track: typeof trackFileHistory } = {
+  track: trackFileHistory,
+};
+
+/**
+ * Final synchronous staleness guard, run IMMEDIATELY before {@link commitWrite}
+ * with no `await` between it and the write. The initial freshness check happens
+ * earlier, but the pre-write {@link trackFileHistory} backup is asynchronous: its
+ * `await` yields the event loop, during which a concurrent process can modify the
+ * target. Without this re-check the subsequent write would silently clobber that
+ * concurrent change. Re-checking here — synchronously, right before the write —
+ * keeps the staleness-confirmation→write span atomic (parity with Claude Code's
+ * FileWriteTool/FileEditTool, which keep "no async operations between the
+ * staleness check and writing to disk"). Returns an error ToolResult when the
+ * file changed under us (and drops the now-stale cache entry); undefined when it
+ * is safe to proceed.
+ */
+function recheckStaleBeforeWrite(resolved: string, verb: string, context: ToolContext): ToolResult | undefined {
+  const fileCache = getFileCache(context.cwd, context.agentId);
+  const change = fileCache.describeChange(resolved);
+  if (change.changed) {
+    fileCache.delete(resolved);
+    return { output: `Error: ${describeFileChangeMessage(change.reason, verb)}`, isError: true };
+  }
+  return undefined;
+}
+
+/**
  * Every parameter the file_edit tool understands, including the accepted aliases
  * for the target path (`path`) and the write-mode content (`content`,
  * `file_text`, `file_content`). Any key outside this set is rejected up front —
@@ -33,7 +82,7 @@ const ALLOWED_EDIT_KEYS = new Set([
   'file_path', 'path',
   'old_string', 'new_string',
   'content', 'file_text', 'file_content',
-  'replace_all', 'edits',
+  'replace_all', 'edits', 'mode',
 ]);
 
 /**
@@ -271,6 +320,7 @@ export function commitWrite(
   rawToWrite: string,
   cacheContent: string,
   context: ToolContext,
+  mode?: number,
 ): string | undefined {
   try {
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -278,7 +328,7 @@ export function commitWrite(
     if (symlinkErr) return symlinkErr;
     let enc: ReturnType<typeof detectEncoding> = 'utf-8';
     try { if (fs.existsSync(resolved)) enc = detectEncoding(fs.readFileSync(resolved).subarray(0, 4)); } catch { /* default utf-8 */ }
-    writeFileAtomicSync(resolved, encodeText(rawToWrite, enc));
+    writeFileAtomicSync(resolved, encodeText(rawToWrite, enc), mode !== undefined ? { mode } : undefined);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `Error writing file: ${message}`;
@@ -293,6 +343,7 @@ export async function writeEntireFile(
   resolved: string,
   content: string,
   context: ToolContext,
+  mode?: number,
 ): Promise<ToolResult> {
   if (isBlockedPath(resolved)) {
     return { output: `Error: Cannot edit device or special file: ${resolved}`, isError: true };
@@ -392,10 +443,15 @@ export async function writeEntireFile(
   const finalContent = content;
 
   if (fileExists && oldContent.length > 0) {
-    await trackFileHistory(resolved, oldContent, context.cwd);
+    await fileHistoryHooks.track(resolved, oldContent, context.cwd);
+    // The backup above is async: re-check staleness synchronously right before
+    // the write so a concurrent modification during that await cannot be
+    // silently clobbered (atomicity of the staleness-check→write span).
+    const staleErr = recheckStaleBeforeWrite(resolved, 'overwriting', context);
+    if (staleErr) return staleErr;
   }
 
-  const writeErr = commitWrite(resolved, finalContent, content, context);
+  const writeErr = commitWrite(resolved, finalContent, content, context, mode);
   if (writeErr) return { output: writeErr, isError: true };
 
   const lines = content.split('\n');
@@ -412,6 +468,17 @@ export async function writeEntireFile(
     return {
       output: `${createdLabel}: ${resolved}\nSuccessfully wrote ${resolved} (new file, ${lineCount} lines)\n\n--- /dev/null\n+++ ${resolved}\n@@ -0,0 +1,${lineCount} @@\n${body}${truncNote}`,
       structuredPatch: buildStructuredPatch(normalizeToLf(oldContent), normalizeToLf(content)),
+    };
+  }
+
+  // OOM/cost guard: past EDIT_DIFF_SCAN_MAX_BYTES, splitting both whole contents
+  // into per-line arrays for a diff is wasteful work on a diff nobody can read.
+  // Degrade to a size-only summary (parity: Claude's MAX_SCAN_BYTES fallback to
+  // the plain "create" view instead of diffing a multi-GB file).
+  if (Buffer.byteLength(oldContent) > EDIT_DIFF_SCAN_MAX_BYTES || Buffer.byteLength(content) > EDIT_DIFF_SCAN_MAX_BYTES) {
+    return {
+      output: `Successfully wrote ${resolved} (${lineCount} lines)\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing size only)`,
+      structuredPatch: [],
     };
   }
 
@@ -548,7 +615,9 @@ async function applySequentialEdits(
   if (jsonErr) return jsonErr;
 
   const finalContent = convertToLineEnding(content, originalEnding);
-  await trackFileHistory(resolved, rawContent, context.cwd);
+  await fileHistoryHooks.track(resolved, rawContent, context.cwd);
+  const staleErr = recheckStaleBeforeWrite(resolved, 'editing', context);
+  if (staleErr) return staleErr;
   const writeErr = commitWrite(resolved, finalContent, content, context);
   if (writeErr) return { output: writeErr, isError: true };
 
@@ -607,6 +676,10 @@ export const fileEditTool: ToolDefinition = {
         type: 'boolean',
         description: 'Replace all occurrences of old_string instead of requiring uniqueness (useful to rename a variable). Default false.',
         default: false,
+      },
+      mode: {
+        type: 'string',
+        description: 'Optional octal permission bits (e.g. "600", "755") to apply when CREATING or overwriting the file in write mode. Ignored for in-place replace/edits (existing permissions are preserved). Use to create a private secret (600) or an executable script (755).',
       },
       edits: {
         type: 'array',
@@ -745,7 +818,10 @@ export const fileEditTool: ToolDefinition = {
       if (newString === undefined || newString === null) {
         return { output: 'Error: new_string (or content) must be provided to create or overwrite a file.', isError: true };
       }
-      return writeEntireFile(resolved, stripWs ? stripTrailingWhitespace(newString) : newString, context);
+      // Explicit permission bits only apply to a create/overwrite; parse them
+      // here so an invalid value simply falls back to default perms.
+      const mode = parseFileMode(input.mode);
+      return writeEntireFile(resolved, stripWs ? stripTrailingWhitespace(newString) : newString, context, mode);
     }
 
     if (newString === undefined || newString === null) {
@@ -813,6 +889,20 @@ export const fileEditTool: ToolDefinition = {
     const normalizedOld = normalizeToLf(oldString);
     const normalizedNew = normalizeToLf(stripWs ? stripTrailingWhitespace(newString) : newString);
 
+    // Large-needle short-circuit: an old_string longer than the ENTIRE file can
+    // never match, so skip the full-file scan + the O(needle) overlap-buffer
+    // allocation fuzzyFindAndReplace would make for a pathologically large needle
+    // (parity: Claude's CHUNK_SIZE large-old_string fast path, which diffs inputs
+    // instead of scanning). Emit a precise diagnostic instead of the generic
+    // "not found" so the model learns the needle is oversized, not merely absent.
+    if (normalizedOld.length > content.length) {
+      fileCache.delete(resolved);
+      return {
+        output: `Error: old_string (${normalizedOld.length} chars) is larger than the entire file "${resolved}" (${content.length} chars), so it cannot match. Re-read the file with file_read and target a smaller, exact span.`,
+        isError: true,
+      };
+    }
+
     const result = fuzzyFindAndReplace(content, normalizedOld, normalizedNew);
 
     if (result.error) {
@@ -843,7 +933,9 @@ export const fileEditTool: ToolDefinition = {
         const jsonErr = validateJsonEdit(resolved, rawContent, replaced);
         if (jsonErr) return jsonErr;
         const finalContent = convertToLineEnding(replaced, originalEnding);
-        await trackFileHistory(resolved, rawContent, context.cwd);
+        await fileHistoryHooks.track(resolved, rawContent, context.cwd);
+        const staleErr = recheckStaleBeforeWrite(resolved, 'editing', context);
+        if (staleErr) return staleErr;
         const writeErr = commitWrite(resolved, finalContent, normalizeToLf(finalContent), context);
         if (writeErr) return { output: writeErr, isError: true };
         const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
@@ -869,7 +961,9 @@ export const fileEditTool: ToolDefinition = {
       return { output: secretWarning(secrets, 'content'), isError: true };
     }
 
-    await trackFileHistory(resolved, rawContent, context.cwd);
+    await fileHistoryHooks.track(resolved, rawContent, context.cwd);
+    const staleErr = recheckStaleBeforeWrite(resolved, 'editing', context);
+    if (staleErr) return staleErr;
     const writeErr = commitWrite(resolved, newContent, normalizeToLf(newContent), context);
     if (writeErr) return { output: writeErr, isError: true };
 

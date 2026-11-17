@@ -1023,9 +1023,35 @@ export const GIT_NO_PROMPT_ENV: Readonly<Record<string, string>> = {
  *     the same dir is unavailable.
  * `data` may be a string or Buffer (callers that re-encode pass a Buffer).
  */
-export function writeFileAtomicSync(target: string, data: string | Buffer): void {
-  let mode: number | undefined;
-  try { mode = fs.statSync(target).mode; } catch { /* new file — no mode to preserve */ }
+/**
+ * Parse an explicit file-permission-bits value from tool input into a numeric
+ * mode. Accepts a number (used as-is) or an octal string (`'600'`, `'0600'`,
+ * `'0o755'`). Returns undefined for absent/invalid input so the caller falls back
+ * to the default (umask / preserved) permissions instead of applying a bogus
+ * mode. Bounded to the standard permission range (<= 0o7777) so a wild value can
+ * never request an unexpected setuid/sticky combination. Parity with Claude
+ * Code's `{ mode }` option on its fs write helpers (create-with-exact-bits).
+ */
+export function parseFileMode(raw: unknown): number | undefined {
+  if (typeof raw === 'number') {
+    return Number.isInteger(raw) && raw >= 0 && raw <= 0o7777 ? raw : undefined;
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim().replace(/^0o/i, '');
+    if (!/^[0-7]{3,4}$/.test(s)) return undefined;
+    const n = parseInt(s, 8);
+    return n >= 0 && n <= 0o7777 ? n : undefined;
+  }
+  return undefined;
+}
+
+export function writeFileAtomicSync(target: string, data: string | Buffer, opts?: { mode?: number }): void {
+  // An explicit mode (create-with-exact-bits) overrides preservation; otherwise
+  // preserve the existing file's permissions across the atomic replace.
+  let mode: number | undefined = opts?.mode;
+  if (mode === undefined) {
+    try { mode = fs.statSync(target).mode; } catch { /* new file — no mode to preserve */ }
+  }
 
   const tmp = `${target}.tmp.${process.pid}.${Date.now()}`;
   try {
@@ -1037,6 +1063,9 @@ export function writeFileAtomicSync(target: string, data: string | Buffer): void
   } catch {
     try { fs.unlinkSync(tmp); } catch { /* temp may not exist */ }
     fs.writeFileSync(target, data);
+    if (mode !== undefined) {
+      try { fs.chmodSync(target, mode); } catch { /* best-effort permission application */ }
+    }
   }
 }
 
