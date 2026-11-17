@@ -85,8 +85,11 @@ describe('runtime const arrays are non-empty', () => {
   it('ENGINE_EVENT_TYPES has 22+ events', () => {
     assert.ok(ENGINE_EVENT_TYPES.length >= 22);
   });
-  it('OUTPUT_FORMATS has 3 values', () => {
-    assert.equal(OUTPUT_FORMATS.length, 3);
+  it('OUTPUT_FORMATS has 4 values including streamlined', () => {
+    assert.equal(OUTPUT_FORMATS.length, 4);
+    assert.ok(OUTPUT_FORMATS.includes('streamlined'));
+    // keeps the original batch encodings (additive, no regression)
+    for (const f of ['json', 'jsonl', 'text'] as const) assert.ok(OUTPUT_FORMATS.includes(f));
   });
   it('INPUT_FORMATS has 2 values', () => {
     assert.equal(INPUT_FORMATS.length, 2);

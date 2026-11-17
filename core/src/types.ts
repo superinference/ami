@@ -32,7 +32,19 @@ export function toAgentId(id: string): AgentId | null {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) ? (id as AgentId) : null;
 }
 
-export const OUTPUT_FORMATS = ['json', 'jsonl', 'text'] as const;
+/**
+ * Detached/headless output formats accepted by `--output-format` (parity: Claude's
+ * `OutputFormat`). `json` / `jsonl` / `text` are machine/human batch encodings;
+ * `streamlined` is a distillation-resistant text mode that keeps the final response
+ * text intact, collapses every tool call into a single cumulative tool-use summary
+ * line, and drops thinking + system/init noise — so a downstream model (or operator)
+ * reading the transcript gets the signal without the per-tool-call bulk (parity:
+ * Claude's `streamlined` output-format value / `createStreamlinedTransformer`). The
+ * valid set is derived from this const everywhere (config-resolver validation,
+ * completions, settings-validation, `--introspect outputFormats`) so there is no
+ * drift when a format is added.
+ */
+export const OUTPUT_FORMATS = ['json', 'jsonl', 'text', 'streamlined'] as const;
 export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
 export const INPUT_FORMATS = ['text', 'stream-json'] as const;
