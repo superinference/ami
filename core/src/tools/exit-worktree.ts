@@ -96,6 +96,13 @@ export const exitWorktreeTool: ToolDefinition = {
     required: ['action', 'originalCwd', 'worktreePath', 'message'],
   },
   isReadOnly: false,
+  // Per-input irreversible-operation classification (parity: Claude's
+  // ExitWorktreeTool.isDestructive(input) — `input.action === 'remove'`). Only
+  // `remove` destroys work (deletes the worktree AND its branch WITHOUT merging);
+  // `keep` preserves everything and `merge` integrates committed work first. The
+  // permission layer consults this to downgrade a wildcard allow to an explicit
+  // prompt in `ask` mode so an irreversible discard is never silently auto-approved.
+  isDestructive: (input) => input.action === 'remove',
 
   async execute(input, context): Promise<ToolResult> {
     // Strict input: reject unknown keys.

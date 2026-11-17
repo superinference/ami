@@ -3004,6 +3004,11 @@ export class PermissionManager {
    *  boundary, so the opt-in knob lets `check()` skip the prompt. Undefined → the
    *  feature is inert and bash is gated exactly as before. */
   private sandboxPolicy?: SandboxPolicy;
+  /** Resolver injected by the engine that reports whether a NON-bash tool call is
+   *  irreversible for this input (parity: Claude's generic `Tool.isDestructive(input)`).
+   *  Lets {@link check} apply the destructive allow-rule downgrade to ANY tool, not
+   *  just bash. Absent → only bash destructiveness is considered (unchanged). */
+  private toolDestructiveResolver?: (toolName: string, input: Record<string, unknown>) => boolean;
 
   // Denial circuit breaker — abort after too many consecutive or total denials
   private consecutiveDenials = 0;
@@ -3118,6 +3123,35 @@ export class PermissionManager {
    */
   setSandboxPolicy(policy: SandboxPolicy | undefined): void {
     this.sandboxPolicy = policy;
+  }
+
+  /**
+   * Register a resolver that reports whether a tool call is DESTRUCTIVE (irreversible:
+   * delete / overwrite / send) for the given input, generalizing the bash
+   * destructive-command guard to ANY tool (parity: Claude's `Tool.isDestructive(input)`).
+   * When it returns true for a call, an over-broad `allow` rule is downgraded to an
+   * explicit prompt in `ask` mode — exactly like a destructive bash command — so a
+   * wildcard allow can never silently auto-approve an irreversible operation.
+   * The engine injects a resolver backed by each tool's `ToolDefinition.isDestructive`.
+   * Passing `undefined` disables the generic guard (bash destructiveness still applies).
+   */
+  setToolDestructiveResolver(
+    fn: ((toolName: string, input: Record<string, unknown>) => boolean) | undefined,
+  ): void {
+    this.toolDestructiveResolver = fn;
+  }
+
+  /**
+   * Whether this tool call is destructive: a destructive bash command (keyed off the
+   * command classifier) OR any tool the injected {@link setToolDestructiveResolver}
+   * resolver flags for this input. Single source of truth for the allow→ask downgrade
+   * and its reason attribution, so both stay in lockstep.
+   */
+  private isDestructiveToolUse(toolName: string, input: Record<string, unknown>): boolean {
+    if (toolName === 'bash' && typeof input.command === 'string') {
+      return this.classifyBashCommand(input.command) === 'destructive';
+    }
+    return this.toolDestructiveResolver?.(toolName, input) === true;
   }
 
   /**
@@ -3303,11 +3337,11 @@ export class PermissionManager {
     const key = denialKey(toolName, input);
     if (this.deniedCommands.has(key)) return 'deny';
 
-    // Determine if this is a destructive bash command (used to guard allow
-    // rules from auto-approving dangerous commands via wildcards).
-    const isDestructiveBash = this.mode === 'ask' && toolName === 'bash' &&
-      typeof input.command === 'string' &&
-      this.classifyBashCommand(input.command) === 'destructive';
+    // Determine if this is a destructive tool call (used to guard allow rules
+    // from auto-approving irreversible operations via wildcards). Covers a
+    // destructive bash command AND any tool whose injected isDestructive resolver
+    // flags this input (parity: Claude's generic Tool.isDestructive(input)).
+    const isDestructiveToolCall = this.mode === 'ask' && this.isDestructiveToolUse(toolName, input);
 
     // Code-execution allow-rule downgrade: a matched over-broad interpreter /
     // package-runner / shell allow rule (e.g. Bash(python:*), Bash(npx:*),
@@ -3392,7 +3426,7 @@ export class PermissionManager {
           : matchPattern(rule.pattern, inputStr);
         if (matched) {
           const effective = (rule.action === 'allow' &&
-            (isDestructiveBash || (codeExecDowngradeMode && this.isDangerousCodeExecAllow(rule)))) ? 'ask' : rule.action;
+            (isDestructiveToolCall || (codeExecDowngradeMode && this.isDangerousCodeExecAllow(rule)))) ? 'ask' : rule.action;
           if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
           return effective;
         }
@@ -3400,7 +3434,7 @@ export class PermissionManager {
         // No pattern -- rule applies to the whole tool (param match already gated above).
         // A content-less (tool-wide) rule is NOT a code-exec prefix, so only the
         // destructive-command downgrade applies here.
-        const effective = (rule.action === 'allow' && isDestructiveBash) ? 'ask' : rule.action;
+        const effective = (rule.action === 'allow' && isDestructiveToolCall) ? 'ask' : rule.action;
         if (this._memo) this._memo.set(toolName, this._hashInput(input), effective);
         return effective;
       }
@@ -3518,6 +3552,14 @@ export class PermissionManager {
           };
         }
       }
+    }
+    // Generic destructive-tool downgrade: a non-bash tool whose isDestructive
+    // resolver flagged this input had its matched `allow` rule downgraded to an
+    // `ask` in {@link check}. Attribute that prompt to the destructive safetyCheck
+    // (same reason code as a destructive bash command) rather than the bare mode.
+    if (decision === 'ask' && this.mode === 'ask' && toolName !== 'bash' &&
+        this.toolDestructiveResolver?.(toolName, input) === true) {
+      return { type: 'safetyCheck', check: 'destructive', message: 'Tool call is destructive and requires approval' };
     }
     const filePath = (input.file_path || input.path) as string | undefined;
     if (filePath) {
