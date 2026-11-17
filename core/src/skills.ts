@@ -561,6 +561,18 @@ export function sanitizeSkillArgs(args: Record<string, string>): Record<string, 
   return result;
 }
 
+/**
+ * Boundary-validate a skill's invocation arguments against the hard caps
+ * ({@link MAX_SKILL_ARG_NAMES} / {@link MAX_SKILL_ARG_NAME_LENGTH} /
+ * {@link MAX_SKILL_ARG_VALUE_LENGTH} / {@link MAX_SKILL_ARG_TOTAL_CHARS}) and
+ * return an ACTIONABLE verdict (parity with Claude Code's skill/agent input
+ * validators, which return a concrete negative result + a warning on invalid
+ * input so a caller can degrade gracefully). `valid` is `false` whenever ANY hard
+ * cap is exceeded — previously it was hard-coded `true`, so a caller trusting
+ * `.valid` to gate oversized/abusive input could never reject. Each breach also
+ * records a human-readable `warnings` entry. Unlike {@link sanitizeSkillArgs}
+ * (which silently truncates), this is the report-and-let-the-caller-log path.
+ */
 export function validateSkillArgs(args: Record<string, string>): { valid: boolean; warnings: string[] } {
   const warnings: string[] = [];
   const keys = Object.keys(args);
@@ -585,7 +597,7 @@ export function validateSkillArgs(args: Record<string, string>): { valid: boolea
     warnings.push(`Total argument size ${totalChars} exceeds limit ${MAX_SKILL_ARG_TOTAL_CHARS}`);
   }
 
-  return { valid: true, warnings };
+  return { valid: warnings.length === 0, warnings };
 }
 
 // ---------------------------------------------------------------------------

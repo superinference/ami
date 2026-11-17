@@ -117,20 +117,26 @@ describe('validateSkillArgs', () => {
       args[`key${i}`] = `val${i}`;
     }
     const result = validateSkillArgs(args);
-    assert.equal(result.valid, true);
+    // A hard-cap breach now yields valid:false (the verdict is actionable, not a
+    // lie) — see validateSkillArgs in core/core/src/skills.ts.
+    assert.equal(result.valid, false);
     assert.ok(result.warnings.some(w => w.includes('Too many arguments')));
   });
 
   it('warns about long key names', () => {
     const longKey = 'k'.repeat(100);
     const result = validateSkillArgs({ [longKey]: 'v' });
-    assert.equal(result.valid, true);
+    // A hard-cap breach now yields valid:false (the verdict is actionable, not a
+    // lie) — see validateSkillArgs in core/core/src/skills.ts.
+    assert.equal(result.valid, false);
     assert.ok(result.warnings.some(w => w.includes('name too long')));
   });
 
   it('warns about long values', () => {
     const result = validateSkillArgs({ key: 'v'.repeat(20_000) });
-    assert.equal(result.valid, true);
+    // A hard-cap breach now yields valid:false (the verdict is actionable, not a
+    // lie) — see validateSkillArgs in core/core/src/skills.ts.
+    assert.equal(result.valid, false);
     assert.ok(result.warnings.some(w => w.includes('value too long')));
   });
 
@@ -140,7 +146,9 @@ describe('validateSkillArgs', () => {
       args[`k${i}`] = 'x'.repeat(9000);
     }
     const result = validateSkillArgs(args);
-    assert.equal(result.valid, true);
+    // A hard-cap breach now yields valid:false (the verdict is actionable, not a
+    // lie) — see validateSkillArgs in core/core/src/skills.ts.
+    assert.equal(result.valid, false);
     assert.ok(result.warnings.some(w => w.includes('Total argument size')));
   });
 

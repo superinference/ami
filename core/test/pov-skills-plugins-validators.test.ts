@@ -314,7 +314,7 @@ describe('sanitizeSkillArgs', () => {
 // ===========================================================================
 
 describe('validateSkillArgs', () => {
-  it('reports no warnings for normal args and is always valid', () => {
+  it('reports no warnings and is valid for normal args', () => {
     const r = validateSkillArgs({ a: '1', b: 'two' });
     assert.equal(r.valid, true);
     assert.deepEqual(r.warnings, []);
@@ -324,7 +324,8 @@ describe('validateSkillArgs', () => {
     const input: Record<string, string> = {};
     for (let i = 0; i < MAX_SKILL_ARG_NAMES + 5; i++) input[`k${i}`] = 'v';
     const r = validateSkillArgs(input);
-    assert.equal(r.valid, true);
+    // A hard-cap breach is now an actionable negative verdict (valid:false).
+    assert.equal(r.valid, false);
     assert.ok(r.warnings.some(w => /Too many arguments/.test(w)));
   });
 
