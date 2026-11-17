@@ -208,6 +208,54 @@ describe('ProviderHealthTracker', () => {
     assert.equal(stats.requestCount, 200);
   });
 
+  // --- per-category error classification ----------------------------------
+
+  it('reports an empty errorsByCategory breakdown with no errors', () => {
+    const stats = tracker.getStats();
+    assert.deepEqual(stats.errorsByCategory, {});
+  });
+
+  it('records an error under its classified category', () => {
+    tracker.recordError(50, 'rate_limited');
+    const stats = tracker.getStats();
+    assert.equal(stats.errorCount, 1);
+    assert.deepEqual(stats.errorsByCategory, { rate_limited: 1 });
+  });
+
+  it('accumulates per-category counts across distinct categories', () => {
+    tracker.recordError(0, 'rate_limited');
+    tracker.recordError(0, 'rate_limited');
+    tracker.recordError(0, 'server_error');
+    tracker.recordError(0, 'network_error');
+    const stats = tracker.getStats();
+    assert.equal(stats.errorCount, 4);
+    assert.deepEqual(stats.errorsByCategory, {
+      rate_limited: 2,
+      server_error: 1,
+      network_error: 1,
+    });
+  });
+
+  it('counts an uncategorized error in errorCount but not in any category bucket', () => {
+    tracker.recordError();
+    const stats = tracker.getStats();
+    assert.equal(stats.errorCount, 1);
+    assert.deepEqual(stats.errorsByCategory, {});
+  });
+
+  it('returns a defensive copy of errorsByCategory (mutating it does not corrupt state)', () => {
+    tracker.recordError(0, 'auth_error');
+    const first = tracker.getStats().errorsByCategory;
+    first.auth_error = 999;
+    assert.deepEqual(tracker.getStats().errorsByCategory, { auth_error: 1 });
+  });
+
+  it('reset clears the per-category error breakdown', () => {
+    tracker.recordError(0, 'server_error');
+    tracker.reset();
+    assert.deepEqual(tracker.getStats().errorsByCategory, {});
+  });
+
   it('reset clears the outcome window and circuit-breaker state', () => {
     for (let i = 0; i < 6; i++) tracker.recordError();
     tracker.reset();
@@ -246,6 +294,31 @@ describe('ProviderCoordinator health integration', () => {
     assert.equal(stats.successCount, 1);
     assert.equal(stats.errorCount, 1);
     assert.equal(stats.errorRate, 0.5);
+  });
+
+  it('recordError threads the error category into per-category health stats', async () => {
+    const { ProviderCoordinator } = await import('../src/provider-coordinator');
+    const coord = new ProviderCoordinator({
+      primary: { apiKey: 'test-key', model: 'test-model', baseUrl: 'http://localhost:1' },
+    });
+    coord.recordRequestLatency(100);
+    coord.recordError('rate_limited');
+    coord.recordError('rate_limited');
+    coord.recordError('server_error');
+    const stats = coord.getHealthStats();
+    assert.equal(stats.errorCount, 3);
+    assert.deepEqual(stats.errorsByCategory, { rate_limited: 2, server_error: 1 });
+  });
+
+  it('recordError without a category leaves the per-category breakdown empty', async () => {
+    const { ProviderCoordinator } = await import('../src/provider-coordinator');
+    const coord = new ProviderCoordinator({
+      primary: { apiKey: 'test-key', model: 'test-model', baseUrl: 'http://localhost:1' },
+    });
+    coord.recordError();
+    const stats = coord.getHealthStats();
+    assert.equal(stats.errorCount, 1);
+    assert.deepEqual(stats.errorsByCategory, {});
   });
 
   it('getHealthStats returns valid data after mixed operations', async () => {

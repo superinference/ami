@@ -5,6 +5,7 @@ import type { RateLimitStatus, RawUtilization } from './rate-limiter';
 import { CredentialPool } from './credential-pool';
 import { ProviderHealthTracker } from './provider-health';
 import type { ProviderHealthStats } from './provider-health';
+import type { ErrorCategory } from './error-classifier';
 
 export interface CoordinatorState {
   currentModel: string;
@@ -119,9 +120,9 @@ export class ProviderCoordinator {
     return this.health.getStats();
   }
 
-  recordError(): boolean {
+  recordError(category?: ErrorCategory): boolean {
     this.state.errorCount++;
-    this.health.recordError();
+    this.health.recordError(0, category);
     // Step one position down the fallback chain, if any remain.
     if (this.fallbackIndex < this.chain.length) {
       this.fallbackIndex++;

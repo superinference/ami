@@ -1,4 +1,5 @@
 import { CircularBuffer } from './utils/circular-buffer';
+import type { ErrorCategory } from './error-classifier';
 
 const WINDOW_SIZE = 100;
 
@@ -32,6 +33,15 @@ export interface ProviderHealthStats {
    * decisions that a lifetime error rate alone cannot express.
    */
   shouldCircuitBreak: boolean;
+  /**
+   * Count of recorded errors broken down by {@link ErrorCategory} (e.g.
+   * `rate_limited` / `server_error` / `network_error`), so a transient overload
+   * is distinguishable from a hard client/auth error in the health stats instead
+   * of collapsing every failure into one undifferentiated {@link errorCount}.
+   * Only categories that have actually occurred are present; an uncategorized
+   * error still increments {@link errorCount} but appears in no bucket.
+   */
+  errorsByCategory: Partial<Record<ErrorCategory, number>>;
   latency: {
     min: number;
     max: number;
@@ -55,6 +65,9 @@ export class ProviderHealthTracker {
   // WINDOW_SIZE so windowed error-rate/availability track recent behavior.
   private _outcomeWindow = new CircularBuffer<number>(WINDOW_SIZE);
   private _consecutiveErrors = 0;
+  // Per-category error tally (rate_limited vs server_error vs client/auth, …) so
+  // health stats can attribute WHY a provider is failing, not just that it is.
+  private _errorsByCategory = new Map<ErrorCategory, number>();
   private _lastErrorTime: number | null = null;
   private _lastSuccessTime: number | null = null;
 
@@ -67,11 +80,14 @@ export class ProviderHealthTracker {
     this.pushOutcome(0);
   }
 
-  recordError(latencyMs: number = 0): void {
+  recordError(latencyMs: number = 0, category?: ErrorCategory): void {
     this._requestCount++;
     this._errorCount++;
     this._consecutiveErrors++;
     this._lastErrorTime = Date.now();
+    if (category) {
+      this._errorsByCategory.set(category, (this._errorsByCategory.get(category) ?? 0) + 1);
+    }
     this.pushLatency(latencyMs);
     this.pushOutcome(1);
   }
@@ -85,6 +101,10 @@ export class ProviderHealthTracker {
       windowLen > 0 ? this._outcomeWindow.toArray().reduce((a, b) => a + b, 0) : 0;
     const windowedErrorRate = windowLen > 0 ? windowErrors / windowLen : 0;
 
+    // Defensive copy so callers can't mutate the tracker's internal tally.
+    const errorsByCategory: Partial<Record<ErrorCategory, number>> = {};
+    for (const [cat, n] of this._errorsByCategory) errorsByCategory[cat] = n;
+
     return {
       requestCount: this._requestCount,
       errorCount: this._errorCount,
@@ -95,6 +115,7 @@ export class ProviderHealthTracker {
       windowedAvailability: 1 - windowedErrorRate,
       consecutiveErrors: this._consecutiveErrors,
       shouldCircuitBreak: this._consecutiveErrors >= CIRCUIT_BREAKER_THRESHOLD,
+      errorsByCategory,
       latency: this.computeLatencyStats(),
       lastErrorTime: this._lastErrorTime,
       lastSuccessTime: this._lastSuccessTime,
@@ -108,6 +129,7 @@ export class ProviderHealthTracker {
     this._latencyWindow.clear();
     this._outcomeWindow.clear();
     this._consecutiveErrors = 0;
+    this._errorsByCategory.clear();
     this._lastErrorTime = null;
     this._lastSuccessTime = null;
   }
