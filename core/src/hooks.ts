@@ -456,6 +456,63 @@ export interface StopHookResult {
 /** Stop hook: may block turn-end (blockingError) or prevent continuation. */
 export type StopHookFn = (context: HookContext) => Promise<{ blockingError?: string; preventContinuation?: boolean; stopReason?: string } | void>;
 
+/** Per-hook timing + error record from a Stop-hook run (Claude Code's hookInfos
+ *  in createStopHookSummaryMessage). One entry per Stop hook that actually ran. */
+export interface StopHookInfo {
+  /** Wall-clock duration of this individual Stop hook, in milliseconds. */
+  durationMs: number;
+  /** Error text if this Stop hook threw/failed; undefined on success. */
+  error?: string;
+}
+
+/**
+ * Aggregated Stop-hook run summary emitted on the HookManager `stopHookSummary`
+ * event after every Stop-hook chain (Claude Code's createStopHookSummaryMessage
+ * inputs). Carries per-hook timings + errors + whether a hook prevented
+ * continuation so a consumer can surface a "Ran N stop hook(s)" line (with the
+ * wall-clock-vs-summed timing, per-hook failures, and prevented-continuation) to
+ * the OPERATOR — never fed to the model. A broken/slow Stop hook is observable
+ * instead of being silently swallowed into the debug log.
+ */
+export interface StopHookSummary {
+  /** Number of Stop hooks that actually ran this chain (= hookInfos.length). */
+  count: number;
+  /** Per-hook timing + error records, in execution order. */
+  hookInfos: StopHookInfo[];
+  /** Wall-clock elapsed for the whole Stop-hook chain, in ms. Claude prefers this
+   *  over the summed per-hook time because stop hooks can run back-to-back. */
+  totalDurationMs: number;
+  /** Error texts for the hooks that failed (subset of hookInfos), for quick display. */
+  hookErrors: string[];
+  /** A hook asked to prevent the turn from ending. */
+  preventContinuation: boolean;
+  /** Reason surfaced when preventContinuation is set. */
+  stopReason?: string;
+}
+
+/**
+ * Minimum wall-clock duration (ms) a Stop-hook chain must exceed before its
+ * summary is worth DISPLAYING when there were no errors / no prevented
+ * continuation (Claude Code's HOOK_TIMING_DISPLAY_THRESHOLD_MS): a fast no-op
+ * Stop hook does not deserve a summary row, but a slow one (or one with errors)
+ * does. Consumed by the summary surface so the display threshold matches parity.
+ */
+export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500;
+
+/**
+ * A settings/hooks/config file that failed to parse while loading hooks. Surfaced
+ * (via {@link HookManager.getConfigErrors} + the `configError` event + `/hooks`)
+ * so a malformed file — which silently disables EVERY hook it would contribute —
+ * is visible to the user instead of only hitting the debug log (Claude Code's
+ * "a broken settings.json silently disables ALL settings from that file" warning).
+ */
+export interface HookConfigError {
+  /** Absolute path of the file that failed to parse. */
+  path: string;
+  /** The parse/validation error text. */
+  error: string;
+}
+
 // ---------------------------------------------------------------------------
 // Hook concurrency limiter — at most N of one event execute at a time
 // ---------------------------------------------------------------------------
@@ -2048,6 +2105,17 @@ export class HookManager extends EventEmitter {
    *  loadFromFile so a reload reflects the current on-disk config. */
   private _descriptors: HookDescriptor[] = [];
 
+  /** Settings/hooks/config files that failed to parse during the last
+   *  {@link loadFromFile}. Reset at the start of each load so it reflects the
+   *  current on-disk state. Surfaced via {@link getConfigErrors} + the
+   *  `configError` event + `/hooks` so a malformed file (which silently drops all
+   *  its hooks) is visible instead of only logged. */
+  private _configErrors: HookConfigError[] = [];
+
+  /** The most recent Stop-hook run summary (per-hook timings + errors). Retained
+   *  for introspection; also emitted live on the `stopHookSummary` event. */
+  private _lastStopHookSummary: StopHookSummary | null = null;
+
   /**
    * When enabled, org/builtin deny verdicts cannot be loosened by user-tier hooks.
    */
@@ -2371,6 +2439,8 @@ export class HookManager extends EventEmitter {
     // Reset the introspection descriptor set so a reload reflects the current
     // on-disk config (no stale accumulation across loads).
     this._descriptors = [];
+    // Reset the parse-error set too, so a fixed file clears its prior error.
+    this._configErrors = [];
     // Folder-trust grant (parity: Claude Code's checkHasTrustDialogAccepted): consult
     // the persisted `hasTrustDialogAccepted` project-config knob so a user who recorded
     // trust for this workspace actually gets project-tier hooks (and, interactively, all
@@ -2507,23 +2577,58 @@ export class HookManager extends EventEmitter {
           this.processHookEntry(entry, cwd);
         }
       } catch (err) {
-        coreLog('hooks', `Invalid hooks.json at ${p}: ${err}`);
+        this.recordConfigError(p, err);
       }
     }
 
-    if (canRunHookUnderManagedOnly('config', this._allowManagedHooksOnly)) try {
+    if (canRunHookUnderManagedOnly('config', this._allowManagedHooksOnly)) {
       const configPath = path.join(cwd, '.ami', 'config.json');
-      if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(stripBom(raw));
-        if (config.hooks && Array.isArray(config.hooks)) {
-          for (const entry of config.hooks) {
-            entry._source = 'config';
-            this.processHookEntry(entry, cwd);
+      try {
+        if (fs.existsSync(configPath)) {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const config = JSON.parse(stripBom(raw));
+          if (config.hooks && Array.isArray(config.hooks)) {
+            for (const entry of config.hooks) {
+              entry._source = 'config';
+              this.processHookEntry(entry, cwd);
+            }
           }
         }
+      } catch (err) {
+        this.recordConfigError(configPath, err);
       }
-    } catch {}
+    }
+  }
+
+  /**
+   * Record a settings/hooks/config file that failed to parse: log it, retain it
+   * for {@link getConfigErrors}/`/hooks`, and emit a `configError` event so a live
+   * consumer (e.g. a file-watcher reload) can surface it. A malformed file
+   * silently disables EVERY hook it would contribute, so making it visible matters
+   * (Claude Code's "silently disables ALL settings from that file" warning).
+   */
+  private recordConfigError(filePath: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    coreLog('hooks', `Invalid hooks config at ${filePath}: ${message}`);
+    this._configErrors.push({ path: filePath, error: message });
+    this.emit('configError', { path: filePath, error: message });
+  }
+
+  /**
+   * Introspection: settings/hooks/config files that failed to parse during the
+   * last {@link loadFromFile}. Returns copies so callers cannot mutate the set.
+   * Surfaced via `/hooks` + `--introspect` (parity with the MCP manager's
+   * getConfigErrors) so a broken config file is never a silent no-op.
+   */
+  getConfigErrors(): HookConfigError[] {
+    return this._configErrors.map(e => ({ ...e }));
+  }
+
+  /** The most recent Stop-hook run summary (per-hook timings + errors), or null if
+   *  no Stop hooks have run yet. Returns a deep copy (introspection surface). */
+  getLastStopHookSummary(): StopHookSummary | null {
+    const s = this._lastStopHookSummary;
+    return s ? { ...s, hookInfos: s.hookInfos.map(h => ({ ...h })), hookErrors: [...s.hookErrors] } : null;
   }
 
   /**
@@ -3115,6 +3220,12 @@ export class HookManager extends EventEmitter {
     return this.withConcurrencyGate('stop', async (): Promise<StopHookResult> => {
       this._stopHookActive = true;
       const blockingErrors: string[] = [];
+      // Per-hook timings + errors for the end-of-chain summary (Claude Code's
+      // hookInfos). Wall-clock total is measured around the whole chain because
+      // Claude prefers it over the summed per-hook time.
+      const hookInfos: StopHookInfo[] = [];
+      const hookErrors: string[] = [];
+      const chainStart = Date.now();
       let preventContinuation = false;
       let stopReason: string | undefined;
       try {
@@ -3129,19 +3240,38 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', 'Stop hooks interrupted by abort signal');
             break;
           }
+          const hookStart = Date.now();
           try {
             const r = await this.stopHooks[i](ctx);
+            hookInfos.push({ durationMs: Date.now() - hookStart });
             if (r) {
               if (r.blockingError) blockingErrors.push(r.blockingError);
               if (r.preventContinuation) { preventContinuation = true; if (r.stopReason) stopReason = r.stopReason; }
             }
           } catch (err) {
-            coreLog('hooks', 'Hook error', { error: String(err) });
-            await this.executeStopFailure({ error: String(err), hookIndex: i });
+            const message = err instanceof Error ? err.message : String(err);
+            hookInfos.push({ durationMs: Date.now() - hookStart, error: message });
+            hookErrors.push(message);
+            coreLog('hooks', 'Hook error', { error: message });
+            await this.executeStopFailure({ error: message, hookIndex: i });
           }
         }
       } finally {
         this._stopHookActive = false;
+      }
+      // Build + retain + emit the per-hook summary (operator-facing; NEVER fed to
+      // the model). Only when hooks actually ran — a no-op turn gets no summary.
+      if (hookInfos.length > 0) {
+        const summary: StopHookSummary = {
+          count: hookInfos.length,
+          hookInfos,
+          totalDurationMs: Date.now() - chainStart,
+          hookErrors,
+          preventContinuation,
+          stopReason,
+        };
+        this._lastStopHookSummary = summary;
+        this.emit('stopHookSummary', summary);
       }
       return { blockingErrors, preventContinuation, stopReason };
     });
