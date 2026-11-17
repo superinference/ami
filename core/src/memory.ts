@@ -3568,8 +3568,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     ensureMemoryDirMode(memoryDir);
 
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `session-${safeId}.md`;
-    const filePath = path.join(memoryDir, filename);
+    const filePath = this.getSessionMemoryPath(sessionId);
 
     const lines: string[] = [
       '---',
@@ -3598,8 +3597,33 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       lines.push('');
     }
 
-    fs.writeFileSync(filePath, lines.join('\n'), { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
+    const fileContent = lines.join('\n');
+    fs.writeFileSync(filePath, fileContent, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
     try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+
+    // No-PII introspection surface for the auto-extracted session-memory WRITE path
+    // (parity with Claude Code's `tengu_session_memory_file_read` /
+    // `sessionMemory.ts` content-length tracking, services/SessionMemory): record
+    // HOW MANY facts were persisted and the resulting file size — never the fact
+    // text or the path — so an operator can observe session-memory growth.
+    logForDiagnosticsNoPII('info', 'session_memory_saved', {
+      content_length: fileContent.length,
+      fact_count: facts.length,
+    });
+  }
+
+  /**
+   * Absolute path of the auto-extracted session-memory notes file for `sessionId`
+   * (`<memoryDir>/session-<safeId>.md`). The session id is path-sanitized to a safe
+   * slug so a hostile id cannot escape the memory directory. Single source of the
+   * session-memory path shared by {@link saveSessionMemory} / {@link loadSessionMemory};
+   * also the introspection accessor a `/memory`-style surface uses to show WHERE the
+   * current conversation's auto-extracted notes live (parity with Claude Code's
+   * `getSessionMemoryPath`, services/SessionMemory/sessionMemoryUtils.ts).
+   */
+  getSessionMemoryPath(sessionId: string): string {
+    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(this.getMemoryDir(), `session-${safeId}.md`);
   }
 
   /**
@@ -3609,9 +3633,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * returns an array of SessionFact objects.
    */
   loadSessionMemory(sessionId: string): SessionFact[] {
-    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `session-${safeId}.md`;
-    const filePath = path.join(this.getMemoryDir(), filename);
+    const filePath = this.getSessionMemoryPath(sessionId);
 
     let raw: string;
     try {
@@ -3660,6 +3682,17 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         }
       }
     }
+
+    // No-PII introspection event for the session-memory LOAD path — emitted only on
+    // a successful read (an ENOENT/other fallback returns early above), mirroring
+    // Claude Code's `logEvent('tengu_session_memory_loaded', { content_length })`
+    // (services/SessionMemory/sessionMemoryUtils.ts): it makes the reinjection of
+    // persisted session memory into the conversation observable (how much was
+    // reloaded + how many facts) without logging any fact text or the path.
+    logForDiagnosticsNoPII('info', 'session_memory_loaded', {
+      content_length: raw.length,
+      fact_count: facts.length,
+    });
 
     return facts;
   }

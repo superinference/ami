@@ -23,7 +23,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { canonicalGitRoot } from './reference-journal';
 import { getAgentMemoryDir, sanitizeAgentTypeForPath } from './memory';
+import { log as coreLog, logForDiagnosticsNoPII } from './logger';
 import type { AgentMemoryScope } from './skills';
+
+/** Debug/introspection component tag for the agent-memory snapshot lifecycle. */
+const SNAPSHOT_LOG_COMPONENT = 'agent-memory-snapshot';
 
 /** Directory (relative to the repo root) holding committed per-agent snapshots. */
 const SNAPSHOT_BASE = 'agent-memory-snapshots';
@@ -132,11 +136,32 @@ export function checkAgentMemorySnapshot(
   }
 
   if (!hasLocalMemory) {
+    // Lifecycle introspection (parity: Claude Code's `logForDebugging('Initializing
+    // agent memory for <agentType> from project snapshot')`, agentMemorySnapshot.ts):
+    // surface the first-time-initialize decision so the snapshot sync lifecycle is
+    // observable in the debug log.
+    coreLog(
+      SNAPSHOT_LOG_COMPONENT,
+      `Initializing agent memory for ${agentType} from project snapshot`,
+      { scope, snapshotTimestamp: snapshotMeta.updatedAt },
+    );
+    // No-PII introspection event (counts/scope/action only — never the memory
+    // contents) so the snapshot sync lifecycle is observable off-box.
+    logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'initialize', scope });
     return { action: 'initialize', snapshotTimestamp: snapshotMeta.updatedAt };
   }
 
   const syncedMeta = readJsonFile(getSyncedJsonPath(agentType, scope, cwd, env), validateSyncedMeta);
   if (!syncedMeta || new Date(snapshotMeta.updatedAt) > new Date(syncedMeta.syncedFrom)) {
+    // Lifecycle introspection (parity: Claude Code's `logForDebugging('Replacing
+    // agent memory for <agentType> with project snapshot')`): surface that the
+    // committed snapshot has advanced past what this clone last synced.
+    coreLog(
+      SNAPSHOT_LOG_COMPONENT,
+      `Project snapshot for ${agentType} is newer than local agent memory — update available`,
+      { scope, snapshotTimestamp: snapshotMeta.updatedAt, syncedFrom: syncedMeta?.syncedFrom ?? null },
+    );
+    logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'prompt-update', scope });
     return { action: 'prompt-update', snapshotTimestamp: snapshotMeta.updatedAt };
   }
 
@@ -171,4 +196,13 @@ export function saveAgentSyncedMeta(
   fs.mkdirSync(dir, { recursive: true });
   const meta: SyncedMeta = { syncedFrom };
   fs.writeFileSync(path.join(dir, SYNCED_META_FILENAME), JSON.stringify(meta));
+  // Lifecycle introspection (parity: Claude Code's snapshot-sync `logForDebugging`
+  // lines, agentMemorySnapshot.ts): record that this clone has committed a sync
+  // marker so the "synced to <timestamp>" transition is visible in the debug log.
+  coreLog(
+    SNAPSHOT_LOG_COMPONENT,
+    `Saved agent-memory snapshot sync marker for ${agentType}`,
+    { scope, syncedFrom },
+  );
+  logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'synced', scope });
 }

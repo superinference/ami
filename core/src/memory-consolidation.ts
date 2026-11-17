@@ -263,7 +263,11 @@ Session transcripts: \`${transcriptDir}\` (large JSONL files — grep narrowly, 
 
 ## Phase 2 — Gather recent signal
 
-Look for new information worth persisting. If you need specific context, grep the JSONL transcripts for narrow terms rather than reading them whole:
+Gather in PRIORITY ORDER — cheapest, highest-signal sources first:
+
+1. **Dated daily working logs** (append-only, already distilled by you) at \`${memoryRoot}/logs/YYYY/MM/YYYY-MM-DD.md\`. Read the most recent days first — these are the primary signal.
+2. **Drifted existing memories** — the topic files you skimmed in Phase 1 that now look stale or contradicted.
+3. **Session transcripts** (last resort, large) — if you still need specific context, grep the JSONL transcripts for narrow terms rather than reading them whole:
 \`grep -rn "<narrow term>" ${transcriptDir}/ --include="*.jsonl" | tail -50\`
 
 ## Phase 3 — Consolidate
