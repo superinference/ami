@@ -2568,6 +2568,13 @@ export class ProcessManager extends EventEmitter {
      *  {@link BackgroundProcess.teamName}). */
     teamName?: string;
   }): void {
+    // On RESUME the taskId is reused (same agent continued), so an entry may already
+    // exist from the prior run. Carry forward its ORIGINAL startTime so the agent's
+    // elapsed-time clock measures its whole life rather than resetting on every
+    // resume (parity: Claude Code's resume re-registration carries prior state —
+    // framework.ts:L74-117). A fresh spawn has no prior entry → starts the clock now.
+    const prior = this.processes.get(taskId);
+    const startTime = opts.resumed && prior ? prior.startTime : Date.now();
     this.processes.set(taskId, {
       taskId,
       pid: process.pid,
@@ -2577,7 +2584,7 @@ export class ProcessManager extends EventEmitter {
       kind: 'agent',
       exitCode: null,
       outputPath: opts.outputPath,
-      startTime: Date.now(),
+      startTime,
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
       ...(opts.abortSignal ? { _abortSignal: opts.abortSignal } : {}),

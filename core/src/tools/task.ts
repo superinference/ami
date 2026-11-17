@@ -217,6 +217,20 @@ export function generateTaskId(prefix = 'agent'): string {
 }
 
 /**
+ * The taskId a spawn registers under: on RESUME, reuse the ORIGINAL agent's taskId
+ * (carried by {@link resolveResumeTarget}) instead of minting a new one; on a fresh
+ * spawn, generate a new id. Mirrors Claude Code's task framework, where a resume
+ * re-registers under the SAME task id — carrying forward the agent's prior state and
+ * output stream rather than double-registering a second background entry for what is
+ * one continued agent (framework.ts:L74-117). Without this, resuming a named agent in
+ * the same process spawned a NEW taskId: a duplicate task_list/processManager entry
+ * and a second output file, orphaning the agent's original id.
+ */
+export function resolveSpawnTaskId(resume?: ResumeResolution): string {
+  return resume ? resume.resolvedId : generateTaskId();
+}
+
+/**
  * Framing prepended to a mode-only sub-agent's task (no subagent_type identity) so
  * it returns its result and STOPS instead of running the full interactive coding
  * loop. Mirrors how a workflow agent is told "your final message IS the result".
@@ -2991,7 +3005,9 @@ export const taskTool: ToolDefinition = {
     if (runInBackground) {
       incrementSpawnCount(context);
       context.subagentLimiter?.recordSpawn();
-      const taskId = generateTaskId();
+      // Reuse the original taskId on resume (continue the SAME agent) rather than
+      // registering a duplicate background entry/output file — see resolveSpawnTaskId.
+      const taskId = resolveSpawnTaskId(resumeResolution);
       // Isolate this sub-agent's read-file-state: the sub-engine gets its own
       // clone-on-fork file cache keyed by taskId (released when it finishes).
       subConfig.agentId = taskId;
@@ -3051,7 +3067,9 @@ export const taskTool: ToolDefinition = {
 
     incrementSpawnCount(context);
     context.subagentLimiter?.recordSpawn();
-    const taskId = generateTaskId();
+    // Reuse the original taskId on resume (continue the SAME agent) rather than
+    // minting a fresh id for what is one continued run — see resolveSpawnTaskId.
+    const taskId = resolveSpawnTaskId(resumeResolution);
     // Isolate this sub-agent's read-file-state: the sub-engine gets its own
     // clone-on-fork file cache keyed by taskId (released in the finally below).
     subConfig.agentId = taskId;
