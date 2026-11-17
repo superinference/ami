@@ -624,6 +624,15 @@ export interface Session {
    *  Claude's agentName/agentColor/agentSetting + 'inherit' model sentinel). Absent
    *  on a plain (default-agent) session. */
   agent?: SessionAgentIdentity;
+  /** Content-replacement decisions ({@link ContentReplacementEntry}) persisted for
+   *  resume: which in-context tool_result blocks were replaced with a smaller stub
+   *  by a per-message budget pass, so `--resume` reconstructs the same stubs and the
+   *  prompt cache stays warm (a lost record re-sends the full content → cache miss +
+   *  permanent overage). Carried across {@link SessionManager.fork} by
+   *  {@link forkContentReplacements}. Parity: Claude's `ContentReplacementEntry` +
+   *  `createFork` content-replacement preservation. Absent when nothing was ever
+   *  replaced. */
+  contentReplacements?: ContentReplacementEntry[];
   /** Per-session settings saved on disk so /resume can restore them. */
   settings?: {
     skill?: string;
@@ -2006,6 +2015,15 @@ export class SessionManager {
       createdAt: now,
       updatedAt: now,
     };
+    // Carry the source's content-replacement records across the fork, rewritten
+    // to the fork's id (the `...source` spread copied them verbatim under the OLD
+    // sessionId, which the resume reader would never match). Without this the fork
+    // reconstructs with an empty replacements set → previously-stubbed tool_results
+    // are re-sent in full (prompt-cache miss + permanent overage). Parity: Claude's
+    // createFork content-replacement preservation.
+    const forkedReplacements = forkContentReplacements(source.contentReplacements, source.id, forked.id);
+    if (forkedReplacements.length > 0) forked.contentReplacements = forkedReplacements;
+    else delete forked.contentReplacements;
     this.save(forked);
     return forked;
   }
@@ -2895,6 +2913,107 @@ export function appendResumeSentinel(messages: Message[]): Message[] {
   const sentinel: AssistantMessage = { role: 'assistant', content: NO_RESPONSE_REQUESTED };
   out.splice(idx + 1, 0, sentinel);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Content-replacement records (resume prompt-cache continuity)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single content-replacement decision: an in-context `tool_result` block whose
+ * representation was swapped for a smaller `replacement` stub by a per-message
+ * budget pass (the full output lives elsewhere — a blob / the un-stubbed history).
+ * Replayed on resume so the reconstructed context is byte-identical and the prompt
+ * cache stays warm. Parity: Claude's `ContentReplacementRecord`
+ * (`utils/toolResultStorage.ts` — `kind: 'tool-result'`, `toolUseId`, `replacement`).
+ */
+export interface ContentReplacementRecord {
+  /** Discriminator — only `tool_result` blocks are budget-replaced today. */
+  kind: 'tool-result';
+  /** The tool-call id whose result block was replaced (correlates to the stub). */
+  toolUseId: string;
+  /** The smaller stub text that replaced the full block in-context. */
+  replacement: string;
+}
+
+/**
+ * One enforcement pass's worth of {@link ContentReplacementRecord}s, keyed by the
+ * owning `sessionId` and discriminated by `agentId`: when `agentId` is set the
+ * record belongs to a subagent sidechain (AgentTool resume reads these); when it is
+ * absent the record is main-thread (`/resume` reads these). Parity: Claude's
+ * `ContentReplacementEntry` (`types/logs.ts`) — the `agentId` main-thread-vs-sidechain
+ * discriminator and the keyed-lookup `sessionId`.
+ */
+export interface ContentReplacementEntry {
+  /** Session the records belong to — the resume reader keys its lookup on this. */
+  sessionId: string;
+  /** When set, these records belong to a subagent sidechain with this id; when
+   *  absent, they are main-thread records. */
+  agentId?: string;
+  /** The replacement decisions made in this pass. */
+  replacements: ContentReplacementRecord[];
+}
+
+/** A value is a well-formed {@link ContentReplacementRecord} (guards against a
+ *  tampered/foreign persisted entry producing a malformed record on resume). */
+function isContentReplacementRecord(v: unknown): v is ContentReplacementRecord {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Partial<ContentReplacementRecord>;
+  return r.kind === 'tool-result' && typeof r.toolUseId === 'string' && typeof r.replacement === 'string';
+}
+
+/**
+ * Collect the flat list of {@link ContentReplacementRecord}s to replay for a
+ * resume, applying the two selectors the reference's keyed lookup uses:
+ *  - `sessionId` (optional) — keep only entries for that session (how Claude's
+ *    `loadTranscriptFile` keys the lookup by the session's messages' sessionId);
+ *  - `agentId` discriminator — `undefined` selects ONLY main-thread entries (no
+ *    `agentId`); a set value selects ONLY the matching subagent sidechain's entries.
+ * Malformed records in a tampered/foreign transcript are dropped (never replayed).
+ * Parity: Claude's content-replacement reconstruction read (main-thread `/resume`
+ * vs AgentTool sidechain resume).
+ */
+export function collectContentReplacements(
+  entries: ContentReplacementEntry[] | undefined,
+  opts: { sessionId?: string; agentId?: string } = {},
+): ContentReplacementRecord[] {
+  if (!Array.isArray(entries)) return [];
+  const out: ContentReplacementRecord[] = [];
+  for (const e of entries) {
+    if (!e || typeof e !== 'object' || !Array.isArray(e.replacements)) continue;
+    if (opts.sessionId !== undefined && e.sessionId !== opts.sessionId) continue;
+    // agentId discriminator: a main-thread read (agentId undefined) takes only
+    // records with NO agentId; a sidechain read takes only the matching agent's.
+    if (opts.agentId === undefined) {
+      if (e.agentId !== undefined) continue;
+    } else if (e.agentId !== opts.agentId) {
+      continue;
+    }
+    for (const r of e.replacements) {
+      if (isContentReplacementRecord(r)) out.push({ kind: 'tool-result', toolUseId: r.toolUseId, replacement: r.replacement });
+    }
+  }
+  return out;
+}
+
+/**
+ * Carry a source session's content-replacement records across a fork: keep only the
+ * ORIGINAL session's MAIN-THREAD records (subagent sidechain records belong to their
+ * own trees and are not forked — mirrors `createFork` filtering to main-conversation
+ * entries), then re-emit them as a SINGLE {@link ContentReplacementEntry} under the
+ * FORK's `sessionId` so the resume reader's keyed lookup finds them for the fork.
+ * Returns `[]` when there is nothing to carry (so a fork of a session that never had
+ * a replacement stays `contentReplacements`-free). Parity: Claude's `createFork`
+ * content-replacement preservation (`commands/branch/branch.ts` L98-158).
+ */
+export function forkContentReplacements(
+  entries: ContentReplacementEntry[] | undefined,
+  originalSessionId: string,
+  forkSessionId: string,
+): ContentReplacementEntry[] {
+  const records = collectContentReplacements(entries, { sessionId: originalSessionId });
+  if (records.length === 0) return [];
+  return [{ sessionId: forkSessionId, replacements: records }];
 }
 
 // ---------------------------------------------------------------------------
