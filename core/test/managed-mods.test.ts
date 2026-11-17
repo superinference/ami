@@ -6,6 +6,7 @@ import {
   isLocalOrInlineSource,
   isMarketplaceAllowlisted,
   getManagedPluginNames,
+  resolveModEnabled,
   parseModId,
   normalizeModName,
   modNamesMatch,
@@ -552,5 +553,45 @@ describe('ManagedModsEnforcer', () => {
   it('static shouldBlock returns blocked:false for builtin mod', () => {
     const result = ManagedModsEnforcer.shouldBlock(builtinMod, activePolicy);
     assert.equal(result.blocked, false);
+  });
+});
+
+describe('resolveModEnabled — per-mod defaultEnabled + 3-level enablement waterfall', () => {
+  // Claude parity (builtinPlugins.ts:72-76): the effective-enabled state resolves via a
+  // 3-level waterfall — explicit setting (enabledPlugins[id]) > the mod's own
+  // defaultEnabled > a hardcoded `true`. A mod author can thus ship a mod that is
+  // installed-but-disabled-by-default (defaultEnabled:false) or forced-on-by-default.
+  const mod = (over: Partial<ModInfo> = {}): ModInfo => ({ name: 'm', id: 'm@local', tier: 'user', ...over });
+
+  it('level 3 (default): absent setting + absent defaultEnabled → enabled (hardcoded true)', () => {
+    assert.equal(resolveModEnabled(mod(), null), true);
+    assert.equal(resolveModEnabled(mod(), { allowManagedModsOnly: false }), true);
+    assert.equal(resolveModEnabled(mod(), { allowManagedModsOnly: false, enabledPlugins: {} }), true);
+  });
+
+  it("level 2 (mod default): absent setting → the mod's own defaultEnabled decides", () => {
+    // A mod that ships disabled-by-default stays off until a setting flips it.
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: false }), null), false);
+    // A mod that ships enabled-by-default (explicit true) is on.
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: true }), null), true);
+  });
+
+  it('level 1 (explicit setting): enabledPlugins boolean wins over the mod default', () => {
+    const p = (id: string, v: boolean): ManagedModsPolicy => ({ allowManagedModsOnly: false, enabledPlugins: { [id]: v } });
+    // Setting true overrides a disabled-by-default mod.
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: false }), p('m@local', true)), true);
+    // Setting false overrides an enabled-by-default mod.
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: true }), p('m@local', false)), false);
+    // Setting for a DIFFERENT id does not apply — the mod default decides.
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: false }), p('other@local', true)), false);
+  });
+
+  it('is boolean-authoritative: a legacy string[] setting is NOT a setting (falls to the default)', () => {
+    // Claude honors only boolean enabledPlugins values; the legacy allow-array form is not
+    // an enablement setting, so the mod default (or hardcoded true) decides.
+    const arr: ManagedModsPolicy = { allowManagedModsOnly: false, enabledPlugins: { 'm@local': ['1.0.0'] } };
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: false }), arr), false);
+    assert.equal(resolveModEnabled(mod({ defaultEnabled: true }), arr), true);
+    assert.equal(resolveModEnabled(mod(), arr), true);
   });
 });

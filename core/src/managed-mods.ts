@@ -13,6 +13,15 @@ export interface ModInfo {
    */
   source?: 'local' | 'inline' | 'remote';
   path?: string;
+  /**
+   * The mod's own default enabled state when NO explicit setting mentions it (Claude
+   * parity: a plugin/mod definition's `defaultEnabled`). It lets a mod author ship a mod
+   * that is installed-but-disabled-by-default (`defaultEnabled: false`) — or forced-on —
+   * instead of every mod being unconditionally on. It is the MIDDLE tier of the
+   * enablement waterfall in {@link resolveModEnabled}; an explicit `enabledPlugins` setting
+   * still overrides it, and an absent value defaults to `true`.
+   */
+  defaultEnabled?: boolean;
 }
 
 export interface ManagedModsPolicy {
@@ -53,6 +62,30 @@ const RESERVED_LOCAL_MARKETPLACE_NAMES = new Set(['local', 'inline']);
  */
 export function isModBlockedByPolicy(id: string, policy: ManagedModsPolicy | null | undefined): boolean {
   return policy?.enabledPlugins?.[id] === false;
+}
+
+/**
+ * The effective enabled state of a mod, resolved via Claude's 3-level enablement
+ * waterfall (builtinPlugins.ts:72-76 `userSetting !== undefined ? userSetting === true :
+ * (definition.defaultEnabled ?? true)`):
+ *
+ *   1. **explicit setting** — an `enabledPlugins[mod.id]` whose value is a BOOLEAN wins
+ *      (`true` = on, `false` = off). The value is boolean-AUTHORITATIVE: the legacy
+ *      `string[]` allow-array form is NOT an enablement setting here (it vouches for a
+ *      source under {@link isModAllowed}, it does not set on/off), so it is ignored and the
+ *      waterfall falls through — mirroring Claude's boolean-only `enabledPlugins` handling.
+ *   2. **the mod's own default** — {@link ModInfo.defaultEnabled} (a mod may ship
+ *      disabled-by-default), consulted when no boolean setting mentions the id.
+ *   3. **hardcoded `true`** — a mod with neither a setting nor a declared default is on.
+ *
+ * This is purely the on/off DEFAULT decision and is orthogonal to the org-policy
+ * allow/deny gate ({@link isModAllowed}) and the unconditional force-disable
+ * ({@link isModBlockedByPolicy}); callers that enforce policy apply those separately.
+ */
+export function resolveModEnabled(mod: ModInfo, policy: ManagedModsPolicy | null | undefined): boolean {
+  const setting = policy?.enabledPlugins?.[mod.id];
+  if (typeof setting === 'boolean') return setting;
+  return mod.defaultEnabled ?? true;
 }
 
 /**
