@@ -17,6 +17,22 @@ import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
 import { validateBoundedIntEnvVar } from './config';
+import { parseRetryAfterHeader } from './rate-limit-parser';
+
+/**
+ * Strip header-injection bytes (CR, LF, NUL) from a value before it is placed in
+ * an outbound HTTP request header. A secret or base URL that carries a stray
+ * `\r\n` (e.g. a mis-pasted `OPENAI_API_KEY="sk-...\r\nX-Evil: 1"`) would
+ * otherwise let an attacker smuggle an extra header line into the model-list
+ * request. Mirrors Claude Code's sanitizeHeaderValue (utils/hooks/execHttpHook.ts):
+ * the single canonical header-value cleaner for every auth header this module
+ * builds (Authorization / x-goog-api-key / x-api-key). Returns '' for a nullish
+ * value so an absent key never becomes the literal string "undefined".
+ */
+export function sanitizeHeaderValue(value: string | undefined): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\r\n\x00]/g, '');
+}
 
 /**
  * Pull a human-readable message out of an API error-response body: checks
@@ -86,9 +102,18 @@ function httpGetJSON(
           // the diagnostic can tell the user WHY instead of a bare "HTTP 404".
           let detail: string | undefined;
           try { detail = extractErrorDetail(JSON.parse(bodyText)); } catch { /* non-JSON error body */ }
-          const httpErr = new Error(`HTTP ${status}`) as Error & { statusCode: number; detail?: string };
+          const httpErr = new Error(`HTTP ${status}`) as Error & { statusCode: number; detail?: string; retryAfterMs?: number };
           httpErr.statusCode = status;
           if (detail) httpErr.detail = detail;
+          // Capture a server-provided Retry-After so the discovery retry loop can
+          // honor the advertised cool-down instead of blind backoff (parity with
+          // Claude Code's withRetry Retry-After handling). Header names are
+          // case-insensitive; Node lower-cases them.
+          const retryAfterRaw = res.headers['retry-after'];
+          const retryAfterMs = parseRetryAfterHeader(
+            Array.isArray(retryAfterRaw) ? retryAfterRaw[0] : retryAfterRaw,
+          );
+          if (retryAfterMs !== null) httpErr.retryAfterMs = retryAfterMs;
           reject(httpErr);
           return;
         }
@@ -104,6 +129,79 @@ function httpGetJSON(
     req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     req.on('error', reject);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Transient-failure retry for model-list discovery — a small bounded retry loop
+// around httpGetJSON so a momentary rate-limit (HTTP 429), a provider restart
+// (HTTP 503), or a dropped/half-open socket (ECONNRESET / ETIMEDOUT) does not
+// make listModels fall straight through to the static fallback list on the first
+// blip. Mirrors Claude Code's withRetry (services/api/withRetry.ts): retry only
+// genuinely transient conditions, honor a server Retry-After when present, and
+// otherwise back off exponentially with equal jitter. Scoped to the discovery
+// fetch path (listOpenAIModels / listGeminiModels); the point-in-time
+// connectivity probe deliberately does NOT retry so its latency reading and
+// reachable/unreachable verdict stay single-shot.
+// ---------------------------------------------------------------------------
+
+/** Up-to-N attempts total (1 initial + N-1 retries) for a model-list fetch. */
+const MODEL_LIST_MAX_ATTEMPTS = 3;
+/** Base blind-backoff delay; doubled per attempt before jitter. */
+const MODEL_LIST_BASE_DELAY_MS = 300;
+
+/**
+ * Test seam for the discovery retry loop: an injectable PRNG (for deterministic
+ * jitter) and sleep (so tests don't actually wait). Mirrors provider.ts'
+ * retryHooks seam so backoff timing is controllable without real delays.
+ */
+export const modelListRetryHooks: { random: () => number; sleep: (ms: number) => Promise<void> } = {
+  random: Math.random,
+  sleep: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
+};
+
+/**
+ * True when a model-list fetch error is worth another attempt: a transient
+ * rate-limit/unavailable status (429/503) or a transient socket error
+ * (ECONNRESET / ETIMEDOUT). A 4xx other than 429 (bad key, wrong path) and a
+ * malformed-JSON body are NOT retried — they will not fix themselves.
+ */
+function isTransientModelListError(err: unknown): boolean {
+  const status = (err as { statusCode?: unknown })?.statusCode;
+  if (status === 429 || status === 503) return true;
+  const code = (err as { code?: unknown })?.code;
+  return code === 'ECONNRESET' || code === 'ETIMEDOUT';
+}
+
+/**
+ * httpGetJSON with a bounded transient-error retry. Honors a server Retry-After
+ * (captured onto the error by httpGetJSON) over blind backoff; otherwise waits
+ * {@link MODEL_LIST_BASE_DELAY_MS} × 2^attempt with equal jitter (50–100%) to
+ * de-synchronize concurrent callers. Rethrows the last error once attempts are
+ * exhausted or the failure is non-transient, so the existing listModels fallback
+ * to the static list still fires.
+ */
+async function httpGetJSONRetrying(
+  url: string,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < MODEL_LIST_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await httpGetJSON(url, headers);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === MODEL_LIST_MAX_ATTEMPTS - 1 || !isTransientModelListError(err)) {
+        throw err;
+      }
+      const retryAfterMs = (err as { retryAfterMs?: unknown })?.retryAfterMs;
+      const waitMs = typeof retryAfterMs === 'number' && retryAfterMs > 0
+        ? retryAfterMs
+        : Math.round(MODEL_LIST_BASE_DELAY_MS * 2 ** attempt * (0.5 + 0.5 * modelListRetryHooks.random()));
+      log('modelCapabilities', `[modelCapabilities] transient model-list error, retrying in ${waitMs}ms (attempt ${attempt + 1}/${MODEL_LIST_MAX_ATTEMPTS})`);
+      await modelListRetryHooks.sleep(waitMs);
+    }
+  }
+  throw lastErr;
 }
 
 export function detectProvider(config: ProviderConfig): string {
@@ -327,9 +425,9 @@ async function listOpenAIModels(config: ProviderConfig): Promise<ModelInfo[]> {
   const baseUrl = config.baseUrl.replace(/\/+$/, '');
   const url = `${baseUrl}/models`;
   const headers: Record<string, string> = {};
-  if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+  if (config.apiKey) headers['Authorization'] = `Bearer ${sanitizeHeaderValue(config.apiKey)}`;
 
-  const data = await httpGetJSON(url, headers) as { data?: Array<Record<string, unknown>> };
+  const data = await httpGetJSONRetrying(url, headers) as { data?: Array<Record<string, unknown>> };
   const raw = data.data || [];
   const models: ModelInfo[] = raw.map(m => ({
     id: String(m.id ?? ''),
@@ -375,7 +473,7 @@ async function listGeminiModels(config: ProviderConfig): Promise<ModelInfo[]> {
   // Default to the public Gemini endpoint; overridable via env (e.g. an offline
   // mirror, or a test server) without changing the default behavior.
   const url = process.env.SI_GEMINI_MODELS_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
-  const data = await httpGetJSON(url, { 'x-goog-api-key': config.apiKey }) as { models?: Array<{ name: string; displayName: string }> };
+  const data = await httpGetJSONRetrying(url, { 'x-goog-api-key': sanitizeHeaderValue(config.apiKey) }) as { models?: Array<{ name: string; displayName: string }> };
   return (data.models || []).map(m => ({
     id: m.name.replace('models/', ''),
     name: m.displayName,
@@ -483,19 +581,19 @@ function connectivityProbeTarget(
       ? `${base}/models`
       : (process.env.SI_GEMINI_MODELS_URL || 'https://generativelanguage.googleapis.com/v1beta/models');
     const headers: Record<string, string> = {};
-    if (config.apiKey) headers['x-goog-api-key'] = config.apiKey;
+    if (config.apiKey) headers['x-goog-api-key'] = sanitizeHeaderValue(config.apiKey);
     return { url, headers };
   }
   if (provider === 'anthropic') {
     const root = base || 'https://api.anthropic.com/v1';
     const headers: Record<string, string> = { 'anthropic-version': '2023-06-01' };
-    if (config.apiKey) headers['x-api-key'] = config.apiKey;
+    if (config.apiKey) headers['x-api-key'] = sanitizeHeaderValue(config.apiKey);
     return { url: `${root}/models`, headers };
   }
   // Generic OpenAI-compatible endpoint (and any provider with an explicit base URL).
   if (!base) return undefined;
   const headers: Record<string, string> = {};
-  if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+  if (config.apiKey) headers['Authorization'] = `Bearer ${sanitizeHeaderValue(config.apiKey)}`;
   return { url: `${base}/models`, headers };
 }
 
