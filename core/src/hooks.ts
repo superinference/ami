@@ -104,6 +104,24 @@ export interface HookContext {
    *  down when the surrounding operation is cancelled, combined with the
    *  per-hook timeout. */
   abortSignal?: AbortSignal;
+  /** Origin of the model-sampling call that triggered this hook (Claude Code's
+   *  MagicDocs `querySource` discriminator). `'main'` = the top-level REPL/agent
+   *  loop; `'subagent'` = a forked/nested agent's own sampling. Surfaced to
+   *  pre/postSampling hooks (as the matcher field + serialized `sampling_origin`)
+   *  so a hook that itself spawns a sampling call can EXCLUDE background/forked
+   *  samplings and avoid re-entrant/recursive work (MagicDocs L222-224:
+   *  `if (querySource !== 'repl_main_thread') return`). */
+  samplingOrigin?: SamplingOrigin;
+}
+
+/** Allowed {@link HookContext.samplingOrigin} discriminators — the matcher value
+ *  set for pre/postSampling hooks (Claude Code's query-source boundary). */
+export const SAMPLING_ORIGINS = ['main', 'subagent'] as const;
+export type SamplingOrigin = (typeof SAMPLING_ORIGINS)[number];
+
+/** Narrow an arbitrary value to a {@link SamplingOrigin}. */
+export function isSamplingOrigin(v: unknown): v is SamplingOrigin {
+  return typeof v === 'string' && (SAMPLING_ORIGINS as readonly string[]).includes(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -975,6 +993,7 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   loadReason: 'load_reason', memoryType: 'memory_type',
   notificationType: 'notification_type',
   permissionMode: 'permission_mode',
+  samplingOrigin: 'sampling_origin',
 };
 
 /**
@@ -1299,6 +1318,12 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   subagentStop: 'mode',
   preCompact: 'trigger',
   postCompact: 'trigger',
+  // Sampling: scope on the query ORIGIN (Claude Code's MagicDocs querySource
+  // boundary) so a pre/postSampling hook can fire for only `main` (the top-level
+  // loop) or only `subagent` (forked/nested agents) — the re-entrancy guard that
+  // lets a hook which itself samples the model exclude background work.
+  preSampling: 'samplingOrigin',
+  postSampling: 'samplingOrigin',
   // Session lifecycle: scope on the boundary cause (Claude Code's
   // SessionStart `source` / SessionEnd `reason` discriminators) so a hook can
   // fire for e.g. only `resume` or only `clear`.
@@ -1374,6 +1399,8 @@ const HOOK_MATCHER_VALUES: Record<string, readonly string[]> = {
   setup: SETUP_TRIGGERS,
   preCompact: ['manual', 'auto'],
   postCompact: ['manual', 'auto'],
+  preSampling: SAMPLING_ORIGINS,
+  postSampling: SAMPLING_ORIGINS,
   stopFailure: [
     'rate_limit', 'authentication_failed', 'billing_error', 'invalid_request',
     'server_error', 'max_output_tokens', 'unknown',
@@ -2522,7 +2549,8 @@ export class HookManager extends EventEmitter {
         }
         case 'preSampling': {
           const fn: PreSamplingHookFn = async (ctx) => {
-            const eventData = serializeHookEvent({ event: 'preSampling' });
+            if (!matcherAppliesToCtx('preSampling', matcher, ctx as unknown as Record<string, unknown>)) return { action: 'allow' };
+            const eventData = serializeHookEvent({ event: 'preSampling', samplingOrigin: ctx.samplingOrigin });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.preSamplingHooks, fn, 'preSampling');
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
             return { action: 'allow' };
@@ -2531,9 +2559,10 @@ export class HookManager extends EventEmitter {
           break;
         }
         case 'postSampling': {
-          const fn: HookFn = async () => {
-            const eventData = serializeHookEvent({ event: 'postSampling' });
-            await this.runArmHook(hookConfig, cwd, eventData, undefined, this.postSamplingHooks, fn, 'postSampling');
+          const fn: HookFn = async (ctx) => {
+            if (!matcherAppliesToCtx('postSampling', matcher, ctx as unknown as Record<string, unknown>)) return;
+            const eventData = serializeHookEvent({ event: 'postSampling', samplingOrigin: ctx.samplingOrigin });
+            await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.postSamplingHooks, fn, 'postSampling');
           };
           this.onPostSampling(fn);
           break;
