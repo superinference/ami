@@ -1711,6 +1711,33 @@ export function deliverDirectMemberMessage(recipientName: string, message: strin
   return { success: true, recipientName: to, from };
 }
 
+/**
+ * Normalize the model-supplied message payload to the canonical string content the
+ * rest of the tool operates on. A model (or a cross-framework Claude Code peer) may
+ * pass the message as EITHER a plain string OR a discriminated structured OBJECT —
+ * Claude Code's SendMessage `Input.message` is a typed object carrying a `type`
+ * discriminator plus payload fields (e.g. `approve`) with `to` as a sibling
+ * (tools/SendMessageTool/UI.tsx). AMI routes structured control messages by JSON-
+ * parsing the string content (parseStructuredMessage), so an object form is simply
+ * serialized to that same JSON here — the single canonical coercion both execute()
+ * and isReadOnlyForInput() use, so the string and object forms take IDENTICAL paths
+ * (no parallel structured-input path). Precedence matches execute's historical
+ * `message ?? content` alias. Returns:
+ *  - the string verbatim when a string is supplied,
+ *  - the JSON serialization when an object is supplied,
+ *  - undefined when neither is present, the value is a non-string primitive, or the
+ *    object cannot be serialized (e.g. a cyclic structure) — the caller then reports
+ *    the normal empty-content validation error rather than crashing on `.trim()`.
+ */
+export function coerceMessageContent(input: Record<string, unknown>): string | undefined {
+  const raw = input.message ?? input.content;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw === 'object') {
+    try { return JSON.stringify(raw); } catch { return undefined; }
+  }
+  return undefined;
+}
+
 export const sendMessageTool: ToolDefinition = {
   name: 'send_message',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
@@ -1762,8 +1789,18 @@ export const sendMessageTool: ToolDefinition = {
         description: 'The message content to send (plain text, or JSON for a structured control message).',
       },
       message: {
-        type: 'string',
-        description: 'Alias for content — the message to send.',
+        // Widened to allow a structured OBJECT, not only a string, so the schema
+        // advertises that typed control messages exist (schema-level discoverability
+        // of the discriminated `type`/`approve` fields) and a cross-framework Claude
+        // Code peer that passes `message` as a typed object is accepted. Parity with
+        // Claude Code's SendMessage Input.message discriminated object.
+        type: ['string', 'object'],
+        description:
+          'Alias for content — the message to send. Either plain text, or a structured ' +
+          'control message as a discriminated object carrying a "type" field (e.g. ' +
+          '"shutdown_request" / "plan_approval_response") plus its typed payload (e.g. ' +
+          '"approve", "requestId", "reason"). A string is sent verbatim; an object is ' +
+          'serialized to the JSON control message.',
       },
       from: {
         type: 'string',
@@ -1786,14 +1823,21 @@ export const sendMessageTool: ToolDefinition = {
   // AMI's string-encoded content via the single canonical structured-message
   // detector. Consumed by tool-executor through isToolReadOnlyForInput.
   isReadOnlyForInput: (input: Record<string, unknown>): boolean => {
-    const c = (input.message as string) ?? (input.content as string);
+    // Normalize a string OR a structured object through the single canonical coercion
+    // so an object-form control message is correctly classified non-read-only (it
+    // mutates a teammate's lifecycle/posture) instead of being mis-read as read-only.
+    const c = coerceMessageContent(input);
     if (typeof c !== 'string') return true;
     return !isStructuredProtocolMessage(c);
   },
 
   async execute(input, context: ToolContext): Promise<ToolResult> {
     let toRaw = input.to as string;
-    const content = (input.message as string) ?? (input.content as string);
+    // Normalize the payload once: a string is used verbatim, a structured object
+    // (Claude Code's discriminated Input.message) is serialized to the JSON content
+    // the structured-message parser already routes — the single canonical path for
+    // both forms, so an object can never reach a `.trim()` on a non-string below.
+    const content = coerceMessageContent(input) as string;
 
     if (!toRaw || !toRaw.trim()) {
       return validationError('"to" must not be empty.');
