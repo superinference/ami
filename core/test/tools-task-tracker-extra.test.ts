@@ -429,10 +429,13 @@ describe('taskTool — execute with engine factory', () => {
     );
 
     assert.ok(capturedConfig);
+    // U065 provider-aware default subagent model fallback: when no _providerConfig is
+    // supplied, the subagent now falls back to the fast default model (haiku for the
+    // first-party default provider) instead of an empty model id.
     assert.deepEqual(capturedConfig.provider, {
       baseUrl: '',
       apiKey: '',
-      model: '',
+      model: 'claude-haiku-4-5',
     });
   });
 

@@ -214,8 +214,11 @@ describe('bashTool – timeout disposition', () => {
       },
       get: () => ({ pid: 999 }),
     };
+    // Use a non-`sleep` long-runner: U030 deliberately EXCLUDES bare `sleep` from
+    // auto-backgrounding (a timed-out sleep is a pointless background job), so the
+    // auto-background path must be exercised with a different blocking command.
     const result = await bashTool.execute(
-      { command: 'sleep 30', timeout: 400 },
+      { command: 'tail -f /dev/null', timeout: 400 },
       ctx({ processManager: pm } as any),
     );
     assert.ok(!result.isError, `auto-bg return is not an error: ${result.output}`);
