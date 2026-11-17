@@ -1331,3 +1331,98 @@ export function friendlyErrorMessage(
   const friendly = FRIENDLY_MESSAGES[classified.category];
   return friendly ?? classified.message;
 }
+
+// ---------------------------------------------------------------------------
+// Auto-compaction failure wording
+// ---------------------------------------------------------------------------
+
+/**
+ * Actionable user-facing wording when AUTOMATIC (background) compaction fails or
+ * is interrupted. The manual `/compact` path already surfaces an error line, but
+ * the auto path was previously opaque — a failed background summary was logged to
+ * analytics and silently swallowed, so the user kept hitting the context wall with
+ * no guidance. Classifies the underlying failure and returns copy that says what
+ * happened AND what to do next (retry on a transient/network/abort failure; trim
+ * context manually when the summary could not be produced or could not shrink the
+ * conversation). Mirrors Claude Code's ERROR_MESSAGE_INCOMPLETE_RESPONSE
+ * ("Compaction interrupted · This may be due to network issues — please try again")
+ * and ERROR_MESSAGE_PROMPT_TOO_LONG guidance (services/compact/compact.ts),
+ * adapted to AMI's own `/compact` and `/clear` recovery commands.
+ */
+export function compactionFailureMessage(error: string | Error | unknown): string {
+  const classified = classifyError(error);
+  switch (classified.category) {
+    case 'abort':
+      return 'Automatic compaction was interrupted — run /compact to trim the conversation manually, or continue (it will retry on the next turn).';
+    case 'network_error':
+    case 'ssl_error':
+    case 'server_error':
+    case 'gateway_rejection':
+      return 'Automatic compaction interrupted · this may be due to network issues — please try again, or run /compact to trim the conversation manually.';
+    case 'context_overflow':
+    case 'output_too_large':
+      return 'Automatic compaction could not shrink the conversation — run /compact to trim it manually, or /clear to start fresh.';
+    case 'rate_limited':
+    case 'plan_limit':
+      return 'Automatic compaction was rate limited — it will retry shortly; run /compact to trim the conversation manually if it persists.';
+    default:
+      return 'Automatic compaction failed — run /compact to trim the conversation manually, or /clear to start fresh.';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit simulation knob (dev/test)
+// ---------------------------------------------------------------------------
+
+/** Env var that enables synthetic rate-limit injection (see {@link parseMockRateLimit}). */
+export const MOCK_RATE_LIMIT_ENV = 'AMI_MOCK_RATE_LIMIT';
+
+/** Default Retry-After advertised on a synthetic rate-limit response, in milliseconds. */
+export const DEFAULT_MOCK_RATE_LIMIT_RETRY_AFTER_MS = 2000;
+
+/** Parsed configuration of the {@link MOCK_RATE_LIMIT_ENV} dev/test knob. */
+export interface MockRateLimitConfig {
+  /** Number of synthetic rate-limit responses to inject before the real request runs. */
+  count: number;
+  /** Retry-After value, in milliseconds, advertised on each synthetic response. */
+  retryAfterMs: number;
+  /** HTTP status stamped on the synthetic response. */
+  status: 429;
+}
+
+/**
+ * Parse the {@link MOCK_RATE_LIMIT_ENV} dev/test knob into a config, or null when
+ * unset / disabled. This is AMI's provider-neutral equivalent of Claude Code's
+ * `shouldProcessMockLimits()` / `/mock-limits` facility (RateLimitMessage.tsx): it
+ * lets a developer or test deterministically drive the WHOLE rate-limit code path
+ * (classification, the approaching/at-limit warning, Retry-After backoff, the retry
+ * loop) WITHOUT provoking a real 429 from a live provider. Deliberately excludes the
+ * vendor-specific upsell/subscription/billing surface from that reference file.
+ *
+ * Accepted forms (trimmed, case-insensitive):
+ *   - unset / '' / '0' / 'false' / 'off' / 'no'  → null (disabled)
+ *   - 'true' / 'on' / 'yes' / '1'                → one synthetic 429 (default delay)
+ *   - 'N'   (positive integer)                   → N synthetic 429s (default delay)
+ *   - 'N:MS' (count : retry-after in ms)         → N synthetic 429s, each Retry-After MS
+ * Any other (non-numeric, non-boolean) token is treated as disabled — fail-safe, so a
+ * typo never silently throttles a real session.
+ */
+export function parseMockRateLimit(raw: string | undefined): MockRateLimitConfig | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '' || trimmed === '0' || trimmed === 'false' || trimmed === 'off' || trimmed === 'no') {
+    return null;
+  }
+  if (trimmed === 'true' || trimmed === 'on' || trimmed === 'yes') {
+    return { count: 1, retryAfterMs: DEFAULT_MOCK_RATE_LIMIT_RETRY_AFTER_MS, status: 429 };
+  }
+  const [countPart, msPart] = trimmed.split(':');
+  const count = Number.parseInt(countPart, 10);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  let retryAfterMs = DEFAULT_MOCK_RATE_LIMIT_RETRY_AFTER_MS;
+  if (msPart !== undefined) {
+    const ms = Number.parseInt(msPart, 10);
+    if (Number.isFinite(ms) && ms >= 0) retryAfterMs = ms;
+  }
+  return { count, retryAfterMs, status: 429 };
+}

@@ -25,7 +25,7 @@ import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCall
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
-import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong } from './error-classifier';
+import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong, parseMockRateLimit, MOCK_RATE_LIMIT_ENV, type MockRateLimitConfig } from './error-classifier';
 import {
   getMTLSConfig,
   getTLSConnectOptions,
@@ -3441,6 +3441,29 @@ function isOverloadedError(errorText: string): boolean {
   return /"type"\s*:\s*"overloaded_error"/i.test(errorText);
 }
 
+/**
+ * Build a synthetic 429 rate-limit error chunk for the {@link MOCK_RATE_LIMIT_ENV}
+ * dev/test knob. The error text carries a parseable `HTTP 429` so the retry loop's
+ * `extractStatusCode` classifies it as rate-limited, and the Retry-After / reset
+ * headers drive the real Retry-After backoff + rate-limit-header display path
+ * exactly as a live provider 429 would. Lets the whole rate-limit UX be exercised
+ * deterministically without a real throttle (parity: Claude's mock-limits facility).
+ */
+function buildMockRateLimitChunk(cfg: MockRateLimitConfig): StreamChunk {
+  const retryAfterSeconds = Math.ceil(cfg.retryAfterMs / 1000);
+  const resetEpoch = Math.floor(Date.now() / 1000) + retryAfterSeconds;
+  return {
+    type: 'error',
+    error: `API Error: HTTP ${cfg.status} rate_limit_error — synthetic rate limit injected via ${MOCK_RATE_LIMIT_ENV}`,
+    retryAfter: retryAfterSeconds,
+    responseHeaders: {
+      'retry-after': String(retryAfterSeconds),
+      'x-ratelimit-reset-requests': String(resetEpoch),
+      'x-ratelimit-remaining-requests': '0',
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Query-source tagging + foreground/background overload (529) retry gating
 // ---------------------------------------------------------------------------
@@ -3687,7 +3710,27 @@ export async function* streamChatCompletionWithRetry(
   // generator that throws (abort / SSL / network / generic) to drive the catch
   // and network-retry branches, which real transports surface as error chunks
   // rather than thrown errors.
-  const streamImpl = options?.streamImpl ?? streamChatCompletion;
+  const baseStreamImpl = options?.streamImpl ?? streamChatCompletion;
+  // Dev/test knob (AMI_MOCK_RATE_LIMIT): inject synthetic 429 rate-limit responses
+  // ahead of the real request so the whole rate-limit path (classification, the
+  // approaching/at-limit warning, Retry-After backoff, the retry loop) can be
+  // exercised deterministically without a live provider 429 — parity with Claude
+  // Code's shouldProcessMockLimits()/`/mock-limits`. Byte-identical when unset: the
+  // real stream impl is used directly. The one-shot counter persists across the
+  // retry-loop attempts of THIS call, so the injected 429s drain and the real
+  // request runs once the quota is spent.
+  const mockRateLimit = parseMockRateLimit(process.env[MOCK_RATE_LIMIT_ENV]);
+  let mockRateLimitRemaining = mockRateLimit?.count ?? 0;
+  const streamImpl: typeof streamChatCompletion = mockRateLimit
+    ? async function* mockRateLimited(c, m, t, sig, o) {
+        if (mockRateLimitRemaining > 0) {
+          mockRateLimitRemaining--;
+          yield buildMockRateLimitChunk(mockRateLimit);
+          return;
+        }
+        yield* baseStreamImpl(c, m, t, sig, o);
+      }
+    : baseStreamImpl;
   // L4: resolve the configurable DEFAULT prompt-cache TTL (AMI_PROMPT_CACHE_TTL)
   // ONCE, before the retry loop. Done here — not inside streamChatCompletion — so
   // the gateway-rejection recovery below (which clears cacheTtl to drop the
