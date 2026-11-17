@@ -278,8 +278,18 @@ export function formatStoppedByUserNotification(descriptions: string[]): string 
 export function buildCompletionSummary(
   status: TaskStatus | undefined,
   exitCode: number | null | undefined,
+  kind?: TaskKind,
 ): string {
   const hasExit = exitCode !== null && exitCode !== undefined;
+  // A monitor task is a long-lived STREAM, not a command that "succeeds" or
+  // "fails" — so its termination is worded as the stream ending/stopping rather
+  // than a pass/fail exit. Parity: Claude Code's monitor-kind notification wording
+  // ('Monitor "..." stream ended/stopped').
+  if (kind === 'monitor') {
+    if (status === 'killed') return 'monitor stream stopped';
+    if (status === 'failed') return hasExit ? `monitor stream ended with exit code ${exitCode}` : 'monitor stream ended';
+    return 'monitor stream ended';
+  }
   if (status === 'killed') return 'was stopped';
   if (status === 'failed') return hasExit ? `failed with exit code ${exitCode}` : 'failed';
   return hasExit ? `completed (exit code: ${exitCode})` : 'completed';
@@ -821,7 +831,7 @@ export class ProcessManager extends EventEmitter {
     return this.runningCount() >= this.maxBackgroundProcesses;
   }
 
-  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string }): string {
+  spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'> }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
     // session could spawn unbounded detached shells. Claude Code caps concurrent
@@ -863,7 +873,12 @@ export class ProcessManager extends EventEmitter {
       command,
       description: opts.description || command.slice(0, 80),
       status: 'running',
-      kind: 'bash',
+      // A caller may spawn a long-lived STREAMING/monitor shell (`tail -f`, a dev
+      // server, a log follower) as kind 'monitor' so the stall watchdog is
+      // disabled and its completion is worded as a monitor stream ending rather
+      // than a command succeeding/failing. Parity: Claude Code's BashTaskKind
+      // ('bash' | 'monitor') threaded through the spawn input (LocalShellTask).
+      kind: opts.kind ?? 'bash',
       exitCode: null,
       outputPath,
       startTime: Date.now(),
@@ -1006,7 +1021,7 @@ export class ProcessManager extends EventEmitter {
     // buildCompletionSummary) so every downstream consumer reads a ready-made
     // outcome string instead of re-deriving it from status/exitCode.
     if (payload.summary === undefined) {
-      payload.summary = buildCompletionSummary(payload.status, payload.exitCode);
+      payload.summary = buildCompletionSummary(payload.status, payload.exitCode, entry?.kind);
     }
     // Attach the active run duration from the tracked entry so the completion
     // note's usage clause can report how long the task ran — parity with Claude
@@ -1258,6 +1273,12 @@ export class ProcessManager extends EventEmitter {
   private stallTick(taskId: string, lastSize: number, now: number = Date.now()): number {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return lastSize;
+    // A monitor task is EXPECTED to idle between bursts (a log follower waiting for
+    // the next line, a server between requests), so the no-growth stall watchdog is
+    // disabled for it — otherwise a healthy monitor would be mis-flagged as blocked
+    // on an interactive prompt and paused. Parity: Claude Code's startStallWatchdog
+    // returns a no-op cleanup (`if (kind === 'monitor') return () => {}`).
+    if (entry.kind === 'monitor') return lastSize;
     const currentSize = this.getOutputSize(taskId);
     if (currentSize !== lastSize) {
       // Output grew — the task is making progress, not stalled. Reset the

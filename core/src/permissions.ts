@@ -779,6 +779,44 @@ export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard 
 }
 
 /**
+ * Glob metacharacters (`*`, `?`, `[`, `]`) in a filesystem-path token. Parity:
+ * Claude Code's GLOB_PATTERN_REGEX (pathValidation.ts L50). A path token carrying
+ * one of these is a glob pattern whose runtime filesystem expansion cannot be
+ * statically validated.
+ */
+export const GLOB_PATTERN_REGEX = /[*?[\]]/;
+
+/** True if `p` contains a glob metacharacter (`* ? [ ]`). */
+export function containsGlobPattern(p: string): boolean {
+  return GLOB_PATTERN_REGEX.test(p);
+}
+
+/**
+ * True if `p` contains a `..` path-traversal segment. Parity: Claude Code's
+ * containsPathTraversal (utils/path.ts L133). A traversal glob such as
+ * `/project/[star]/../../etc/shadow` is resolved-and-revalidated rather than
+ * blindly gated, because collapsing the `..` segments pins down a concrete target
+ * the forbidden/workspace guards can then inspect.
+ */
+export function containsPathTraversal(p: string): boolean {
+  return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p);
+}
+
+/**
+ * Whether a read-path token is a glob that cannot be statically validated and must
+ * therefore be forced to manual approval. Parity: Claude Code's pathValidation glob
+ * handling (pathValidation.ts L1199-L1241, "finding #15"): a plain read glob's
+ * pre-glob base is the only segment that gets realpath'd, so a symlink MATCHED
+ * inside the expansion (e.g. `/project/[star]/passwd` with `/project/link → /etc`)
+ * is never examined while the literal glob string still prefix-matches the
+ * workspace. A traversal glob is excluded here (returns false) so it falls through
+ * to normal resolve-and-revalidate, where its `..`-collapsed target is checked.
+ */
+export function isUnvalidatableReadGlob(rawPath: string): boolean {
+  return containsGlobPattern(rawPath) && !containsPathTraversal(rawPath);
+}
+
+/**
  * Human-readable, user-facing reason for why an expansion-hazard path requires
  * manual approval, worded to match Claude's distinct messages so the user
  * understands why an otherwise-valid-looking path was gated.
@@ -4129,6 +4167,10 @@ export class PermissionManager {
     // (it is kept literal here but rewritten by the shell at run time) — keep this
     // boundary consistent with classifyReadAccess, which gates it to a prompt.
     if (detectPathExpansionHazard(filePath)) return false;
+    // A plain (non-traversal) read glob cannot be statically validated — a symlink
+    // matched inside its expansion is never examined — so it is never silently
+    // auto-allowed; the consent-aware classifyReadAccess gates it to a prompt.
+    if (isUnvalidatableReadGlob(filePath)) return false;
     return this.isWithinWorkspace(resolved, cwd);
   }
 
@@ -4154,19 +4196,33 @@ export class PermissionManager {
     // even when it resolves inside the workspace — force a manual-approval prompt.
     // Mirrors Claude's pathValidation blanket-reject (pathValidation.ts L393-L436).
     if (detectPathExpansionHazard(filePath)) return 'prompt';
+    // Glob read paths cannot be statically validated (finding #15): the pre-glob
+    // base is the only realpath'd segment, so a symlink matched inside the
+    // expansion (e.g. `/project/[star]/passwd`, `/project/link → /etc`) is never
+    // examined while the literal glob still prefix-matches the workspace. Force a
+    // manual-approval prompt for a plain read glob; a traversal glob falls through
+    // so its `..`-collapsed concrete target is validated against the workspace and
+    // forbidden guards above. Parity: Claude's pathValidation.ts L1199-L1241.
+    if (isUnvalidatableReadGlob(filePath)) return 'prompt';
     if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
     return 'prompt';
   }
 
   /**
    * The user-facing reason a path must be manually approved because it carries a
-   * shell-expansion / tilde-variant TOCTOU hazard, or `null` when the path is inert.
-   * Lets the permission UI explain WHY an otherwise-valid-looking path was gated
-   * rather than mislabelling it "outside the workspace".
+   * shell-expansion / tilde-variant TOCTOU hazard or is an unvalidatable read glob,
+   * or `null` when the path is inert. Lets the permission UI explain WHY an
+   * otherwise-valid-looking path was gated rather than mislabelling it "outside the
+   * workspace".
    */
   pathExpansionHazardReason(filePath: string): string | null {
     const hazard = detectPathExpansionHazard(filePath);
-    return hazard ? pathExpansionHazardReason(hazard) : null;
+    if (hazard) return pathExpansionHazardReason(hazard);
+    if (isUnvalidatableReadGlob(filePath)) {
+      return 'Glob patterns in read paths require manual approval — a symlink '
+        + 'matched inside the glob expansion cannot be statically validated';
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------

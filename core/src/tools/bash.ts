@@ -1198,6 +1198,16 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
           'You will be notified when it completes — do not poll. Use task_output to inspect results, task_kill to stop it, ' +
           'or task_list to see all background tasks.',
       },
+      background_kind: {
+        type: 'string',
+        enum: ['bash', 'monitor'],
+        description:
+          'Kind of background task (only meaningful with run_in_background). Defaults to "bash". ' +
+          'Use "monitor" for a long-lived STREAMING command that is EXPECTED to idle between bursts of output ' +
+          '(e.g. `tail -f`, a dev server, a log follower): the stall watchdog is disabled for it, so a healthy ' +
+          'monitor is not mis-flagged as blocked on an interactive prompt, and its termination is reported as a ' +
+          'stream ending rather than a command succeeding or failing.',
+      },
       description: {
         type: 'string',
         description:
@@ -1231,6 +1241,9 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
   };
   if (backgroundDisabled) {
     delete schema.properties.run_in_background;
+    // background_kind only gates a background run, so it is meaningless — and must
+    // not be advertised — when background tasks are disabled by policy.
+    delete schema.properties.background_kind;
   }
   // When policy forbids the escape hatch, omit it from the advertised schema so
   // the model cannot even request it (parity: Claude's prompt states the
@@ -1581,11 +1594,17 @@ export const bashTool: ToolDefinition = {
       // [functional parity] coerce a numeric-string timeout, honor the env knob,
       // and reject NaN/non-positive env values (see resolveBackgroundTimeoutMs).
       const bgTimeoutMs = resolveBackgroundTimeoutMs(input.timeout);
+      // A model-requested 'monitor' kind opts a streaming command out of the stall
+      // watchdog and gives it stream-ended completion wording. Any other value
+      // (incl. the default/absent) is a plain 'bash' task. Parity: Claude Code's
+      // BashTaskKind threaded through the spawn input.
+      const backgroundKind = input.background_kind === 'monitor' ? 'monitor' as const : undefined;
       const taskId = context.processManager.spawn(effectiveCommand, {
         cwd: context.cwd,
         description: desc,
         env: scrubEnv(context.skillEnv),
         timeoutMs: bgTimeoutMs,
+        ...(backgroundKind ? { kind: backgroundKind } : {}),
         // Record the owning agent so the shell is reaped if that agent exits first
         // (zombie prevention — see ProcessManager.killTasksForAgent).
         agentId: context.agentId,
