@@ -26,6 +26,7 @@ import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong, parseMockRateLimit, MOCK_RATE_LIMIT_ENV, type MockRateLimitConfig } from './error-classifier';
+import { maybeThrowFault } from './fault-injection';
 import {
   getMTLSConfig,
   getTLSConnectOptions,
@@ -3109,6 +3110,15 @@ export async function* streamChatCompletion(
   }
 
   try {
+    // Runtime fault-injection seam (parity: Claude's bridgeDebug.wrapApiForFaultInjection).
+    // When AMI_FAULT_INJECTION has queued a fault for the 'provider' target, throw the
+    // classified error HERE — before the real request — so the LIVE retry/backoff/teardown
+    // machinery (streamChatCompletionWithRetry → classifyError) actually fires: a transient
+    // fault (503) is retried, a fatal fault (403) is surfaced non-retryable. The throw is
+    // caught by this generator's catch below and yielded as an error chunk, exactly like a
+    // real wire error. No-op / near-zero overhead when unset.
+    maybeThrowFault('provider');
+
     const effectiveTemperature = resolveTemperature(modelId, config.temperature, options?.thinking);
 
     // OpenAI SDK-native prompt-cache options. The transport-layer extraBody path
