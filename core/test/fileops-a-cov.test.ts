@@ -1154,15 +1154,19 @@ describe('fileEditTool – deeper error paths', () => {
     assert.ok(fs.readFileSync(fp, 'utf-8').includes('bye world'));
   });
 
-  it('reports "no changes detected" for a CRLF/LF-only no-op replace', async () => {
+  it('surfaces a CRLF/LF-only no-op replace as a no-op error (post-apply identity check)', async () => {
+    // U125 parity: an edit that produces no change after normalization (here the
+    // only difference is CRLF→LF, which AMI normalizes away) is surfaced as an
+    // error rather than a silent "success", so the model never mistakes a no-op for
+    // an applied edit (Claude's post-apply identity check).
     const fp = path.join(tmpDir, 'noop.txt');
     fs.writeFileSync(fp, 'foo\nbar\n');
     const res = await fileEditTool.execute(
       { file_path: fp, old_string: 'foo\r\n', new_string: 'foo\n' },
       ctx(),
     );
-    assert.equal(res.isError, undefined);
-    assert.ok(res.output.includes('no changes detected'));
+    assert.equal(res.isError, true);
+    assert.ok(res.output.includes('produces no change'), res.output);
   });
 
   it('rejects a sequential edit on a non-UTF-encoded file', async () => {

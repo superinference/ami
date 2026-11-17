@@ -69,6 +69,11 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       sessionMemoryInterval: 5, alwaysLoadMcpServers: ['srv'], continueOnInvalidConfig: true,
       outputStyle: 'concise', includeGitInstructions: false,
       pluginHintsDisabled: true,
+      // Startup runtime-knob bridges (w79): CA certs, plans dir, gitignore,
+      // auto-compact, anthropic betas, extra directories.
+      extraCaCerts: '/etc/ca.pem', plansDirectory: 'plans', respectGitignore: true,
+      autoCompactEnabled: false, fastMode: true, redactThinking: true,
+      additionalDirectories: ['/srv/data'],
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

@@ -413,11 +413,13 @@ describe('MemoryGate — Eq.5', () => {
     assert.equal(gate.getEntries().length, 1);
   });
 
-  it('getApprovedContext formats Q/A and truncates result to 500 chars', () => {
+  it('getApprovedContext formats Q/A and truncates result to 500 chars with a marker', () => {
     const long = 'x'.repeat(600);
     gate.gate('qq', long, { approved: true, score: 1 }, 0.5, 1);
     const ctx = gate.getApprovedContext();
-    assert.match(ctx, /^Q: qq\nA: x{500}$/);
+    // U239 parity: a per-entry over-cap result is cut to 500 chars AND an explicit
+    // truncation marker is appended so a mid-content cut is never read as complete.
+    assert.match(ctx, /^Q: qq\nA: x{500}…\[truncated 100 chars\]$/);
   });
 
   it('reset clears entries', () => {
