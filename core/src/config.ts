@@ -669,6 +669,90 @@ export interface ProjectConfig {
    * Unset/`true` keeps background tasks on (AMI's default).
    */
   backgroundTasksEnabled?: boolean;
+  // -------------------------------------------------------------------------
+  // Admin-policy / engine knobs (round 3) that a `common/` resolver ALREADY reads
+  // but config.ts neither declared, value-validated, nor (for the merged-path keys)
+  // copied through {@link mergeConfigs} — so a value set in `.ami/config.json` (any
+  // file tier) was silently dropped AND surfaced as a spurious unknown-key typo
+  // warning. Same class of bug as the engine-behavior rounds above; newly-found keys.
+  // Declaring them here (+ their entry in {@link PROJECT_CONFIG_FIELD_TYPES} + their
+  // copy in {@link mergeConfigs}) makes them recognized, base-type validated, and
+  // actually honored. Parity: Claude Code's policyLimits / pluginTrustMessage /
+  // marketplace-policy settings flowing through the settings cascade.
+  // -------------------------------------------------------------------------
+  /**
+   * Generic admin/enterprise feature-restriction map (parity: Claude Code's
+   * `services/policyLimits` `restrictions: Record<string, { allowed: boolean }>`).
+   * Keyed by a named policy/feature (`computer_use`, `bash_classifier`,
+   * `task_tracker`, …); only BLOCKED policies need an entry — an absent key is
+   * allowed. A present entry whose `allowed` is `false` DENIES that named feature.
+   * Read by `common/src/feature-flags.ts` {@link import('./types')} `isPolicyAllowed`
+   * (fail-open: no map / unknown key / malformed entry → allowed) off the MERGED
+   * project config, so {@link mergeConfigs} must copy it. Managed-authoritative: a
+   * lower tier may ADD denies for new policies, but it can never RELAX a managed
+   * deny (managed entries win), so enterprise policy is not defeatable locally.
+   */
+  policyRestrictions?: Record<string, { allowed: boolean }>;
+  /**
+   * Org/enterprise custom trust-message appended to the plugin-install warning
+   * (parity: Claude Code's `getPluginTrustMessage` / managed `pluginTrustMessage`
+   * setting). A non-empty string replaces/augments the built-in advisory with the
+   * org's own policy copy (e.g. "Only install plugins approved in the internal
+   * registry — see go/plugins"). Read by `common/src/plugin-commands.ts`
+   * `resolvePluginTrustWarning` (managed tier first, then global). Declaring it here
+   * makes a managed/global config carrying it recognized + value-validated instead of
+   * flagged as an unknown-key typo.
+   */
+  pluginTrustMessage?: string;
+  /**
+   * RSS high-water mark (bytes) at which the engine treats memory pressure as
+   * CRITICAL and sheds load (parity: Claude Code's critical-memory RSS threshold).
+   * Read by `common/src/engine-factory.ts` off the merged project config
+   * (`resolveEngineConfig` → `EngineConfig.memoryCriticalRssBytes`), so
+   * {@link mergeConfigs} must copy it; a non-positive value is ignored by the
+   * resolver. Unset keeps the engine default.
+   */
+  memoryCriticalRssBytes?: number;
+  /**
+   * Prefer a tmux teammate backend over iTerm2 panes when both are available
+   * (parity: Claude Code's terminal-multiplexer preference). Read by
+   * `common/src/engine-factory.ts` off the merged project config to resolve the
+   * teammate execution surface; {@link mergeConfigs} must copy it. Unset/`false`
+   * keeps the default auto-selection.
+   */
+  preferTmuxOverIterm2?: boolean;
+  /**
+   * Managed/enterprise policy-refresh tuning block (parity: Claude Code's remote
+   * policy-limits background refresh knobs). `{ pollIntervalMs, maxRetries,
+   * fetchTimeoutMs, failOpenOnStaleCache }` — each sub-field is clamped/validated
+   * by `common/src/engine-factory.ts` `resolvePolicyRefreshConfig` off the merged
+   * project config (env vars still win per-field), so {@link mergeConfigs} must copy
+   * the block. Unset keeps the built-in refresh defaults.
+   */
+  policyRefresh?: {
+    pollIntervalMs?: number;
+    maxRetries?: number;
+    fetchTimeoutMs?: number;
+    failOpenOnStaleCache?: boolean;
+  };
+  /**
+   * Enterprise marketplace host BLOCKLIST (parity: Claude Code's `blockedMarketplaces`
+   * managed setting). Hosts named here are refused as plugin-marketplace sources
+   * (deny-wins — the union across the managed + global tiers is enforced). Read by
+   * `common/src/plugin-commands.ts` `sourceBlockedMarketplaces` (managed + global raw
+   * config). Declaring it here makes it recognized + value-validated; entries
+   * ACCUMULATE across layers (a higher layer adds more blocked hosts, never removes a
+   * lower layer's).
+   */
+  blockedMarketplaces?: string[];
+  /**
+   * Enterprise marketplace host ALLOWLIST (parity: Claude Code's
+   * `strictKnownMarketplaces` managed setting). When configured, ONLY these hosts may
+   * be added as plugin-marketplace sources. Read by `common/src/plugin-commands.ts`
+   * `sourceStrictKnownMarketplaces` (managed + global raw config). Declaring it here
+   * makes it recognized + value-validated; entries ACCUMULATE across layers.
+   */
+  strictKnownMarketplaces?: string[];
 }
 
 /**
@@ -1288,6 +1372,15 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['syntaxHighlightingDisabled', 'boolean'], ['showThinkingSummaries', 'boolean'],
   ['messageIdleNotifThresholdMs', 'number'], ['spinnerVerbs', 'object'],
   ['backgroundTasksEnabled', 'boolean'],
+  // Admin-policy / engine knobs (round 3) a common/ resolver already reads but
+  // mergeConfigs previously dropped / the loader flagged as an unknown key — declared
+  // here so they are recognized (no spurious unknown-key warning) + base-type validated.
+  // `policyRestrictions` is base-type `object`; its nested `{ allowed: boolean }` shape
+  // is validated bespoke in {@link validateProjectConfigValues}.
+  ['policyRestrictions', 'object'], ['policyRefresh', 'object'],
+  ['pluginTrustMessage', 'string'], ['memoryCriticalRssBytes', 'number'],
+  ['preferTmuxOverIterm2', 'boolean'],
+  ['blockedMarketplaces', 'string[]'], ['strictKnownMarketplaces', 'string[]'],
 ];
 
 /**
@@ -1678,6 +1771,23 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     for (const [name, v] of Object.entries(counts)) {
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
         issues.push({ field: `noticeSeenCounts.${name}`, message: `must be a non-negative number (got ${JSON.stringify(v)})`, value: v, tip: getConfigValidationTip(`noticeSeenCounts.${name}`, { kind: 'type', type: 'number' }) });
+      }
+    }
+  }
+  // 4c. Nested `policyRestrictions` entries must each be a `{ allowed: boolean }`
+  //     object (parity: Claude's policyLimits `restrictions` schema). Step 1 only
+  //     guards that the outer value is an object; a malformed entry (a non-object, or
+  //     `{ allowed: "yes" }`) would otherwise flow into the fail-open `isPolicyAllowed`
+  //     gate and be silently treated as "allowed", masking a mistyped deny. Skip when
+  //     the outer object type was already flagged.
+  if (config.policyRestrictions !== undefined && !typeInvalid.has('policyRestrictions')) {
+    const entries = config.policyRestrictions as Record<string, unknown>;
+    for (const [name, v] of Object.entries(entries)) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        issues.push({ field: `policyRestrictions.${name}`, message: `must be a { allowed: boolean } object (got ${describeJsonType(v)})`, value: v, tip: getConfigValidationTip(`policyRestrictions.${name}`, { kind: 'type', type: 'object' }) });
+      } else if (typeof (v as Record<string, unknown>).allowed !== 'boolean') {
+        const allowed = (v as Record<string, unknown>).allowed;
+        issues.push({ field: `policyRestrictions.${name}.allowed`, message: `must be a boolean (got ${describeJsonType(allowed)})`, value: allowed, tip: getConfigValidationTip(`policyRestrictions.${name}.allowed`, { kind: 'type', type: 'boolean' }) });
       }
     }
   }
@@ -2881,6 +2991,18 @@ export function mergeConfigs(
     if (layer.messageIdleNotifThresholdMs !== undefined) merged.messageIdleNotifThresholdMs = layer.messageIdleNotifThresholdMs;
     if (layer.spinnerVerbs !== undefined) merged.spinnerVerbs = layer.spinnerVerbs;
     if (layer.backgroundTasksEnabled !== undefined) merged.backgroundTasksEnabled = layer.backgroundTasksEnabled;
+    // Admin-policy / engine knobs (round 3): the policy maps deep-merge across layers
+    // (a higher layer ADDS denies/entries, never silently drops a lower layer's), the
+    // marketplace policy lists ACCUMULATE (deny/allow-wins union), and the remaining
+    // scalars are last-layer-wins. Each was READ by a common/ resolver off the merged
+    // config yet never COPIED here, so a file-tier value was silently dropped.
+    if (layer.policyRestrictions !== undefined) merged.policyRestrictions = deepMergeConfigObjects(merged.policyRestrictions as Record<string, unknown> | undefined, layer.policyRestrictions as Record<string, unknown>) as ProjectConfig['policyRestrictions'];
+    if (layer.policyRefresh !== undefined) merged.policyRefresh = deepMergeConfigObjects(merged.policyRefresh as Record<string, unknown> | undefined, layer.policyRefresh as Record<string, unknown>) as ProjectConfig['policyRefresh'];
+    if (layer.pluginTrustMessage !== undefined) merged.pluginTrustMessage = layer.pluginTrustMessage;
+    if (layer.memoryCriticalRssBytes !== undefined) merged.memoryCriticalRssBytes = layer.memoryCriticalRssBytes;
+    if (layer.preferTmuxOverIterm2 !== undefined) merged.preferTmuxOverIterm2 = layer.preferTmuxOverIterm2;
+    if (layer.blockedMarketplaces !== undefined) merged.blockedMarketplaces = mergeConfigArray(merged.blockedMarketplaces, layer.blockedMarketplaces);
+    if (layer.strictKnownMarketplaces !== undefined) merged.strictKnownMarketplaces = mergeConfigArray(merged.strictKnownMarketplaces, layer.strictKnownMarketplaces);
   }
 
   // Managed allowlist is authoritative and MUST NOT be overridable by lower
@@ -2943,6 +3065,17 @@ export function mergeConfigs(
   // Claude's shouldAllowManagedSandboxDomainsOnly() policy knob.
   if (managedConfig?.allowManagedSandboxDomainsOnly) {
     merged.allowManagedSandboxDomainsOnly = true;
+  }
+  // Managed feature-restriction map is AUTHORITATIVE: a lower tier may ADD denies for
+  // new policies (handled by the deep-merge in the loop), but a managed deny can never
+  // be RELAXED by a lower layer re-allowing it. Re-apply the managed entries ON TOP so
+  // each managed `{ allowed }` wins per-policy (deny-wins / admin-wins). Parity: Claude
+  // Code's policyLimits being sourced from the managed/enterprise tier only.
+  if (managedConfig?.policyRestrictions) {
+    merged.policyRestrictions = deepMergeConfigObjects(
+      merged.policyRestrictions as Record<string, unknown> | undefined,
+      managedConfig.policyRestrictions as Record<string, unknown>,
+    ) as ProjectConfig['policyRestrictions'];
   }
   // Managed tier is HIGHEST-PRECEDENCE and authoritative for the security-relevant
   // scalar settings, not just the allowlists/killswitches handled above. The

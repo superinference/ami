@@ -93,6 +93,14 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // Background-task gate (U010 w88): bridged to AMI_DISABLE_BACKGROUND_TASKS by
       // applyConfigStartupKnobs; declared/validated/merged like the above.
       backgroundTasksEnabled: false,
+      // Admin-policy / engine knobs (U010 w90, round 3): read by a common/ resolver
+      // (isPolicyAllowed / resolvePluginTrustWarning / engine-factory / plugin-commands)
+      // but previously dropped by mergeConfigs or flagged as an unknown key — now
+      // declared/validated/merged so a config-file value takes effect.
+      policyRestrictions: { computer_use: { allowed: false } },
+      pluginTrustMessage: 'See go/plugins', memoryCriticalRssBytes: 1_500_000_000,
+      preferTmuxOverIterm2: true, policyRefresh: { pollIntervalMs: 90_000 },
+      blockedMarketplaces: ['evil.example'], strictKnownMarketplaces: ['github.com'],
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
