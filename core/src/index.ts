@@ -72,7 +72,8 @@ export {
   truncateContent, MAX_OTLP_ATTR_BYTES, shouldIncludeTelemetryAttr, buildTelemetryResourceAttrs,
   OTEL_CARDINALITY_DEFAULTS, parseOtelHeaders,
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
-  detectTerminalType, getHostPlatformForAnalytics, HOST_PLATFORM_OVERRIDES, getEnvironmentFingerprint,
+  detectTerminalType, getHostPlatformForAnalytics, HOST_PLATFORM_OVERRIDES, getEnvironmentFingerprint, detectWslForAnalytics,
+  DEFAULT_SHUTDOWN_TIMEOUT_MS, resolveShutdownTimeoutMs, stripLocalOnlyFields, resolveLocalOnlyFields,
   getCiContext, getOrCreateUserId, USER_ID_FILE, getUserBucket, NUM_USER_BUCKETS,
   bucketHttpStatus, deriveHttpStatusFields,
   parseExporterTypes, resolveOtlpProtocol, OTLP_PROTOCOLS, isTelemetrySuppressedForTest,
@@ -89,7 +90,7 @@ export {
   SINK_NAMES, resolveKilledSinks, ProcessMetricsSampler, FailedBatchStore, FAILED_BATCH_FILE_PREFIX,
 } from './analytics';
 export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps,
-  SinkName, ProcessMetrics, ProcessMetricsDeps } from './analytics';
+  SinkName, ProcessMetrics, ProcessMetricsDeps, LocalOnlyFieldMatcher } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';

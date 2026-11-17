@@ -1,7 +1,10 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
+import { AsyncLocalStorage } from 'async_hooks';
+import { detectWslVersion } from './tools/bash-sandbox';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
@@ -493,6 +496,60 @@ export function filterEventForEgress(
   return out;
 }
 
+/**
+ * A matcher selecting data FIELDS that are local-only: present on the privileged,
+ * on-machine sinks (in-memory + JSONL + console) but stripped from the general-access,
+ * off-machine OTLP export. Either an explicit set of field NAMES, a key PREFIX, or
+ * both (a key matches if it is in `names` OR starts with `prefix`).
+ */
+export interface LocalOnlyFieldMatcher {
+  names?: ReadonlySet<string>;
+  prefix?: string;
+}
+
+/**
+ * Copy-on-write strip of local-only fields from a payload destined for off-machine
+ * export: returns the SAME reference when no field matches (the common case — no
+ * allocation), else a shallow clone with the matching keys removed. Mirrors Claude's
+ * `stripProtoFields` copy-on-write optimization — the privileged/local sinks keep the
+ * full payload, only the general-access (OTLP) copy is minimized.
+ */
+export function stripLocalOnlyFields<V>(
+  data: Record<string, V>,
+  matcher: LocalOnlyFieldMatcher,
+): Record<string, V> {
+  const { names, prefix } = matcher;
+  let out: Record<string, V> | undefined;
+  for (const key of Object.keys(data)) {
+    if ((names && names.has(key)) || (prefix && prefix.length > 0 && key.startsWith(prefix))) {
+      if (out === undefined) out = { ...data };
+      delete out[key];
+    }
+  }
+  return out ?? data;
+}
+
+/**
+ * Resolve the local-only field matcher from explicit opts merged with the env knobs
+ * `AMI_ANALYTICS_LOCAL_ONLY_FIELDS` (comma list of field names) and
+ * `AMI_ANALYTICS_LOCAL_ONLY_PREFIX` (a key prefix). Returns null when nothing is
+ * configured (so the common differential-free path stays a cheap null check).
+ */
+export function resolveLocalOnlyFields(
+  env: NodeJS.ProcessEnv = process.env,
+  explicit: { localOnlyFields?: readonly string[]; localOnlyFieldPrefix?: string } = {},
+): LocalOnlyFieldMatcher | null {
+  const names = new Set<string>();
+  for (const f of explicit.localOnlyFields ?? []) { if (f) names.add(f); }
+  for (const tok of (env.AMI_ANALYTICS_LOCAL_ONLY_FIELDS || '').split(',')) {
+    const t = tok.trim();
+    if (t) names.add(t);
+  }
+  const prefix = explicit.localOnlyFieldPrefix ?? env.AMI_ANALYTICS_LOCAL_ONLY_PREFIX ?? undefined;
+  if (names.size === 0 && !prefix) return null;
+  return { ...(names.size > 0 ? { names } : {}), ...(prefix ? { prefix } : {}) };
+}
+
 // ---------------------------------------------------------------------------
 // Per-sink killswitch (Claude-Code sinkKillswitch.ts parity): disable an individual
 // analytics sink (in-memory / on-disk JSONL / off-machine OTLP) at runtime without
@@ -793,6 +850,28 @@ export function resolveFlushTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
+ * Default shutdown-drain budget (ms) the graceful close may block for. AMI keeps its
+ * own deliberate {@link CLOSE_GRACE_MS} value as the default (additive superset — a
+ * knob is ADDED, AMI's default is not regressed to Claude's 2000ms).
+ */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = CLOSE_GRACE_MS;
+
+/**
+ * Resolve the graceful-shutdown drain budget (ms), honoring `AMI_OTEL_SHUTDOWN_TIMEOUT_MS`
+ * then the Claude-compatible `CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS`, defaulting to
+ * {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. This is SEPARATE from the per-flush budget
+ * ({@link resolveFlushTimeoutMs}): shutdown bounds how long the FINAL close drain may
+ * block on a slow collector, independent of the in-session flush bound (mirrors
+ * Claude's distinct shutdown-vs-flush timeout knobs). A literal `0` is honored (do not
+ * block on close); a non-finite/negative value falls back to the default.
+ */
+export function resolveShutdownTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AMI_OTEL_SHUTDOWN_TIMEOUT_MS ?? env.CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS;
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_SHUTDOWN_TIMEOUT_MS;
+}
+
+/**
  * Actionable, numbered remediation shown when the OTLP flush exceeds its budget —
  * so a user pointing AMI at an unreachable/slow collector gets a self-correcting
  * hint instead of silence (mirrors Claude's flush-timeout guidance; AGENTS.md
@@ -880,19 +959,44 @@ export function getHostPlatformForAnalytics(
 }
 
 /**
+ * Resolve the `wsl.version` telemetry dimension (`'1'` | `'2'`) when running under
+ * the Windows Subsystem for Linux, else null (so the attribute is attached only on
+ * WSL). Detection requires a WSL env marker (`WSL_DISTRO_NAME` / `WSL_INTEROP`) so
+ * the dimension is deterministic off-WSL (never a false positive from a stray kernel
+ * string), then classifies the generation via the shared {@link detectWslVersion}
+ * kernel classifier (single source of truth, reused — no duplicate WSL logic). A
+ * marker present with an untagged kernel assumes WSL2 (the modern default), matching
+ * bash-sandbox's `currentWslVersion`. Mirrors Claude's instrumentation.ts WSL
+ * resource special-case (`wsl.version`).
+ */
+export function detectWslForAnalytics(
+  env: NodeJS.ProcessEnv = process.env,
+  kernel: string = os.release(),
+): string | null {
+  if (!env.WSL_DISTRO_NAME && !env.WSL_INTEROP) return null;
+  const v = detectWslVersion(kernel);
+  if (v === 'wsl1') return '1';
+  return '2'; // 'wsl2' or marker-present-but-untagged → modern WSL2 default
+}
+
+/**
  * Vendor-neutral environment fingerprint for telemetry: host platform (honoring
- * the {@link getHostPlatformForAnalytics} override), CPU arch, and Node version.
- * Attached to every OTLP resource so a collector can segment by environment.
+ * the {@link getHostPlatformForAnalytics} override), CPU arch, Node version, and —
+ * only when running under WSL — the `wsl.version` generation. Attached to every OTLP
+ * resource so a collector can segment by environment.
  */
 export function getEnvironmentFingerprint(
   env: NodeJS.ProcessEnv = process.env,
-  info: { platform?: NodeJS.Platform; arch?: string; nodeVersion?: string } = {},
+  info: { platform?: NodeJS.Platform; arch?: string; nodeVersion?: string; kernel?: string } = {},
 ): Record<string, string> {
-  return {
+  const out: Record<string, string> = {
     'host.platform': getHostPlatformForAnalytics(env, info.platform ?? process.platform),
     'host.arch': info.arch ?? process.arch,
     'node.version': info.nodeVersion ?? process.version,
   };
+  const wsl = detectWslForAnalytics(env, info.kernel);
+  if (wsl) out['wsl.version'] = wsl;
+  return out;
 }
 
 /** Point-in-time process resource metrics attached to analytics events (opt-in). */
@@ -1318,6 +1422,28 @@ export interface AnalyticsTrackerOpts {
   persistFailedBatches?: boolean;
   /** Override directory for the durable failed-batch spool. */
   failedBatchDir?: string;
+  /**
+   * Bypass telemetry batching: when true, every logged event is flushed to the OTLP
+   * send path immediately (one batch per event) instead of accumulating to the
+   * size/byte/interval boundary — a low-latency/debugging pass-through. Off by default;
+   * also enabled by the `AMI_OTEL_IMMEDIATE_FLUSH` env knob. Mirrors Claude's
+   * bufferedWriter `immediateMode`.
+   */
+  telemetryImmediateMode?: boolean;
+  /**
+   * Field NAMES that are local-only: kept on the privileged on-machine sinks (in-memory
+   * + JSONL + console) but stripped from the general-access off-machine OTLP export.
+   * Merged with the `AMI_ANALYTICS_LOCAL_ONLY_FIELDS` env list. Mirrors Claude's
+   * differential-by-sink redaction (full payload to the privileged 1P sink, stripped
+   * copy to the general-access backend).
+   */
+  localOnlyFields?: readonly string[];
+  /**
+   * Key PREFIX marking local-only fields (stripped from the OTLP export only). Merged
+   * with the `AMI_ANALYTICS_LOCAL_ONLY_PREFIX` env knob. Mirrors Claude's `_PROTO_*`
+   * prefix strip.
+   */
+  localOnlyFieldPrefix?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,6 +1584,21 @@ export class AnalyticsTracker {
   private _warnedMirror = false;
   /** Serializes mid-session (onBatch) sends so concurrent boundary flushes don't interleave. */
   private _sendChain: Promise<void> = Promise.resolve();
+  /** Resolved local-only field matcher (stripped from OTLP egress only); null = none. */
+  private _localOnly: LocalOnlyFieldMatcher | null;
+  /** When true the batch sender flushes one batch per event (immediate-mode bypass). */
+  private _immediate: boolean;
+  /**
+   * ALS-backed invocation source. Unlike the mutable push/pop {@link _sourceStack},
+   * a source established via {@link runWithSource} survives every `await` boundary in
+   * that async chain and is isolated from sibling/parent chains — so a void-detached
+   * background task (cron, forked slash command, subagent) whose synchronous
+   * continuation runs before it resumes still resolves ITS own source rather than a
+   * clobbered global. Mirrors Claude's workloadContext AsyncLocalStorage.
+   */
+  private _sourceAls = new AsyncLocalStorage<{ source: string | undefined }>();
+  /** Re-entrancy guard for persisted-batch recovery (Claude's `isRetrying` parity). */
+  private _recovering = false;
 
   constructor(logDir?: string, opts?: AnalyticsTrackerOpts) {
     this.logFile = logDir ? `${logDir}/analytics.jsonl` : null;
@@ -1520,6 +1661,11 @@ export class AnalyticsTracker {
     const failedDir = opts?.failedBatchDir ?? (logDir ? path.join(logDir, 'telemetry-failed') : undefined);
     this._failedStore = persist && failedDir ? new FailedBatchStore(failedDir) : null;
     this._dedup = opts?.dedupeContent ? new TelemetryContentDedup() : null;
+    this._localOnly = resolveLocalOnlyFields(this._env, {
+      localOnlyFields: opts?.localOnlyFields,
+      localOnlyFieldPrefix: opts?.localOnlyFieldPrefix,
+    });
+    this._immediate = opts?.telemetryImmediateMode ?? isEnvTruthy(this._env.AMI_OTEL_IMMEDIATE_FLUSH);
     this._headersHelper = opts?.otlpHeadersHelper
       ? new OtelHeadersHelper(opts.otlpHeadersHelper.command, {
           exec: opts.otlpHeadersHelper.exec,
@@ -1628,7 +1774,27 @@ export class AnalyticsTracker {
     return this._sourceStack.pop();
   }
 
+  /**
+   * Run `fn` within an async-isolated invocation-source context: {@link currentSource}
+   * (and the {@link setAllowedSources} gate it drives) resolve to `source` for the
+   * entire async chain of `fn` — across every `await` — and NOT for sibling/parent
+   * chains. ALWAYS establishes a fresh boundary (even for `undefined`) so a leaked
+   * ambient context can never bleed in (Claude workloadContext parity). Returns `fn`'s
+   * return value (including a Promise, whose continuation keeps the context). Prefer
+   * this over {@link pushSource}/{@link popSource} for void-detached background work
+   * (cron, forked slash commands, subagents) whose continuation outlives the caller.
+   */
+  runWithSource<T>(source: string | undefined, fn: () => T): T {
+    return this._sourceAls.run({ source }, fn);
+  }
+
   currentSource(): string | undefined {
+    // An ALS boundary (survives awaits, isolated per chain) always wins — even when it
+    // was established with an undefined source (so a fresh `runWithSource(undefined, …)`
+    // shadows a leaked ambient stack rather than falling through to it). Only with NO
+    // ALS boundary at all do we consult the synchronous push/pop stack.
+    const fromAls = this._sourceAls.getStore();
+    if (fromAls !== undefined) return fromAls.source;
     return this._sourceStack.length > 0 ? this._sourceStack[this._sourceStack.length - 1] : undefined;
   }
 
@@ -1745,11 +1911,18 @@ export class AnalyticsTracker {
             maxBatchSize: this._telemetryMaxBatchSize,
             maxBatchBytes: this._telemetryMaxBatchBytes,
             flushIntervalMs: this._exportIntervalMs,
+            immediateMode: this._immediate,
             onBatch: (batch) => this._scheduleSend(batch),
           });
           this._telemetry.startAutoFlush();
         }
-        this._telemetry.enqueue(type, egressData, event.sequence);
+        // Differential redaction: the off-machine OTLP copy drops local-only fields
+        // (copy-on-write) while the on-machine disk + console sinks above kept the full
+        // payload — full to the privileged/local sinks, minimized to general-access.
+        const otlpEgress = this._localOnly
+          ? markAnalyticsSafe(stripLocalOnlyFields(egressData, this._localOnly))
+          : egressData;
+        this._telemetry.enqueue(type, otlpEgress, event.sequence);
       } catch (e) {
         if (!this._warnedMirror) {
           this._warnedMirror = true;
@@ -1827,7 +2000,7 @@ export class AnalyticsTracker {
    * events still queued are left for a later process to recover. Idempotent;
    * best-effort (never throws).
    */
-  async closeWithGrace(graceMs: number = CLOSE_GRACE_MS): Promise<void> {
+  async closeWithGrace(graceMs: number = resolveShutdownTimeoutMs(this._env)): Promise<void> {
     if (this._shutdown) return;
     await raceWithTimeout(this.flushOtlp(), graceMs, this._sleep);
     this._shutdown = true;
@@ -1922,7 +2095,14 @@ export class AnalyticsTracker {
       // Killswitch: requeue the boundary batch for a later flush instead of sending.
       if (this._isKilled?.()) { this._telemetry?.requeueFront([batch]); return; }
       const ok = await this._sendWithRetry(batch);
-      if (!ok && this._telemetry) this._telemetry.requeueFront([batch]);
+      if (ok) {
+        // A successful mid-session send proves the collector is healthy — immediately
+        // drain any previously-spooled failed batches instead of waiting for the next
+        // flush/backoff tick (Claude's "success means healthy, retry queued" parity).
+        if (this._failedStore) await this.recoverPersistedBatches();
+      } else if (this._telemetry) {
+        this._telemetry.requeueFront([batch]);
+      }
     });
   }
 
@@ -1986,22 +2166,38 @@ export class AnalyticsTracker {
   async recoverPersistedBatches(): Promise<number> {
     if (!this._failedStore || !this._otlpEndpoint || !this._otlpExport || this._shutdown) return 0;
     if (isTelemetryDisabled(this._env) || this.isSinkKilled('otlp') || this._isKilled?.()) return 0;
+    // Re-entrancy guard (Claude's `isRetrying`): a recovery triggered by a successful
+    // mid-session send must not overlap one already running at a flush head.
+    if (this._recovering) return 0;
+    this._recovering = true;
+    try {
+      return await this._recoverPersistedBatchesInner();
+    } finally {
+      this._recovering = false;
+    }
+  }
+
+  private async _recoverPersistedBatchesInner(): Promise<number> {
+    // Non-null: the public entry point guards `_failedStore`/`_otlpEndpoint` before
+    // delegating here.
+    const store = this._failedStore!;
+    const endpoint = this._otlpEndpoint!;
     let recovered = 0;
-    for (const file of this._failedStore.list()) {
-      const events = this._failedStore.load(file);
-      if (events.length === 0) { this._failedStore.delete(file); continue; }
+    for (const file of store.list()) {
+      const events = store.load(file);
+      if (events.length === 0) { store.delete(file); continue; }
       const batch: TelemetryBatch = { events, sessionId: this._sessionId ?? 'unknown', batchId: -1 };
       const headers = this._resolveHeaders();
-      const res = await postOtlpBatch(this._otlpEndpoint, batch, {
+      const res = await postOtlpBatch(endpoint, batch, {
         fetchImpl: this._otlpFetch, env: this._env, headers,
         resourceAttrs: this._otlpResourceAttrs, timeoutMs: this._otlpTimeoutMs,
       });
       if (res.ok) {
-        this._failedStore.delete(file);
+        store.delete(file);
         recovered++;
       } else if (!res.retryable) {
         // Permanent (4xx) — the collector will never accept it; stop re-spooling.
-        this._failedStore.delete(file);
+        store.delete(file);
       }
       // Retryable failure: leave the file in place for the next recovery pass.
     }
@@ -2041,6 +2237,14 @@ export interface TelemetryBatchSenderOpts {
    * (never discarded — one-shot flush at the boundary must not lose events).
    */
   onBatch?: (batch: TelemetryBatch) => void;
+  /**
+   * Bypass batching: flush one batch per {@link TelemetryBatchSender.enqueue} call
+   * instead of accumulating to the size/byte boundary (the interval timer is moot with
+   * nothing buffered). A single config knob turning the buffered sink into a
+   * pass-through for low-latency/debug sinks. Mirrors Claude's bufferedWriter
+   * `immediateMode`.
+   */
+  immediateMode?: boolean;
 }
 
 export class TelemetryBatchSender {
@@ -2058,6 +2262,8 @@ export class TelemetryBatchSender {
   private _totalDropped = 0;
   private _maxQueueSize: number;
   private _onBatch: ((batch: TelemetryBatch) => void) | null;
+  /** When true, every enqueue() flushes immediately (batching bypass). */
+  private _immediate: boolean;
   /** Latched by shutdown() — rejects all further enqueue()/flush() (export guard). */
   private _shutdown = false;
 
@@ -2069,6 +2275,7 @@ export class TelemetryBatchSender {
     this._flushIntervalMs = opts.flushIntervalMs ?? 30_000;
     this._maxQueueSize = opts.maxQueueSize ?? 10_000;
     this._onBatch = opts.onBatch ?? null;
+    this._immediate = opts.immediateMode ?? false;
   }
 
   enqueue(type: string, data: Record<string, unknown>, sequence?: number): boolean {
@@ -2081,7 +2288,9 @@ export class TelemetryBatchSender {
       return false;
     }
     this._queue.push({ type, timestamp: Date.now(), data, ...(sequence !== undefined ? { sequence } : {}) });
-    if (this._queue.length >= this._maxBatchSize) {
+    // Immediate mode: pass-through — flush this event right away instead of waiting for
+    // the size/byte/interval boundary.
+    if (this._immediate || this._queue.length >= this._maxBatchSize) {
       this._emit();
     }
     return true;
