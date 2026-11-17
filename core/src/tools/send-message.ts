@@ -804,6 +804,35 @@ function requestOriginTag(requestId: string): string {
   return origin ? ` [re: ${origin.requestType} request for ${origin.agentId}]` : '';
 }
 
+/**
+ * Structured-output correlation fields attached to a control-message send result,
+ * riding the ToolResult `metadata` channel (the same programmatic-contract channel
+ * {@link DeliveryWarning}/`errorCode` use). Mirrors Claude Code's
+ * SendMessageToolOutput discriminators (tools/SendMessageTool/UI.tsx L21-26):
+ *  - a REQUEST send carries `request_id` + `target` so a later response can be
+ *    correlated back to the exact request and recipient;
+ *  - a RESPONSE send additionally carries `routing: true`, marking it a
+ *    fire-and-forward routed reply a consumer can correlate and suppress from the
+ *    transcript (Claude's `routing` null-render branch).
+ * ADDITIVE only — delivery behavior is unchanged; this is a structured hint a
+ * programmatic consumer reads off the result.
+ */
+export interface SendMessageCorrelation {
+  request_id: string;
+  target: string;
+  routing?: true;
+}
+
+/** Correlation metadata for a REQUEST-type send (no routing marker). */
+function requestCorrelation(requestId: string, target: string): SendMessageCorrelation {
+  return { request_id: requestId, target };
+}
+
+/** Correlation metadata for a RESPONSE-type send (fire-and-forward, suppressible). */
+function responseCorrelation(requestId: string, target: string): SendMessageCorrelation {
+  return { routing: true, request_id: requestId, target };
+}
+
 // --- Recipient address schemes ---------------------------------------------
 // A `to` value is normally a bare teammate name, but it may be a scheme-qualified
 // cross-session address: `uds:<socket-path>` for a local peer process, or
@@ -1817,7 +1846,7 @@ export const sendMessageTool: ToolDefinition = {
           // Open the handshake: record the outstanding request keyed by the bare
           // teammate name so a re-send is guarded until the teammate responds.
           outstandingShutdowns.set(toRaw, reqId);
-          return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]` };
+          return { output: `Shutdown request sent to ${toRaw} (id: ${reqId}) [from: ${from}]`, metadata: { ...requestCorrelation(reqId, toRaw) } };
         }
         case 'shutdown_response': {
           // A shutdown decision is always reported back to the lead.
@@ -1849,9 +1878,10 @@ export const sendMessageTool: ToolDefinition = {
               output: aborted
                 ? `Shutdown approved (id: ${structured.requestId})${originTag} — ${from} aborted; confirmation sent to ${TEAM_LEAD_NAME}.`
                 : `Shutdown approved (id: ${structured.requestId})${originTag} — confirmation sent to ${TEAM_LEAD_NAME}; ${from} is exiting.`,
+              metadata: { ...responseCorrelation(structured.requestId, TEAM_LEAD_NAME) },
             };
           }
-          return { output: `Shutdown rejected (id: ${structured.requestId})${originTag}: "${structured.reason}" — ${from} continues working.` };
+          return { output: `Shutdown rejected (id: ${structured.requestId})${originTag}: "${structured.reason}" — ${from} continues working.`, metadata: { ...responseCorrelation(structured.requestId, TEAM_LEAD_NAME) } };
         }
         case 'plan_approval_request': {
           // The request half: a teammate submits a plan to another agent (usually
@@ -1865,7 +1895,7 @@ export const sendMessageTool: ToolDefinition = {
           // matching plan_approval_response (addressed back to it) resolves it.
           awaitingPlanApproval.set(from, reqId);
           const fileTag = structured.planFilePath ? ` (${structured.planFilePath})` : '';
-          return { output: `Plan submitted to ${toRaw} for approval (id: ${reqId})${fileTag} [from: ${from}]` };
+          return { output: `Plan submitted to ${toRaw} for approval (id: ${reqId})${fileTag} [from: ${from}]`, metadata: { ...requestCorrelation(reqId, toRaw) } };
         }
         case 'plan_approval_response': {
           // Authorization: only the team lead may approve or reject plans.
@@ -1884,12 +1914,12 @@ export const sendMessageTool: ToolDefinition = {
             // The granted permission mode (if any) is surfaced so the lead sees
             // what posture the teammate will inherit on exiting plan-mode.
             const modeTag = structured.permissionMode ? ` (mode: ${structured.permissionMode})` : '';
-            return { output: `Plan approved for ${toRaw} (id: ${structured.requestId})${originTag}${modeTag} [from: ${from}]` };
+            return { output: `Plan approved for ${toRaw} (id: ${structured.requestId})${originTag}${modeTag} [from: ${from}]`, metadata: { ...responseCorrelation(structured.requestId, toRaw) } };
           }
           // Rejection always carries actionable guidance, defaulting when the lead
           // gave no explicit feedback (mirrors Claude's 'Please revise your plan').
           const guidance = structured.feedback || 'Please revise your plan';
-          return { output: `Plan rejected for ${toRaw} (id: ${structured.requestId})${originTag} [from: ${from}] — ${guidance}; revise and call ExitPlanMode again` };
+          return { output: `Plan rejected for ${toRaw} (id: ${structured.requestId})${originTag} [from: ${from}] — ${guidance}; revise and call ExitPlanMode again`, metadata: { ...responseCorrelation(structured.requestId, toRaw) } };
         }
         case 'task_assignment': {
           // A lead assigns work to a named teammate. assignedBy is stamped from the
@@ -1938,7 +1968,7 @@ export const sendMessageTool: ToolDefinition = {
           const reqId = structured.requestId || generateRequestId('permission', from);
           const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
-          return { output: `Permission request for "${structured.tool}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]` };
+          return { output: `Permission request for "${structured.tool}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]`, metadata: { ...requestCorrelation(reqId, TEAM_LEAD_NAME) } };
         }
         case 'permission_response': {
           // Only the lead may answer a forwarded permission request.
@@ -1952,7 +1982,7 @@ export const sendMessageTool: ToolDefinition = {
           // decision the worker will act on (mirrors Claude's feedback/updatedInput).
           const editedTag = structured.updatedInput ? ' with edited input' : '';
           const feedbackTag = !structured.approve && structured.feedback ? `: ${structured.feedback}` : '';
-          return { output: `Permission ${structured.approve ? 'granted' : 'denied'}${editedTag} to ${toRaw} (id: ${structured.requestId})${originTag}${feedbackTag}` };
+          return { output: `Permission ${structured.approve ? 'granted' : 'denied'}${editedTag} to ${toRaw} (id: ${structured.requestId})${originTag}${feedbackTag}`, metadata: { ...responseCorrelation(structured.requestId, toRaw) } };
         }
         case 'sandbox_permission_request': {
           // A worker whose sandbox blocked egress to a host asks the lead to
@@ -1961,7 +1991,7 @@ export const sendMessageTool: ToolDefinition = {
           const reqId = structured.requestId || generateRequestId('sandbox', from);
           const wire = structured.requestId ? content : JSON.stringify({ ...structured, requestId: reqId });
           enqueue(TEAM_LEAD_NAME, { from, to: TEAM_LEAD_NAME, content: wire, timestamp: Date.now() });
-          return { output: `Sandbox network request for host "${structured.host}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]` };
+          return { output: `Sandbox network request for host "${structured.host}" forwarded to ${TEAM_LEAD_NAME} (id: ${reqId}) [from: ${from}]`, metadata: { ...requestCorrelation(reqId, TEAM_LEAD_NAME) } };
         }
         case 'sandbox_permission_response': {
           // Only the lead may approve/deny a host-egress request; routed back to
@@ -1971,7 +2001,7 @@ export const sendMessageTool: ToolDefinition = {
           }
           const originTag = requestOriginTag(structured.requestId);
           enqueue(to, { from, to, content, timestamp: Date.now() });
-          return { output: `Sandbox access to "${structured.host}" ${structured.allow ? 'allowed' : 'denied'} for ${toRaw} (id: ${structured.requestId})${originTag}` };
+          return { output: `Sandbox access to "${structured.host}" ${structured.allow ? 'allowed' : 'denied'} for ${toRaw} (id: ${structured.requestId})${originTag}`, metadata: { ...responseCorrelation(structured.requestId, toRaw) } };
         }
         case 'team_permission_update': {
           // A team-wide permission decision. Lead-only; may be directed to one
