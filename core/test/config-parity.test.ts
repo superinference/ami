@@ -58,6 +58,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       migrationVersion: 1, worktree: { symlinkDirectories: ['a'] }, cleanupPeriodDays: 1,
       attribution: { commit: 'x', pr: 'y' }, disabledMcpServers: ['a'], enabledMcpServers: ['a'],
       language: 'japanese', memoryExcludes: ['**/AGENTS.md'],
+      externalMemoryImportsApproved: true, externalMemoryImportRoots: ['/srv/shared'],
       allowManagedSandboxDomainsOnly: true, skillUsage: { demo: { usageCount: 1, lastUsedAt: 1 } },
       strictPluginOnlyCustomization: ['skills'],
       // Engine-behavior knobs (U010 w78): read off the merged config by the engine

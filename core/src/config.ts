@@ -267,6 +267,33 @@ export interface ProjectConfig {
    * `resolveMemoryExcludes`.
    */
   memoryExcludes?: string[];
+  /**
+   * Persisted, explicit user CONSENT to let instruction (CLAUDE.md / AGENTS.md /
+   * SUPERINFERENCE.md) `@path` imports resolve files OUTSIDE the launch workspace
+   * (parity: Claude Code's `hasClaudeMdExternalIncludesApproved`,
+   * components/ClaudeMdExternalIncludesDialog.tsx). AMI's default posture is a hard
+   * block — an `@~/shared.md` / `@../sibling/standards.md` is replaced with a visible
+   * "import blocked — outside workspace" marker so a crafted memory file can never
+   * exfiltrate arbitrary files into the system prompt. This field is the sanctioned,
+   * recorded escape hatch for a trusted layout (e.g. a monorepo whose project
+   * CLAUDE.md imports a shared parent-dir file): a tri-state — `undefined` (never
+   * asked → blocked), `true` (approved → external imports load), `false` (declined →
+   * blocked). It is deliberately absent by default; a value here is a one-time human
+   * decision, not something a scanned instruction file can set for itself. Consumed by
+   * {@link resolveConfiguredExternalMemoryImports} and `MemoryManager.resolveAtImports`.
+   */
+  externalMemoryImportsApproved?: boolean;
+  /**
+   * OPTIONAL allowlist of absolute root directories an approved external import must
+   * resolve within ({@link externalMemoryImportsApproved} must also be `true`). When
+   * present it narrows the consent to specific trusted roots (e.g. the monorepo top);
+   * when absent but approved, any outside-workspace import is permitted (approve-once
+   * for a wholly trusted repo). `~` is expanded. Patterns ACCUMULATE across config
+   * layers (a higher layer adds more trusted roots). The real (symlink-resolved) path
+   * of each imported file is checked against these roots so a symlink cannot escape
+   * them. Consumed by {@link resolveConfiguredExternalMemoryImports}.
+   */
+  externalMemoryImportRoots?: string[];
   // -------------------------------------------------------------------------
   // Engine-behavior knobs read off the MERGED config by the engine factory.
   //
@@ -1091,6 +1118,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['disabledMcpServers', 'string[]'], ['enabledMcpServers', 'string[]'],
   ['fallbackModels', 'string[]'], ['alwaysLoadTools', 'string[]'],
   ['sandboxExcludedCommands', 'string[]'], ['memoryExcludes', 'string[]'],
+  ['externalMemoryImportsApproved', 'boolean'], ['externalMemoryImportRoots', 'string[]'],
   ['superinference', 'object'], ['managedMcpServers', 'object'],
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
@@ -2225,6 +2253,13 @@ export function mergeConfigs(
     // claudeMdExcludes list-merge; unioned with the AMI_MEMORY_EXCLUDES env list at
     // load time by {@link resolveConfiguredMemoryExcludes}.
     if (layer.memoryExcludes !== undefined) merged.memoryExcludes = mergeConfigArray(merged.memoryExcludes, layer.memoryExcludes);
+    // External-memory-import consent: the approval flag is last-layer-wins (a higher
+    // tier's explicit decision overrides a lower one), while the optional trusted-roots
+    // allowlist ACCUMULATES across layers (parity with the other memory/path list
+    // settings — a higher layer adds more trusted roots, never silently drops a lower
+    // layer's).
+    if (layer.externalMemoryImportsApproved !== undefined) merged.externalMemoryImportsApproved = layer.externalMemoryImportsApproved;
+    if (layer.externalMemoryImportRoots !== undefined) merged.externalMemoryImportRoots = mergeConfigArray(merged.externalMemoryImportRoots, layer.externalMemoryImportRoots);
     // env merges key-wise across layers (higher-priority layers override single
     // keys rather than replacing the whole block).
     if (layer.env !== undefined) merged.env = { ...merged.env, ...layer.env };
@@ -2400,6 +2435,36 @@ export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
     managed,
   );
   return merged.memoryExcludes ?? [];
+}
+
+/**
+ * The persisted external-memory-import CONSENT for `cwd`, merged across the full
+ * config waterfall (managed > global > project > local). Returns the approval flag
+ * ({@link ProjectConfig.externalMemoryImportsApproved}, defaulting to `false` — the
+ * safe, blocked posture) and the accumulated trusted-roots allowlist
+ * ({@link ProjectConfig.externalMemoryImportRoots}). Kept in the config layer so there
+ * is ONE place that reads the config files and applies the merge semantics; the memory
+ * loader UNIONS the roots with a one-shot env override and consults `approved` before
+ * ever loading an outside-workspace `@import`. Parity: Claude Code reading
+ * `hasClaudeMdExternalIncludesApproved` from the project config for external includes.
+ */
+export function resolveConfiguredExternalMemoryImports(cwd: string): { approved: boolean; roots: string[] } {
+  let managed: ProjectConfig | null = null;
+  // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
+  // consent lookup must never abort memory loading over it — treat it as absent.
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return {
+    approved: merged.externalMemoryImportsApproved === true,
+    roots: merged.externalMemoryImportRoots ?? [],
+  };
 }
 
 /**

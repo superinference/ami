@@ -17,7 +17,7 @@ import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
 import { scanForSecrets } from './tools/tool-utils';
-import { resolveConfiguredMemoryExcludes } from './config';
+import { resolveConfiguredMemoryExcludes, resolveConfiguredExternalMemoryImports } from './config';
 import { sequential } from './utils/sequential';
 import {
   isMemoryFileAccess,
@@ -601,6 +601,44 @@ export function resolveMemoryExcludes(
 }
 
 /**
+ * One-shot env override that GRANTS consent to load outside-workspace instruction
+ * `@imports` without a persisted config decision, and an optional colon/comma/semicolon
+ * -separated list of extra trusted root directories. Mirrors the env-vs-config waterfall
+ * of {@link resolveMemoryExcludes}: the persisted {@link ProjectConfig.externalMemoryImportsApproved}
+ * is the durable choice, this env var the ephemeral one (e.g. a trusted CI run), and the
+ * two root lists are UNIONED. Unset ⇒ no env consent (the default hard block stands).
+ */
+const EXTERNAL_IMPORTS_APPROVE_ENV = 'AMI_ALLOW_EXTERNAL_MEMORY_IMPORTS';
+const EXTERNAL_IMPORT_ROOTS_ENV = 'AMI_EXTERNAL_MEMORY_IMPORT_ROOTS';
+
+/**
+ * Resolve the EFFECTIVE external-import consent for a workspace: the persisted
+ * {@link resolveConfiguredExternalMemoryImports | config decision} combined with the
+ * one-shot {@link EXTERNAL_IMPORTS_APPROVE_ENV} / {@link EXTERNAL_IMPORT_ROOTS_ENV} env
+ * overrides. Consent is granted when EITHER source approves; the trusted-root allowlists
+ * are UNIONED (env `~`-expanded and absolutized). When no root is listed but consent is
+ * granted, ANY outside-workspace import is permitted (approve-once for a wholly trusted
+ * repo); when roots ARE listed, an import is only allowed if its real path resolves
+ * within one of them. Defaults to blocked ({@link resolveConfiguredExternalMemoryImports}
+ * returns `approved:false`). Kept pure/injectable for testability.
+ */
+export function resolveExternalMemoryImportConsent(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { approved: boolean; roots: string[] } {
+  const cfg = resolveConfiguredExternalMemoryImports(cwd);
+  const approvedByEnv = isEnvTruthy(env[EXTERNAL_IMPORTS_APPROVE_ENV]);
+  const rawRoots = env[EXTERNAL_IMPORT_ROOTS_ENV];
+  const envRoots = rawRoots && rawRoots.trim()
+    ? rawRoots.split(/[,:;]+/).map(s => s.trim()).filter(s => s.length > 0)
+    : [];
+  const roots = [...new Set([...cfg.roots, ...envRoots])].map(r =>
+    r.startsWith('~') ? path.join(os.homedir(), r.slice(1)) : path.resolve(r),
+  );
+  return { approved: cfg.approved || approvedByEnv, roots };
+}
+
+/**
  * Extra memory guidelines injected verbatim into the memory-guidance prompt
  * block. Parity with Claude Code's `CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`
  * (memdir.ts `extraGuidelines`): a host/SDK can append organization-specific
@@ -949,6 +987,81 @@ function isGitRoot(dir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** `dir` is the MAIN working tree of a normal clone — `.git` is a DIRECTORY. */
+function hasGitDirDir(dir: string): boolean {
+  try {
+    return fs.statSync(path.join(dir, '.git')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read `dir`'s `.git` file pointer when it is a LINKED-WORKTREE marker, returning the
+ * canonical MAIN-repo root the worktree belongs to, else `null`. A linked worktree's
+ * `.git` is a FILE containing `gitdir: <main>/.git/worktrees/<name>`; parsing it yields
+ * the main root (`<main>`) directly. A SUBMODULE's pointer instead reads
+ * `.git/modules/<name>`, which this deliberately does NOT match — a submodule must keep
+ * stopping at its own root (never borrowing a parent project's instruction files). Any
+ * read/parse failure or a non-worktree pointer returns `null`.
+ */
+function worktreeMainRootFromPointer(dir: string): string | null {
+  const gitPath = path.join(dir, '.git');
+  try {
+    if (!fs.statSync(gitPath).isFile()) return null;
+  } catch {
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(gitPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const m = raw.match(/gitdir:\s*(.+)/);
+  if (!m) return null;
+  const gitdir = m[1].trim().replace(/\\/g, '/');
+  // `<main>/.git/worktrees/<name>` → the main-repo root is the part before `/.git/worktrees/`.
+  const wt = gitdir.match(/^(.*)\/\.git\/worktrees\/[^/]+\/?$/);
+  if (!wt) return null;
+  return path.normalize(wt[1]);
+}
+
+/**
+ * Detect the NESTED-WORKTREE case that `loadProjectInstructions` must handle for parity
+ * with Claude Code's nested-worktree de-duplication (utils/claudemd.ts): a git worktree
+ * (`.git` pointer file) that lives physically INSIDE its own main repo tree — e.g. AMI's
+ * `<main>/.claude/worktrees/<name>/`. Walking up from `cwd` would stop at the worktree's
+ * `.git` and so MISS the main repo's gitignored Local files (CLAUDE.local.md), which only
+ * exist in the main checkout. Returns the worktree root and the canonical main root when
+ * the layout is a true nested worktree (main root resolved from the pointer, is a real
+ * `.git`-dir clone, and the worktree sits within it); `null` otherwise — so every normal
+ * repo / standalone dir / submodule / out-of-tree worktree keeps today's behavior exactly.
+ */
+function detectNestedWorktree(cwd: string): { worktreeRoot: string; canonicalRoot: string } | null {
+  let dir = path.resolve(cwd);
+  const fsRoot = path.parse(dir).root;
+  // Bound the probe to the normal scan depth plus the fixed `.claude/worktrees/<name>`
+  // nesting so an arbitrarily deep cwd cannot turn detection into an unbounded walk.
+  for (let i = 0; i <= MAX_PARENT_SCAN_DEPTH + 4; i++) {
+    const mainRoot = worktreeMainRootFromPointer(dir);
+    if (mainRoot !== null) {
+      // A worktree marker: a nested worktree only when the resolved main root is a real
+      // clone root AND the worktree dir is contained within it.
+      if (hasGitDirDir(mainRoot) && isPathWithin(dir, mainRoot, cwd) && path.normalize(dir) !== path.normalize(mainRoot)) {
+        return { worktreeRoot: dir, canonicalRoot: path.normalize(mainRoot) };
+      }
+      return null;
+    }
+    // A `.git` DIRECTORY before any worktree marker ⇒ a normal main clone, not nested.
+    if (hasGitDirDir(dir)) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir || dir === fsRoot) break;
+    dir = parent;
+  }
+  return null;
 }
 
 const INJECTION_PATTERNS = [
@@ -1838,6 +1951,10 @@ export class MemoryManager {
   /** Lazily-resolved, per-instance cache of the config-sourced instruction-file
    *  exclude globs ({@link ProjectConfig.memoryExcludes}) for {@link cwd}. */
   private _configMemoryExcludes: string[] | null = null;
+  /** Lazily-resolved, per-instance cache of the effective external-import consent
+   *  ({@link resolveExternalMemoryImportConsent}) for {@link cwd} — read once and
+   *  reused across every `@import` resolved this load. */
+  private _externalImportConsent: { approved: boolean; roots: string[] } | null = null;
   /** Absolute ADDITIONAL instruction directories (the engine's `allowedReadRoots`
    *  — dirs granted via `--add-dir` / `--context-file`). Loaded into the prompt only
    *  when {@link additionalInstructionDirsEnabled}. Empty when none supplied. */
@@ -1875,6 +1992,40 @@ export class MemoryManager {
       this._configMemoryExcludes = resolveConfiguredMemoryExcludes(this.cwd);
     }
     return resolveMemoryExcludes(process.env, this._configMemoryExcludes);
+  }
+
+  /** The effective external-import consent for this workspace, resolved once per
+   *  instance ({@link resolveExternalMemoryImportConsent}) and reused across every
+   *  `@import` the current load resolves. */
+  private externalImportConsent(): { approved: boolean; roots: string[] } {
+    if (this._externalImportConsent === null) {
+      this._externalImportConsent = resolveExternalMemoryImportConsent(this.cwd);
+    }
+    return this._externalImportConsent;
+  }
+
+  /**
+   * Decide whether a specific outside-workspace `@import` target is sanctioned by the
+   * persisted/env consent, returning its canonical REAL path when allowed or `null`
+   * when it must stay blocked. Consent must be granted
+   * ({@link ProjectConfig.externalMemoryImportsApproved} / the approve env); then the
+   * target is symlink-resolved ({@link realpathDeepest}) so a link cannot smuggle a path
+   * out of an approved root, and — when a trusted-roots allowlist is configured — the
+   * real path must resolve within one of those roots. With consent but no roots, any
+   * external file is permitted (approve-once for a wholly trusted repo). Returns `null`
+   * whenever consent is absent, the path cannot be resolved, or it falls outside every
+   * configured trusted root.
+   */
+  private resolveApprovedExternalImport(resolved: string): string | null {
+    const consent = this.externalImportConsent();
+    if (!consent.approved) return null;
+    const real = realpathDeepest(resolved);
+    if (real === null) return null;
+    if (consent.roots.length > 0) {
+      const within = consent.roots.some(root => isPathWithin(real, root, this.cwd));
+      if (!within) return null;
+    }
+    return real;
   }
 
   /**
@@ -1940,10 +2091,23 @@ export class MemoryManager {
         // symlinks FIRST (realpath) so a link that sits inside the workspace but points
         // out of it is also caught — a lexical prefix check misses that. Block it, leave a
         // visible marker (so it is never silent), and notify via the hook.
-        const real = realpathWithin(resolved, this.cwd);
+        let real = realpathWithin(resolved, this.cwd);
         if (real === null) {
-          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: resolved, loadReason: 'import-blocked-outside-workspace' });
-          return `${pre}[import blocked — outside workspace: ${path.basename(resolved)}]`;
+          // Workspace confinement failed. The default posture is a hard block, BUT a
+          // persisted, explicit user consent ({@link ProjectConfig.externalMemoryImportsApproved}
+          // / the AMI_ALLOW_EXTERNAL_MEMORY_IMPORTS env, resolved + root-scoped by
+          // {@link resolveApprovedExternalImport}) MAY sanction this specific external
+          // file — the sanctioned escape hatch for a trusted monorepo layout. When
+          // granted we proceed with the file's REAL path (so a symlink still cannot
+          // escape the approved roots) and fire a DISTINCT load reason so the decision
+          // is observable; otherwise we keep the visible block marker + hook.
+          const approvedReal = this.resolveApprovedExternalImport(resolved);
+          if (approvedReal === null) {
+            if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: resolved, loadReason: 'import-blocked-outside-workspace' });
+            return `${pre}[import blocked — outside workspace: ${path.basename(resolved)}]`;
+          }
+          real = approvedReal;
+          if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: real, loadReason: 'import-allowed-external-approved' });
         }
         // Cycle detection keys on the REAL path so two aliases of one file (one via
         // a symlink) can't slip past `seen` and re-enter the recursion.
@@ -1990,8 +2154,18 @@ export class MemoryManager {
     const projectEnabled = isMemorySourceEnabled('project');
     const localEnabled = isMemorySourceEnabled('local');
 
-    while (depth <= MAX_PARENT_SCAN_DEPTH) {
-      const found = projectEnabled ? this.findInstructionFile(currentDir) : null;
+    // Nested-worktree de-duplication (parity: Claude Code utils/claudemd.ts): when cwd
+    // is a git worktree nested inside its own main repo, the plain upward walk stops at
+    // the worktree's `.git` and MISSES the main repo's gitignored Local files. Once the
+    // walk passes the worktree root we continue up to the canonical main root in a
+    // `localOnly` mode — loading ONLY `*.local.md` (which exist only in the main
+    // checkout) and SKIPPING checked-in Project files (already present in the worktree's
+    // own checkout, so loading them again from the main tree would double them).
+    const nested = detectNestedWorktree(this.cwd);
+    let localOnly = false;
+
+    while (depth <= MAX_PARENT_SCAN_DEPTH || localOnly) {
+      const found = (projectEnabled && !localOnly) ? this.findInstructionFile(currentDir) : null;
       if (found && !isInstructionExcluded(found, excludes)) {
         try {
           const raw = fs.readFileSync(found, 'utf-8').trim();
@@ -2061,8 +2235,17 @@ export class MemoryManager {
       }
       // Stop at the git repository root to avoid loading instruction files from
       // parent projects. `.git` is a DIRECTORY in a normal clone but a FILE in a
-      // linked worktree / submodule — stop at either.
-      if (isGitRoot(currentDir)) break;
+      // linked worktree / submodule — stop at either. The ONE exception: in a nested
+      // worktree, the worktree root's own `.git` stop would miss the main repo's Local
+      // files, so instead of stopping we flip into `localOnly` mode and keep walking up
+      // to the canonical main root (whose `.git` DIR then ends the walk).
+      if (isGitRoot(currentDir)) {
+        if (nested && !localOnly && path.normalize(currentDir) === path.normalize(nested.worktreeRoot)) {
+          localOnly = true;
+        } else {
+          break;
+        }
+      }
       currentDir = parentDir;
       depth++;
     }
