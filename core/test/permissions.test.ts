@@ -1774,3 +1774,75 @@ describe('permission modes are semantically distinct (no duplicates)', () => {
     }
   });
 });
+
+describe('matchedAllowRule — auto-approval provenance (U082)', () => {
+  it('returns the Tool(pattern) label of a matching bash allow rule', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('bash', { command: 'git log --oneline' }), 'bash(git *)');
+  });
+
+  it('agrees with check(): the matched label corresponds to an actual allow verdict', async () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'allow' },
+    ]);
+    assert.equal(await pm.check('bash', { command: 'git status' }), 'allow');
+    assert.equal(pm.matchedAllowRule('bash', { command: 'git status' }), 'bash(git *)');
+    // A command the rule does NOT cover stays 'ask' and has no provenance.
+    assert.equal(await pm.check('bash', { command: 'npm install' }), 'ask');
+    assert.equal(pm.matchedAllowRule('bash', { command: 'npm install' }), undefined);
+  });
+
+  it('returns the bare tool name for a tool-wide allow rule (no pattern)', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'file_read', action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('file_read', { file_path: 'x.ts' }), 'file_read');
+  });
+
+  it('matches a file-path allow rule on its pattern', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'file_edit', pattern: 'src/*', action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('file_edit', { file_path: 'src/index.ts' }), 'file_edit(src/*)');
+  });
+
+  it('returns undefined when no allow rule matches (allow came from a mode, not a rule)', () => {
+    const pm = new PermissionManager('auto-allow');
+    // auto-allow mode grants the call, but there is no NAMED rule behind it.
+    assert.equal(pm.matchedAllowRule('bash', { command: 'ls -la' }), undefined);
+  });
+
+  it('returns undefined when the first matching non-deny rule is an ASK (it would have prompted)', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'git *', action: 'ask' },
+      { tool: 'bash', pattern: 'git log:*', action: 'allow' },
+    ]);
+    // First-match semantics: the `ask` rule matches first → not auto-approval provenance.
+    assert.equal(pm.matchedAllowRule('bash', { command: 'git log' }), undefined);
+  });
+
+  it('skips a non-matching deny rule and still finds the later allow rule', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', pattern: 'rm *', action: 'deny' },
+      { tool: 'bash', pattern: 'ls *', action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('bash', { command: 'ls -la' }), 'bash(ls *)');
+  });
+
+  it('returns undefined for a tool the allow rule does not cover', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'file_read', action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('bash', { command: 'ls' }), undefined);
+  });
+
+  it('respects paramPattern gating (only reports when the params match)', () => {
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', paramPattern: { command: 'git *' }, action: 'allow' },
+    ]);
+    assert.equal(pm.matchedAllowRule('bash', { command: 'git status' }), 'bash');
+    assert.equal(pm.matchedAllowRule('bash', { command: 'npm install' }), undefined);
+  });
+});

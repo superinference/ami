@@ -6280,6 +6280,40 @@ export class PermissionManager {
   }
 
   /**
+   * The human label of the ALLOW rule that auto-approved a tool call, or `undefined`
+   * when no explicit allow rule grants it (the allow came from a mode / safety /
+   * classifier fast-path, not a named rule). Scans the rule set with the SAME
+   * first-match, deny-skipping semantics as {@link check}'s rule loop: a matching
+   * `deny` rule is skipped (it never produces an allow), and if the FIRST matching
+   * non-deny rule is an `ask` rule the result is `undefined` (that call would have
+   * prompted, not auto-allowed). Intended to be called AFTER {@link check} /
+   * {@link checkWithReason} already returned `allow`, so the executor can attribute the
+   * silent approval to the specific standing rule that caused it — the provenance surface
+   * Claude Code shows as `Auto-approved · matched "<rule>"` (classifierMatchedRule /
+   * setClassifierApproval). The label uses the canonical `Tool(pattern)` permission-rule
+   * syntax (or the bare tool name for a tool-wide rule). Pure read — never prompts or
+   * mutates state.
+   */
+  matchedAllowRule(toolName: string, input: Record<string, unknown>): string | undefined {
+    for (const rule of this.rules) {
+      if (rule.action === 'deny') continue;
+      if (!this.toolNameMatches(rule.tool, toolName)) continue;
+      if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
+      const matched = rule.pattern
+        ? (toolName === 'bash' && typeof input.command === 'string'
+            ? matchBashPattern(rule.pattern, input.command, rule.action)
+            : matchPattern(rule.pattern, this.inputToString(toolName, input)))
+        : true;
+      if (!matched) continue;
+      // First matching non-deny rule decides (check() first-match). Only an `allow`
+      // rule is auto-approval provenance; a matching `ask` rule would have prompted.
+      if (rule.action !== 'allow') return undefined;
+      return rule.pattern ? `${rule.tool}(${rule.pattern})` : rule.tool;
+    }
+    return undefined;
+  }
+
+  /**
    * Synchronously decide whether a bash COMMAND would be DENIED by the user's
    * configured deny rules (parity with Claude Code's `hasPermissionsToUseTool`
    * deny half, applied to skill/command-embedded `!`cmd` live-command execution —
