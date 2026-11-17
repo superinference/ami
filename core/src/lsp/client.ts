@@ -25,6 +25,7 @@ import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { isBinaryInstalled } from '../utils/which';
 import { retryWithBackoff } from '../mcp/oauth';
 import { log, logError } from '../logger';
+import { AMI_CLIENT_INFO } from '../version';
 import {
   assertNoAutoFetch,
   getAllLspServers,
@@ -62,6 +63,26 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1000;
  * has not shut itself down. Keeps teardown a clean LSP shutdown in the common case.
  */
 const EXIT_GRACE_MS = 50;
+/**
+ * Consecutive diagnostic-handling failures for one server before we emit a loud
+ * warning. Mirrors Claude Code's passiveFeedback threshold (warn after >= 3) so a
+ * persistently misbehaving (or malicious) language server whose diagnostics keep
+ * failing to process is surfaced instead of being silently swallowed forever.
+ */
+const DIAGNOSTIC_FAILURE_WARN_THRESHOLD = 3;
+
+/**
+ * The BCP-47 locale AMI advertises to a language server in the `initialize`
+ * handshake, derived from the process environment (LC_ALL > LC_MESSAGES > LANG),
+ * stripped of any `.encoding`/`@modifier` suffix (`en_US.UTF-8` → `en_US`).
+ * Falls back to `en` when unset. Mirrors Claude Code's `locale` InitializeParam,
+ * which lets a server localize its diagnostic messages.
+ */
+export function lspLocale(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.LC_ALL || env.LC_MESSAGES || env.LANG || '';
+  const base = raw.split('.')[0].split('@')[0].trim();
+  return base.length > 0 && base !== 'C' && base !== 'POSIX' ? base : 'en';
+}
 
 /**
  * Lifecycle state of a single language server, mirroring Claude Code's
@@ -88,6 +109,14 @@ export interface LspServerStatus {
   exitCode?: number | null;
   /** True only when the server is running AND its handshake completed. */
   isHealthy: boolean;
+  /**
+   * Number of CONSECUTIVE `publishDiagnostics` deliveries from this server that
+   * failed to process (reset to 0 on the next successful delivery). Mirrors
+   * Claude Code's passiveFeedback per-server `diagnosticFailures` counter; once it
+   * reaches `DIAGNOSTIC_FAILURE_WARN_THRESHOLD` a warning is logged. Surfaced by
+   * `getServerStatus`/`getAllServerStatus` so `/doctor` can flag a flapping server.
+   */
+  consecutiveDiagnosticFailures: number;
 }
 
 /**
@@ -145,6 +174,13 @@ export class LSPClient implements DiagnosticSource {
   private notificationHandlers: Map<string, NotificationHandler[]> = new Map();
   /** Client-level server→client request handlers. */
   private requestHandlers: Map<string, RequestHandler> = new Map();
+  /**
+   * Per-language consecutive `publishDiagnostics` processing-failure tracker
+   * ({count,lastError}). Incremented when delivering a diagnostics notification
+   * throws, reset on the next success — the AMI analogue of Claude's
+   * passiveFeedback `diagnosticFailures` map. Surfaced in the per-server status.
+   */
+  private diagnosticFailures: Map<string, { count: number; lastError: string }> = new Map();
 
   /** Baseline/diff tracker reading diagnostics from this client. */
   readonly diagnostics = new DiagnosticTracker(this);
@@ -410,6 +446,7 @@ export class LSPClient implements DiagnosticSource {
       restartCount: patch.restartCount ?? prev?.restartCount ?? 0,
       exitCode: 'exitCode' in patch ? patch.exitCode : prev?.exitCode,
       isHealthy: false,
+      consecutiveDiagnosticFailures: this.diagnosticFailures.get(language)?.count ?? 0,
     };
     next.isHealthy = next.state === 'running' && this.servers.get(language)?.initialized === true;
     this.serverStatus.set(language, next);
@@ -429,6 +466,14 @@ export class LSPClient implements DiagnosticSource {
     const workspaceUri = this.fileUri(workspaceFolder);
     return {
       processId: process.pid,
+      // Identify AMI (name + real version) to the server, matching the full LSP
+      // InitializeParams Claude sends. Reuses the single version source of truth
+      // (also used for the MCP handshake) — no second hardcoded version string.
+      clientInfo: { ...AMI_CLIENT_INFO },
+      // BCP-47 locale so a server can localize its diagnostic messages.
+      locale: lspLocale(),
+      // We do not consume `$/logTrace`, so request no protocol tracing.
+      trace: 'off',
       // Required by vue-language-server, harmless default elsewhere.
       initializationOptions: config.initializationOptions ?? {},
       // LSP 3.16+ — required by Pyright/gopls.
@@ -503,9 +548,14 @@ export class LSPClient implements DiagnosticSource {
   getServerStatus(language: string): LspServerStatus | undefined {
     const status = this.serverStatus.get(language);
     if (!status) return undefined;
-    // `isHealthy` is derived live so it reflects the current connection, not a
-    // snapshot taken when the status was last written.
-    return { ...status, isHealthy: this.isHealthy(language) };
+    // `isHealthy` and the diagnostic-failure streak are derived live so they
+    // reflect the current connection, not a snapshot taken when the status was
+    // last written.
+    return {
+      ...status,
+      isHealthy: this.isHealthy(language),
+      consecutiveDiagnosticFailures: this.diagnosticFailures.get(language)?.count ?? 0,
+    };
   }
 
   /** Introspection snapshot for every language server attempted this session. */
@@ -599,11 +649,56 @@ export class LSPClient implements DiagnosticSource {
       const method = message.method as string;
       const params = message.params;
       if (method === 'textDocument/publishDiagnostics') {
-        this.onPublishDiagnostics(language, params);
+        // Diagnostics delivery (storage + registered handlers) runs under the
+        // per-server consecutive-failure tracker, so a server whose diagnostics
+        // keep failing to process is surfaced instead of silently swallowed.
+        this.deliverDiagnostics(language, params);
+        return;
       }
       for (const handler of this.notificationHandlers.get(method) ?? []) {
         try { handler(params); } catch { /* isolate handler errors */ }
       }
+    }
+  }
+
+  /**
+   * Deliver a `publishDiagnostics` notification: store the diagnostics and fan
+   * out to any registered handlers, tracking CONSECUTIVE per-server failures.
+   * A successful delivery resets the server's failure streak; a throwing handler
+   * (or storage error) increments it and, past the threshold, logs a warning —
+   * mirroring Claude Code's passiveFeedback diagnostic-failure circuit breaker.
+   * Errors never break the read loop (the caller's try/catch is a second net).
+   */
+  private deliverDiagnostics(language: string, params: unknown): void {
+    try {
+      this.onPublishDiagnostics(language, params);
+      for (const handler of this.notificationHandlers.get('textDocument/publishDiagnostics') ?? []) {
+        handler(params);
+      }
+      // Success — clear the consecutive-failure streak for this server.
+      this.diagnosticFailures.delete(language);
+    } catch (e) {
+      this.recordDiagnosticFailure(language, (e as Error).message);
+    }
+  }
+
+  /**
+   * Increment a server's consecutive diagnostic-failure count, retain the last
+   * error, and emit a loud warning once the count reaches
+   * `DIAGNOSTIC_FAILURE_WARN_THRESHOLD` (parity with Claude's warn-after-3). The
+   * warning routes through the shared logger (the in-memory ring `/doctor` reads).
+   */
+  private recordDiagnosticFailure(language: string, message: string): void {
+    const prev = this.diagnosticFailures.get(language) ?? { count: 0, lastError: '' };
+    const next = { count: prev.count + 1, lastError: message };
+    this.diagnosticFailures.set(language, next);
+    logError('lsp', `LSP server "${language}" diagnostic delivery failed: ${message}`);
+    if (next.count >= DIAGNOSTIC_FAILURE_WARN_THRESHOLD) {
+      logError(
+        'lsp',
+        `WARNING: LSP diagnostic handler for "${language}" has failed ${next.count} times consecutively. ` +
+          `Last error: ${next.lastError}. This may indicate a problem with the LSP server or diagnostic processing.`,
+      );
     }
   }
 
@@ -925,6 +1020,7 @@ export class LSPClient implements DiagnosticSource {
     this.pendingInits = 0;
     this.diagnosticsByUri.clear();
     this.diagnosticWaiters.clear();
+    this.diagnosticFailures.clear();
     this.diagnostics.reset();
   }
 
