@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { resolveConfigDir } from './reference-journal';
+import { resolveConfigDir, journalPathFor } from './reference-journal';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
@@ -1733,6 +1733,34 @@ export const HOOK_VERIFICATION_CONTRACT =
   'You are a verification hook. Evaluate the condition described below against the ' +
   'event data. Respond with EXACTLY one JSON object and nothing else: ' +
   '{"ok": true} if the condition is met, or {"ok": false, "reason": "<why>"} if it is not.';
+
+/**
+ * System prompt for a multi-turn AGENT hook (stop/plan verification). Unlike a
+ * single-shot prompt hook, an agent hook is a sub-engine that can use tools to
+ * inspect the codebase AND read the conversation transcript to decide whether a
+ * stop condition is met. This dedicated system prompt (passed via the sub-engine's
+ * `appendSystemPrompt`) frames the verification task, tells the agent exactly where
+ * the transcript lives (so it can analyze prior conversation when `transcriptPath`
+ * is known), nudges it to be efficient, and restates the `{ok, reason}` output
+ * contract so it returns a parseable verdict. Parity: Claude Code's execAgentHook
+ * verification system prompt (utils/hooks/execAgentHook.ts) — AMI keeps its own
+ * text-JSON `{ok, reason}` contract rather than a synthetic structured-output tool.
+ */
+export function buildAgentHookSystemPrompt(transcriptPath?: string): string {
+  const transcriptLines = transcriptPath
+    ? `The conversation transcript is available at: ${transcriptPath}\n` +
+      'You may read this file to analyze the conversation history if needed.\n\n'
+    : '';
+  return (
+    'You are verifying a stop condition. Your task is to verify that the agent ' +
+    'completed the given plan or condition.\n\n' +
+    transcriptLines +
+    'Use the available tools to inspect the codebase and verify the condition.\n' +
+    'Use as few steps as possible - be efficient and direct.\n\n' +
+    'When done, respond with EXACTLY one JSON object and nothing else: ' +
+    '{"ok": true} if the condition is met, or {"ok": false, "reason": "<why>"} if it is not.'
+  );
+}
 
 /**
  * Substitute the hook input JSON into a prompt/agent hook's prompt template
@@ -3528,6 +3556,24 @@ export class HookManager extends EventEmitter {
       }
     }
     return base;
+  }
+
+  /**
+   * Resolve the current session's transcript (journal) file path so a verification
+   * AGENT hook can be told where to read the prior conversation, and be granted a
+   * scoped Read rule for exactly that file. Returns undefined when no session is
+   * active (nothing to read) or the path cannot be resolved. Parity: Claude Code's
+   * getTranscriptPath/getAgentTranscriptPath threaded into execAgentHook.
+   */
+  private resolveHookTranscriptPath(): string | undefined {
+    if (!this._sessionId) return undefined;
+    try {
+      return journalPathFor(this._cwd, this._sessionId);
+    } catch {
+      // A malformed cwd/session id (assertPathWithin reject) just means no scoped
+      // transcript access — the agent hook still runs without it.
+      return undefined;
+    }
   }
 
   /**
@@ -5747,9 +5793,24 @@ export class HookManager extends EventEmitter {
     const timeoutMs = resolveHookTimeoutMs(timeoutSeconds, defaultMs);
     const abort = combineHookAbort(signal, timeoutMs);
 
+    // AGENT hooks are multi-turn stop/plan verifiers: give them a dedicated
+    // verification system prompt, tell them where the conversation transcript is,
+    // and scope-allow Read of exactly that transcript file so they can inspect the
+    // prior conversation without a permission prompt (Claude Code execAgentHook
+    // parity). Prompt hooks are single-shot verdicts and get none of this.
+    const agentExtras: Record<string, unknown> = {};
+    if (kind === 'agent') {
+      const transcriptPath = this.resolveHookTranscriptPath();
+      agentExtras.appendSystemPrompt = buildAgentHookSystemPrompt(transcriptPath);
+      if (transcriptPath) {
+        agentExtras.permissionRules = [{ tool: 'file_read', pattern: transcriptPath, action: 'allow' as const }];
+      }
+    }
+
     const engine = this._engineFactory({
       provider: providerConfig,
       cwd: this._cwd,
+      ...agentExtras,
       // Run under the session's permission context (not blanket auto-allow unless
       // that is the session's mode), so a hook agent cannot exceed the user's grant.
       permissionMode: this._hookEnginePermissionMode,
