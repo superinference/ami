@@ -9,6 +9,7 @@ import type { ProviderConfig, Message } from './types';
 import { streamChatCompletion, streamChatCompletionWithRetry } from './provider';
 import { log as coreLog } from './logger';
 import { resolveConfigDir } from './reference-journal';
+import { estimateTextTokens } from './token-estimator';
 
 export interface SessionFact {
   fact: string;
@@ -27,6 +28,19 @@ export interface SessionFact {
 export interface SessionMemoryConfig {
   /** Max retained memory entries before confidence/recency eviction. */
   maxEntries: number;
+  /**
+   * Aggregate token budget for ALL persisted session-memory facts combined. In
+   * addition to the per-entry char cap ({@link maxEntryChars}) and the entry-count
+   * cap ({@link maxEntries}), the whole notes document is bounded so a large number
+   * of small-but-numerous facts cannot silently blow the compaction budget. When the
+   * merged facts exceed this many tokens (counted with the same byte-aware estimate
+   * as the rest of the engine), the lowest-priority facts are evicted — recency- and
+   * criticality-protected first — until the total fits. Parity: Claude's
+   * `MAX_TOTAL_SESSION_MEMORY_TOKENS` whole-document budget (default 12000) that
+   * triggers a condense pass preserving the most critical sections
+   * (SessionMemory/prompts.ts:L9,L168-L187).
+   */
+  maxTotalTokens: number;
   /** Max characters per persisted memory entry. */
   maxEntryChars: number;
   /** Number of trailing messages used as extraction context. */
@@ -90,6 +104,7 @@ export interface SessionMemoryConfig {
 
 export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
   maxEntries: 100,
+  maxTotalTokens: 12_000,
   maxEntryChars: 2000,
   contextWindowMessages: 4,
   toolResultTruncateChars: 500,
@@ -108,6 +123,9 @@ export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
 
 export const MAX_MEMORY_ENTRIES = DEFAULT_SESSION_MEMORY_CONFIG.maxEntries;
 export const MAX_MEMORY_ENTRY_CHARS = DEFAULT_SESSION_MEMORY_CONFIG.maxEntryChars;
+/** Aggregate token budget for the whole persisted session-memory document (parity:
+ *  Claude's `MAX_TOTAL_SESSION_MEMORY_TOKENS`). See {@link SessionMemoryConfig.maxTotalTokens}. */
+export const MAX_SESSION_MEMORY_TOTAL_TOKENS = DEFAULT_SESSION_MEMORY_CONFIG.maxTotalTokens;
 
 /** The incremental window of messages to run a memory-extraction pass over, plus
  *  the cursor the caller should persist AFTER a successful extraction (parity:
@@ -557,10 +575,12 @@ export class SessionMemoryExtractor {
    * Near-duplicates (normalized-equal, or Jaccard token similarity at/above
    * `config.dedupSimilarityThreshold`) collapse so paraphrased restatements do
    * not accumulate; the higher-confidence variant wins. When the merged list
-   * exceeds `config.maxEntries`, the newest `config.recencyProtectedCount` facts
-   * are retained regardless of confidence and the remaining slots are filled by
-   * confidence, so current-work facts are not evicted by stale high-confidence
-   * ones. The returned list is ordered by descending confidence.
+   * exceeds `config.maxEntries` OR its combined token count exceeds
+   * `config.maxTotalTokens`, the newest `config.recencyProtectedCount` facts are
+   * retained regardless of confidence and the remaining slots are filled by a
+   * criticality-aware score until BOTH the entry-count and token budgets are
+   * satisfied, so current-work and critical facts are not evicted by stale
+   * high-confidence noise. The returned list is ordered by descending confidence.
    */
   mergeFacts(existing: SessionFact[], newFacts: SessionFact[]): SessionFact[] {
     const merged = [...existing];
@@ -588,10 +608,13 @@ export class SessionMemoryExtractor {
       }
     }
 
-    if (merged.length > this.config.maxEntries) {
+    const overEntries = merged.length > this.config.maxEntries;
+    const overTokens = this.totalFactTokens(merged) > this.config.maxTotalTokens;
+    if (overEntries || overTokens) {
       // Insertion order == recency (existing first, newest appended), so the tail
       // is the most recent. Protect the newest N from eviction, then fill the
-      // remaining slots from the older facts by confidence.
+      // remaining slots from the older facts by a criticality-aware score, honoring
+      // BOTH the entry-count cap and the aggregate token budget.
       const protectCount = Math.min(this.config.recencyProtectedCount, this.config.maxEntries);
       const recent = merged.slice(merged.length - protectCount);
       const older = merged.slice(0, merged.length - protectCount);
@@ -600,12 +623,32 @@ export class SessionMemoryExtractor {
       // facts (errors, decisions, user preferences) are not crowded out by stale
       // high-confidence noise. The stored confidence is never mutated.
       older.sort((a, b) => this.evictionScore(b) - this.evictionScore(a));
-      const survivors = [...older.slice(0, this.config.maxEntries - recent.length), ...recent];
+      // Recency-protected facts are always kept (even if they alone exceed the token
+      // budget — current work must survive). Then add older facts, highest-score
+      // first, skipping any that would push the running total over the token budget,
+      // and stopping once the entry-count cap is reached.
+      const survivors = [...recent];
+      let tokens = this.totalFactTokens(recent);
+      for (const fact of older) {
+        if (survivors.length >= this.config.maxEntries) break;
+        const factTokens = estimateTextTokens(fact.fact);
+        if (tokens + factTokens > this.config.maxTotalTokens) continue;
+        survivors.push(fact);
+        tokens += factTokens;
+      }
       survivors.sort((a, b) => b.confidence - a.confidence);
       return survivors;
     }
 
     return merged;
+  }
+
+  /** Combined byte-aware token estimate of a set of facts' text, used to enforce the
+   *  aggregate {@link SessionMemoryConfig.maxTotalTokens} budget in {@link mergeFacts}. */
+  private totalFactTokens(facts: SessionFact[]): number {
+    let total = 0;
+    for (const fact of facts) total += estimateTextTokens(fact.fact);
+    return total;
   }
 
   /**
