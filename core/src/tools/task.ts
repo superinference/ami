@@ -599,8 +599,12 @@ const PERMISSION_MODE_RANK: Record<string, number> = {
   'plan': 1,
   'ask': 2,
   'acceptEdits': 3,
-  'auto-allow': 4,
-  'bypassPermissions': 5,
+  // 'auto' is screened autonomy: it runs without prompts (more permissive than
+  // acceptEdits) but blocks risky/injection-bearing calls (less permissive than the
+  // blanket auto-allow), so it ranks between them.
+  'auto': 4,
+  'auto-allow': 5,
+  'bypassPermissions': 6,
 };
 
 /**

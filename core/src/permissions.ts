@@ -7,6 +7,7 @@ import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
+import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
@@ -24,7 +25,7 @@ import type { SandboxPolicy } from './types';
 // Claude-Code wire-names — that is intentional, we match CC semantics, not a naming
 // convention). `dontAsk` was removed: it was a semantic DUPLICATE of `deny-all` (both
 // deny every tool call); normalizePermissionMode maps the legacy spelling to deny-all.
-export const PERMISSION_MODES = ['ask', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+export const PERMISSION_MODES = ['ask', 'auto', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
@@ -672,6 +673,83 @@ export function classifyPermissionRisk(toolName: string, input: unknown): Permis
     explanation: `Uses the ${tool} tool.`,
     reasoning: 'I need to use this tool to continue the task.',
     risk: 'Effects depend on the tool; review before approving.',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 'auto' permission mode — screened autonomy (parity: Claude Code's AutoMode)
+// ---------------------------------------------------------------------------
+
+/**
+ * The verdict of the per-call screen the `auto` permission mode applies to EVERY
+ * tool call: `allow` runs it without a prompt, `deny` blocks it (the engine
+ * reports the block to the model, which may try a different approach — Claude's
+ * "block what is judged risky" fallback). This is a middle ground between `ask`
+ * (prompt on everything) and `auto-allow` (run everything except hardline): an
+ * autonomous run proceeds without prompts yet is bounded by a per-call risk +
+ * prompt-injection screen.
+ */
+export interface AutoModeScreen {
+  decision: 'allow' | 'deny';
+  /** Deterministic risk level of the call (reuses {@link classifyPermissionRisk}). */
+  riskLevel: RiskLevel;
+  /** True when a prompt-injection pattern was found in the tool input. */
+  injection: boolean;
+  /** Human-readable justification for the decision (surfaced in the denial log). */
+  reason: string;
+}
+
+/**
+ * Gather the string-valued fields of a tool input into one blob so a
+ * prompt-injection scan can inspect everything the model proposed to execute
+ * (the bash `command`, an edit's `content`/`new_string`, a URL, etc.) rather than
+ * just one well-known field. Non-string values are ignored.
+ */
+function collectToolInputText(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (!input || typeof input !== 'object') return '';
+  const parts: string[] = [];
+  for (const v of Object.values(input as Record<string, unknown>)) {
+    if (typeof v === 'string') parts.push(v);
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Screen a single pending tool call for the `auto` permission mode: run it when
+ * judged safe, block it when judged risky. A call is blocked when its input
+ * carries a prompt-injection pattern ({@link detectPromptInjection}) OR when its
+ * deterministic risk is HIGH (destructive/irreversible — {@link classifyPermissionRisk}).
+ * LOW (read-only) and MEDIUM (recoverable mutation) calls run without a prompt.
+ * Pure and side-effect free; reuses the existing classifiers so the screen can
+ * never drift from the permission engine's own risk model (No-Duplication Rule).
+ * Parity: Claude Code's auto mode (per-call risk + prompt-injection gate with a
+ * block-and-retry fallback, AutoModeOptInDialog.tsx).
+ */
+export function screenAutoModeToolCall(toolName: string, input: unknown): AutoModeScreen {
+  const injection = detectPromptInjection(collectToolInputText(input));
+  if (injection.suspicious) {
+    return {
+      decision: 'deny',
+      riskLevel: 'HIGH',
+      injection: true,
+      reason: `blocked: tool input matches a prompt-injection pattern (${injection.pattern})`,
+    };
+  }
+  const risk = classifyPermissionRisk(toolName, input);
+  if (risk.riskLevel === 'HIGH') {
+    return {
+      decision: 'deny',
+      riskLevel: 'HIGH',
+      injection: false,
+      reason: `blocked: ${risk.risk}`,
+    };
+  }
+  return {
+    decision: 'allow',
+    riskLevel: risk.riskLevel,
+    injection: false,
+    reason: risk.risk,
   };
 }
 
@@ -4801,6 +4879,20 @@ export class PermissionManager {
       // even though file_read of the same path is forbidden.
       if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
       return 'allow';
+    }
+    // Screened autonomy: `auto` runs tool calls without a prompt (like auto-allow)
+    // but screens EACH call for risk + prompt injection first, blocking the risky
+    // ones so an autonomous run is bounded without interrupting the user. Ordering
+    // mirrors the other autonomous branches: explicit user deny/ask rules win, then
+    // sensitive-path safety prompts, then the per-call screen decides allow vs block
+    // ({@link screenAutoModeToolCall}). A blocked call returns `deny`, which the
+    // engine reports back so the model can try a different approach (Claude's auto
+    // mode block-and-retry fallback).
+    if (this.mode === 'auto') {
+      if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
+      if (this.anyAskMatches(toolName, input)) return 'ask';
+      if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
+      return screenAutoModeToolCall(toolName, input).decision;
     }
     if (this.mode === 'deny-all') return 'deny';
 
