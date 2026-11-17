@@ -2724,6 +2724,103 @@ export type PermissionUpdate =
   | { type: 'removeDirectories'; directories: string[]; destination?: PermissionUpdateDestination };
 
 /**
+ * The kind of filesystem access a tool call represents — mirrors Claude's
+ * `FileOperationType` (components/permissions/FilePermissionDialog/permissionOptions.tsx):
+ * a read-only access, an edit of pre-existing content (`write`), or the creation of
+ * a brand-new file (`create`). It drives OPERATION-AWARE permission affordances: a
+ * `read` widens the read boundary by directory, a `write`/`create` offers a path
+ * allow rule, and only a non-`read` op targeting the agent's own config folder gets
+ * the "allow editing its own settings this session" grant.
+ */
+export type FileOperationType = 'read' | 'write' | 'create';
+
+/** Read-shaped canonical tools: they access content without mutating the tree. */
+const READ_SHAPED_FILE_TOOLS = new Set(['file_read', 'glob', 'grep', 'list_dir']);
+
+/**
+ * Classify a tool call's filesystem operation type (parity with Claude's
+ * `operationType`), or `undefined` for a tool that targets no file path. Read-shaped
+ * tools are `'read'`; a mutating file tool is `'create'` when its target does not yet
+ * exist on disk and `'write'` when it does — so a prompt can distinguish editing
+ * existing content from bringing a new file into being. The on-disk probe is a
+ * best-effort `existsSync`; an erroring path falls back to `'write'`.
+ */
+export function resolveFileOperationType(
+  toolName: string,
+  input: Record<string, unknown>,
+): FileOperationType | undefined {
+  const canonical = normalizeToolName(toolName);
+  if (READ_SHAPED_FILE_TOOLS.has(canonical)) return 'read';
+  const filePath = (input.file_path ?? input.path) as unknown;
+  if (typeof filePath !== 'string' || filePath.length === 0) return undefined;
+  try {
+    return fs.existsSync(expandPath(filePath)) ? 'write' : 'create';
+  } catch {
+    return 'write';
+  }
+}
+
+/**
+ * Which of the agent's own config folders a path lives in: the PROJECT config
+ * folder (`<cwd>/.ami` | `.ami-plugin` | `.claude`) or the GLOBAL one
+ * (`~/.ami` | `~/.ami-plugin` | `~/.claude`). Mirrors Claude's `isInClaudeFolder` /
+ * `isInGlobalClaudeFolder` scope distinction.
+ */
+export type ConfigFolderScope = 'project-config-folder' | 'global-config-folder';
+
+/** Directory names that are a genuine AMI *settings root* the agent may self-grant
+ *  (NOT the IDE/git dirs in {@link AGENT_CONFIG_DIR_SEGMENTS}, which are not AMI's
+ *  own config to offer a self-edit grant for). */
+const CONFIG_FOLDER_NAMES = ['.ami', '.ami-plugin', '.claude'] as const;
+
+/** True when the already-absolute `child` is `root` itself or nested within it,
+ *  case-folded on win32 (case-insensitive FS) like Claude's normalizeCaseForComparison. */
+function pathIsWithinDir(child: string, root: string): boolean {
+  const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const c = fold(path.normalize(child));
+  const r = fold(path.normalize(root));
+  return c === r || c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+}
+
+/**
+ * Resolve the config-folder {@link ConfigFolderScope} + matched root dir for
+ * `filePath`, or `null` when it is outside every config folder. The PROJECT folder
+ * wins when the two overlap (cwd under $HOME). Shared matcher behind
+ * {@link resolveConfigFolderScope} and the config-folder permission suggestion — one
+ * matching implementation, no per-caller duplication.
+ */
+function matchConfigFolderRoot(
+  filePath: string,
+  cwd: string,
+): { scope: ConfigFolderScope; root: string } | null {
+  if (!filePath) return null;
+  const abs = path.resolve(cwd, expandPath(filePath));
+  for (const name of CONFIG_FOLDER_NAMES) {
+    const root = path.resolve(cwd, name);
+    if (pathIsWithinDir(abs, root)) return { scope: 'project-config-folder', root };
+  }
+  const home = os.homedir();
+  for (const name of CONFIG_FOLDER_NAMES) {
+    const root = path.join(home, name);
+    if (pathIsWithinDir(abs, root)) return { scope: 'global-config-folder', root };
+  }
+  return null;
+}
+
+/**
+ * Resolve whether `filePath` lives inside the agent's own config folder (project or
+ * global), returning the {@link ConfigFolderScope} or `null`. Mirrors Claude's
+ * `isInClaudeFolder` / `isInGlobalClaudeFolder`; used to offer a config-folder-scoped
+ * "allow editing own settings this session" grant at permission-decision time.
+ */
+export function resolveConfigFolderScope(
+  filePath: string,
+  cwd: string = process.cwd(),
+): ConfigFolderScope | null {
+  return matchConfigFolderRoot(filePath, cwd)?.scope ?? null;
+}
+
+/**
  * Compute the pre-baked {@link PermissionUpdate} *suggestions* to attach to an
  * ask/deny permission decision — the "always allow X" candidates a prompt can
  * offer for one-click acceptance (Claude's `permissionResult.suggestions`, parsed
@@ -2752,13 +2849,29 @@ export function buildPermissionSuggestions(
   }
   const filePath = (input.file_path ?? input.path) as unknown;
   if (typeof filePath === 'string' && filePath.length > 0) {
-    if (canonical === 'file_read' || canonical === 'glob' || canonical === 'grep' || canonical === 'list_dir') {
+    // Operation-aware shaping (parity with Claude's operationType): a READ widens
+    // the read boundary by directory; a mutating op offers a path allow rule.
+    if (resolveFileOperationType(canonical, input) === 'read') {
       return [{ type: 'addDirectories', destination: 'session', directories: [path.dirname(filePath)] }];
     }
-    return [{
+    const suggestions: PermissionUpdate[] = [];
+    // A write/create inside the agent's OWN config folder also offers a broader,
+    // SESSION-scoped grant for that whole config folder — Claude's config-folder
+    // "allow editing its own settings for this session" option — so the user is
+    // not re-prompted per settings file. Session-only (never persisted): it widens
+    // self-modification rights, which must not survive the process.
+    const configFolder = matchConfigFolderRoot(filePath, process.cwd());
+    if (configFolder) {
+      suggestions.push({
+        type: 'addRules', behavior: 'allow', destination: 'session',
+        rules: [{ toolName: canonical, ruleContent: `${configFolder.root}${path.sep}*` }],
+      });
+    }
+    suggestions.push({
       type: 'addRules', behavior: 'allow', destination: 'session',
       rules: [{ toolName: canonical, ruleContent: filePath }],
-    }];
+    });
+    return suggestions;
   }
   return [];
 }

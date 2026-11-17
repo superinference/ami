@@ -59,8 +59,9 @@ export type { PathExpansionHazard } from './permissions';
 export {
   validatePermissionRule, filterInvalidPermissionRules, permissionRuleValueFromString,
   permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,
+  resolveFileOperationType, resolveConfigFolderScope,
 } from './permissions';
-export type { PermissionRuleValue } from './permissions';
+export type { PermissionRuleValue, FileOperationType, ConfigFolderScope } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
 export {
   SessionMemoryExtractor,
