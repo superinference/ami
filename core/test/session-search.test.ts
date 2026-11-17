@@ -15,7 +15,9 @@ import {
   DATE_TIE_THRESHOLD_MS,
   MAX_RANKING_TRANSCRIPT_CHARS,
   MAX_RANKING_MESSAGES_TO_SCAN,
+  MAX_SNIPPET_CHARS,
 } from '../src/session-search';
+import type { SearchTrace } from '../src/session-search';
 import { projectStateDir } from '../src/reference-journal';
 
 describe('searchSessions', () => {
@@ -730,5 +732,204 @@ describe('renderableSearchText / flattenMessageText — WeakMap per-message cach
     assert.equal(r.length, 1);
     assert.equal(r[0].sessionId, 's');
     fs.rmSync(tmpDir, { recursive: true });
+  });
+});
+
+describe('searchSessions — configurable scan knobs (SearchScanOptions)', () => {
+  let tmpDir: string;
+  let sessDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-knobs-'));
+    sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+  });
+
+  function writeSession(name: string, content: string, createdAt: string): void {
+    fs.writeFileSync(path.join(sessDir, name), JSON.stringify({
+      id: name.replace('.json', ''), createdAt,
+      messages: [{ role: 'user', content }],
+    }));
+  }
+
+  it('snippetChars caps the result snippet below the default budget', () => {
+    const long = 'needle ' + 'x'.repeat(1000);
+    writeSession('s1.json', long, new Date().toISOString());
+    const def = searchSessions(tmpDir, 'needle');
+    assert.ok(def[0].content.length <= MAX_SNIPPET_CHARS);
+    const tight = searchSessions(tmpDir, 'needle', 20, 'relevance', { snippetChars: 40 });
+    assert.ok(tight[0].content.length <= 40, `snippet ${tight[0].content.length} should be <= 40`);
+    // Default budget is wider than the tight one — proves the knob actually shrinks it.
+    assert.ok(tight[0].content.length < def[0].content.length);
+  });
+
+  it('maxSessions caps how many (newest-first) session files are scanned', () => {
+    // Three sessions, distinct mtimes; all contain the needle.
+    writeSession('old.json', 'needle old', '2020-01-01T00:00:00Z');
+    writeSession('mid.json', 'needle mid', '2021-01-01T00:00:00Z');
+    writeSession('new.json', 'needle new', '2022-01-01T00:00:00Z');
+    const now = Date.now();
+    fs.utimesSync(path.join(sessDir, 'old.json'), new Date(now - 30000), new Date(now - 30000));
+    fs.utimesSync(path.join(sessDir, 'mid.json'), new Date(now - 20000), new Date(now - 20000));
+    fs.utimesSync(path.join(sessDir, 'new.json'), new Date(now - 10000), new Date(now - 10000));
+    const all = searchSessions(tmpDir, 'needle');
+    assert.equal(all.length, 3);
+    const capped = searchSessions(tmpDir, 'needle', 20, 'relevance', { maxSessions: 1 });
+    assert.equal(capped.length, 1);
+    // Newest file (by mtime) survives the cap.
+    assert.equal(capped[0].sessionId, 'new');
+  });
+
+  it('maxMessages caps how many messages per session are scanned', () => {
+    fs.writeFileSync(path.join(sessDir, 's.json'), JSON.stringify({
+      id: 's', createdAt: new Date().toISOString(),
+      messages: [
+        { role: 'user', content: 'alpha one' },
+        { role: 'assistant', content: 'beta two' },
+        { role: 'user', content: 'needle three' },
+      ],
+    }));
+    // With only the first message scanned, the needle in message 3 is invisible.
+    const capped = searchSessions(tmpDir, 'needle', 20, 'relevance', { maxMessages: 1 });
+    assert.equal(capped.length, 0);
+    // Default scans all messages and finds it.
+    assert.equal(searchSessions(tmpDir, 'needle').length, 1);
+  });
+
+  it('maxSessions=0 scans nothing (boundary)', () => {
+    writeSession('s.json', 'needle here', new Date().toISOString());
+    assert.equal(searchSessions(tmpDir, 'needle', 20, 'relevance', { maxSessions: 0 }).length, 0);
+  });
+
+  it('omitting the options bag is identical to the legacy positional call', () => {
+    writeSession('s.json', 'needle body text', new Date().toISOString());
+    const a = searchSessions(tmpDir, 'needle');
+    const b = searchSessions(tmpDir, 'needle', 20, 'relevance', {});
+    assert.deepEqual(a, b);
+  });
+});
+
+describe('searchSessions / searchSessionsRanked — diagnostic trace', () => {
+  let tmpDir: string;
+  let sessDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'search-trace-'));
+    sessDir = projectStateDir(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(path.join(sessDir, 'hit.json'), JSON.stringify({
+      id: 'hit', createdAt: '2022-01-01T00:00:00Z',
+      messages: [{ role: 'user', content: 'the needle is here' }],
+    }));
+    fs.writeFileSync(path.join(sessDir, 'miss.json'), JSON.stringify({
+      id: 'miss', createdAt: '2021-01-01T00:00:00Z',
+      messages: [{ role: 'user', content: 'unrelated content' }],
+    }));
+  });
+
+  it('emits a trace with scanned/matched/hits/results counts', () => {
+    const traces: SearchTrace[] = [];
+    const r = searchSessions(tmpDir, 'needle', 20, 'relevance', { trace: t => traces.push(t) });
+    assert.equal(traces.length, 1);
+    const t = traces[0];
+    assert.equal(t.query, 'needle');
+    assert.equal(t.scanned, 2);          // both files scanned
+    assert.equal(t.matched, 1);          // only 'hit' produced a row
+    assert.equal(t.hits, 1);
+    assert.equal(t.results, r.length);
+    assert.equal(t.ordering, 'relevance');
+    assert.equal(t.limit, 20);
+    assert.equal(t.rerank, undefined);   // no rerank on the plain path
+  });
+
+  it('emits a zero-count trace when the sessions dir is absent', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'search-trace-empty-'));
+    const traces: SearchTrace[] = [];
+    searchSessions(empty, 'needle', 20, 'relevance', { trace: t => traces.push(t) });
+    assert.equal(traces.length, 1);
+    assert.deepEqual(
+      { scanned: traces[0].scanned, matched: traces[0].matched, hits: traces[0].hits, results: traces[0].results },
+      { scanned: 0, matched: 0, hits: 0, results: 0 },
+    );
+    fs.rmSync(empty, { recursive: true });
+  });
+
+  it('emits a zero-count trace for an empty query', () => {
+    const traces: SearchTrace[] = [];
+    searchSessions(tmpDir, '   ', 20, 'relevance', { trace: t => traces.push(t) });
+    assert.equal(traces.length, 1);
+    assert.equal(traces[0].hits, 0);
+    assert.equal(traces[0].scanned, 0);
+  });
+
+  it('ranked trace reports skipped=no-rankfn when no ranker is supplied', async () => {
+    const traces: SearchTrace[] = [];
+    await searchSessionsRanked(tmpDir, 'needle', { trace: t => traces.push(t) });
+    assert.equal(traces.length, 1);
+    assert.equal(traces[0].rerank?.applied, false);
+    assert.equal(traces[0].rerank?.skipped, 'no-rankfn');
+    assert.equal(traces[0].matched, 1);
+  });
+
+  it('ranked trace reports applied=true and the candidate-pool size when a ranker runs', async () => {
+    const traces: SearchTrace[] = [];
+    const out = await searchSessionsRanked(tmpDir, 'needle', {
+      rankFn: async (_q, cands) => cands.map(c => c.sessionId).reverse(),
+      trace: t => traces.push(t),
+    });
+    assert.equal(traces.length, 1);
+    assert.equal(traces[0].rerank?.applied, true);
+    assert.equal(traces[0].rerank?.candidates, out.length);
+    assert.equal(traces[0].rerank?.skipped, undefined);
+  });
+
+  it('ranked trace reports skipped=aborted when the signal is already aborted', async () => {
+    const traces: SearchTrace[] = [];
+    await searchSessionsRanked(tmpDir, 'needle', {
+      rankFn: async () => { throw new Error('should not run'); },
+      signal: AbortSignal.abort(),
+      trace: t => traces.push(t),
+    });
+    assert.equal(traces[0].rerank?.skipped, 'aborted');
+    assert.equal(traces[0].rerank?.applied, false);
+  });
+
+  it('ranked trace reports skipped=error when the ranker throws', async () => {
+    const traces: SearchTrace[] = [];
+    await searchSessionsRanked(tmpDir, 'needle', {
+      rankFn: async () => { throw new Error('boom'); },
+      trace: t => traces.push(t),
+    });
+    assert.equal(traces[0].rerank?.skipped, 'error');
+    assert.equal(traces[0].rerank?.applied, false);
+  });
+
+  it('ranked trace reports skipped=empty + recentFilled when there are no candidates', async () => {
+    const traces: SearchTrace[] = [];
+    await searchSessionsRanked(tmpDir, 'zzznomatchzzz', {
+      rankFn: async (_q, c) => c.map(x => x.sessionId),
+      trace: t => traces.push(t),
+    });
+    assert.equal(traces[0].rerank?.skipped, 'empty');
+    assert.equal(traces[0].rerank?.candidates, 0);
+  });
+
+  it('ranked trace records recentFilled when recentFill widens the pool', async () => {
+    const traces: SearchTrace[] = [];
+    await searchSessionsRanked(tmpDir, 'needle', {
+      limit: 20,
+      recentFill: true,
+      rankFn: async (_q, c) => c.map(x => x.sessionId),
+      trace: t => traces.push(t),
+    });
+    // One literal hit ('hit'); recentFill backfills the non-matching 'miss'.
+    assert.equal(traces[0].rerank?.recentFilled, 1);
+    assert.equal(traces[0].rerank?.candidates, 2);
+  });
+
+  it('no trace callback => no overhead, no throw (default path unchanged)', async () => {
+    assert.equal(searchSessions(tmpDir, 'needle').length, 1);
+    const ranked = await searchSessionsRanked(tmpDir, 'needle', {});
+    assert.equal(ranked.length, 1);
   });
 });

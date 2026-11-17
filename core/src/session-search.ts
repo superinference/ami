@@ -83,6 +83,65 @@ export const DATE_TIE_THRESHOLD_MS = 60 * 1000; // 1 minute
  */
 export type SearchOrdering = 'relevance' | 'recency';
 
+/**
+ * @public Step-by-step diagnostic trace of one search pass, mirroring the
+ * reference's `logForDebugging` instrumentation of the agentic search pipeline
+ * (agenticSessionSearch.ts L178-200): how many session files were scanned, how
+ * many produced a hit, how many raw hit rows that yielded, the limit/ordering in
+ * effect, and the final result count. For a ranked search the `rerank` block adds
+ * whether the LLM reorder ran (or why it was skipped), the candidate-pool size,
+ * and how many recent non-matching sessions were back-filled. Emitted ONLY when a
+ * `trace` callback is supplied, so a zero/odd result is diagnosable without any
+ * cost on the normal path. (AMI "introspection on every change".)
+ */
+export interface SearchTrace {
+  query: string;
+  /** Session files scanned (post newest-first recency cap). */
+  scanned: number;
+  /** Sessions that produced >=1 hit (meta / body / fuzzy). */
+  matched: number;
+  /** Raw hit rows accumulated before the `limit` truncation. */
+  hits: number;
+  /** Result-row cap requested by the caller. */
+  limit: number;
+  ordering: SearchOrdering;
+  /** Result rows returned (post-limit). */
+  results: number;
+  /** Rerank stage — present only for {@link searchSessionsRanked}. */
+  rerank?: {
+    /** A `rankFn` ran and reordered the pool. */
+    applied: boolean;
+    /** Why the rerank did not run (absent when it did). */
+    skipped?: 'no-rankfn' | 'aborted' | 'empty' | 'error';
+    /** Sessions in the pool handed (or that would be handed) to the ranker. */
+    candidates: number;
+    /** Recent non-matching sessions appended by `recentFill`. */
+    recentFilled: number;
+  };
+}
+
+/** @public Diagnostic-trace sink for {@link searchSessions} / {@link searchSessionsRanked}. */
+export type SearchTraceFn = (trace: SearchTrace) => void;
+
+/**
+ * @public Optional scan knobs for {@link searchSessions}. Every field defaults to
+ * the module-level budget constant, so omitting the bag is byte-for-byte the old
+ * behavior. Mirrors the reference's named, tunable extraction constants
+ * (agenticSessionSearch.ts L10-13): a caller can shrink the snippet or cap how
+ * many sessions/messages are scanned for a cheaper search, or widen them when a
+ * deeper scan is wanted.
+ */
+export interface SearchScanOptions {
+  /** Max chars per result snippet (default {@link MAX_SNIPPET_CHARS}). */
+  snippetChars?: number;
+  /** Newest-first cap on session files scanned (default {@link MAX_SESSIONS_TO_SEARCH}). */
+  maxSessions?: number;
+  /** Per-session message cap (default {@link MAX_MESSAGES_TO_SCAN}). */
+  maxMessages?: number;
+  /** Optional diagnostic-trace sink (see {@link SearchTrace}). */
+  trace?: SearchTraceFn;
+}
+
 /** Comparator for {@link SearchOrdering}. `relevance`: score desc, then recency
  *  desc. `recency`: recency desc, but relevance desc within the tie window. */
 function resultComparator(ordering: SearchOrdering): (a: SearchResult, b: SearchResult) => number {
@@ -362,10 +421,10 @@ function flattenContent(content: unknown): string {
 /**
  * Newest-first, capped list of session filenames in a sessions dir. A huge
  * session dir must not make a scan unbounded: sort by mtime desc, take at most
- * {@link MAX_SESSIONS_TO_SEARCH}. Shared by the literal search and the recent-fill
- * tier so both apply the same ordering + cap.
+ * `maxSessions` (default {@link MAX_SESSIONS_TO_SEARCH}). Shared by the literal
+ * search and the recent-fill tier so both apply the same ordering + cap.
  */
-function sessionFilesByRecency(sessionsDir: string): string[] {
+function sessionFilesByRecency(sessionsDir: string, maxSessions: number = MAX_SESSIONS_TO_SEARCH): string[] {
   const candidates: { file: string; mtimeMs: number }[] = [];
   for (const file of fs.readdirSync(sessionsDir)) {
     if (!file.endsWith('.json')) continue;
@@ -374,7 +433,7 @@ function sessionFilesByRecency(sessionsDir: string): string[] {
     candidates.push({ file, mtimeMs });
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return candidates.slice(0, MAX_SESSIONS_TO_SEARCH).map(c => c.file);
+  return candidates.slice(0, Math.max(0, maxSessions)).map(c => c.file);
 }
 
 export function searchSessions(
@@ -382,17 +441,34 @@ export function searchSessions(
   query: string,
   limit: number = 20,
   ordering: SearchOrdering = 'relevance',
+  options: SearchScanOptions = {},
 ): SearchResult[] {
+  const {
+    snippetChars = MAX_SNIPPET_CHARS,
+    maxSessions = MAX_SESSIONS_TO_SEARCH,
+    maxMessages = MAX_MESSAGES_TO_SCAN,
+    trace,
+  } = options;
   const sessionsDir = projectStateDir(cwd, 'sessions');
-  if (!fs.existsSync(sessionsDir)) return [];
+  if (!fs.existsSync(sessionsDir)) {
+    trace?.({ query, scanned: 0, matched: 0, hits: 0, limit, ordering, results: 0 });
+    return [];
+  }
 
   const phrase = query.toLowerCase().trim();
   const terms = phrase.split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return [];
+  if (terms.length === 0) {
+    trace?.({ query, scanned: 0, matched: 0, hits: 0, limit, ordering, results: 0 });
+    return [];
+  }
 
   const results: SearchResult[] = [];
+  // Diagnostics: files actually scanned + distinct sessions that produced a hit.
+  let scanned = 0;
+  let matched = 0;
 
-  for (const file of sessionFilesByRecency(sessionsDir)) {
+  for (const file of sessionFilesByRecency(sessionsDir, maxSessions)) {
+    scanned++;
     try {
       const filePath = path.join(sessionsDir, file);
       // OOM guard: skip a session file larger than the read cap rather than
@@ -404,6 +480,8 @@ export function searchSessions(
       // A session contributes substring hits first; only if it produced NONE do
       // we fall back to the subsequence (fuzzy) tier below, so exact always wins.
       let sessionHadSubstringHit = false;
+      // Did THIS session push any result row (meta/body/fuzzy)? Drives `matched`.
+      let sessionContributed = false;
       // Accumulate the session's searchable text (capped) for the fuzzy scan.
       let subsequenceText = '';
       const addSubsequenceText = (t: string): void => {
@@ -422,11 +500,12 @@ export function searchSessions(
         const metaMatch = terms.filter(t => lowerMeta.includes(t)).length;
         if (metaMatch > 0) {
           sessionHadSubstringHit = true;
+          sessionContributed = true;
           const literalBonus = terms.length > 1 && lowerMeta.includes(phrase) ? 1 : 0;
           results.push({
             sessionId,
             role: 'meta',
-            content: matchSnippet(metaText, terms, phrase),
+            content: matchSnippet(metaText, terms, phrase, snippetChars),
             // Hoist a tag/title hit above scattered body matches of equal coverage.
             score: metaMatch / terms.length + literalBonus + 0.5,
             timestamp: session.createdAt,
@@ -434,7 +513,7 @@ export function searchSessions(
         }
       }
       const messages = Array.isArray(session.messages) ? session.messages : [];
-      for (const msg of messages.slice(0, MAX_MESSAGES_TO_SCAN)) {
+      for (const msg of messages.slice(0, maxMessages)) {
         // Flatten string | structured-block content + tool calls into one
         // searchable string, so a query hits text inside a tool_use input or a
         // tool_result that a string-only check would miss. (H33)
@@ -447,6 +526,7 @@ export function searchSessions(
         const matchCount = terms.filter(t => lower.includes(t)).length;
         if (matchCount > 0) {
           sessionHadSubstringHit = true;
+          sessionContributed = true;
           // Hoist literal matches (every token verbatim and contiguous) above
           // scattered-term matches of the same coverage.
           const literalBonus = terms.length > 1 && lower.includes(phrase) ? 1 : 0;
@@ -454,7 +534,7 @@ export function searchSessions(
             sessionId,
             role: msg.role,
             // Match-centered snippet (…before <match> after…) instead of a fixed head.
-            content: matchSnippet(content, terms, phrase),
+            content: matchSnippet(content, terms, phrase, snippetChars),
             score: matchCount / terms.length + literalBonus,
             timestamp: session.createdAt,
           });
@@ -470,14 +550,16 @@ export function searchSessions(
         subsequenceText &&
         isSubsequence(subsequenceText.toLowerCase(), phrase)
       ) {
+        sessionContributed = true;
         results.push({
           sessionId,
           role: 'fuzzy',
-          content: matchSnippet(subsequenceText, terms, phrase),
+          content: matchSnippet(subsequenceText, terms, phrase, snippetChars),
           score: SUBSEQUENCE_SCORE,
           timestamp: session.createdAt,
         });
       }
+      if (sessionContributed) matched++;
     } catch {
       // Skip malformed session files
     }
@@ -485,7 +567,17 @@ export function searchSessions(
 
   // Rank per the selected ordering: relevance-first (default) or newest-first with
   // relevance breaking ties inside the DATE_TIE_THRESHOLD_MS window (`--recent`).
-  return results.sort(resultComparator(ordering)).slice(0, limit);
+  const ranked = results.sort(resultComparator(ordering)).slice(0, limit);
+  trace?.({
+    query,
+    scanned,
+    matched,
+    hits: results.length,
+    limit,
+    ordering,
+    results: ranked.length,
+  });
+  return ranked;
 }
 
 /**
@@ -529,6 +621,19 @@ export interface RankedSearchOptions {
    * affects which candidates fall inside the `limit` before reranking.
    */
   ordering?: SearchOrdering;
+  /** Max chars per result snippet for the literal pass (default {@link MAX_SNIPPET_CHARS}). */
+  snippetChars?: number;
+  /** Newest-first cap on session files scanned (default {@link MAX_SESSIONS_TO_SEARCH}). */
+  maxSessions?: number;
+  /** Per-session message cap for the literal pass (default {@link MAX_MESSAGES_TO_SCAN}). */
+  maxMessages?: number;
+  /**
+   * Optional diagnostic-trace sink. Invoked ONCE per ranked search with the literal
+   * pass's counts PLUS a `rerank` block (applied/skipped reason, candidate-pool
+   * size, recent-fill count) so a mis-ranked or empty result is diagnosable.
+   * Mirrors the reference's step-by-step `logForDebugging` pipeline instrumentation.
+   */
+  trace?: SearchTraceFn;
 }
 
 /**
@@ -565,12 +670,17 @@ export function extractRankingTranscript(
  * they rank below every literal/fuzzy hit and exist solely to widen a semantic
  * reranker's candidate pool. Reads are size-capped like the literal scan.
  */
-function recentSessionResults(cwd: string, count: number, excludeIds: Set<string>): SearchResult[] {
+function recentSessionResults(
+  cwd: string,
+  count: number,
+  excludeIds: Set<string>,
+  maxSessions: number = MAX_SESSIONS_TO_SEARCH,
+): SearchResult[] {
   if (count <= 0) return [];
   const sessionsDir = projectStateDir(cwd, 'sessions');
   if (!fs.existsSync(sessionsDir)) return [];
   const out: SearchResult[] = [];
-  for (const file of sessionFilesByRecency(sessionsDir)) {
+  for (const file of sessionFilesByRecency(sessionsDir, maxSessions)) {
     try {
       const filePath = path.join(sessionsDir, file);
       if (fs.statSync(filePath).size > MAX_SESSION_SEARCH_BYTES) continue;
@@ -640,30 +750,61 @@ export async function searchSessionsRanked(
   query: string,
   options: RankedSearchOptions = {},
 ): Promise<SearchResult[]> {
-  const { limit = 20, rankFn, signal, recentFill = false, ordering = 'relevance' } = options;
-  const candidates = searchSessions(cwd, query, limit, ordering);
-  if (!rankFn) return candidates;
+  const {
+    limit = 20, rankFn, signal, recentFill = false, ordering = 'relevance',
+    snippetChars, maxSessions, maxMessages, trace,
+  } = options;
+  // Capture the literal pass's trace counts so the single ranked-search trace can
+  // carry them alongside the rerank block (one trace per ranked search).
+  let base: SearchTrace | undefined;
+  const candidates = searchSessions(cwd, query, limit, ordering, {
+    snippetChars, maxSessions, maxMessages,
+    trace: trace ? t => { base = t; } : undefined,
+  });
+  // Emit the ranked-search trace: literal counts + a rerank block describing what
+  // happened at the reorder stage (or why it was skipped).
+  const emit = (rerank: SearchTrace['rerank'], results: number): void => {
+    if (!trace) return;
+    const b = base ?? { query, scanned: 0, matched: 0, hits: candidates.length, limit, ordering, results };
+    trace({ ...b, results, rerank });
+  };
+  if (!rankFn) {
+    emit({ applied: false, skipped: 'no-rankfn', candidates: candidates.length, recentFilled: 0 }, candidates.length);
+    return candidates;
+  }
   // Fallback-to-recent: when enabled and literal matches under-fill the limit,
   // widen the ranker's pool with the most-recent non-matching sessions so a
   // semantic rerank can still surface sessions lacking the literal query term.
   let pool = candidates;
+  let recentFilled = 0;
   if (recentFill && candidates.length < limit) {
     const have = new Set(candidates.map(c => c.sessionId));
-    pool = [...candidates, ...recentSessionResults(cwd, limit - candidates.length, have)];
+    const filler = recentSessionResults(cwd, limit - candidates.length, have, maxSessions);
+    recentFilled = filler.length;
+    pool = [...candidates, ...filler];
   }
   // Boundary cap on the payload sent to the ranking model: never hand a reranker
   // more than MAX_RANKING_CANDIDATES sessions in one call (reference L12).
   if (pool.length > MAX_RANKING_CANDIDATES) pool = pool.slice(0, MAX_RANKING_CANDIDATES);
-  if (pool.length === 0) return pool;
+  if (pool.length === 0) {
+    emit({ applied: false, skipped: 'empty', candidates: 0, recentFilled }, 0);
+    return pool;
+  }
   // Already-cancelled search: skip the (potentially networked) rerank entirely
   // and hand back the fast local order.
-  if (signal?.aborted) return pool;
+  if (signal?.aborted) {
+    emit({ applied: false, skipped: 'aborted', candidates: pool.length, recentFilled }, pool.length);
+    return pool;
+  }
   try {
     const orderedIds = await rankFn(query, pool, signal);
-    return reorderByIds(pool, orderedIds);
+    const reordered = reorderByIds(pool, orderedIds);
+    emit({ applied: true, candidates: pool.length, recentFilled }, reordered.length);
+    return reordered;
   } catch {
     // Ranker failure (incl. an abort mid-flight) must never break search: fall
     // back to the local order.
+    emit({ applied: false, skipped: 'error', candidates: pool.length, recentFilled }, pool.length);
     return pool;
   }
 }
