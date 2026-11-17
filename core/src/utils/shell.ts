@@ -34,6 +34,9 @@ export const shellHooks = {
   mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
   readFileSync: fs.readFileSync as typeof fs.readFileSync,
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+  openSync: fs.openSync as typeof fs.openSync,
+  writeSync: fs.writeSync as typeof fs.writeSync,
+  closeSync: fs.closeSync as typeof fs.closeSync,
   /**
    * Shell-command-assembly debug sink (see {@link SHELL_DEBUG_ENV}). Default
    * writes a single `[shell-debug]` line to stderr, but ONLY when
@@ -149,11 +152,53 @@ export function resolveTmpBase(): string {
   return override || os.tmpdir();
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * Baseline default per-command timeout (ms) when a caller passes none AND no env
+ * override is set. Overridable per call via {@link ExecCommandOptions.timeout}
+ * and globally via {@link DEFAULT_TIMEOUT_ENV} (see {@link resolveDefaultTimeoutMs}).
+ */
+export const DEFAULT_TIMEOUT_MS = 120_000;
+
+/**
+ * Env knobs (ms) that raise/lower the default per-command timeout for commands
+ * that don't pass an explicit {@link ExecCommandOptions.timeout}. AMI's baseline
+ * is 2 minutes — conservative for long builds/test suites. Setting
+ * `AMI_DEFAULT_TIMEOUT_MS` (or `CLAUDE_CODE_SHELL_TIMEOUT` for parity) lets an
+ * operator match Claude Code's 30-minute default (Shell.ts:L44) or any other
+ * value. An unset / blank / non-numeric / non-positive value keeps the baseline,
+ * so default behavior is unchanged. An opt-in introspection surface per AMI's
+ * introspection-on-every-change invariant.
+ */
+export const DEFAULT_TIMEOUT_ENV = ['AMI_DEFAULT_TIMEOUT_MS', 'CLAUDE_CODE_SHELL_TIMEOUT'] as const;
+
+/**
+ * Resolve the default per-command timeout (ms), honoring {@link DEFAULT_TIMEOUT_ENV}.
+ * Returns {@link DEFAULT_TIMEOUT_MS} when the override is unset / blank / NaN /
+ * non-positive. Used as the fallback timeout by {@link execCommand} when a call
+ * supplies no explicit `timeout`.
+ */
+export function resolveDefaultTimeoutMs(): number {
+  const raw = DEFAULT_TIMEOUT_ENV.map(k => (process.env[k] || '').trim()).find(Boolean) || '';
+  if (raw === '') return DEFAULT_TIMEOUT_MS;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms <= 0) return DEFAULT_TIMEOUT_MS;
+  return ms;
+}
+
 /** Bound captured output. Head plus tail so a long pytest log keeps its summary. */
 const HEAD_CHARS = 670_000;
 const TAIL_CHARS = 330_000;
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
+
+/**
+ * Hard ceiling (bytes) on the complete command output persisted to disk when a
+ * caller opts in with {@link ExecCommandOptions.persistFullOutput}. Mirrors
+ * Claude Code's `MAX_PERSISTED_SIZE` (BashTool.tsx:L732): the full stream is
+ * streamed to a file so the model can `file_read` the WHOLE output (including the
+ * middle AMI's in-memory head+tail window drops), truncated only at this 64MB
+ * boundary so a runaway producer can't exhaust the disk.
+ */
+export const MAX_PERSISTED_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
  * After the shell process itself emits `'exit'`, how long to keep waiting for the
@@ -181,11 +226,12 @@ export const SPAWN_FAILURE_EXIT_CODE = 126;
 /** Candidate directories probed for a POSIX shell when resolving one. */
 const SHELL_SEARCH_PATHS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
 
-function createOutputBuffer(): { push: (chunk: string) => void; value: () => string } {
+function createOutputBuffer(): { push: (chunk: string) => void; value: () => string; truncated: () => boolean } {
   let head = '';
   let tail = '';
   let dropped = 0;
   return {
+    truncated() { return dropped > 0; },
     push(chunk: string) {
       if (head.length < HEAD_CHARS) {
         const room = HEAD_CHARS - head.length;
@@ -382,6 +428,26 @@ function isExecutable(shellPath: string): boolean {
   }
 }
 
+/** The interactive login-shell families AMI can classify from `$SHELL`. */
+export type InteractiveShellType = 'zsh' | 'bash' | 'fish' | 'unknown';
+
+/**
+ * Classify the user's interactive login shell from a shell path (defaults to
+ * `process.env.SHELL`) into `'zsh' | 'bash' | 'fish' | 'unknown'`. Lets callers
+ * tailor setup/affordance guidance (PATH export, alias syntax) to the user's
+ * actual shell — fish's `set -x PATH` differs from bash/zsh's `export PATH`.
+ * Parity with Claude Code's `getShellType()` (localInstaller.ts:L156-162),
+ * including its `zsh → bash → fish` precedence. Also consolidates the
+ * shell-family detection {@link resolveShell} needs (single source for the
+ * bash-vs-zsh preference), so there is one canonical classifier.
+ */
+export function getShellType(shellPath: string = process.env.SHELL || ''): InteractiveShellType {
+  if (shellPath.includes('zsh')) return 'zsh';
+  if (shellPath.includes('bash')) return 'bash';
+  if (shellPath.includes('fish')) return 'fish';
+  return 'unknown';
+}
+
 // Memoize the resolved shell per (platform, override, SHELL) tuple so probing
 // only happens once per session for a given environment, while still
 // re-resolving when the relevant env changes (e.g. in tests).
@@ -395,8 +461,11 @@ function resolveShell(override: string, envShell: string): string | null {
     if (supported && isExecutable(override)) return override;
   }
   // 2. Prefer the user's login shell type; probe standard install locations.
-  const preferBash = envShell.includes('bash');
-  const isEnvSupported = envShell.includes('bash') || envShell.includes('zsh');
+  //    Classify via the canonical {@link getShellType} so the bash-vs-zsh
+  //    preference lives in exactly one place.
+  const envType = getShellType(envShell);
+  const preferBash = envType === 'bash';
+  const isEnvSupported = envType === 'bash' || envType === 'zsh';
   const order = preferBash ? ['bash', 'zsh'] : ['zsh', 'bash'];
   const candidates = order.flatMap(sh => SHELL_SEARCH_PATHS.map(p => `${p}/${sh}`));
   // 3. Always try the SHELL env var first when it is a supported, runnable shell.
@@ -930,6 +999,19 @@ export interface ExecCommandOptions {
    * shell family.
    */
   preventCwdChanges?: boolean;
+  /**
+   * When `true`, stream the command's COMPLETE stdout to a temp file (capped at
+   * {@link MAX_PERSISTED_OUTPUT_BYTES} = 64MB) so the model can retrieve the whole
+   * output — including the middle that the in-memory head+tail window
+   * ({@link HEAD_CHARS}/{@link TAIL_CHARS}) drops — via `file_read`. The path +
+   * byte size are returned in {@link ExecCommandResult.fullOutputPath} /
+   * {@link ExecCommandResult.fullOutputSize}, but ONLY when the captured output
+   * actually overflowed the in-memory window (otherwise the inline result is
+   * already complete and the temp file is discarded, so small commands pay no
+   * retrieval surface). Defaults to off. Parity with Claude Code's
+   * persist-complete-output-to-disk model (BashTool.tsx:L725-753).
+   */
+  persistFullOutput?: boolean;
 }
 
 export interface ExecCommandResult {
@@ -960,6 +1042,20 @@ export interface ExecCommandResult {
    * PowerShell path, or when the command exited before `pwd -P` ran.
    */
   cwd?: string;
+  /**
+   * Path to the temp file holding the command's COMPLETE stdout, present ONLY
+   * when the caller set {@link ExecCommandOptions.persistFullOutput} AND the
+   * captured stdout overflowed the in-memory head+tail window (so the complete
+   * output — including the dropped middle — is on disk for `file_read`). Absent
+   * when persistence was off, the output fit in memory, or the command was
+   * backgrounded / its output was suppressed.
+   */
+  fullOutputPath?: string;
+  /**
+   * Byte size of the persisted complete stdout ({@link fullOutputPath}), capped
+   * at {@link MAX_PERSISTED_OUTPUT_BYTES}. Present iff {@link fullOutputPath} is.
+   */
+  fullOutputSize?: number;
 }
 
 /**
@@ -987,8 +1083,11 @@ export interface ExecCommandResult {
  *   {@link shellHooks.onSlowCommand} (opt-in slow-command diagnostics).
  * - `AMI_TMPDIR` / `CLAUDE_CODE_TMPDIR` — relocate AMI's temp-file base
  *   (see {@link resolveTmpBase}).
+ * - `AMI_DEFAULT_TIMEOUT_MS` / `CLAUDE_CODE_SHELL_TIMEOUT` ({@link DEFAULT_TIMEOUT_ENV})
+ *   — override the default per-command timeout for calls that pass none
+ *   (see {@link resolveDefaultTimeoutMs}); unset/invalid keeps the 120 000 ms baseline.
  *
- * - Respects timeout (default 120 000 ms) and abort signal.
+ * - Respects timeout (default {@link resolveDefaultTimeoutMs}, baseline 120 000 ms) and abort signal.
  * - Kills the entire process tree on timeout or abort.
  * - Recovers if the working directory no longer exists (falls back to a
  *   known-good root; fails with a clear message when none is available).
@@ -1003,7 +1102,7 @@ export function execCommand(
   command: string,
   options: ExecCommandOptions,
 ): Promise<ExecCommandResult> {
-  const { cwd, timeout = DEFAULT_TIMEOUT_MS, abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath, skipSnapshot, onProgress, progressIntervalMs, preventCwdChanges } = options;
+  const { cwd, timeout = resolveDefaultTimeoutMs(), abortSignal, onData, env, stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS, input, stdin, preserveOutputOnError, shellType, shellPath, skipSnapshot, onProgress, progressIntervalMs, preventCwdChanges, persistFullOutput } = options;
 
   // Opt-in cwd tracking: only when the caller explicitly allows cwd changes to
   // persist (`preventCwdChanges === false`). Default (undefined/true) leaves
@@ -1029,6 +1128,38 @@ export function execCommand(
     // Temp file the bash shell writes its final `pwd -P` to when cwd tracking is
     // opted in (preventCwdChanges === false). Read back + unlinked in finish().
     let cwdFile: string | null = null;
+
+    // --- Full-output persistence (persistFullOutput) ---
+    // When opted in, the complete stdout stream is tee'd to a temp file (capped at
+    // MAX_PERSISTED_OUTPUT_BYTES) so the model can file_read the WHOLE output —
+    // including the middle the in-memory head+tail window drops. The fd is opened
+    // lazily on the first stdout chunk so a silent command creates no file.
+    let fullOutputPath: string | null = null;
+    let fullOutputFd: number | null = null;
+    let fullOutputBytes = 0;
+    let fullOutputCapped = false;
+    const teeFullOutput = (chunk: string): void => {
+      if (!persistFullOutput || fullOutputCapped) return;
+      try {
+        if (fullOutputFd === null) {
+          fullOutputPath = path.join(resolveTmpBase(), `ami-bash-output-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+          fullOutputFd = shellHooks.openSync(fullOutputPath, 'w');
+        }
+        const buf = Buffer.from(chunk, 'utf8');
+        const room = MAX_PERSISTED_OUTPUT_BYTES - fullOutputBytes;
+        if (room <= 0) { fullOutputCapped = true; return; }
+        const slice = buf.length > room ? buf.subarray(0, room) : buf;
+        shellHooks.writeSync(fullOutputFd, slice);
+        fullOutputBytes += slice.length;
+        if (slice.length < buf.length) fullOutputCapped = true;
+      } catch {
+        // Persistence is best-effort — a write/open failure must never fail the
+        // command. Stop teeing and drop the (possibly partial) file.
+        fullOutputCapped = true;
+        if (fullOutputFd !== null) { try { shellHooks.closeSync(fullOutputFd); } catch { /* ignore */ } fullOutputFd = null; }
+        if (fullOutputPath !== null) { try { shellHooks.unlinkSync(fullOutputPath); } catch { /* ignore */ } fullOutputPath = null; }
+      }
+    };
 
     // --- Structured progress (onProgress) accumulators ---
     // Combined stdout+stderr seen so far (the "command output"), total bytes,
@@ -1223,6 +1354,23 @@ export function execCommand(
       if (cwdFile) {
         try { shellHooks.unlinkSync(cwdFile); } catch { /* may not exist if the command died first */ }
       }
+      // Finalize full-output persistence: close the fd, then keep the file ONLY
+      // when the in-memory window actually dropped stdout (so the on-disk copy is
+      // strictly more complete than the inline result). Otherwise the inline
+      // output already has everything — discard the temp file so a small command
+      // leaves no retrieval surface. A backgrounded soft-interrupt or a suppressed
+      // probe result keeps nothing either.
+      let persistedPath: string | undefined;
+      let persistedSize: number | undefined;
+      if (fullOutputFd !== null) { try { shellHooks.closeSync(fullOutputFd); } catch { /* ignore */ } }
+      if (fullOutputPath !== null) {
+        if (!suppress && !backgrounded && fullOutputBytes > 0 && stdoutBuf.truncated()) {
+          persistedPath = fullOutputPath;
+          persistedSize = fullOutputBytes;
+        } else {
+          try { shellHooks.unlinkSync(fullOutputPath); } catch { /* ignore */ }
+        }
+      }
       resolve({
         stdout: suppress ? '' : stdoutBuf.value(),
         stderr: suppress ? '' : stderrBuf.value(),
@@ -1230,6 +1378,7 @@ export function execCommand(
         signal,
         ...(backgrounded ? { backgrounded: true } : {}),
         ...(finalCwd !== undefined ? { cwd: finalCwd } : {}),
+        ...(persistedPath !== undefined ? { fullOutputPath: persistedPath, fullOutputSize: persistedSize } : {}),
       });
     };
 
@@ -1340,6 +1489,7 @@ export function execCommand(
     procStdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
       stdoutBuf.push(chunk);
+      teeFullOutput(chunk);
       lastDataTime = Date.now();
       accumulateProgress(chunk);
       onData?.(chunk);

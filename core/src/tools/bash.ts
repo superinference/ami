@@ -134,6 +134,10 @@ export const _bashHooks = {
   },
   existsSync: fs.existsSync as typeof fs.existsSync,
   statSync: fs.statSync as typeof fs.statSync,
+  // Read back / clean up the shell layer's persisted full-stdout temp file so a
+  // large command's complete output is spilled (not just the in-memory head+tail).
+  readFileSync: fs.readFileSync as typeof fs.readFileSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   // realpath seam for the working-directory resolver (TOCTOU-safe resolve +
   // delete-recovery). Default is the real fs.realpathSync; tests drive the
   // not-found / recovery-exhausted branches through this seam.
@@ -1607,6 +1611,10 @@ export const bashTool: ToolDefinition = {
       abortSignal: context.abortSignal,
       env: scrubEnv(context.skillEnv),
       onData: context.onProgress ? (chunk) => context.onProgress!(chunk) : undefined,
+      // Persist the COMPLETE stdout to disk so a large build/test log can be
+      // read back in full (including the middle the in-memory head+tail window
+      // drops) — see the fullOutputPath handling at the spill site below.
+      persistFullOutput: true,
     });
 
     // Fold before any return. A failing suite is an error result, and the
@@ -1686,7 +1694,21 @@ export const bashTool: ToolDefinition = {
 
     // Already folded. Spill only non-suite output that is still over the cap.
     const bashMaxChars = context.outputBudget?.bashMaxChars ?? resolveBashMaxOutput();
-    let stdout = spillToolText(context.cwd, 'bash', presented.stdout, bashMaxChars);
+    // When the shell layer persisted the COMPLETE stdout to disk (output
+    // overflowed the in-memory head+tail window), spill the FULL stdout — not the
+    // middle-dropped in-memory copy — so the model can file_read every byte of a
+    // large build/test log. Re-fold the raw stdout the same way presentCommandOutput
+    // did so the spilled file is consistently formatted. Best-effort: fall back to
+    // the in-memory preview if the temp file can't be read, and always remove it.
+    let spillStdout = presented.stdout;
+    if (result.fullOutputPath) {
+      try {
+        const rawFull = _bashHooks.readFileSync(result.fullOutputPath, 'utf8');
+        spillStdout = presentCommandOutput(command, rawFull, '').stdout;
+      } catch { /* fall back to the in-memory preview */ }
+      try { _bashHooks.unlinkSync(result.fullOutputPath); } catch { /* already gone */ }
+    }
+    let stdout = spillToolText(context.cwd, 'bash', spillStdout, bashMaxChars);
     // In container mode, explain a failure that was likely caused by sandbox
     // isolation (network off, or a host path not mounted inside the container) so
     // the model does not misdiagnose a blocked op as a real error.
