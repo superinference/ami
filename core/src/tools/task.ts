@@ -210,12 +210,16 @@ export const EXPLORE_AGENT_MIN_QUERIES = 3;
 
 /** Lean system prompt for a read-only `explore`-mode sub-agent. ui#13. */
 export const EXPLORE_SUBAGENT_SYSTEM_PROMPT =
-  `You are a read-only exploration sub-agent handling one search/investigation task.
+  `You are a fast, read-only exploration sub-agent handling one search/investigation task. You are meant to return a focused answer as quickly as possible.
 
-- Investigate using read and search tools only. Do NOT modify files, run mutating commands, or make any changes.
+=== READ-ONLY MODE — NO FILE MODIFICATIONS ===
+This is a strictly read-only task. You are PROHIBITED from: creating files (no write, touch, or file creation of any kind); modifying files (no edits); deleting, moving, or copying files (no rm/mv/cp); creating temporary files anywhere (including /tmp); using redirect operators (>, >>) or heredocs to write to files; and running ANY command that changes system state (mkdir, git add, git commit, npm/pip install, …). Your role is exclusively to search and analyze existing code.
+
+- Investigate using read and search tools only. If dedicated glob/grep search tools are unavailable in your tool set, fall back to read-only \`find\` and \`grep\` via bash (never mutating commands) to locate files and search contents.
 - Adapt your search breadth to the thoroughness the caller requests ("quick" for a basic lookup, "medium" for moderate exploration, "very thorough" for comprehensive analysis).
 - Start broad and narrow down; if one search strategy yields nothing, try another; consider alternate naming conventions and check multiple locations before concluding something does not exist.
 - Run at least ${EXPLORE_AGENT_MIN_QUERIES} distinct searches (different strategies, terms, or locations) before concluding something is absent — do not report "not found" after a single miss.
+- Be fast: spawn multiple parallel tool calls in one turn when grepping and reading independent files rather than searching one at a time.
 - Gather exactly what the task asks for, cite concrete locations (file:line) where relevant, then report your findings directly and concisely as your final message and STOP. Your final message IS the deliverable.
 - Do not over-explore beyond what the task asks. One focused report, then stop.`;
 
@@ -232,6 +236,42 @@ const agentSessionRegistry = new Map<string, string>();
 // Code's per-agent worktree restoration on resume.
 const agentCwdRegistry = new Map<string, string>();
 
+/**
+ * The identity/defaults a spawned agent ran under, keyed by taskId. Lets a later
+ * `resume` restore the ORIGINAL agent's identity (its `subagent_type`, model,
+ * permission mode, and description) when the resume call does not re-supply them,
+ * instead of silently re-deriving a generic general-purpose agent. Mirrors Claude
+ * Code's resumeAgent metadata restore (resumeAgent.ts:L99-114): a resumed agent
+ * keeps its agentType/description/model/permissionMode from the persisted record.
+ * In-memory (process-lifetime) — cross-process durability is a separate concern.
+ */
+export interface AgentMeta {
+  agentType?: string;
+  model?: string;
+  permissionMode?: string;
+  description?: string;
+}
+const agentMetaRegistry = new Map<string, AgentMeta>();
+
+/** The recorded identity/defaults a prior agent ran under (for `resume`). */
+export function getAgentMeta(taskId: string): AgentMeta | undefined {
+  return agentMetaRegistry.get(taskId);
+}
+
+/**
+ * Record a spawned agent's identity/defaults so a later `resume` can restore them.
+ * Only non-empty fields are stored (an undefined field means "the caller set none",
+ * which should not shadow a real restore on resume).
+ */
+export function recordAgentMeta(taskId: string, meta: AgentMeta): void {
+  const entry: AgentMeta = {};
+  if (meta.agentType) entry.agentType = meta.agentType;
+  if (meta.model) entry.model = meta.model;
+  if (meta.permissionMode) entry.permissionMode = meta.permissionMode;
+  if (meta.description) entry.description = meta.description;
+  agentMetaRegistry.set(taskId, entry);
+}
+
 export function getAgentByName(name: string): string | undefined {
   return agentNameRegistry.get(name);
 }
@@ -247,6 +287,7 @@ export function resetAgentRegistry(): void {
   agentNameRegistry.clear();
   agentSessionRegistry.clear();
   agentCwdRegistry.clear();
+  agentMetaRegistry.clear();
 }
 
 /**
@@ -973,6 +1014,24 @@ export function parseAllowedTools(
 }
 
 /**
+ * Resolve the per-spawn `allow_permission_prompts` knob into a permission-mode
+ * contribution. Mirrors Claude Code's `allowPermissionPrompts` spawn flag
+ * (`swarm/backends/types.ts`, default false): a spawned agent cannot show an
+ * interactive permission prompt for a tool outside its granted scope — those calls
+ * are auto-DENIED (`deny-all`) rather than blocking a detached/teammate run on a
+ * prompt no one will answer. Passing `true` opts the subagent back into the
+ * interactive `ask` handler. Returns `undefined` when the flag is absent, so the
+ * existing fallback chain (explicit permission_mode → agent-def → explore → `ask`)
+ * is untouched — this is an ADDITIVE opt-in that never changes AMI's default. The
+ * companion `permissions` grant from Claude maps onto AMI's existing `allowed_tools`
+ * inline tool scope (no separate field — see {@link parseAllowedTools}).
+ */
+export function resolvePromptGatePermissionMode(raw: unknown): 'ask' | 'deny-all' | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  return coerceBool(raw) ? 'ask' : 'deny-all';
+}
+
+/**
  * Env knob that globally disables background (`run_in_background`) subagents —
  * mirrors Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`. When truthy the
  * `run_in_background` field is OMITTED from the advertised input schema (so the
@@ -1094,6 +1153,14 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   cwd: {
     type: 'string',
     description: 'Override working directory for the subagent. Must be an absolute path. Mutually exclusive with isolation:"worktree".',
+  },
+  worktree_path: {
+    type: 'string',
+    description: 'Point the subagent at an EXISTING git worktree (absolute path) instead of creating a fresh one. Use to continue work in a worktree you already created. Mutually exclusive with isolation:"worktree" and cwd. The worktree is NOT auto-removed when the agent finishes (you own its lifecycle).',
+  },
+  allow_permission_prompts: {
+    type: 'boolean',
+    description: 'Whether this subagent may show interactive permission prompts for tools outside its granted scope. Default (false) auto-DENIES such calls so a detached/teammate run never blocks on a prompt no one will answer; set true to route unlisted-tool calls to the interactive "ask" handler. An explicit permission_mode overrides this.',
   },
   name: {
     type: 'string',
@@ -1388,11 +1455,21 @@ export const taskTool: ToolDefinition = {
   ): Promise<ToolResult> {
     const prompt = input.prompt as string;
     const mode = (input.mode as string) || 'general';
-    const subagentType = input.subagent_type as string | undefined;
-    const taskDescription = input.description as string | undefined;
     const resumeTarget = input.resume as string | undefined;
+    // Resume identity restore (parity: Claude Code's resumeAgent metadata restore,
+    // resumeAgent.ts:L99-114): when resuming an agent and the resume call does not
+    // re-supply its identity/defaults, fall back to what the ORIGINAL spawn ran
+    // under (subagent_type, description, permission_mode, model) — recorded in
+    // agentMetaRegistry — instead of silently re-deriving a generic general-purpose
+    // agent with a fresh label. The authoritative session/cwd resolution still
+    // happens in the resume block below; this only restores the identity fields.
+    const resumeMeta = resumeTarget
+      ? agentMetaRegistry.get(agentNameRegistry.get(resumeTarget) ?? resumeTarget)
+      : undefined;
+    const subagentType = (input.subagent_type as string | undefined) ?? resumeMeta?.agentType;
+    const taskDescription = (input.description as string | undefined) ?? resumeMeta?.description;
     const effortOverride = input.effort as string | undefined;
-    const requestedPermissionMode = input.permission_mode as string | undefined;
+    const requestedPermissionMode = (input.permission_mode as string | undefined) ?? resumeMeta?.permissionMode;
     const customSystemPromptRaw = input.system_prompt as string | undefined;
     const customSystemPrompt = customSystemPromptRaw && customSystemPromptRaw.trim().length > 0
       ? customSystemPromptRaw
@@ -1517,7 +1594,9 @@ export const taskTool: ToolDefinition = {
       };
     }
 
-    const rawModel = input.model as string | undefined;
+    // On resume, inherit the original agent's model when the resume call names none
+    // (part of the resumeAgent identity restore above).
+    const rawModel = (input.model as string | undefined) ?? resumeMeta?.model;
     const parentModel = context._providerConfig?.model;
     const modelOverride = resolveSubagentModel(rawModel, parentModel);
 
@@ -1776,6 +1855,19 @@ export const taskTool: ToolDefinition = {
     // definition's `isolation` default (parity: Claude's agent isolation field).
     const isolation = (input.isolation as string | undefined) ?? agentIsolationDefault;
     const requestedCwd = input.cwd as string | undefined;
+    // `worktree_path` points the subagent at an EXISTING worktree (parity: Claude's
+    // TeammateSpawnConfig.worktreePath). It is mutually exclusive with both
+    // `isolation:"worktree"` (which CREATES a fresh worktree) and `cwd` (a different
+    // working-dir override) — all three set the working directory, so accepting more
+    // than one would silently pick a winner. Unlike a created worktree, an
+    // existing-worktree run is NOT auto-removed on completion: the caller owns it.
+    const requestedWorktreePath = input.worktree_path as string | undefined;
+    if (requestedWorktreePath && (isolation === 'worktree' || requestedCwd)) {
+      return {
+        output: 'Error: `worktree_path` is mutually exclusive with `isolation:"worktree"` and `cwd` — pass exactly one working-directory option.',
+        isError: true,
+      };
+    }
     // `cwd` and `isolation:"worktree"` are mutually exclusive (parity: Claude's
     // documented cwd contract). A worktree is created FROM the base cwd, so honoring
     // both would silently root the worktree at the override and defeat one of the two
@@ -1794,7 +1886,20 @@ export const taskTool: ToolDefinition = {
         return { output: `Error: ${cwdError}`, isError: true };
       }
     }
-    let effectiveCwd = requestedCwd || context.cwd;
+    if (requestedWorktreePath) {
+      // The existing worktree must resolve inside the parent's trusted boundary, same
+      // as any model-supplied cwd override — a worktree outside it cannot be targeted.
+      const wtError = validateSubagentCwd(requestedWorktreePath, context.cwd, context.allowedReadRoots ?? []);
+      if (wtError) {
+        return { output: `Error: ${wtError}`, isError: true };
+      }
+    }
+    // Whether the subagent runs inside a git worktree distinct from the parent cwd —
+    // a freshly created one (isolation:"worktree") OR a caller-supplied existing one
+    // (worktree_path). Drives the worktree-orientation NOTICE; only the created form
+    // is auto-cleaned (that path gates on `isolation === 'worktree'`).
+    const usingExistingWorktree = !!requestedWorktreePath;
+    let effectiveCwd = requestedCwd || requestedWorktreePath || context.cwd;
     // Introspection note surfaced to the parent when a resumed agent's recorded
     // worktree/cwd could not be restored (it was cleaned up) and we fell back.
     let cwdFallbackNote = '';
@@ -1867,14 +1972,22 @@ export const taskTool: ToolDefinition = {
       providerConfig.maxTokens = requestedMaxOutputTokens;
     }
 
+    // Per-spawn `allow_permission_prompts` gate (parity: Claude's allowPermissionPrompts
+    // spawn flag): when the caller passes it, false → 'deny-all' (unlisted-tool calls are
+    // auto-denied, never prompted) and true → 'ask' (interactive handler). Absent → no
+    // contribution, so the existing fallback chain is unchanged (additive opt-in).
+    const promptGatePermissionMode = resolvePromptGatePermissionMode(input.allow_permission_prompts);
+
     // Permission mode priority:
     // 1. Explicit `permission_mode` input (caller sets the spawned agent's mode,
     //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above)
-    // 2. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
-    // 3. explore mode → always auto-allow (read-only tool set)
-    // 4. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
+    // 2. Per-spawn `allow_permission_prompts` gate (deny-all when false, ask when true)
+    // 3. Agent definition's permissionMode (e.g. verifier → auto-allow; safe, restricted tools)
+    // 4. explore mode → always auto-allow (read-only tool set)
+    // 5. Fallback → 'ask' (uses parent's permissionPromptHandler for TUI/YOLO propagation)
     const resolvedPermissionMode =
       requestedPermissionMode ||
+      promptGatePermissionMode ||
       agentPermissionMode ||
       (effectiveMode === 'explore' ? 'auto-allow' : 'ask');
 
@@ -2025,10 +2138,12 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = `${buildCoordinatorWorkerContext(connectedMcpServerNames(context))}\n\n---\n\n${effectivePrompt}`;
     }
 
-    // When the subagent runs in an isolated worktree, prepend a notice so it
-    // translates inherited paths to the worktree root, re-reads stale files, and
-    // knows its changes are isolated (mirrors Claude's buildWorktreeNotice).
-    if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
+    // When the subagent runs in a git worktree distinct from the parent cwd — a
+    // freshly created one (isolation:"worktree") OR a caller-supplied existing one
+    // (worktree_path) — prepend a notice so it translates inherited paths to the
+    // worktree root, re-reads stale files, and knows its changes are isolated
+    // (mirrors Claude's buildWorktreeNotice).
+    if ((isolation === 'worktree' || usingExistingWorktree) && effectiveCwd !== context.cwd) {
       effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
     }
 
@@ -2078,6 +2193,9 @@ export const taskTool: ToolDefinition = {
       // Record a non-parent working dir (isolated worktree or explicit cwd) so a
       // later `resume` can restore the agent to the same files it was editing.
       if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
+      // Record this agent's identity/defaults so a later `resume` restores them when
+      // the resume call names none (parity: Claude's resumeAgent metadata restore).
+      recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
       // If a team is active, a named teammate joins it as an active member so the
       // team-delete guard can see it and refuse to disband while it runs.
       if (agentName && getCurrentTeam()) {
@@ -2109,7 +2227,7 @@ export const taskTool: ToolDefinition = {
         effectiveCwd, isolation, subAbort,
       }).catch(() => {});
 
-      return { output: `Background agent started: ${taskId}\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
+      return { output: `Background agent started: ${taskId}\nOutput file: ${outputPath} (its streamed transcript is appended here live).\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. To check progress mid-flight WITHOUT blocking, call task_output({ task_id: "${taskId}" }) (no wait) or tail the output file. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
     }
 
     incrementSpawnCount(context);
@@ -2126,6 +2244,9 @@ export const taskTool: ToolDefinition = {
     // Record a non-parent working dir (isolated worktree or explicit cwd) so a
     // later `resume` can restore the agent to the same files it was editing.
     if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
+    // Record this agent's identity/defaults so a later `resume` restores them when
+    // the resume call names none (parity: Claude's resumeAgent metadata restore).
+    recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
     if (agentName && getCurrentTeam()) {
       registerTeamMember({ name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd });
     }
