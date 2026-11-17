@@ -4,6 +4,7 @@ import {
   isModAllowed,
   isModBlockedByPolicy,
   isLocalOrInlineSource,
+  isMarketplaceAllowlisted,
   getManagedPluginNames,
   parseModId,
   normalizeModName,
@@ -77,7 +78,7 @@ describe('isModAllowed', () => {
       allowManagedModsOnly: true,
       enabledPlugins: { 'my-mod@local': true },
     };
-    const mod: ModInfo = { name: 'my-mod', id: 'my-mod@local', tier: 'user', marketplace: 'local-folder' };
+    const mod: ModInfo = { name: 'my-mod', id: 'my-mod@local', tier: 'user', marketplace: 'local' };
     const result = isModAllowed(mod, policy);
     assert.equal(result.allowed, true);
   });
@@ -214,9 +215,16 @@ describe('isLocalOrInlineSource (non-spoofable provenance vouch)', () => {
     assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user' }), true);
   });
 
-  it('legacy fallback: local/inline display-name prefix honored, remote rejected', () => {
-    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'local-folder' }), true);
+  it('legacy fallback: EXACT local/inline marketplace name honored (case-insensitive), everything else rejected', () => {
+    // Gap (exact-set membership): the vouch is EXACT token match, not a prefix. A remote
+    // marketplace that merely STARTS WITH "local"/"inline" (e.g. "local-folder",
+    // "inline-exfil") must NOT be trusted — only the reserved tokens "local"/"inline" are.
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'local' }), true);
     assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'inline' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'LOCAL' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'Inline' }), true);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'local-folder' }), false);
+    assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'inline-exfil' }), false);
     assert.equal(isLocalOrInlineSource({ name: 'm', id: 'm@x', tier: 'user', marketplace: 'npm' }), false);
   });
 });
@@ -263,6 +271,77 @@ describe('isModAllowed — non-spoofable source vouch under allowManagedModsOnly
     };
     const mod: ModInfo = { name: 'inl', id: 'inl@here', tier: 'user', marketplace: 'anything', source: 'inline' };
     assert.equal(isModAllowed(mod, policy).allowed, true);
+  });
+});
+
+describe('isModAllowed — exact-set membership closes the prefix spoof (legacy fallback)', () => {
+  it('BLOCKS a legacy (sourceless) mod whose marketplace merely starts with "local"', () => {
+    // Pre-hardening, marketplace="local-folder".startsWith("local") vouched this mod as
+    // local under allowManagedModsOnly. Exact-set membership now blocks it: "local-folder"
+    // is not the reserved "local" token.
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'sneaky@local-folder': true },
+    };
+    const mod: ModInfo = { name: 'sneaky', id: 'sneaky@local-folder', tier: 'user', marketplace: 'local-folder' };
+    const result = isModAllowed(mod, policy);
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason!.includes('remote marketplace'));
+  });
+
+  it('ALLOWS a legacy (sourceless) mod from the EXACT reserved "local" marketplace', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'ok@local': true },
+    };
+    const mod: ModInfo = { name: 'ok', id: 'ok@local', tier: 'user', marketplace: 'local' };
+    assert.equal(isModAllowed(mod, policy).allowed, true);
+  });
+});
+
+describe('isMarketplaceAllowlisted + configurable cross-marketplace trust allowlist', () => {
+  it('returns false when policy/allowlist/marketplace is absent', () => {
+    assert.equal(isMarketplaceAllowlisted('npm', null), false);
+    assert.equal(isMarketplaceAllowlisted('npm', undefined), false);
+    assert.equal(isMarketplaceAllowlisted('npm', { allowManagedModsOnly: true }), false);
+    assert.equal(isMarketplaceAllowlisted(undefined, { allowManagedModsOnly: true, allowedMarketplaces: ['npm'] }), false);
+  });
+
+  it('matches an allowlisted marketplace case-insensitively', () => {
+    const policy: ManagedModsPolicy = { allowManagedModsOnly: true, allowedMarketplaces: ['Trusted-Remote', 'npm'] };
+    assert.equal(isMarketplaceAllowlisted('trusted-remote', policy), true);
+    assert.equal(isMarketplaceAllowlisted('NPM', policy), true);
+    assert.equal(isMarketplaceAllowlisted('other', policy), false);
+  });
+
+  it('isModAllowed vouches a remote mod from an org-allowlisted marketplace (no inline/local required)', () => {
+    // An org declares "trusted-remote" a trusted marketplace; a user-tier mod from it,
+    // with an enabledPlugins entry, is now allowed under allowManagedModsOnly even though
+    // its source is remote and its marketplace is neither "local" nor "inline".
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'blessed@trusted-remote': true },
+      allowedMarketplaces: ['trusted-remote'],
+    };
+    const mod: ModInfo = {
+      name: 'blessed',
+      id: 'blessed@trusted-remote',
+      tier: 'user',
+      marketplace: 'trusted-remote',
+      source: 'remote',
+    };
+    assert.equal(isModAllowed(mod, policy).allowed, true);
+  });
+
+  it('isModAllowed still refuses a remote mod whose marketplace is NOT on the allowlist', () => {
+    const policy: ManagedModsPolicy = {
+      allowManagedModsOnly: true,
+      enabledPlugins: { 'remote-mod@npm': true },
+      allowedMarketplaces: ['some-other-market'],
+    };
+    const result = isModAllowed(remoteUserMod, policy);
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason!.includes('remote marketplace'));
   });
 });
 

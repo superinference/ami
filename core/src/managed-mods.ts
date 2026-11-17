@@ -20,7 +20,27 @@ export interface ManagedModsPolicy {
   enabledPlugins?: Record<string, boolean | string[]>;
   prependPlugins?: string[];
   appendPlugins?: string[];
+  /**
+   * Operator-configured cross-marketplace trust allowlist (Claude parity:
+   * `allowCrossMarketplaceDependenciesOn`). Marketplace names an org explicitly
+   * trusts for user-tier mods under {@link allowManagedModsOnly}. Without this an org
+   * could only vouch for the reserved `local`/`inline` sources; a specific trusted
+   * REMOTE marketplace could not be approved short of editing code. Matching is exact
+   * and case-insensitive (see {@link isMarketplaceAllowlisted}); there is NO transitive
+   * trust — only this root allowlist is consulted.
+   */
+  allowedMarketplaces?: string[];
 }
+
+/**
+ * The reserved marketplace tokens that identify a trusted LOCAL/INLINE copy when a mod
+ * carries no typed {@link ModInfo.source}. Membership is EXACT (case-insensitive) —
+ * never a prefix — mirroring Claude's `ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(...)`
+ * exact-set check. An exact set cannot be spoofed by a remote marketplace that merely
+ * STARTS WITH `local`/`inline` (e.g. `local-attacker`, `inline-exfil`), which the old
+ * `startsWith` prefix test wrongly trusted.
+ */
+const RESERVED_LOCAL_MARKETPLACE_NAMES = new Set(['local', 'inline']);
 
 /**
  * Unconditional org force-disable predicate (Claude parity: `isPluginBlockedByPolicy`).
@@ -67,14 +87,29 @@ export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefin
  * remote source carries `source: 'remote'` and can never be mistaken for local even
  * if it names its marketplace `local-attacker` or `inline-evil`. Only when `source`
  * is absent (legacy {@link ModInfo}) do we fall back to the display-name heuristic:
- * an absent marketplace is an in-repo/implicit copy (local), otherwise the (spoofable)
- * `local`/`inline` prefix is honored for backward compatibility until callers set
- * `source` at discovery time.
+ * an absent marketplace is an in-repo/implicit copy (local), otherwise ONLY the EXACT
+ * reserved `local`/`inline` tokens (case-insensitive) are honored — an exact-set match,
+ * not a prefix, so `local-attacker`/`inline-exfil` can never masquerade as trusted.
  */
 export function isLocalOrInlineSource(mod: ModInfo): boolean {
   if (mod.source) return mod.source === 'local' || mod.source === 'inline';
   if (!mod.marketplace) return true;
-  return mod.marketplace.startsWith('inline') || mod.marketplace.startsWith('local');
+  return RESERVED_LOCAL_MARKETPLACE_NAMES.has(mod.marketplace.toLowerCase());
+}
+
+/**
+ * Whether a marketplace is on the org's configurable cross-marketplace trust allowlist
+ * ({@link ManagedModsPolicy.allowedMarketplaces}). Matching is EXACT and case-insensitive,
+ * mirroring Claude's exact-set membership checks — a prefix cannot slip past. Returns
+ * false when the marketplace, the policy, or the allowlist is absent.
+ */
+export function isMarketplaceAllowlisted(
+  marketplace: string | undefined,
+  policy: ManagedModsPolicy | null | undefined,
+): boolean {
+  if (!marketplace || !policy?.allowedMarketplaces) return false;
+  const target = marketplace.toLowerCase();
+  return policy.allowedMarketplaces.some((m) => m.toLowerCase() === target);
 }
 
 export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed: boolean; reason?: string } {
@@ -98,10 +133,12 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
   if (policy.enabledPlugins) {
     const entry = policy.enabledPlugins[mod.id];
     if (entry === true || (Array.isArray(entry) && entry.length > 0)) {
-      // Only local/inline copies are vouched for. The typed `source` discriminant
-      // (set at discovery time) is authoritative and non-spoofable here; the
-      // display-name `marketplace` prefix is only a legacy fallback.
-      if (!isLocalOrInlineSource(mod)) {
+      // Only local/inline copies — OR a mod from an org-allowlisted remote marketplace
+      // ({@link ManagedModsPolicy.allowedMarketplaces}) — are vouched for. The typed
+      // `source` discriminant (set at discovery time) is authoritative and non-spoofable
+      // for the local/inline decision; the display-name `marketplace` is only a legacy
+      // fallback there, but IS the authoritative token matched against the org allowlist.
+      if (!isLocalOrInlineSource(mod) && !isMarketplaceAllowlisted(mod.marketplace, policy)) {
         return {
           allowed: false,
           reason: `${mod.name} is not part of your organization's managed mod set, so it was not loaded (it came from the remote marketplace "${mod.marketplace}") — contact your administrator to allow it`,
