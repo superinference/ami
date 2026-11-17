@@ -2259,12 +2259,24 @@ export class HookManager extends EventEmitter {
     if (managedPath) sources.push({ path: managedPath, source: 'user', kind: 'managed' });
     sources.push(
       { path: filePath, source: 'project', kind: 'project' },
+      // Per-directory LOCAL override tier: `.ami/settings.local.json` is the
+      // developer's untracked, machine-local settings file (gitignored by
+      // convention). It is read AFTER the shared project `.ami/hooks.json` so a
+      // local entry layers on top with higher precedence — matching Claude Code's
+      // `settings.local.json` `local` tier (addDirPluginSettings / settings-guard).
+      { path: path.join(cwd, '.ami', 'settings.local.json'), source: 'project', kind: 'project' },
       { path: userHooksPath, source: 'user', kind: 'user' },
       // Claude Code compatibility: load hooks from .claude/settings.json
       // ({ "hooks": { "PreToolUse": [{ matcher, hooks: [...] }] } }). The
       // map-keyed `hooks` field is handled by normalizeMapKeyedHooks below, and
       // project-scoped entries are gated by workspace trust. (R2-M8)
       { path: path.join(cwd, '.claude', 'settings.json'), source: 'project', kind: 'project' },
+      // Claude Code's per-directory local override: `.claude/settings.local.json`
+      // is read right after `.claude/settings.json` (local-after-project), so a
+      // developer's untracked local settings take precedence over the shared,
+      // committed project settings — the three-layer user < project < local
+      // precedence (updateConfig three-layer settings precedence).
+      { path: path.join(cwd, '.claude', 'settings.local.json'), source: 'project', kind: 'project' },
       { path: path.join(os.homedir(), '.claude', 'settings.json'), source: 'user', kind: 'user' },
     );
 
@@ -3750,32 +3762,65 @@ export class HookManager extends EventEmitter {
       ? substituteHookArguments(promptText, eventData)
       : `${promptText}\n\n${dataLabel}:\n${eventData}`;
     const fullPrompt = `${HOOK_VERIFICATION_CONTRACT}\n\n${body}`;
+    // Introspection debug trace (Claude Code execPromptHook's logForDebugging
+    // "Processing prompt hook with prompt: …"): the exact processed prompt the
+    // hook evaluates, so `--debug` / AMI_DEBUG_TO_STDERR reveals what it saw.
+    coreLog('hooks', `${kind} hook processing prompt: ${body}`);
     let result = '';
     let error: string | undefined;
+    // Distinguish a cancelled/timed-out/errored run from a genuine completion: a
+    // run that did not finish produced NO trustworthy verdict, so its partial
+    // model text must NEVER be returned as a hook decision (Claude Code's
+    // execPromptHook/execAgentHook return a 'cancelled'/non_blocking_error
+    // outcome on abort/error, not the partial text).
+    let errored = false;
     try {
       for await (const event of engine.submit(fullPrompt)) {
         if (abort.aborted()) break;
         if (event.type === 'text_delta' && event.text) result += event.text;
-        if (event.type === 'error') { result += event.error ?? ''; break; }
+        if (event.type === 'error') { error = event.error || 'hook engine error'; errored = true; break; }
       }
     } catch (err) {
       error = String(err);
+      errored = true;
       coreLog('hooks', `${kind} hook error: ${err}`);
     } finally {
       abort.cleanup();
       engine.shutdown?.();
     }
     if (abort.timedOut()) coreLog('hooks', `${kind} hook hard-timeout after ${timeoutMs}ms`);
+    // Introspection debug trace (Claude Code's "Model response: …"): the raw
+    // reply the hook produced, logged before any decision is derived from it.
+    coreLog('hooks', `${kind} hook model reply: ${result}`);
+    // A cancelled/timed-out/errored run yields no decision — discard the partial
+    // output (never block/allow on half a reply) and report the run as failed so
+    // a `once` hook retries instead of self-removing.
+    if (abort.aborted() || errored) {
+      const why = abort.timedOut() ? 'timed out' : abort.aborted() ? 'cancelled' : `errored: ${error}`;
+      coreLog('hooks', `${kind} hook did not complete (${why}) — discarding partial output`);
+      return { output: '', error: error ?? why };
+    }
     // Structured verification result → block (ok:false) or allow (ok:true).
     const verification = parseHookVerification(result);
     if (verification) {
       // Claude Code wording parity: "<Prompt|Agent> hook condition was not met: …"
       const label = kind === 'agent' ? 'Agent' : 'Prompt';
+      coreLog('hooks', verification.ok
+        ? `${kind} hook condition was met`
+        : `${kind} hook condition was not met: ${verification.reason ?? 'condition not met'}`);
       return {
         output: verification.ok ? '' : `DENY:${label} hook condition was not met: ${verification.reason ?? 'condition not met'}`,
         error,
       };
     }
+    // Non-conforming output (did not match the {ok,reason} schema): surface a
+    // distinct, non-blocking diagnostic (Claude Code's hook_non_blocking_error
+    // "model response does not conform to expected schema") instead of silently
+    // treating free-form prose as a verdict. AMI keeps its SYSTEM:/raw-context
+    // passthrough superset here — the output is still applied as context, never
+    // as a block — so the run stays non-blocking exactly as Claude Code's
+    // non_blocking_error outcome does.
+    coreLog('hooks', `${kind} hook output did not match the {ok,reason} schema — treating as non-blocking raw output`);
     return { output: sanitizeHookOutput(result), error };
   }
 
@@ -3786,6 +3831,15 @@ export class HookManager extends EventEmitter {
     // Any failure path (allowlist/SSRF block, non-2xx, transport error, timeout) is
     // NOT a successful run — a once hook stays registered to retry (Claude parity).
     const onFail = () => { if (outcome) outcome.success = false; return config.onFailure === 'block' ? 'DENY:HTTP hook failed (fail-closed)' : ''; };
+    // Fail-closed WITH the underlying cause: a transport error / timeout surfaces
+    // its specific detail in the DENY reason and the debug log (Claude Code's
+    // execHttpHook `logForDebugging("HTTP hook error: <msg>")` + distinct errorMsg),
+    // instead of a generic "failed" with no diagnosable cause.
+    const onFailWith = (detail: string) => {
+      coreLog('hooks', `HTTP hook error: ${detail}`);
+      if (outcome) outcome.success = false;
+      return config.onFailure === 'block' ? `DENY:HTTP hook failed: ${detail}` : '';
+    };
 
     // (1) URL allowlist gate (three-state) — enforced BEFORE any I/O.
     if (!isHttpHookUrlAllowed(config.url, this._httpHookPolicy.allowedHttpHookUrls)) {
@@ -3827,6 +3881,15 @@ export class HookManager extends EventEmitter {
     // per-hook timeout, matching command/prompt/agent hooks.
     const timeoutMs = resolveHookTimeoutMs(config.timeout, DEFAULT_HTTP_HOOK_TIMEOUT_MS);
     const abort = combineHookAbort(signal, timeoutMs);
+    // Introspection: log the outbound request target before any I/O (Claude Code's
+    // execHttpHook `logForDebugging("Hooks: HTTP hook POST to <url>")`).
+    coreLog('hooks', `HTTP hook POST to ${config.url}`);
+    // Classify a transport failure: a combined-signal abort is a timeout/cancel
+    // (name it so), anything else carries the Node error message.
+    const failDetail = (err?: Error): string =>
+      abort.timedOut() ? `timed out after ${timeoutMs}ms`
+        : abort.aborted() ? 'request cancelled'
+          : (err?.message || 'transport error');
     return new Promise((resolve) => {
       let settled = false;
       const done = (val: string) => { if (!settled) { settled = true; abort.cleanup(); resolve(val); } };
@@ -3842,16 +3905,21 @@ export class HookManager extends EventEmitter {
         res.on('end', () => {
           // (4) Non-2xx is a failure — do NOT parse an error body as a decision.
           const status = res.statusCode ?? 0;
+          // Introspection: response status + body length (Claude Code's
+          // execHttpHook `logForDebugging("… response status <code>, body length <n>")`).
+          coreLog('hooks', `HTTP hook response status ${status}, body length ${body.length}`);
           if (status < 200 || status >= 300) {
+            // Non-2xx is "not ok" but not a transport error — keep the generic
+            // fail-closed DENY (the specific status is already in the debug log).
             coreLog('hooks', `HTTP hook non-2xx (${status})`);
             done(onFail());
             return;
           }
           done(sanitizeHookOutput(body));
         });
-        res.on('error', () => done(onFail()));
+        res.on('error', (err: Error) => done(onFailWith(failDetail(err))));
       });
-      req.on('error', () => done(onFail()));
+      req.on('error', (err: Error) => done(onFailWith(failDetail(err))));
       req.write(eventData);
       req.end();
     });
