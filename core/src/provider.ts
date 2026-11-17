@@ -1,4 +1,4 @@
-import { streamText, jsonSchema } from 'ai';
+import { streamText, generateText, jsonSchema } from 'ai';
 import type { ModelMessage, ToolSet, ToolCallRepairFunction } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -4163,13 +4163,169 @@ export function formatSslError(original: string): string {
     `(5) If the server requires a CLIENT certificate (mutual TLS), set ${MTLS_ENV.cert} and ${MTLS_ENV.key} (optionally ${MTLS_ENV.passphrase})`
   );
 }
+// ---------------------------------------------------------------------------
+// Non-streaming request fallback (Claude parity: executeNonStreamingRequest).
+//
+// Some gateways/proxies break SSE streaming — they answer a stream request with a
+// 200 + non-SSE body (surfaced as EMPTY_STREAM_ERROR) or a 404 on the streaming
+// endpoint — yet serve an ordinary non-streaming request fine. When the fallback
+// is enabled, streamChatCompletionWithRetry recovers such a turn by making ONE
+// bounded, token-capped non-streaming request via the AI SDK `generateText` and
+// replaying its result as the normal stream chunks (reusing ALL of
+// streamChatCompletion's request-building and chunk-emission — no duplication).
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on `max_tokens` for a non-streaming fallback request (Claude parity:
+ * `MAX_NON_STREAMING_TOKENS`). A single non-streaming response has no incremental
+ * delivery, so a huge budget risks a long opaque wait or a server-side cap; the
+ * fallback is a recovery path, not the primary long-generation path, so its output
+ * is bounded. {@link adjustParamsForNonStreaming} clamps the request to this.
+ */
+export const MAX_NON_STREAMING_TOKENS = 21_333;
+
+/**
+ * Per-attempt timeout (ms) for the non-streaming fallback request (Claude parity:
+ * `getNonstreamingFallbackTimeoutMs`): 120s against a remote endpoint, 300s for a
+ * local one (a local model has no network RTT but is slower per token). A local
+ * endpoint is a loopback/private-host base URL. Overridable via
+ * `SUPERINFERENCE_NONSTREAMING_FALLBACK_TIMEOUT_MS` (a positive number wins).
+ */
+export function nonstreamingFallbackTimeoutMs(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const override = Number(env.SUPERINFERENCE_NONSTREAMING_FALLBACK_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) return override;
+  // Resolve the host and classify it with anchored, backtracking-free checks (no
+  // nested quantifiers — ReDoS-safe). A loopback or RFC-1918 private host is local.
+  let host = '';
+  try { host = new URL(config.baseUrl ?? '').hostname.toLowerCase(); } catch { host = ''; }
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0';
+  const isPrivate = /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
+  return (isLoopback || isPrivate) ? 300_000 : 120_000;
+}
+
+/**
+ * Whether the non-streaming fallback is enabled for a request. An explicit
+ * `config.nonStreamingFallback` boolean wins; otherwise the process-wide
+ * `SUPERINFERENCE_NONSTREAMING_FALLBACK` / `CLAUDE_CODE_NONSTREAMING_FALLBACK`
+ * env knob is honored. Off by default (the streaming-only retry path is unchanged).
+ */
+export function nonStreamingFallbackEnabled(
+  config: ProviderConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (typeof config.nonStreamingFallback === 'boolean') return config.nonStreamingFallback;
+  return isEnvTruthy(env.SUPERINFERENCE_NONSTREAMING_FALLBACK)
+    || isEnvTruthy(env.CLAUDE_CODE_NONSTREAMING_FALLBACK);
+}
+
+/**
+ * Clamp a request's `maxTokens` to {@link MAX_NON_STREAMING_TOKENS} for the
+ * non-streaming fallback (Claude parity: `adjustParamsForNonStreaming`). Returns a
+ * NEW config (never mutates the caller's). An absent/larger budget is capped; a
+ * smaller one is left as-is so a deliberately tiny request is respected.
+ */
+export function adjustParamsForNonStreaming(config: ProviderConfig): ProviderConfig {
+  const requested = config.maxTokens;
+  const capped = requested === undefined
+    ? MAX_NON_STREAMING_TOKENS
+    : Math.min(requested, MAX_NON_STREAMING_TOKENS);
+  return { ...config, maxTokens: capped };
+}
+
+/**
+ * Adapt the AI SDK `generateText` (a single non-streaming call) into a
+ * `streamText`-shaped impl so {@link streamChatCompletion} can drive the
+ * non-streaming path through its EXISTING request-building and part-handling loop
+ * with zero duplication. The returned fake exposes a `.stream` that replays the
+ * completed result as the same fullStream parts streamChatCompletion already
+ * understands — reasoning, text, each tool-call, then a terminal finish-step
+ * carrying the usage + providerMetadata the token/cache accounting reads. A thrown
+ * generateText error propagates out of the replay (caught by streamChatCompletion's
+ * try/catch and surfaced as an error chunk), exactly like a streaming failure.
+ */
+export function generateTextToStreamAdapter(
+  generateTextFn: typeof generateText = generateText,
+): typeof streamText {
+  return ((params: Record<string, unknown>) => {
+    async function* replay(): AsyncGenerator<Record<string, unknown>> {
+      // `onError` is a streamText-only callback; a non-streaming call throws
+      // instead, so strip it before forwarding the identical params.
+      const { onError: _onError, ...rest } = params;
+      const result = await generateTextFn(rest as Parameters<typeof generateText>[0]);
+      const reasoning = (result as { reasoningText?: unknown }).reasoningText;
+      if (typeof reasoning === 'string' && reasoning.length > 0) {
+        yield { type: 'reasoning-delta', text: reasoning };
+      }
+      if (typeof result.text === 'string' && result.text.length > 0) {
+        yield { type: 'text-delta', text: result.text };
+      }
+      for (const tc of result.toolCalls ?? []) {
+        yield {
+          type: 'tool-call',
+          toolCallId: (tc as { toolCallId: string }).toolCallId,
+          toolName: (tc as { toolName: string }).toolName,
+          input: (tc as { input: unknown }).input,
+        };
+      }
+      yield {
+        type: 'finish-step',
+        finishReason: result.finishReason,
+        usage: (result as { totalUsage?: unknown }).totalUsage ?? result.usage ?? {},
+        providerMetadata: result.providerMetadata,
+        response: result.response,
+      };
+    }
+    return { stream: replay() };
+  }) as unknown as typeof streamText;
+}
+
+/**
+ * Run ONE non-streaming fallback request and yield its result as normal stream
+ * chunks. Reuses {@link streamChatCompletion} (so cache markers, betas, metadata,
+ * image validation, tool-call pairing, and chunk emission are identical to the
+ * streaming path) with the token budget capped ({@link adjustParamsForNonStreaming})
+ * and a bounded per-attempt timeout ({@link nonstreamingFallbackTimeoutMs}) linked
+ * to the caller's abort signal. The `generateTextImpl` seam lets tests inject a
+ * deterministic non-streaming result.
+ */
+export async function* runNonStreamingFallback(
+  config: ProviderConfig,
+  messages: Message[],
+  tools: ToolDefinition[],
+  abortSignal: AbortSignal,
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; querySource?: QuerySource; generateTextImpl?: typeof generateText },
+): AsyncGenerator<StreamChunk> {
+  const cappedConfig = adjustParamsForNonStreaming(config);
+  const timeoutMs = nonstreamingFallbackTimeoutMs(config);
+  const fbAbort = new AbortController();
+  const onCallerAbort = () => fbAbort.abort();
+  if (abortSignal.aborted) fbAbort.abort();
+  else abortSignal.addEventListener('abort', onCallerAbort, { once: true });
+  const timer = setTimeout(() => fbAbort.abort(), timeoutMs);
+  try {
+    yield* streamChatCompletion(cappedConfig, messages, tools, fbAbort.signal, {
+      thinking: options?.thinking,
+      repairToolCall: options?.repairToolCall,
+      querySource: options?.querySource,
+      streamTextImpl: generateTextToStreamAdapter(options?.generateTextImpl ?? generateText),
+    });
+  } finally {
+    clearTimeout(timer);
+    abortSignal.removeEventListener('abort', onCallerAbort);
+  }
+}
 
 export async function* streamChatCompletionWithRetry(
   config: ProviderConfig,
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; heartbeatIntervalMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number | null) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; heartbeatIntervalMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number | null) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number; generateTextImpl?: typeof generateText },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the underlying single-attempt stream. Defaults to the real
   // streamChatCompletion so production behavior is unchanged; tests inject a
@@ -4450,6 +4606,32 @@ export async function* streamChatCompletionWithRetry(
             return;
           }
           break; // break inner loop to retry
+        }
+
+        // Non-streaming fallback (parity: executeNonStreamingRequest). A broken-SSE
+        // signal — an empty/non-SSE proxy body (EMPTY_STREAM_ERROR, reached here once
+        // the streaming retries are spent) or a 404 on the streaming endpoint
+        // (non-retryable, so reached immediately) — is recoverable by ONE
+        // non-streaming request. This branch always returns, so it runs at most once.
+        if (
+          nonStreamingFallbackEnabled(config)
+          && (isEmptyStreamError(chunk.error) || statusCode === 404)
+        ) {
+          let recovered = false;
+          for await (const fb of runNonStreamingFallback(config, messages, tools, abortSignal, {
+            thinking: options?.thinking,
+            repairToolCall: options?.repairToolCall,
+            querySource: options?.querySource,
+            generateTextImpl: options?.generateTextImpl,
+          })) {
+            // The fallback's OWN failure (it also errored / stayed empty) must not
+            // mask the original error: discard its leading error and surface the
+            // original streaming error below instead.
+            if (!recovered && fb.type === 'error') break;
+            recovered = true;
+            yield fb;
+          }
+          if (recovered) return;
         }
 
         yield withRequestId(chunk);

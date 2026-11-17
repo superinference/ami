@@ -986,6 +986,19 @@ export interface ProviderConfig {
    * fallback covering all beta headers. Not user-facing; off by default.
    */
   disableBetas?: boolean;
+  /**
+   * Opt in to the NON-STREAMING request fallback. When a streaming attempt fails
+   * in a way that signals a broken SSE transport — a gateway/proxy that returns a
+   * 200 with a non-SSE body (the empty-stream sentinel) or a 404 on the streaming
+   * endpoint — `streamChatCompletionWithRetry` makes ONE bounded, token-capped
+   * non-streaming request (AI SDK `generateText`) and replays its result as the
+   * normal stream, recovering a turn a proxy would otherwise have killed. Mirrors
+   * Claude Code's executeNonStreamingRequest fallback (services/api/claude.ts).
+   * Also enabled process-wide via SUPERINFERENCE_NONSTREAMING_FALLBACK /
+   * CLAUDE_CODE_NONSTREAMING_FALLBACK. Off by default (streaming-only retry is
+   * unchanged); an explicit falsy config value overrides a truthy env knob.
+   */
+  nonStreamingFallback?: boolean;
 }
 
 export const STREAM_CHUNK_TYPES = ['content_delta', 'tool_call_delta', 'thinking_delta', 'done', 'error'] as const;
