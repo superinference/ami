@@ -6,14 +6,17 @@ import {
   formatNewDiagnosticsSummary,
   isUncPath,
   validateLspFilePath,
+  truncateWithMarker,
   MAX_LSP_FILE_SIZE_BYTES,
   MAX_DIAGNOSTICS_PER_FILE,
   MAX_TOTAL_DIAGNOSTICS,
+  MAX_DIAGNOSTICS_SUMMARY_CHARS,
   DIAGNOSTIC_SEVERITY_NAMES,
   type DiagnosticFile,
   type DiagnosticSeverityName,
 } from '../lsp/diagnostic-tracking';
 import { isLspEnabled } from './tool-gates';
+import { logError } from '../logger';
 import * as path from 'path';
 
 /**
@@ -264,7 +267,17 @@ export const lspDiagnosticsTool: ToolDefinition = {
   // PARITY (additive): synonyms for tool_search / introspection discovery of the
   // code-intelligence surface (Claude's LSPTool searchHint).
   searchHint: 'code intelligence errors warnings problems type-check lint',
-  description: 'Get LSP diagnostics (errors, warnings) for a file or the workspace. Useful for finding issues after edits.',
+  // PARITY (additive): richer description with caveats (Claude's LSPTool prompt.ts).
+  // Notes that diagnostics come from language servers started lazily on first edit,
+  // so an empty result can mean "not yet indexed" rather than "clean", and that the
+  // model should fall back to the project linter/compiler when none is available.
+  description:
+    'Get LSP diagnostics (errors, warnings, info, hints) for a file or the workspace. '
+    + 'Best run right after an edit to catch issues it introduced; when a pre-edit baseline '
+    + 'exists only the NEW diagnostics are returned. Language servers start lazily on the '
+    + 'first edit and index asynchronously, so an empty result may mean "not yet indexed" '
+    + 'rather than "clean"; when no server is available for the file type, run the project '
+    + 'linter/compiler manually instead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -425,7 +438,14 @@ export const lspDiagnosticsTool: ToolDefinition = {
         ? withNote(`${header}:\n${formatDiagnosticsDetail(all)}`, volumeLimitNote(removed))
         : withNote(`${header} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
       return { output: body, metadata: diagMetadata('diagnostics', all) };
-    } catch {
+    } catch (e) {
+      // PARITY (additive): error observability (Claude's LSPTool catch(e) → logError).
+      // A failure DURING LSP work (a wedged client, a throwing getDiagnostics) is a
+      // real fault, not the benign "no client" case — route it to the debug/error
+      // logger (bounded, no untrusted diagnostic text) so it is distinguishable from
+      // "LSP not available" in diagnostics/bug reports. Keep the same user-facing
+      // fallback so model behaviour is unchanged.
+      logError('lsp-diagnostics', e instanceof Error ? e.message : String(e));
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
     }
   },
@@ -437,7 +457,15 @@ export const lspReferencesTool: ToolDefinition = {
   isEnabled: () => lspDiagToolsEnabled(),
   // PARITY (additive): code-intelligence synonyms for tool_search discovery.
   searchHint: 'code intelligence symbol usages callers definitions navigate',
-  description: 'Find all references to a symbol in the codebase using the workspace indexer.',
+  // PARITY (additive): richer description with the workspace-indexer caveat
+  // (Claude's LSPTool prompt.ts) — results rely on the background indexer and may
+  // be empty until it has scanned the relevant files; grep is the fallback.
+  description:
+    'Find all references to a symbol in the codebase using the workspace indexer. '
+    + 'Results depend on the background indexer, so they may be empty until it has '
+    + 'scanned the relevant files (a workspace that was just opened may not be indexed '
+    + 'yet); if you get no results for a symbol you expect to exist, retry shortly or '
+    + 'use grep as a fallback.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -465,6 +493,12 @@ export const lspReferencesTool: ToolDefinition = {
       return { output: 'Invalid file_path: expected a string path.', isError: true };
     }
     const symbol = input.symbol.trim();
+    // PARITY (additive): abort boundary (Claude's LSPTool honors context's abort
+    // signal before the lookup). A caller that already cancelled the turn must not
+    // pay for a full workspace-index scan; short-circuit to the grep fallback.
+    if (context.abortSignal?.aborted) {
+      return { output: `Reference search for "${symbol}" aborted before it ran. Use grep as fallback.` };
+    }
     try {
       const results = _lspDiagHooks.searchSymbols(context.cwd, symbol);
       if (results.length === 0) {
@@ -495,11 +529,20 @@ export const lspReferencesTool: ToolDefinition = {
       if (results.length >= SEARCH_SYMBOL_CAP) {
         lines.push(`\n(showing first ${SEARCH_SYMBOL_CAP} matches — refine your query to narrow)`);
       }
+      // PARITY (additive): output-size boundary (Claude caps rendered references).
+      // The row cap bounds entry COUNT, but very long symbol/type/path strings can
+      // still overflow the context budget, so cap total chars with the same shared
+      // truncation marker used for the diagnostics block.
+      const output = truncateWithMarker(lines.join('\n'), MAX_DIAGNOSTICS_SUMMARY_CHARS);
       return {
-        output: lines.join('\n'),
+        output,
         metadata: { operation: 'find_references', resultCount: results.length, fileCount: byFile.size },
       };
-    } catch {
+    } catch (e) {
+      // PARITY (additive): error observability — a real indexer failure is logged
+      // (bounded message, no untrusted content) so it is distinguishable from the
+      // benign empty-result case, matching Claude's LSPTool catch(e) → logError.
+      logError('find_references', e instanceof Error ? e.message : String(e));
       return { output: `Error searching for "${symbol}". Use grep as fallback.`, isError: true };
     }
   },

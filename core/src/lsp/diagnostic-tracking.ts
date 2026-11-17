@@ -51,6 +51,51 @@ export const MAX_TRACKED_BASELINE_FILES = 500;
 export const MAX_DIAGNOSTICS_SUMMARY_CHARS = 4000;
 
 /**
+ * PARITY (additive): per-diagnostic message char cap for UNTRUSTED server text.
+ * Mirrors Claude Code's LSPDiagnosticRegistry message truncation (L296-310): a
+ * language server (possibly malicious) can emit an arbitrarily long `message`,
+ * which would otherwise flood a single diagnostic line and blow the context
+ * budget before the block-level {@link MAX_DIAGNOSTICS_SUMMARY_CHARS} cap even
+ * applies. Each server-provided message is truncated to this length at
+ * conversion time ({@link truncateDiagnosticMessage}).
+ */
+export const MAX_DIAGNOSTIC_MESSAGE_CHARS = 1000;
+
+/**
+ * Truncate `text` to `max` chars, replacing the tail with `marker` when it
+ * overflows. One canonical truncation helper shared by the block renderer
+ * ({@link formatDiagnosticsDetail}), the per-message cap
+ * ({@link truncateDiagnosticMessage}), and the references-output cap in the LSP
+ * tools — so there is a single truncation implementation, never a per-site copy.
+ * A `max` at or below the marker length collapses to just the marker.
+ */
+export function truncateWithMarker(text: string, max: number, marker = '…[truncated]'): string {
+  if (text.length <= max) return text;
+  if (max <= marker.length) return marker;
+  return text.slice(0, max - marker.length) + marker;
+}
+
+/**
+ * PARITY (additive, defensive): coerce an UNTRUSTED server-provided diagnostic
+ * message to a bounded string. The LSP spec says `message` is a string, but we
+ * never trust wire data: a malformed/malicious server may send a non-string (or
+ * an exotic object whose `String()` coercion throws). This coerces safely inside
+ * a try/catch — a coercion failure yields a fixed placeholder rather than
+ * aborting the whole {@link convertPublishDiagnostics} batch — then truncates to
+ * {@link MAX_DIAGNOSTIC_MESSAGE_CHARS}. Mirrors Claude Code's defensive
+ * serialization + message truncation before diagnostics are logged/surfaced.
+ */
+export function truncateDiagnosticMessage(message: unknown): string {
+  let text: string;
+  try {
+    text = typeof message === 'string' ? message : String(message ?? '');
+  } catch {
+    return '<unrenderable diagnostic message>';
+  }
+  return truncateWithMarker(text, MAX_DIAGNOSTIC_MESSAGE_CHARS);
+}
+
+/**
  * True for a UNC path (`\\server\share` or `//server/share`). Touching one with
  * stat()/readFile() on Windows triggers an outbound SMB/NTLM auth, leaking
  * credentials — so the LSP entry points short-circuit before any filesystem
@@ -191,7 +236,9 @@ export function mapLspSeverity(severity: number | undefined): DiagnosticSeverity
  */
 export function convertPublishDiagnostics(params: PublishDiagnosticsParams): Diagnostic[] {
   return (params.diagnostics ?? []).map((d) => ({
-    message: d.message,
+    // Untrusted server text: coerce defensively + truncate so one giant (or
+    // non-string) message cannot flood context or abort the batch.
+    message: truncateDiagnosticMessage(d.message),
     severity: mapLspSeverity(d.severity),
     range: {
       start: { line: d.range?.start?.line ?? 0, character: d.range?.start?.character ?? 0 },
@@ -546,9 +593,5 @@ export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
     .join('\n\n');
 
   // Hard char cap so a flood of diagnostics can't blow the model's context.
-  if (rendered.length > MAX_DIAGNOSTICS_SUMMARY_CHARS) {
-    const marker = '…[truncated]';
-    return rendered.slice(0, MAX_DIAGNOSTICS_SUMMARY_CHARS - marker.length) + marker;
-  }
-  return rendered;
+  return truncateWithMarker(rendered, MAX_DIAGNOSTICS_SUMMARY_CHARS);
 }
