@@ -24,6 +24,7 @@ import {
   CURRENT_MIGRATION_VERSION,
   type StartupMigrationResult,
 } from '../src/reference-journal';
+import { LEGACY_MODEL_REMAP_OPT_OUT_ENV } from '../src/model-registry';
 
 const tmpdirs: string[] = [];
 function mkTmp(): string {
@@ -143,5 +144,38 @@ describe('formatStartupMigrationNotices', () => {
       formatStartupMigrationNotices({ ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs: [], modelAlias: null }),
       [],
     );
+  });
+
+  // U035 (w88): the model-remap notice advertises its opt-out control inline (parity with
+  // Claude Code's useModelMigrationNotifications "Model updated … · Set X=1 to opt out").
+  // RED on revert: without the appendOptOut DI seam the model notice is emitted unchanged,
+  // so the opt-out hint is absent and this assertion fails.
+  it('applies the appendOptOut renderer ONLY to the model-remap notice', () => {
+    const res: StartupMigrationResult = {
+      ranVersion: CURRENT_MIGRATION_VERSION,
+      relocatedDirs: ['plugins'],
+      modelAlias: { from: 'old-model', to: 'new-model', path: '/tmp/config.json' },
+    };
+    const notices = formatStartupMigrationNotices(res, {
+      appendOptOut: msg => `${msg} [opt-out:${LEGACY_MODEL_REMAP_OPT_OUT_ENV}]`,
+    });
+    assert.equal(notices.length, 2);
+    // Relocation notice is untouched by the model-remap opt-out renderer.
+    assert.doesNotMatch(notices[0]!, /opt-out:/);
+    assert.match(notices[0]!, /Relocated durable config/);
+    // The model-remap notice carries the opt-out control with the real env var name.
+    assert.match(notices[1]!, /old-model.*new-model/);
+    assert.match(notices[1]!, /\[opt-out:CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP\]$/);
+  });
+
+  it('omits the opt-out hint when no renderer is injected (plain data)', () => {
+    const res: StartupMigrationResult = {
+      ranVersion: CURRENT_MIGRATION_VERSION,
+      relocatedDirs: [],
+      modelAlias: { from: 'old-model', to: 'new-model', path: '/tmp/config.json' },
+    };
+    const notices = formatStartupMigrationNotices(res);
+    assert.equal(notices.length, 1);
+    assert.doesNotMatch(notices[0]!, /opt out/);
   });
 });

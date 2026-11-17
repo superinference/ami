@@ -320,14 +320,36 @@ export async function runStartupMigrations(
 }
 
 /**
+ * Options for {@link formatStartupMigrationNotices}.
+ */
+export interface StartupMigrationNoticeOptions {
+  /**
+   * Presentation-layer renderer that appends the "how to opt out" control to the
+   * model-alias notice — the model remap is an AUTOMATIC change, so (parity with
+   * Claude Code's useModelMigrationNotifications.tsx:L29 "Model updated … · Set
+   * CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1 to opt out") the announcement also tells
+   * the user the single env var that disables it. Injected (not hard-coded here) so the
+   * canonical opt-out-control formatter stays in ONE place (the CLI's
+   * `appendOptOutControl`) rather than this core layer re-deriving the "· Set X=1 to opt
+   * out" wording. Omitted → the notice is emitted without the hint (plain data).
+   */
+  appendOptOut?: (message: string) => string;
+}
+
+/**
  * Human-readable one-time notices describing what {@link runStartupMigrations} silently
  * changed on disk, so the startup surface can tell the user (parity: Claude's
  * post-migration one-time notification driven by a persisted flag). Empty when the set
  * was skipped (version already current) or ran but changed nothing — so a caller prints
  * nothing on a steady-state startup, and the version stamp guarantees the notice shows at
- * most once per generation.
+ * most once per generation. When {@link StartupMigrationNoticeOptions.appendOptOut} is
+ * supplied, the model-remap notice carries the opt-out control so the user learns how to
+ * disable the auto-remap inline (parity with Claude Code's migration-notification hint).
  */
-export function formatStartupMigrationNotices(result: StartupMigrationResult): string[] {
+export function formatStartupMigrationNotices(
+  result: StartupMigrationResult,
+  opts: StartupMigrationNoticeOptions = {},
+): string[] {
   const notices: string[] = [];
   if (result.relocatedDirs.length) {
     notices.push(
@@ -335,10 +357,10 @@ export function formatStartupMigrationNotices(result: StartupMigrationResult): s
     );
   }
   if (result.modelAlias) {
-    notices.push(
+    const base =
       `Updated your pinned model from "${result.modelAlias.from}" to "${result.modelAlias.to}" ` +
-        `(the previous id was retired) in ${result.modelAlias.path}.`,
-    );
+      `(the previous id was retired) in ${result.modelAlias.path}.`;
+    notices.push(opts.appendOptOut ? opts.appendOptOut(base) : base);
   }
   return notices;
 }

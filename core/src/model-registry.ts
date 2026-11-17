@@ -722,8 +722,18 @@ export function suggestDeprecatedReplacement(modelId: string, available: string[
 }
 
 /**
+ * The SINGLE canonical name of the env var that opts out of the deprecated→successor
+ * model remap (parity with Claude Code's useModelMigrationNotifications.tsx:L24-L29
+ * opt-out). Exported so every consumer — the remap decision ({@link
+ * isLegacyModelRemapDisabled}) AND the one-time startup-migration notice that
+ * advertises how to disable the auto-remap — references ONE literal instead of
+ * re-typing the variable name (no divergent copies).
+ */
+export const LEGACY_MODEL_REMAP_OPT_OUT_ENV = 'CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP';
+
+/**
  * True when the legacy-model remap is opted out via
- * CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP (parity with Claude Code's env opt-out,
+ * {@link LEGACY_MODEL_REMAP_OPT_OUT_ENV} (parity with Claude Code's env opt-out,
  * useModelMigrationNotifications.tsx:L24-L29). Accepts the usual truthy spellings
  * (1/true/yes/on, case-insensitive, trimmed). The SINGLE source of the opt-out
  * decision, consumed by both the advisory {@link suggestDeprecatedReplacement}
@@ -732,7 +742,7 @@ export function suggestDeprecatedReplacement(modelId: string, available: string[
  * legacy-id remap path identically.
  */
 export function isLegacyModelRemapDisabled(): boolean {
-  const v = (process.env.CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP ?? '').trim().toLowerCase();
+  const v = (process.env[LEGACY_MODEL_REMAP_OPT_OUT_ENV] ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 

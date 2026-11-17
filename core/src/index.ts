@@ -38,7 +38,7 @@ export {
 export type {
   JournalUsageInput, JournalUsage, JournalContentBlock, StructuredPatchHunk,
   AssistantEntry, AssistantEntryArgs, UserEntry, UserEntryArgs, ModelAliasMigration,
-  StartupMigrationResult,
+  StartupMigrationResult, StartupMigrationNoticeOptions,
 } from './reference-journal';
 export { PermissionManager, containsUnquotedExpansion, containsShellSubstitution, isBuildConfigFile, unwrapShellControlStructures } from './permissions';
 export { safeReadFile, safeLstat, FILE_ENCODINGS } from './tools/tool-utils';
@@ -197,7 +197,7 @@ export type { ApiProviderClass, ContextUpgrade } from './model-capabilities';
 export { formatTokenCount } from './token-format';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS, PERMISSION_RULE_SOURCES, coercePermissionRuleSource, isManagedPermissionSource, managedPermissionsPath, SESSION_GRANT_SCOPES, SAFETY_CHECK_KINDS } from './permissions';
 export type { PermissionRuleSource } from './permissions';
-export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata, getAgentModelOptions, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, resolveOverriddenModel, MODEL_ENV_TOGGLES } from './model-registry';
+export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata, getAgentModelOptions, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, LEGACY_MODEL_REMAP_OPT_OUT_ENV, resolveOverriddenModel, MODEL_ENV_TOGGLES } from './model-registry';
 export type { AgentModelOption } from './model-registry';
 export type { ValidateModelResult, ModelAlias } from './model-registry';
 export { loadProjectConfig, loadGlobalConfig, mergeConfigs, applyConfigEnv, applyConfigLanguage, applyConfigStartupKnobs, applyConfigCaCerts, applyConfigGitignore, applyConfigAutoCompact, applyConfigPlansDirectory, applyConfigAnthropicBetas, resolveAdditionalDirectories, FAST_MODE_BETA, REDACT_THINKING_BETA, CONFIG_ENV_TIERS, loadConfigFileChecked, loadFlagSettingsConfig, FLAG_SETTINGS_ENV, backupCorruptConfig, findMostRecentBackup, collectConfigDiagnostics, validateProjectConfigValues, findUnknownConfigKeys, KNOWN_CONFIG_KEYS, getConfigValidationDocLink, formatConfigValueIssues, buildConfigDiagnosticsTree, formatConfigDiagnosticsTree, CONFIG_DOC_BASE, getConfigJSONSchema, CONFIG_SCHEMA_URL, markInternalWrite, consumeInternalWrite, INTERNAL_WRITE_WINDOW_MS, loadPersistedSkillUsage, persistSkillUsageStat, saveGlobalConfig, loadPreferenceFlags, wasPreferenceShown, markPreferenceShown, loadNoticeSeenCounts, getNoticeSeenCount, shouldShowNotice, recordNoticeSeen } from './config';
