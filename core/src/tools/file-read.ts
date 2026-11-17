@@ -13,7 +13,7 @@ import { suggestSimilarPaths, suggestPathUnderCwd, suggestPathCorrection } from 
 import { formatFileSize } from '../utils/format';
 import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
 import { memoryFreshnessReminder } from '../memory';
-import { getFileReadingLimits, getFileReadPromptFlags, type FileReadPromptFlags } from './file-read-limits';
+import { getFileReadingLimits, getFileReadPromptFlags, getLineNumberStyle, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
 import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
 import { log } from '../logger';
 
@@ -871,6 +871,34 @@ export function convertLeadingTabsToSpaces(content: string): string {
   return content.replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length));
 }
 
+/** Pad width used for the arrow line-number style (`     N→`), matching Claude Code. */
+const ARROW_PREFIX_WIDTH = 6;
+
+/**
+ * Prefix a single already-tab-normalized source line with its 1-based line number
+ * in the active {@link LineNumberStyle}:
+ *   - `compact` → `${num}\t${line}` (num right-padded to `compactWidth`, default 1
+ *     i.e. no padding — matches the historical per-site output exactly);
+ *   - `arrow`   → `${num.padStart(6)}→${line}` (or the bare number when it is
+ *     already ≥6 digits), the legacy padded-arrow format.
+ * The inverse (stripping EITHER prefix) is {@link stripLineNumberPrefix} in
+ * file-cache-seed.ts, so a transcript-seeded re-read round-trips regardless of the
+ * style the output was produced in. Mirrors Claude Code's addLineNumbers()
+ * (utils/file.ts) compact/padded-arrow branches.
+ */
+export function formatLineNumber(
+  lineNumber: number,
+  line: string,
+  style: LineNumberStyle,
+  compactWidth = 1,
+): string {
+  if (style === 'arrow') {
+    const s = String(lineNumber);
+    return `${s.length >= ARROW_PREFIX_WIDTH ? s : s.padStart(ARROW_PREFIX_WIDTH)}→${line}`;
+  }
+  return `${String(lineNumber).padStart(compactWidth)}\t${line}`;
+}
+
 /**
  * Options that shape the Read tool's self-description/schema so it HONESTLY
  * reflects the runtime's real capabilities and the operator's prompt-shaping
@@ -1000,6 +1028,11 @@ export const fileReadTool: ToolDefinition = {
       maxTokens: context.outputBudget?.fileReadMaxTokens,
       maxSizeBytes: context.outputBudget?.fileReadMaxSizeBytes,
     });
+    // Operator-selected line-number prefix format for this read's output. Compact
+    // (`N\t`) by default; `arrow` selects the padded `     N→` legacy format. The
+    // same style is reflected in the file_edit description (buildFileEditDescription)
+    // so the model strips the correct prefix. See getLineNumberStyle.
+    const lineNumberStyle = getLineNumberStyle();
 
     if (!filePath || filePath.trim().length === 0) {
       return { output: 'Error: file_path must not be empty.', isError: true };
@@ -1162,7 +1195,7 @@ export const fileReadTool: ToolDefinition = {
         const lines = partial.split('\n').slice(0, PARTIAL_VIEW_LINES);
         // Normalize leading tabs in the SOURCE line (not the gutter separator),
         // matching the full/range read paths. See convertLeadingTabsToSpaces.
-        const numbered = lines.map((l, i) => `${i + 1}\t${convertLeadingTabsToSpaces(l)}`).join('\n');
+        const numbered = lines.map((l, i) => formatLineNumber(i + 1, convertLeadingTabsToSpaces(l), lineNumberStyle)).join('\n');
         const totalLines = partial.split('\n').length;
         context.filesRead?.add(resolved);
         // Flag the cache so a later full-file overwrite is blocked until the model
@@ -1508,7 +1541,7 @@ export const fileReadTool: ToolDefinition = {
       );
       const numbered = range.content
         .split('\n')
-        .map((line, i) => `${tailStart + i + 1}\t${convertLeadingTabsToSpaces(line)}`)
+        .map((line, i) => formatLineNumber(tailStart + i + 1, convertLeadingTabsToSpaces(line), lineNumberStyle))
         .join('\n');
       const rangeText = stripForgedSystemReminders(numbered);
       const shownFrom = tailStart + 1;
@@ -1559,7 +1592,7 @@ export const fileReadTool: ToolDefinition = {
       // the SOURCE line (not the gutter) for tab-width-independent indentation.
       const numbered = range.content
         .split('\n')
-        .map((line, i) => `${offset + i + 1}\t${convertLeadingTabsToSpaces(line)}`)
+        .map((line, i) => formatLineNumber(offset + i + 1, convertLeadingTabsToSpaces(line), lineNumberStyle))
         .join('\n');
       // Neutralize forged <system-reminder> trust-boundary tags planted in the
       // untrusted window before it enters the transcript.
@@ -1640,12 +1673,13 @@ export const fileReadTool: ToolDefinition = {
 
     // Format with line numbers (1-based display)
     const numbered = selectedLines
-      .map((line, i) => {
-        const lineNum = String(startLine + i + 1).padStart(lineNumberWidth);
+      .map((line, i) =>
         // Normalize leading tabs in the SOURCE line (not the gutter separator) so
-        // indentation renders tab-width-independently. See convertLeadingTabsToSpaces.
-        return `${lineNum}\t${convertLeadingTabsToSpaces(line)}`;
-      })
+        // indentation renders tab-width-independently. The compact gutter is padded
+        // to `lineNumberWidth` for column-aligned numbers; the arrow style uses its
+        // own fixed width. See convertLeadingTabsToSpaces / formatLineNumber.
+        formatLineNumber(startLine + i + 1, convertLeadingTabsToSpaces(line), lineNumberStyle, lineNumberWidth),
+      )
       .join('\n');
 
     const totalChars = content.length;

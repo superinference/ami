@@ -96,6 +96,46 @@ export interface FileReadingLimits {
 }
 
 /**
+ * How the Read tool prefixes each returned line with its line number:
+ * - `compact` — `N\t<content>` (a bare number + TAB). The default; it is the
+ *   least-overhead format and the one AMI/Claude prefer.
+ * - `arrow` — `     N→<content>` (the number right-padded to width 6, then a `→`
+ *   arrow). The legacy, more-verbose format some operators/tools expect.
+ *
+ * The round-trip inverse (stripping EITHER prefix back to the bare source line)
+ * already lives in {@link module:file-cache-seed.stripLineNumberPrefix}. Mirrors
+ * Claude Code's `isCompactLinePrefixEnabled()` line-prefix selector (utils/file.ts).
+ */
+export type LineNumberStyle = 'compact' | 'arrow';
+
+/** Default line-number prefix style (compact `N\t`), matching the historical output. */
+export const DEFAULT_LINE_NUMBER_STYLE: LineNumberStyle = 'compact';
+
+/**
+ * Operator knob selecting the Read tool's line-number prefix format. Set to
+ * `arrow` (case-insensitive) for the padded `     N→` format; any other/unset
+ * value keeps the default compact `N\t`. The active format is reflected in the
+ * file_edit tool description so the model knows exactly which prefix to strip
+ * from old_string/new_string. Surfaced in `ami --introspect` (experimentalEnvFlags).
+ * Mirrors Claude Code's `tengu_compact_line_prefix_killswitch` (utils/file.ts).
+ */
+export const LINE_NUMBER_STYLE_ENV = 'AMI_LINE_NUMBER_STYLE';
+
+/**
+ * Resolve the effective {@link LineNumberStyle} from the environment. Only an
+ * explicit `arrow` token selects the padded-arrow format; unset/empty/any other
+ * value falls back to the default compact style, so a malformed value can never
+ * silently corrupt the read output format.
+ */
+export function getLineNumberStyle(
+  env: NodeJS.ProcessEnv = process.env,
+): LineNumberStyle {
+  return /^arrow$/i.test((env[LINE_NUMBER_STYLE_ENV] ?? '').trim())
+    ? 'arrow'
+    : DEFAULT_LINE_NUMBER_STYLE;
+}
+
+/**
  * A usable cap: a positive, finite number. Rejects 0, negatives, NaN, Infinity,
  * and non-numbers. Guarantees no route to a zero/NaN/Infinity cap.
  */

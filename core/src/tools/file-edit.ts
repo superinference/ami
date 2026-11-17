@@ -15,6 +15,7 @@ import { coerceBool } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
 import { trackFileHistory } from './file-history';
 import { MemoryManager } from '../memory';
+import { getLineNumberStyle, type LineNumberStyle } from './file-read-limits';
 
 /**
  * True when `resolved` lives under the shared TEAM-memory tree for `cwd`. A write
@@ -1006,14 +1007,30 @@ async function applySequentialEdits(
   };
 }
 
+/**
+ * Build the file_edit tool description, reflecting the ACTIVE Read line-number
+ * prefix format so the model knows exactly which prefix to strip from
+ * old_string/new_string. In the default `compact` style the prefix is a number +
+ * tab (`N\t<content>`); in the `arrow` style it is a padded number + arrow
+ * (`     N→<content>`). Mirrors Claude Code's getEditToolDescription(), which
+ * switches the "line number prefix format" clause on isCompactLinePrefixEnabled().
+ */
+export function buildFileEditDescription(style: LineNumberStyle = getLineNumberStyle()): string {
+  const prefixClause = style === 'arrow'
+    ? 'file_read output prefixes EVERY line with its right-padded line number and an arrow ("     N→<content>"), and old_string must contain ONLY the content that appears AFTER that arrow — never the "N→" prefix'
+    : 'file_read output prefixes EVERY line with its line number and a tab ("N\\t<content>"), and old_string must contain ONLY the content that appears AFTER that tab — never the "N\\t" prefix';
+  return 'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers: '
+    + prefixClause
+    + ' — with the original indentation (tabs/spaces) preserved exactly as written in the file. Never use bash sed/awk to edit files. Edits are addressed by EXACT STRING MATCH on content (old_string), never by line number: this is the canonical, intentional addressing scheme — AMI does not use line-reference ("hashline") edits, because a string match stays correct even when surrounding lines shift, whereas a stale line number silently edits the wrong span.';
+}
+
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
   // Discovery hint for tool_search: synonyms a model might phrase the intent with
   // that are not in the formal name/description (parity: Claude's Tool.searchHint
   // 'modify file contents in place'). Consumed by tool-search.ts scoring.
   searchHint: 'modify file contents in place create overwrite write edit replace rewrite patch',
-  description:
-    'Create or edit a file. You MUST file_read an existing file before changing it. ALWAYS prefer editing an existing file (one of the replace modes, which send only the diff) over creating a new one; use the Write/create mode only to create a genuinely new file or for a complete rewrite. NEVER proactively create documentation files (*.md) or README files unless the User explicitly requests them. Only write emojis into a file if the User explicitly asks for them. Modes: (1) Replace — file_path + old_string + new_string; old_string must match exactly (use the smallest unique 2–4 line span). Set replace_all to replace every occurrence. (2) Multiple replaces — file_path + edits: [{old_string, new_string, replace_all?}]; applied in order. (3) Write/create — file_path + new_string (or content) with old_string omitted or empty: creates the file or replaces its entire contents. Do not include line numbers: file_read output prefixes EVERY line with its line number and a tab ("N\\t<content>"), and old_string must contain ONLY the content that appears AFTER that tab — never the "N\\t" prefix — with the original indentation (tabs/spaces) preserved exactly as written in the file. Never use bash sed/awk to edit files. Edits are addressed by EXACT STRING MATCH on content (old_string), never by line number: this is the canonical, intentional addressing scheme — AMI does not use line-reference ("hashline") edits, because a string match stays correct even when surrounding lines shift, whereas a stale line number silently edits the wrong span.',
+  description: buildFileEditDescription(),
   inputSchema: {
     type: 'object',
     properties: {
