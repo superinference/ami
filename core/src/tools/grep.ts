@@ -269,6 +269,11 @@ Usage:
   },
   isReadOnly: true,
   isConcurrencySafe: true,
+  // Curated discovery phrase weighted by `tool_search` above the prose description:
+  // surfaces capability synonyms NOT already in the name/description ("contents",
+  // "regex") so the model can find grep by intent even when it is deferred. Parity:
+  // Claude Code's GrepTool `searchHint: 'search file contents with regex (ripgrep)'`.
+  searchHint: 'search file contents with regex (ripgrep)',
 
   async execute(
     input: Record<string, unknown>,
