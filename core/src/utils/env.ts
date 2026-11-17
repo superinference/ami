@@ -3,9 +3,11 @@
  * and loading, and env-var waterfall resolution.
  *
  * These are intentionally dependency-free and side-effect-free (except the thin
- * {@link loadDotenv} filesystem wrapper), so they are safe to import from any
- * layer. Credential redaction lives in `credential-guard` and tool-argument
- * boolean coercion lives in `utils/coerce`; this module does NOT duplicate them.
+ * {@link loadDotenv} filesystem wrapper, and an OPTIONAL injected `log` callback
+ * on {@link validateBoundedEnvInt}/{@link collectEnvLimitDiagnostics} — no logger
+ * is imported here), so they are safe to import from any layer. Credential
+ * redaction lives in `credential-guard` and tool-argument boolean coercion lives
+ * in `utils/coerce`; this module does NOT duplicate them.
  */
 
 import { readFileSync } from 'node:fs';
@@ -95,13 +97,20 @@ export interface BoundedEnvIntResult {
  * zero is legitimately meaningful (e.g. a depth/concurrency "unlimited" sentinel).
  * Unlike {@link parseEnvInt} with bounds (which rejects an over-cap value back to
  * the default), this CLAMPS an over-cap value to `upperLimit` and reports it.
+ *
+ * Pass `log` to emit the diagnostic `message` whenever the value is rejected
+ * (`invalid`) or clamped (`capped`) — parity with Claude Code's
+ * `validateBoundedIntEnvVar`, which calls `logForDebugging` on those paths so a
+ * misconfigured override surfaces to the debug log, not only to the return value.
+ * The callback is injected (rather than importing a logger here) so this module
+ * stays dependency-free; the real consumer wires the core debug logger.
  */
 export function validateBoundedEnvInt(
   name: string,
   value: string | undefined,
   defaultValue: number,
   upperLimit: number,
-  options: { min?: number } = {},
+  options: { min?: number; log?: (line: string) => void } = {},
 ): BoundedEnvIntResult {
   if (value === undefined || value === '') {
     return { effective: defaultValue, status: 'valid' };
@@ -109,18 +118,22 @@ export function validateBoundedEnvInt(
   const min = options.min ?? 1;
   const n = coerceEnvInt(value);
   if (n === null || n < min) {
-    return {
+    const result: BoundedEnvIntResult = {
       effective: defaultValue,
       status: 'invalid',
       message: `${name}: invalid value "${value}" (using default ${defaultValue})`,
     };
+    options.log?.(result.message!);
+    return result;
   }
   if (n > upperLimit) {
-    return {
+    const result: BoundedEnvIntResult = {
       effective: upperLimit,
       status: 'capped',
       message: `${name}: capped from ${n} to ${upperLimit}`,
     };
+    options.log?.(result.message!);
+    return result;
   }
   return { effective: n, status: 'valid' };
 }
@@ -161,14 +174,22 @@ export const AMI_ENV_INT_LIMITS: readonly EnvLimitSpec[] = [
  * entries that are `invalid` or `capped` (each with a message). An empty result
  * means every numeric override is within range. Defaults to the live process env
  * and the {@link AMI_ENV_INT_LIMITS} catalog.
+ *
+ * Pass `options.log` to also emit each non-valid finding's message to the debug
+ * logger (parity with Claude Code's per-validation `logForDebugging` call); the
+ * callback is injected so this module stays dependency-free.
  */
 export function collectEnvLimitDiagnostics(
   specs: readonly EnvLimitSpec[] = AMI_ENV_INT_LIMITS,
   env: Record<string, string | undefined> = process.env,
+  options: { log?: (line: string) => void } = {},
 ): EnvLimitDiagnostic[] {
   const out: EnvLimitDiagnostic[] = [];
   for (const spec of specs) {
-    const r = validateBoundedEnvInt(spec.name, env[spec.name], spec.defaultValue, spec.upperLimit, { min: spec.min });
+    const r = validateBoundedEnvInt(spec.name, env[spec.name], spec.defaultValue, spec.upperLimit, {
+      min: spec.min,
+      log: options.log,
+    });
     if (r.status !== 'valid' && r.message) {
       out.push({ name: spec.name, effective: r.effective, status: r.status, message: r.message });
     }
