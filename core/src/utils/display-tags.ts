@@ -49,3 +49,38 @@ export function stripDisplayTags(text: string): string {
 export function stripDisplayTagsAllowEmpty(text: string): string {
   return text.replace(XML_TAG_BLOCK_PATTERN, '').trim();
 }
+
+/**
+ * Narrowly-scoped tag block pattern keyed to an EXPLICIT allowlist of the
+ * wrapper tags AMI injects into a user turn — system reminders
+ * (`<system-reminder>`, `<system>`), IDE context (`<ide_opened_file>`,
+ * `<ide_selection>`), and local slash-command markers (`<command-name>`,
+ * `<command-message>`, `<command-args>`, `<command-prefix>`,
+ * `<local-command-stdout>`, `<local-command-stderr>`).
+ *
+ * Unlike {@link XML_TAG_BLOCK_PATTERN} (which strips ANY lowercase block), this
+ * matches ONLY the injected-context families above so genuine user-typed markup —
+ * lowercase HTML like `<code>foo</code>`, a `<div>`, a `<pre>` snippet — survives
+ * untouched. Parity with Claude's `IDE_CONTEXT_TAGS_PATTERN`
+ * (references/claude/claude-code-main/src/utils/displayTags.ts:41-43), widened to
+ * the tag set AMI actually appends. The `command-[\w-]*` / `local-command-[\w-]*`
+ * arms cover the whole marker family with one bounded alternative; the
+ * backreference (`\1`) requires an exactly-matching close so adjacent blocks stay
+ * separate and an unpaired `<command-name>` without a close is left alone.
+ */
+// eslint-disable-next-line security/detect-unsafe-regex -- quantifiers are sequential, not nested: the alternation of fixed/`[\w-]*` names, optional attribute run (`[^>]*`), and lazy body (`[\s\S]*?`) are separated by literals, so matching is linear per start position (no catastrophic backtracking). The backreference only trips safe-regex's conservative heuristic.
+const INJECTED_CONTEXT_TAGS_PATTERN = /<(system-reminder|system|ide_opened_file|ide_selection|command-[\w-]*|local-command-[\w-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>\n?/g;
+
+/**
+ * Strip ONLY injected-context wrapper blocks ({@link INJECTED_CONTEXT_TAGS_PATTERN})
+ * from text, preserving every other character — in particular user-typed lowercase
+ * HTML. Used on the up-arrow recall / resubmit path so a prompt restored for
+ * re-editing drops any injected context block (a `<system-reminder>` or IDE/command
+ * marker that was concatenated into the stored turn) while keeping the human-authored
+ * prose and markup exactly as typed. Parity: Claude's `stripIdeContextTags`
+ * (utils/displayTags.ts:45-51). Returns the trimmed remainder (possibly empty, so a
+ * caller can detect an all-injected turn and skip it).
+ */
+export function stripInjectedContextTags(text: string): string {
+  return text.replace(INJECTED_CONTEXT_TAGS_PATTERN, '').trim();
+}

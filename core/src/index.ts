@@ -262,7 +262,7 @@ export {
 } from './utils/path';
 export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary } from './title-generator';
 export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun, ToolUseSummaryInput } from './title-generator';
-export { stripDisplayTags } from './utils/display-tags';
+export { stripDisplayTags, stripInjectedContextTags } from './utils/display-tags';
 export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
 export type { PythonPackageManager } from './utils/package-manager';
 export { getInstallPlatform, getOsRelease, isDistroFamily, detectMise, detectAsdf, detectHomebrew, detectWinget, detectPacman, detectDeb, detectRpm, detectApk, getPackageManager, upgradeInstructionFor, resetPackageManagerCaches, packageManagerHooks } from './package-manager';

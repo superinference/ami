@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { stripDisplayTags } from '../src/utils/display-tags';
+import { stripDisplayTags, stripInjectedContextTags } from '../src/utils/display-tags';
 import { SessionManager } from '../src/session';
 import type { Session } from '../src/session';
 import { generateTitle } from '../src/title-generator';
@@ -73,6 +73,71 @@ describe('stripDisplayTags', () => {
 
   it('is a no-op for plain text', () => {
     assert.equal(stripDisplayTags('just a normal message'), 'just a normal message');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: stripInjectedContextTags — narrow allowlist, preserves user markup
+// ---------------------------------------------------------------------------
+
+describe('stripInjectedContextTags', () => {
+  it('strips an injected <system-reminder> block but keeps the user prose', () => {
+    const input =
+      '<system-reminder>injected machine context</system-reminder>\nFix the login bug';
+    assert.equal(stripInjectedContextTags(input), 'Fix the login bug');
+  });
+
+  it('strips a bare <system> block', () => {
+    assert.equal(
+      stripInjectedContextTags('<system>policy</system>\nreal ask'),
+      'real ask',
+    );
+  });
+
+  it('strips IDE context blocks (ide_opened_file / ide_selection)', () => {
+    const input =
+      '<ide_opened_file path="a.ts">x</ide_opened_file><ide_selection>sel</ide_selection>run the tests';
+    assert.equal(stripInjectedContextTags(input), 'run the tests');
+  });
+
+  it('strips local slash-command marker families (command-* / local-command-*)', () => {
+    const input =
+      '<command-name>/clear</command-name><command-args></command-args><local-command-stdout>ok</local-command-stdout>deploy it';
+    assert.equal(stripInjectedContextTags(input), 'deploy it');
+  });
+
+  it('PRESERVES user-typed lowercase HTML like <code>foo</code> (not in the allowlist)', () => {
+    const input = 'use <code>foo</code> inside the <pre>block</pre>';
+    assert.equal(stripInjectedContextTags(input), input);
+  });
+
+  it('does NOT strip a generic lowercase block outside the injected allowlist', () => {
+    // stripDisplayTags WOULD strip this; the narrow stripper must not.
+    const input = '<context>file: a.ts</context>\nrefactor';
+    assert.equal(stripInjectedContextTags(input), input);
+  });
+
+  it('leaves uppercase JSX and unpaired brackets untouched', () => {
+    assert.equal(
+      stripInjectedContextTags('fix the <Button> when x < y'),
+      'fix the <Button> when x < y',
+    );
+  });
+
+  it('keeps adjacent injected blocks separate via the backreference', () => {
+    const input = '<system>a</system>KEEP<system-reminder>b</system-reminder>';
+    assert.equal(stripInjectedContextTags(input), 'KEEP');
+  });
+
+  it('returns EMPTY when the whole turn is injected context (caller can skip it)', () => {
+    assert.equal(
+      stripInjectedContextTags('<system-reminder>only noise</system-reminder>\n'),
+      '',
+    );
+  });
+
+  it('is a no-op for plain text', () => {
+    assert.equal(stripInjectedContextTags('just a prompt'), 'just a prompt');
   });
 });
 
