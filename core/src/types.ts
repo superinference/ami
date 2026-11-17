@@ -923,7 +923,7 @@ export const ENGINE_EVENT_TYPES = [
   'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
-  'mcp_resource_update', 'done',
+  'mcp_resource_update', 'mcp_connection_changed', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1040,6 +1040,13 @@ export type EngineEvent =
    *  changed WHAT (and why, for a list change). Parity: Claude's
    *  `UserResourceUpdateMessage`. `uri` is empty for a whole-list change. */
   | { type: 'mcp_resource_update'; server: string; uri: string; reason?: string }
+  /** An MCP server's connection state changed mid-session in a user-relevant way:
+   *  `'lost'` (a ready server dropped), `'recovered'` (it came back after a drop), or
+   *  `'failed'` (reconnection was abandoned). Carries server provenance + an optional
+   *  `detail` (the raw state / attempt count) so a dropped tool/MCP connection is
+   *  surfaced proactively instead of silently vanishing. Parity: Claude's IDE/MCP
+   *  connection status indicator (`useIDEStatusIndicator`). */
+  | { type: 'mcp_connection_changed'; server: string; state: 'lost' | 'recovered' | 'failed'; detail?: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**

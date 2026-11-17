@@ -9,6 +9,8 @@ export { McpManager, findMcpConfigPaths, findMcpConfigScopes, mcpScopeLabel, MCP
 export type { McpServerConfig, McpServerStatus, McpConfigError, McpServerScope } from './manager';
 export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './resource-update-notice';
 export type { McpResourceUpdateNotice, McpResourceNoticeBuffer, McpResourceEventSource } from './resource-update-notice';
+export { createMcpConnectionNoticeBuffer, formatMcpConnectionChange } from './connection-notice';
+export type { McpConnectionChange, McpConnectionState, McpConnectionNoticeBuffer, McpConnectionEventSource } from './connection-notice';
 export {
   generatePkce, generateState, parseWwwAuthenticate, wellKnown,
   discoverProtectedResource, discoverAuthServer, registerClient,

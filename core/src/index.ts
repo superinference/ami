@@ -45,6 +45,8 @@ export { MCP_SERVER_STATES, matchMcpAutoAllow, isValidCallbackPort, resolveMcpOA
 export type { McpServerState } from './mcp/manager';
 export { createMcpResourceNoticeBuffer, formatResourceUpdateNotice } from './mcp/resource-update-notice';
 export type { McpResourceUpdateNotice, McpResourceNoticeBuffer, McpResourceEventSource } from './mcp/resource-update-notice';
+export { createMcpConnectionNoticeBuffer, formatMcpConnectionChange } from './mcp/connection-notice';
+export type { McpConnectionChange, McpConnectionState, McpConnectionNoticeBuffer, McpConnectionEventSource } from './mcp/connection-notice';
 export { getMcpServerLogPath, logMcpError, logMcpDebug, sanitizeMcpLogSegment, mcpLogDateStamp } from './mcp/log-sink';
 export { classifyMcpToolForCollapse, normalizeCollapseToolName } from './mcp/classify-collapse';
 export type { McpCollapseClass } from './mcp/classify-collapse';
