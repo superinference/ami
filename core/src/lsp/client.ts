@@ -249,6 +249,18 @@ export class LSPClient implements DiagnosticSource {
    * useLspInitializationNotification polling. See {@link startHealthMonitoring}.
    */
   private healthMonitor?: LspHealthMonitor;
+  /**
+   * User-facing health-error listeners (e.g. the CLI's transient-flash sink). Every
+   * server failure routes through {@link recordError}, which emits to these so a
+   * spawn/init failure or a post-startup crash is SURFACED to the user instead of
+   * only being logged — the AMI analogue of Claude Code's
+   * `useLspInitializationNotification` toast. Deduped via {@link notifiedHealthErrors}
+   * so the same failure is shown at most once per session (never spammed).
+   */
+  private healthErrorListeners: Array<(error: LspHealthError) => void> = [];
+  /** Deduper for {@link emitHealthError}, keyed `source:message` (parity with
+   * Claude's `notifiedErrorsRef` set and the health monitor's own per-source dedup). */
+  private notifiedHealthErrors = new Set<string>();
 
   /** Baseline/diff tracker reading diagnostics from this client. */
   readonly diagnostics = new DiagnosticTracker(this);
@@ -640,13 +652,44 @@ export class LSPClient implements DiagnosticSource {
   }
 
   /**
+   * Register a user-facing health-error listener (e.g. the CLI's transient-flash
+   * sink). The listener fires once per distinct failure (deduped per
+   * `source:message`), isolating a throwing listener so one bad sink never breaks
+   * the rest. This is the subscription a frontend uses to turn a silent LSP
+   * spawn/init failure into a visible toast — parity with Claude Code's
+   * `useLspInitializationNotification` `addNotification`.
+   */
+  onHealthError(listener: (error: LspHealthError) => void): void {
+    this.healthErrorListeners.push(listener);
+  }
+
+  /**
+   * Emit a health error to every registered listener exactly once per distinct
+   * `source:message` (so a repeatedly-failing server is surfaced once, never
+   * spammed). Listener exceptions are isolated. The shared dedup set also covers
+   * the background health monitor (whose auto-start sink routes here), so a
+   * poll-detected error never double-fires an already-surfaced failure.
+   */
+  private emitHealthError(error: LspHealthError): void {
+    const key = `${error.source}:${error.message}`;
+    if (this.notifiedHealthErrors.has(key)) return;
+    this.notifiedHealthErrors.add(key);
+    for (const listener of this.healthErrorListeners) {
+      try { listener(error); } catch { /* isolate a bad sink */ }
+    }
+  }
+
+  /**
    * Record a server error: flip the retained status to `error`, keep the message
-   * as `lastError`, and surface it through the shared logger (which also captures
-   * it in the in-memory error ring that `/doctor` reads).
+   * as `lastError`, surface it through the shared logger (which also captures it in
+   * the in-memory error ring that `/doctor` reads), AND notify any user-facing
+   * health-error listeners so a spawn/init failure or crash becomes a visible
+   * toast instead of a silent log line (deduped — see {@link emitHealthError}).
    */
   private recordError(language: string, message: string, exitCode?: number | null): void {
     this.setStatus(language, { state: 'error', lastError: message, exitCode });
     logError('lsp', message);
+    this.emitHealthError({ source: language, message });
   }
 
   private initializeParams(workspaceFolder: string, config: LspServerConfig): unknown {
@@ -1393,6 +1436,11 @@ export class LSPClient implements DiagnosticSource {
     this.diagnosticsByUri.clear();
     this.diagnosticWaiters.clear();
     this.diagnosticFailures.clear();
+    // Reset the health-error deduper so a later session re-surfaces a recurring
+    // failure (parity with resetAllLSPDiagnosticState clearing cross-turn state).
+    // The listener subscriptions themselves persist — a frontend registers its
+    // flash sink once per process, not per session.
+    this.notifiedHealthErrors.clear();
     this.diagnostics.reset();
     // Drop the async registry's pending + cross-turn delivered state so a later
     // session starts clean (parity: resetAllLSPDiagnosticState on session reset).

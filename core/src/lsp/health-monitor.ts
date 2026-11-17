@@ -33,6 +33,32 @@ export interface LspHealthError {
 }
 
 /**
+ * The user-facing diagnostic command an LSP failure toast points the user at.
+ * AMI surfaces LSP health failures through the `/doctor` diagnostic surface
+ * (health errors route to the shared logger ring `/doctor` reads), so the
+ * affordance hint references it — the AMI analogue of Claude Code's
+ * `· /plugin for details` hint on its LSP-failure notification.
+ */
+export const LSP_HEALTH_HINT = '/doctor for details';
+
+/**
+ * Format an {@link LspHealthError} into the user-facing failure toast surfaced in
+ * the TUI. Mirrors Claude Code's `useLspInitializationNotification` notification
+ * (`<Text color="error">LSP for {displayName} failed</Text>` +
+ * `<Text dimColor> · /plugin for details</Text>`): a bare `plugin:` prefix is
+ * stripped from the source so a plugin-contributed server shows a clean name, and
+ * an affordance hint points the user at the diagnostic command. Returned as data
+ * (message + hint) so the CLI renders it through AMI's own flash chrome rather
+ * than any hard-coded styling — this is a pure string builder, no UI rendering.
+ */
+export function formatLspHealthError(error: LspHealthError): { message: string; hint: string } {
+  const displayName = error.source.startsWith('plugin:')
+    ? error.source.split(':')[1] ?? error.source
+    : error.source;
+  return { message: `LSP for ${displayName} failed`, hint: LSP_HEALTH_HINT };
+}
+
+/**
  * Classify one poll tick against the client's current initialization status and
  * per-server statuses, returning the errors observed right now and whether
  * polling should STOP. The branch structure mirrors Claude's `poll()` exactly:

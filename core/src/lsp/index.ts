@@ -7,7 +7,13 @@ export type {
   LspInitializationStatus,
   HandlerRegistrationResult,
 } from './client';
-export { LspHealthMonitor, collectLspHealthErrors, LSP_POLL_INTERVAL_MS } from './health-monitor';
+export {
+  LspHealthMonitor,
+  collectLspHealthErrors,
+  formatLspHealthError,
+  LSP_POLL_INTERVAL_MS,
+  LSP_HEALTH_HINT,
+} from './health-monitor';
 export type { LspHealthError, LspHealthMonitorOptions, HealthScheduler } from './health-monitor';
 export {
   DEFAULT_LSP_SERVERS,
