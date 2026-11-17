@@ -929,24 +929,64 @@ export function parseSessionIdentifier(arg: unknown): ParsedSessionIdentifier | 
   return null;
 }
 
+/** The four persisted message roles ({@link Message}). A loaded transcript entry
+ *  whose `role` is not one of these is not a turn the engine can replay, so it is
+ *  dropped by {@link sanitizeLoadedSession} rather than cast-trusted. */
+const VALID_MESSAGE_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'tool', 'system']);
+
 /**
- * Allowlist-sanitize a session parsed back from disk before it is handed to any
- * consumer. The on-disk JSON is UNTRUSTED (it may have been written by a different
- * build, hand-edited, or synced from another machine), so a security-sensitive
- * field is validated against its canonical allowlist rather than restored blindly:
+ * True when an UNTRUSTED on-disk value is a minimally well-formed {@link Message}
+ * record: a plain object carrying one of the {@link VALID_MESSAGE_ROLES}. Shape
+ * beyond `role` is intentionally NOT over-constrained — `content` may be a string,
+ * a {@link SessionBlobRef}, or a multimodal array, all already handled downstream —
+ * so the guard's job is to reject a tampered non-message blob, not to re-type every
+ * field (which would risk dropping legitimately-shaped turns written by a newer build).
+ */
+function isValidMessageRecord(value: unknown): value is Message {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof (value as { role?: unknown }).role === 'string' &&
+    VALID_MESSAGE_ROLES.has((value as { role: string }).role)
+  );
+}
+
+/**
+ * Validate + allowlist-sanitize a session parsed back from disk BEFORE it is handed
+ * to any consumer. The on-disk JSON is UNTRUSTED (it may have been written by a
+ * different build, hand-edited, or synced from another machine), so it is structurally
+ * validated — not cast-trusted — mirroring the safeParse-before-apply posture AMI
+ * already uses for other persisted configs (frito/provision `safeParse`) and Claude's
+ * zod-validated resume state (sessionRestore):
+ *  - the blob MUST be a plain object with a non-empty string `id`; a shapeless /
+ *    top-level-array / id-less payload is REJECTED (returns `null` → the caller
+ *    treats it as not-found) instead of being cast to `Session` and resumed;
+ *  - `messages` is coerced to an array and every entry that is not a well-formed
+ *    {@link isValidMessageRecord} is DROPPED, so a corrupt/tampered transcript can
+ *    never inject an arbitrary-shaped "turn" into the restored conversation;
  *  - `settings.permissionMode` must round-trip through {@link normalizePermissionMode}
  *    (the single {@link PERMISSION_MODES} acceptance boundary); an unknown mode is
  *    DROPPED so --resume can never reinstate a bogus or dangerous permission posture
  *    from a foreign/corrupt transcript.
- * Mutates and returns `parsed` (the just-parsed object is not shared). Parity:
- * Claude's resume-time PERMISSION_MODES allowlist nulling of deserialized state.
+ * Returns the validated {@link Session} (mutated in place — the just-parsed object is
+ * not shared) or `null` when the blob is not a usable session. FUNCTIONAL: a
+ * structurally-broken session that was previously cast-trusted (non-array `messages`,
+ * garbage message entries) is now sanitized/dropped rather than handed to the engine.
  */
-function sanitizeLoadedSession(parsed: Session): Session {
-  const mode = parsed?.settings?.permissionMode;
+function sanitizeLoadedSession(parsed: unknown): Session | null {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  // A session with no usable id cannot be resolved/rehydrated — reject outright.
+  if (typeof obj.id !== 'string' || obj.id.trim() === '') return null;
+  // Coerce messages to an array and drop any non-message entry.
+  obj.messages = (Array.isArray(obj.messages) ? obj.messages : []).filter(isValidMessageRecord);
+  const session = obj as unknown as Session;
+  const mode = session.settings?.permissionMode;
   if (typeof mode === 'string' && normalizePermissionMode(mode) === null) {
-    delete parsed.settings!.permissionMode;
+    delete session.settings!.permissionMode;
   }
-  return parsed;
+  return session;
 }
 
 /**
@@ -2095,8 +2135,12 @@ export class SessionManager {
       const size = fs.statSync(filePath).size;
       if (size === 0 || size > MAX_SESSION_READ_BYTES) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
-      const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
-      if (rehydrate && Array.isArray(parsed.messages)) {
+      // Structural validation before trust: a shapeless/tampered blob returns null
+      // (skipped as unreadable, like a parse failure). `messages` is guaranteed an
+      // array of well-formed records by sanitizeLoadedSession.
+      const parsed = sanitizeLoadedSession(JSON.parse(raw));
+      if (!parsed) return null;
+      if (rehydrate) {
         const safeId = path.basename(filePath).replace(/\.json$/, '');
         const blobDir = this.blobDirFor(safeId);
         parsed.messages = parsed.messages.map(m => this.rehydrateMessage(m, blobDir));
@@ -2116,8 +2160,10 @@ export class SessionManager {
       // Zero-byte-as-not-found + OOM boundary, identical to the sync reader.
       if (st.size === 0 || st.size > MAX_SESSION_READ_BYTES) return null;
       const raw = await fs.promises.readFile(filePath, 'utf-8');
-      const parsed = sanitizeLoadedSession(JSON.parse(raw) as Session);
-      if (rehydrate && Array.isArray(parsed.messages)) {
+      // Same structural validation as the sync reader (shapeless/tampered → null).
+      const parsed = sanitizeLoadedSession(JSON.parse(raw));
+      if (!parsed) return null;
+      if (rehydrate) {
         const safeId = path.basename(filePath).replace(/\.json$/, '');
         const blobDir = this.blobDirFor(safeId);
         parsed.messages = await Promise.all(
