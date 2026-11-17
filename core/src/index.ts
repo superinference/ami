@@ -237,8 +237,8 @@ export {
   stripTrailingSep,
   validatePathExpansionSafety,
 } from './utils/path';
-export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery } from './title-generator';
-export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun } from './title-generator';
+export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary } from './title-generator';
+export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun, ToolUseSummaryInput } from './title-generator';
 export { stripDisplayTags } from './utils/display-tags';
 export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
 export type { PythonPackageManager } from './utils/package-manager';

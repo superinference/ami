@@ -1713,6 +1713,22 @@ function tokenEfficientToolsEnabled(): boolean {
 }
 
 /**
+ * Opt-in: after each completed tool batch, generate an LLM-written, PAST-TENSE
+ * "what this batch accomplished" summary label (parity: Claude Code's
+ * toolUseSummaryGenerator, gated by `CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES`). Off by
+ * default — it costs one extra cheap-model call per tool turn, so an operator opts
+ * in explicitly. The AMI-native `SUPERINFERENCE_EMIT_TOOL_USE_SUMMARIES` is honored
+ * too. When on, the engine attaches the label to its `tool_summary` analytics event
+ * and reports the query's outcome as a `tool_use_summary` {@link AuxQueryResult}.
+ */
+export function toolUseSummaryLabelEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.SUPERINFERENCE_EMIT_TOOL_USE_SUMMARIES) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES)
+  );
+}
+
+/**
  * Fine-grained tool streaming (`eager_input_streaming`) opt-in. Without it the
  * Anthropic API buffers the ENTIRE tool-input JSON before emitting any
  * `input_json_delta`, so a tool with a large input (a big file write, a long

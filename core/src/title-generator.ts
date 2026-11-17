@@ -31,8 +31,11 @@ export const AUX_QUERY_TIMEOUT_MS = 30000;
 // bare `catch {}` and masked behind a fallback string.
 // ---------------------------------------------------------------------------
 
-/** Named source of a background query (parity: Claude's `querySource`/`queryName`). */
-export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary';
+/** Named source of a background query (parity: Claude's `querySource`/`queryName`).
+ *  `tool_use_summary` tags the LLM-written past-tense label describing what a batch
+ *  of completed tool calls accomplished (parity: Claude's
+ *  `querySource: 'tool_use_summary_generation'`, toolUseSummaryGenerator.ts). */
+export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary' | 'tool_use_summary';
 
 /** Why a background query yielded no usable model output. Distinguishes an OUTER
  *  failure (stream error / abort / timeout / exception) from a two-tier INNER
@@ -797,4 +800,155 @@ export async function generateBranchName(
   // failure (if any) or the two-tier `unparseable` inner failure is reported.
   reportAuxResult(onResult, 'branch_name', resolvedModel, messageId, failure, slug);
   return slug || fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-use summary label (LLM-written "what this batch accomplished") — parity
+// with Claude Code's toolUseSummaryGenerator.ts generateToolUseSummary().
+// ---------------------------------------------------------------------------
+
+/**
+ * Max chars of a single tool's input/output JSON fed into the summary prompt.
+ * Parity: Claude's `truncateJson(…, 300)` (toolUseSummaryGenerator.ts) — keeps the
+ * prompt small/cheap while preserving the distinctive head of each value.
+ */
+export const TOOL_USE_SUMMARY_IO_MAX = 300;
+
+/**
+ * Max rendered length of a generated tool-use summary label. Claude's label row
+ * "truncates around 30 characters" (the system prompt below); AMI caps the STORED
+ * label at a small budget so a verbose model reply can't bloat the analytics /
+ * progress-affordance surface. Applied via the shared {@link truncateTitle}
+ * (word-boundary + ellipsis affordance), not a bare slice.
+ */
+export const TOOL_USE_SUMMARY_LABEL_MAX = 40;
+
+/**
+ * Tool-use summary system prompt. VERBATIM parity with Claude Code's
+ * `TOOL_USE_SUMMARY_SYSTEM_PROMPT` (services/toolUseSummary/toolUseSummaryGenerator.ts):
+ * a short past-tense, git-commit-subject-style label (not a sentence), with the same
+ * few-shot examples so the model emits a clean single-line accomplishment label.
+ */
+export const TOOL_USE_SUMMARY_PROMPT =
+  `Write a short summary label describing what these tool calls accomplished. ` +
+  `It appears as a single-line row in a mobile app and truncates around 30 characters, ` +
+  `so think git-commit-subject, not sentence.\n\n` +
+  `Keep the verb in past tense and the most distinctive noun. ` +
+  `Drop articles, connectors, and long location context first.\n\n` +
+  `Examples:\n` +
+  `- Searched in auth/\n` +
+  `- Fixed NPE in UserService\n` +
+  `- Created signup endpoint\n` +
+  `- Read config.json\n` +
+  `- Ran failing tests`;
+
+/** One completed tool call fed into {@link generateToolUseSummaryLabel} (parity:
+ *  Claude's `ToolInfo` — name + input + output). */
+export interface ToolUseSummaryInput {
+  name: string;
+  input: unknown;
+  output: unknown;
+}
+
+/**
+ * Serialize a value to JSON truncated to `maxLength` chars for the summary prompt.
+ * Parity: Claude's `truncateJson` — a non-serializable value (circular ref, bigint,
+ * or a value that stringifies to `undefined` like a bare function/`undefined`)
+ * yields the literal `[unable to serialize]` rather than throwing. A truncated value
+ * gets a trailing `...` so the model sees it was clipped.
+ */
+export function truncateJsonForSummary(value: unknown, maxLength = TOOL_USE_SUMMARY_IO_MAX): string {
+  let str: string | undefined;
+  try {
+    str = JSON.stringify(value);
+  } catch {
+    return '[unable to serialize]';
+  }
+  if (str === undefined) return '[unable to serialize]';
+  if (str.length <= maxLength) return str;
+  return str.slice(0, maxLength - 3) + '...';
+}
+
+/**
+ * Build the USER prompt for a tool-use summary query (parity: Claude's
+ * generateToolUseSummary body): one `Tool/Input/Output` block per completed call,
+ * optionally prefixed by the user's intent lifted from the assistant's last message
+ * (first 200 chars). The fixed instruction lives in the SYSTEM message
+ * ({@link TOOL_USE_SUMMARY_PROMPT}) so untrusted tool output can't masquerade as an
+ * instruction (same prompt-injection isolation as {@link generateTitle}).
+ */
+export function buildToolUseSummaryPrompt(
+  tools: readonly ToolUseSummaryInput[],
+  lastAssistantText?: string,
+): string {
+  const toolSummaries = tools
+    .map(t => `Tool: ${t.name}\nInput: ${truncateJsonForSummary(t.input)}\nOutput: ${truncateJsonForSummary(t.output)}`)
+    .join('\n\n');
+  const contextPrefix = lastAssistantText && lastAssistantText.trim()
+    ? `User's intent (from assistant's last message): ${lastAssistantText.slice(0, 200)}\n\n`
+    : '';
+  return `${contextPrefix}Tools completed:\n\n${toolSummaries}\n\nLabel:`;
+}
+
+/**
+ * Generate a short, past-tense, git-commit-subject-style label describing what a
+ * BATCH of completed tool calls accomplished (e.g. "Fixed NPE in UserService",
+ * "Ran failing tests"). Parity with Claude Code's `generateToolUseSummary`
+ * (services/toolUseSummary/toolUseSummaryGenerator.ts): a cheap, deterministic
+ * (`temperature:0`) auxiliary model call fed each tool's name/input/output plus the
+ * user-intent prefix, returning a NON-CRITICAL label — the empty string on an empty
+ * batch, a stream failure, a timeout, or unusable output (Claude's `null`), so a
+ * caller can treat it as best-effort.
+ *
+ * Mirrors {@link generateTitle} / {@link generateBranchName}: same aux provider
+ * shape, the shared {@link runAuxQuery} stream/abort/timeout primitive, the same
+ * `<think>`-strip → sanitise → truncate pipeline ({@link sanitizeTitle} /
+ * {@link truncateTitle} / {@link isUsableTitle}), and the uniform
+ * {@link AuxQueryResult} introspection record tagged `source:'tool_use_summary'` —
+ * reusing those helpers rather than re-implementing them (no semantic duplication).
+ */
+export async function generateToolUseSummaryLabel(
+  tools: readonly ToolUseSummaryInput[],
+  provider: ProviderConfig,
+  model?: string,
+  // Test seam (behaviour-preserving): defaults to the real streamer.
+  _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
+  // External cancellation (same contract as generateTitle/generateBranchName).
+  signal?: AbortSignal,
+  // Introspection sink (same uniform AuxQueryResult, tagged source:'tool_use_summary').
+  onResult?: OnAuxQueryResult,
+  // User-intent context lifted from the assistant's last message text.
+  lastAssistantText?: string,
+): Promise<string> {
+  // Empty batch → nothing to summarise; skip the model round-trip entirely.
+  // Parity: Claude's `if (tools.length === 0) return null`. No query, no report.
+  if (tools.length === 0) return '';
+
+  const resolvedModel = model || provider.model;
+  const labelProvider: ProviderConfig = {
+    ...provider,
+    model: resolvedModel,
+    maxTokens: 50,
+    temperature: 0,
+  };
+  const messages: Message[] = [
+    { role: 'system', content: TOOL_USE_SUMMARY_PROMPT },
+    { role: 'user', content: buildToolUseSummaryPrompt(tools, lastAssistantText) },
+  ];
+
+  const { raw, failure, messageId } = await runAuxQuery(labelProvider, messages, _streamChatCompletion, signal);
+
+  const stripped = raw
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/g, '')
+    .trim();
+  // The label is free-form (no JSON contract, like Claude's), so flatten/scrub it
+  // (quotes + markdown + control bytes) and cap on a word boundary with an ellipsis.
+  const candidate = sanitizeTitle(
+    stripped.replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '').trim(),
+  );
+  const usable = isUsableTitle(candidate) ? truncateTitle(candidate, TOOL_USE_SUMMARY_LABEL_MAX) : '';
+
+  reportAuxResult(onResult, 'tool_use_summary', resolvedModel, messageId, failure, usable);
+  return usable;
 }
