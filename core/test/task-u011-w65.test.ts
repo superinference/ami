@@ -182,8 +182,8 @@ describe('allowed_tools per-spawn scope (U011)', () => {
   });
 
   it('an intersection that empties the set surfaces the empty-tool guard', async () => {
-    // explore mode has no bash; scoping it to bash leaves nothing.
-    const { isError, output } = await runTask({ prompt: 'go', mode: 'explore', allowed_tools: ['bash'] });
+    // explore mode is read-only (no file_edit); scoping it to file_edit leaves nothing.
+    const { isError, output } = await runTask({ prompt: 'go', mode: 'explore', allowed_tools: ['file_edit'] });
     assert.ok(isError);
     assert.match(output, /empty/i);
   });

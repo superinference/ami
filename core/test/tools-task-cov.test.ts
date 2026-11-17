@@ -65,12 +65,18 @@ describe('task.ts pure helpers', () => {
     assert.deepEqual(getSubagentDepthContext(2, 7), { _agentDepth: 3, _maxAgentDepth: 7 });
   });
 
-  it('filterToolsForAgent — explore keeps only read-only tools', () => {
+  it('filterToolsForAgent — explore keeps only read-only tools (incl. read-only bash)', () => {
     const all = createDefaultTools(process.cwd()).getAll();
-    const names = filterToolsForAgent(all, 'explore').map(t => t.name);
+    const explore = filterToolsForAgent(all, 'explore');
+    const names = explore.map(t => t.name);
     assert.ok(names.includes('file_read'));
     assert.ok(!names.includes('file_edit'));
-    assert.ok(!names.includes('bash'));
+    // Explore now RETAINS bash for read-only shell ops (git status/log/diff, ls,
+    // cat, head, tail, find, grep) — parity with Claude's Explore agent — but the
+    // bash it keeps is the read-only-guarded variant (isReadOnly pinned true).
+    assert.ok(names.includes('bash'));
+    const bash = explore.find(t => t.name === 'bash')!;
+    assert.equal(bash.isReadOnly, true);
   });
 
   it('filterToolsForAgent — general at shallow depth keeps task tool', () => {

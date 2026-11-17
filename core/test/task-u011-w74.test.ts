@@ -65,13 +65,17 @@ describe('isMcpTool — single MCP discriminator', () => {
 describe('filterToolsForAgent — MCP tools survive EVERY mode', () => {
   const withMcp = (extra: string[]) => fakeTools([...extra, 'mcp__srv__read', 'mcp__srv__write']);
 
-  it('explore keeps read-only tools AND mcp tools, drops edit/shell/task', () => {
-    const kept = filterToolsForAgent(withMcp(['file_read', 'bash', 'file_edit', 'task']), 'explore', 0, 5)
-      .map(t => t.name);
+  it('explore keeps read-only tools (incl. read-only bash) AND mcp tools, drops edit/task', () => {
+    const resolved = filterToolsForAgent(withMcp(['file_read', 'bash', 'file_edit', 'task']), 'explore', 0, 5);
+    const kept = resolved.map(t => t.name);
     assert.ok(kept.includes('file_read'), 'read-only kept');
     assert.ok(kept.includes('mcp__srv__read'), 'mcp read kept in explore');
     assert.ok(kept.includes('mcp__srv__write'), 'mcp write kept in explore (unconditional)');
-    for (const forbidden of ['bash', 'file_edit', 'task']) {
+    // Explore RETAINS bash (parity: Claude's read-only Explore agent) — but as the
+    // read-only-guarded variant (isReadOnly pinned true), never the raw writable tool.
+    assert.ok(kept.includes('bash'), 'read-only bash kept in explore');
+    assert.equal(resolved.find(t => t.name === 'bash')!.isReadOnly, true, 'explore bash is read-only-guarded');
+    for (const forbidden of ['file_edit', 'task']) {
       assert.ok(!kept.includes(forbidden), `${forbidden} dropped in explore`);
     }
   });
@@ -132,12 +136,13 @@ describe('AGENT_MODES source of truth', () => {
     assert.equal(AGENT_MODES.explore.stripsPlanMode, false);
   });
 
-  it('explore read-only set is exactly the read/search/web class (no edit/shell)', () => {
-    for (const t of ['file_read', 'grep', 'glob', 'list_dir', 'search_symbols', 'web_search', 'web_fetch']) {
-      assert.ok(EXPLORE_READ_ONLY_TOOLS.has(t), `${t} is read-only`);
+  it('explore read-only set is the read/search/web class PLUS read-only bash (no edit/task)', () => {
+    for (const t of ['file_read', 'grep', 'glob', 'list_dir', 'search_symbols', 'web_search', 'web_fetch', 'bash']) {
+      assert.ok(EXPLORE_READ_ONLY_TOOLS.has(t), `${t} is in the explore pool`);
     }
-    for (const t of ['bash', 'file_edit', 'task']) {
-      assert.ok(!EXPLORE_READ_ONLY_TOOLS.has(t), `${t} is NOT read-only`);
+    // bash is admitted but filterToolsForAgent swaps it for a read-only-guarded variant.
+    for (const t of ['file_edit', 'file_write', 'task']) {
+      assert.ok(!EXPLORE_READ_ONLY_TOOLS.has(t), `${t} is NOT in the explore pool`);
     }
   });
 
@@ -155,11 +160,13 @@ describe('AGENT_MODES source of truth', () => {
 describe('task.execute wires filterToolsForAgent (behavior preserved)', () => {
   beforeEach(() => resetAgentRegistry());
 
-  it('an explore spawn gets a read-only pool (no edit/shell), proving the filter is wired', async () => {
+  it('an explore spawn gets a read-only pool (read-only bash, no edit/task), proving the filter is wired', async () => {
     const { isError, toolNames } = await runTask({ prompt: 'look around', mode: 'explore' });
     assert.ok(!isError, 'explore spawn ok');
     assert.ok(toolNames.includes('file_read'), 'has read tool');
-    for (const forbidden of ['file_edit', 'bash', 'task']) {
+    // Explore retains bash for read-only shell ops (parity: Claude Explore agent).
+    assert.ok(toolNames.includes('bash'), 'explore keeps read-only bash');
+    for (const forbidden of ['file_edit', 'task']) {
       assert.ok(!toolNames.includes(forbidden), `explore must not get ${forbidden}`);
     }
   });

@@ -371,14 +371,18 @@ describe('taskTool — execute with engine factory', () => {
     // Verify the config was passed through
     assert.ok(capturedConfig);
     assert.equal(capturedConfig.permissionMode, 'auto-allow');
-    // In explore mode, tools should only be read-only ones
+    // In explore mode, tools should only be read-only ones (incl. read-only-guarded
+    // bash — parity with Claude's read-only Explore agent).
     const toolNames = capturedConfig.tools.map((t: any) => t.name);
     for (const name of toolNames) {
       assert.ok(
-        ['file_read', 'grep', 'glob', 'list_dir', 'search_symbols', 'web_search', 'web_fetch'].includes(name),
+        ['file_read', 'grep', 'glob', 'list_dir', 'search_symbols', 'web_search', 'web_fetch', 'bash'].includes(name),
         `unexpected tool in explore mode: ${name}`,
       );
     }
+    // The bash it keeps is the read-only-guarded variant.
+    const bash = capturedConfig.tools.find((t: any) => t.name === 'bash');
+    assert.ok(bash && bash.isReadOnly === true, 'explore bash must be read-only-guarded');
   });
 
   it('creates tools with general mode (excludes task tool)', async () => {

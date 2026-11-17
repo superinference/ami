@@ -7,6 +7,7 @@ import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema,
 import { createDefaultTools } from './index';
 import { isMcpTool } from './tool-categories';
 import { releaseFileCache } from '../file-cache';
+import { isReadOnlyBashCommand } from './bash-cache';
 import { coerceBool } from '../utils/coerce';
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
@@ -583,14 +584,24 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
 
 /**
  * The read-only tool class an `explore`-mode sub-agent is restricted to — search,
- * read, and web lookup, no edit/shell/orchestration (mirrors Claude Code's
- * read-only agent tool bucket). Extracted to a named const so {@link AGENT_MODES}
- * can describe the explore pool as data and {@link filterToolsForAgent} resolves it
- * from the single source rather than an inline literal.
+ * read, web lookup, AND read-only shell (`bash`), no edit/orchestration (mirrors
+ * Claude Code's read-only Explore agent tool bucket). Extracted to a named const
+ * so {@link AGENT_MODES} can describe the explore pool as data and
+ * {@link filterToolsForAgent} resolves it from the single source rather than an
+ * inline literal.
+ *
+ * `bash` is included so an explorer can run the read-only shell operations Claude's
+ * Explore agent keeps — `git status`/`git log`/`git diff`, `ls`, `cat`, `head`,
+ * `tail`, `find`, `grep` (exploreAgent.ts:L47-48) — which the explore system prompt
+ * already instructs it to use ("fall back to read-only `find`/`grep` via bash").
+ * Without it that instruction was a dead-letter: the tool it named was stripped.
+ * MUTATIONS stay impossible: {@link filterToolsForAgent} swaps the raw bash tool for
+ * a {@link wrapExploreReadOnlyBash} variant that structurally refuses any command
+ * that is not provably read-only.
  */
 export const EXPLORE_READ_ONLY_TOOLS = new Set([
   'file_read', 'grep', 'glob', 'list_dir', 'search_symbols',
-  'web_search', 'web_fetch',
+  'web_search', 'web_fetch', 'bash',
 ]);
 
 /** How an agent mode's tool pool is derived (data form of {@link filterToolsForAgent}). */
@@ -1113,6 +1124,48 @@ export function getSubagentDepthContext(currentDepth: number, maxDepth: number):
 }
 
 /**
+ * Error returned when an `explore`-mode sub-agent attempts a bash command that is
+ * not provably read-only. Exported so the test asserting the read-only refusal and
+ * any renderer can share the exact text (single source).
+ */
+export const EXPLORE_BASH_WRITE_REFUSAL =
+  'Error: explore mode is READ-ONLY — this bash command is not a provably read-only ' +
+  'operation and was refused. Only read-only shell commands are permitted here ' +
+  '(ls, cat, head, tail, find, grep, git status/log/diff); use file_read/grep/glob ' +
+  'for reads and spawn a non-explore agent (mode:"general") for anything that writes.';
+
+/**
+ * Wrap the `bash` tool for a read-only `explore`-mode sub-agent so it RETAINS bash
+ * for read-only operations (parity: Claude Code's Explore agent keeps Bash but
+ * prohibits mutations — exploreAgent.ts:L47-48) while structurally REFUSING any
+ * command that is not provably read-only. The verdict reuses the canonical
+ * {@link isReadOnlyBashCommand} classifier (bash-cache.ts — fail-closed: anything it
+ * cannot prove side-effect-free returns false) so there is ONE definition of
+ * "read-only bash" shared with the result-cache/permission layers, not a second
+ * parser. Returns a shallow clone (all schema/metadata preserved) with `isReadOnly`
+ * pinned true and the guarded `execute`; the original tool is never mutated.
+ */
+export function wrapExploreReadOnlyBash(tool: ToolDefinition): ToolDefinition {
+  return {
+    ...tool,
+    isReadOnly: true,
+    // This variant is unconditionally read-only — drop any per-input override that
+    // could otherwise re-classify a refused write as writable for the permission layer.
+    isReadOnlyForInput: undefined,
+    execute: async (input, context) => {
+      const command = typeof input.command === 'string' ? input.command : '';
+      // A blank/non-string command is not a real read-only operation (the canonical
+      // classifier treats an empty string as vacuously safe) — refuse it so the guard
+      // never forwards an empty call to the shell.
+      if (!command.trim() || !isReadOnlyBashCommand(command)) {
+        return { output: EXPLORE_BASH_WRITE_REFUSAL, isError: true };
+      }
+      return tool.execute(input, context);
+    },
+  };
+}
+
+/**
  * Filter the tool set for an agent based on mode and nesting depth.
  * Exported for testing; used internally by the task tool execute method.
  */
@@ -1131,7 +1184,7 @@ export function filterToolsForAgent(
   // `explore` and `coordinator` are positive allowlists; `general` is "all tools".
   const spec = AGENT_MODES[mode as keyof typeof AGENT_MODES] ?? AGENT_MODES.general;
 
-  return allTools.filter(t => {
+  const filtered = allTools.filter(t => {
     // MCP tools (`mcp__*`) are unconditionally available in EVERY agent mode
     // (parity: Claude's mcp__ bypass) — a read-only explore or a pure-delegation
     // coordinator can still reach connected MCP servers. Checked first so the
@@ -1147,6 +1200,16 @@ export function filterToolsForAgent(
     // (allow === undefined) keeps everything that survived the rules above.
     return spec.allow ? spec.allow.has(t.name) : true;
   });
+
+  // Explore is read-only: the `bash` it keeps (for git status/log/diff, ls, cat,
+  // head, tail, find, grep) must refuse every mutating command. Swap the raw bash
+  // tool for its read-only-guarded variant so the explorer can run read-only shell
+  // ops without ever being able to write (parity: Claude's Explore keeps Bash but
+  // prohibits mutations). Other modes keep the unguarded bash tool untouched.
+  if (mode === 'explore') {
+    return filtered.map(t => (t.name === 'bash' ? wrapExploreReadOnlyBash(t) : t));
+  }
+  return filtered;
 }
 
 /**

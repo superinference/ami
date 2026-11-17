@@ -455,8 +455,8 @@ describe('taskTool – default mode gives write tools (regression)', () => {
 
     assert.ok(!capturedTools.includes('file_edit'),
       'explore mode must NOT include file_edit');
-    assert.ok(!capturedTools.includes('bash'),
-      'explore mode must NOT include bash');
+    assert.ok(capturedTools.includes('bash'),
+      'explore mode retains read-only bash (parity: Claude Explore agent)');
     assert.ok(capturedTools.includes('file_read'),
       'explore mode must include file_read');
     assert.ok(capturedTools.includes('grep'),
