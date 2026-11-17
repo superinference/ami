@@ -90,9 +90,12 @@ export {
   raceWithTimeout, CLOSE_GRACE_MS,
   TOOL_SUMMARY_LINE_MAX, hashFilePath, hashFileContent, FILE_PATH_HASH_LEN, MAX_CONTENT_HASH_SIZE,
   SINK_NAMES, resolveKilledSinks, ProcessMetricsSampler, FailedBatchStore, FAILED_BATCH_FILE_PREFIX,
+  ANALYTICS_SOURCE_CRON, buildFileOperationEvent, classifyGitOperation, IncrementalContextTracker,
 } from './analytics';
 export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps,
-  SinkName, ProcessMetrics, ProcessMetricsDeps, LocalOnlyFieldMatcher } from './analytics';
+  SinkName, ProcessMetrics, ProcessMetricsDeps, LocalOnlyFieldMatcher,
+  FileOperationKind, FileOperationTool, FileOperationParams,
+  GitOperationName, GitOperationClassification, IncrementalContextDelta } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
 export type { PrivacyLevel, PrivacyPosture, SanitizeOpts, AnalyticsSafeMetadata } from './analytics';
 export type { FileState } from './file-cache';

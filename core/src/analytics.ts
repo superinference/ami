@@ -1310,6 +1310,226 @@ export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<st
   return { ...data, file_language: getLanguageForAnalytics(pathValue) };
 }
 
+// ---------------------------------------------------------------------------
+// Invocation-source vocabulary (Claude-Code workloadContext.ts parity): a fixed,
+// low-cardinality set of source tags so the usage view / analytics can segment a
+// turn by what triggered it. AMI already has interactive/detached + a per-turn
+// source field; the `cron` value lets a scheduler-fired turn be distinguished
+// from an interactive/detached one (Claude's WORKLOAD_CRON).
+// ---------------------------------------------------------------------------
+
+/** Invocation-source tag for a turn fired by the cron scheduler (Claude's WORKLOAD_CRON). */
+export const ANALYTICS_SOURCE_CRON = 'cron';
+
+// ---------------------------------------------------------------------------
+// Structured file-operation analytics event (Claude-Code fileOperationAnalytics.ts
+// parity): a typed read/write/edit record carrying an operation + tool enum, a
+// privacy-preserving truncated path hash, and (size-guarded) a full content hash,
+// so file activity becomes a queryable structured analytics record without the raw
+// path or content ever leaving the machine. Reuses the existing {@link hashFilePath}
+// / {@link hashFileContent} (+ {@link MAX_CONTENT_HASH_SIZE} guard) — no duplicate hashing.
+// ---------------------------------------------------------------------------
+
+/** The file operation being recorded. */
+export type FileOperationKind = 'read' | 'write' | 'edit';
+/** AMI canonical file-tool names (vs Claude's FileReadTool/FileWriteTool/FileEditTool). */
+export type FileOperationTool = 'file_read' | 'file_write' | 'file_edit';
+
+/** Inputs for a structured file-operation analytics event. */
+export interface FileOperationParams {
+  operation: FileOperationKind;
+  tool: FileOperationTool;
+  /** Raw path — hashed (never logged verbatim). */
+  filePath: string;
+  /** File content — hashed only when present AND within {@link MAX_CONTENT_HASH_SIZE}. */
+  content?: string;
+  /** Distinguishes a newly-created file from an updated one (write/edit only). */
+  type?: 'create' | 'update';
+}
+
+/**
+ * Build the privacy-preserving metadata for a `file_operation` analytics event:
+ * the operation + tool enums, a truncated SHA-256 `file_path_hash`, an optional
+ * full `content_hash` (only when content is present and not too large — the
+ * {@link hashFileContent} size guard returns undefined above {@link MAX_CONTENT_HASH_SIZE},
+ * preventing memory blow-ups on base64 blobs), and an optional create/update `type`.
+ * Mirrors Claude's logFileOperation metadata shape.
+ */
+export function buildFileOperationEvent(params: FileOperationParams): Record<string, unknown> {
+  const md: Record<string, unknown> = {
+    operation: params.operation,
+    tool: params.tool,
+    file_path_hash: hashFilePath(params.filePath),
+  };
+  if (params.content !== undefined) {
+    const contentHash = hashFileContent(params.content); // undefined when over the size guard
+    if (contentHash !== undefined) md.content_hash = contentHash;
+  }
+  if (params.type !== undefined) md.type = params.type;
+  return md;
+}
+
+// ---------------------------------------------------------------------------
+// Local git commit/PR operation classification (Claude-Code gitOperationTracking.ts
+// parity): detect `git commit` (+ --amend), `git push`, `gh pr <action>`,
+// `glab mr create`, and curl-based PR creation in a raw command string (succeeded
+// only, exitCode===0) so the usage view can count local commit/PR activity. Pure
+// text matching on the raw argv — identical for any shell.
+// ---------------------------------------------------------------------------
+
+/** The set of git/PR operations a single command can be classified as. */
+export type GitOperationName =
+  | 'commit' | 'commit_amend' | 'push'
+  | 'pr_create' | 'pr_edit' | 'pr_merge' | 'pr_comment' | 'pr_close' | 'pr_ready';
+
+/** Result of classifying one (successful) command for git/PR usage counters. */
+export interface GitOperationClassification {
+  /** All distinct operations matched (in a stable order). */
+  operations: GitOperationName[];
+  /** Amount to add to the local commit counter (0 or 1). */
+  commitDelta: number;
+  /** Amount to add to the local PR counter (one per pr-create source matched). */
+  prDelta: number;
+}
+
+/**
+ * Build a regex matching `git <subcmd>` while tolerating git's global options
+ * between `git` and the subcommand (e.g. `git -c commit.gpgsign=false commit`,
+ * `git -C path push`, `git --git-dir=path commit`). Mirrors Claude's gitCmdRe.
+ */
+function gitSubcmdRe(subcmd: string, suffix = ''): RegExp {
+  return new RegExp(`\\bgit(?:\\s+-[cC]\\s+\\S+|\\s+--\\S+=\\S+)*\\s+${subcmd}\\b${suffix}`);
+}
+
+const GIT_COMMIT_RE = gitSubcmdRe('commit');
+const GIT_PUSH_RE = gitSubcmdRe('push');
+const GH_PR_ACTIONS: readonly { re: RegExp; op: GitOperationName; isCreate: boolean }[] = [
+  { re: /\bgh\s+pr\s+create\b/, op: 'pr_create', isCreate: true },
+  { re: /\bgh\s+pr\s+edit\b/, op: 'pr_edit', isCreate: false },
+  { re: /\bgh\s+pr\s+merge\b/, op: 'pr_merge', isCreate: false },
+  { re: /\bgh\s+pr\s+comment\b/, op: 'pr_comment', isCreate: false },
+  { re: /\bgh\s+pr\s+close\b/, op: 'pr_close', isCreate: false },
+  { re: /\bgh\s+pr\s+ready\b/, op: 'pr_ready', isCreate: false },
+];
+/** curl with an explicit or implicit (`-d`) POST — a PR-create candidate. */
+const CURL_POST_RE = /\bcurl\b/;
+const CURL_EXPLICIT_POST_RE = /-X\s*POST\b|--request\s*=?\s*POST\b|\s-d\s/i;
+/** A PR-create REST endpoint, but NOT a sub-resource like /pulls/123/comments. */
+const PR_ENDPOINT_RE = /https?:\/\/[^\s'"]*\/(pulls|pull-requests|merge[-_]requests)(?!\/\d)/i;
+
+/**
+ * Classify a (successful) command string into local commit/PR operations + the
+ * counter deltas that feed the usage view. A non-zero `exitCode` yields an empty
+ * classification (only successful operations are counted). `git commit` counts a
+ * commit (and additionally emits `commit_amend` for `--amend`); `git push` emits
+ * `push`; each `gh pr <action>` / `glab mr create` / curl-POST-to-a-PR-endpoint
+ * emits the relevant op and (for creates) increments the PR counter. Mirrors
+ * Claude's trackGitOperations detection, including the curl PR-create branch.
+ */
+export function classifyGitOperation(command: string, exitCode: number): GitOperationClassification {
+  const empty: GitOperationClassification = { operations: [], commitDelta: 0, prDelta: 0 };
+  if (exitCode !== 0 || !command) return empty;
+  const operations: GitOperationName[] = [];
+  let commitDelta = 0;
+  let prDelta = 0;
+  if (GIT_COMMIT_RE.test(command)) {
+    operations.push('commit');
+    commitDelta = 1;
+    if (/--amend\b/.test(command)) operations.push('commit_amend');
+  }
+  if (GIT_PUSH_RE.test(command)) operations.push('push');
+  for (const { re, op, isCreate } of GH_PR_ACTIONS) {
+    if (re.test(command)) {
+      operations.push(op);
+      if (isCreate) prDelta++;
+    }
+  }
+  if (/\bglab\s+mr\s+create\b/.test(command)) {
+    operations.push('pr_create');
+    prDelta++;
+  }
+  if (CURL_POST_RE.test(command) && CURL_EXPLICIT_POST_RE.test(command) && PR_ENDPOINT_RE.test(command)) {
+    operations.push('pr_create');
+    prDelta++;
+  }
+  if (operations.length === 0) return empty;
+  return { operations, commitDelta, prDelta };
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent incremental context delta (Claude-Code betaSessionTracing.ts parity):
+// track the hash of the last-reported message per invocation source (main thread /
+// subagent / warmup have independent conversations) so a trace/record can carry only
+// the NEW user/tool-result messages added since the previous request, instead of
+// re-dumping the whole (huge) conversation each turn.
+// ---------------------------------------------------------------------------
+
+/** The new-message delta for one source since its previous report. */
+export interface IncrementalContextDelta<T> {
+  /** Only the NEW user messages added since the last report (assistant msgs filtered out). */
+  newMessages: T[];
+  /** `newMessages.length` — the `new_context_message_count` dimension. */
+  count: number;
+  /** Index in the full array at which the new slice began (0 when the prior hash was not found). */
+  startIndex: number;
+}
+
+/**
+ * Tracks, per invocation source (querySource), the hash of the last message
+ * reported so each call returns ONLY the user messages added since the previous
+ * one. Keyed per source because the main thread, subagents, and warmup each own an
+ * independent conversation. When the previously-reported hash is no longer present
+ * in the array (compaction/reset), it falls back to the whole array (startIndex 0).
+ * The remembered hash advances to the LAST message only when a non-empty delta is
+ * produced (matching Claude's lastReportedMessageHash update being gated on
+ * newMessages.length > 0). Mirrors Claude's betaSessionTracing new_context tracking.
+ */
+export class IncrementalContextTracker {
+  private readonly _last = new Map<string, string>();
+
+  /**
+   * Compute the new-user-message delta for `source` over `messages`. `hashOf`
+   * produces a stable per-message hash; `isUser` selects the messages that count as
+   * new context (user input / tool results — assistant output is excluded).
+   */
+  delta<T>(
+    source: string,
+    messages: readonly T[],
+    hashOf: (m: T) => string,
+    isUser: (m: T) => boolean,
+  ): IncrementalContextDelta<T> {
+    const lastHash = this._last.get(source);
+    let startIndex = 0;
+    if (lastHash !== undefined) {
+      for (let i = 0; i < messages.length; i++) {
+        if (hashOf(messages[i]) === lastHash) {
+          startIndex = i + 1; // start AFTER the last reported message
+          break;
+        }
+      }
+      // lastHash not found → startIndex stays 0 (report everything).
+    }
+    const newMessages = messages.slice(startIndex).filter(isUser);
+    if (newMessages.length > 0) {
+      // Advance the remembered hash to the final message of the WHOLE array so the
+      // next delta starts after everything seen this turn (incl. assistant msgs).
+      this._last.set(source, hashOf(messages[messages.length - 1]));
+    }
+    return { newMessages, count: newMessages.length, startIndex };
+  }
+
+  /** Forget the last-reported hash for one source (or all sources when omitted). */
+  reset(source?: string): void {
+    if (source === undefined) this._last.clear();
+    else this._last.delete(source);
+  }
+
+  /** Number of sources currently being tracked (introspection/testability). */
+  get trackedSourceCount(): number {
+    return this._last.size;
+  }
+}
+
 export interface AnalyticsTrackerOpts {
   otlpEndpoint?: string;
   otlpFetch?: typeof fetch;
@@ -1569,6 +1789,14 @@ export class AnalyticsTracker {
   private logFile: string | null;
   private dirInitialized = false;
   private _sessionId: string | undefined;
+  /** Per-prompt correlation id stamped onto every EVENT (not resource/metrics — Claude's prompt.id). */
+  private _promptId: string | undefined;
+  /** Local commit counter feeding the usage view (Claude's getCommitCounter). */
+  private _commitCount = 0;
+  /** Local PR counter feeding the usage view (Claude's getPrCounter). */
+  private _prCount = 0;
+  /** Per-source incremental-context tracker, lazily created on first use. */
+  private _incrementalContext: IncrementalContextTracker | null = null;
   private _allowedSources: Set<string> | null = null;
   private _sourceStack: string[] = [];
   private _droppedEvents = 0;
@@ -1822,6 +2050,74 @@ export class AnalyticsTracker {
     this._sessionId = sessionId;
   }
 
+  /**
+   * Set (or clear, with undefined) the per-prompt correlation id stamped onto every
+   * subsequent event's data as `prompt.id` — so a turn's events can be grouped to the
+   * specific prompt that produced them. Event-level only (never a resource/metric
+   * dimension). Mirrors Claude's per-turn getPromptId(). */
+  setPromptId(promptId: string | undefined): void {
+    this._promptId = promptId;
+  }
+
+  /** The current per-prompt correlation id (undefined when none set). */
+  getPromptId(): string | undefined {
+    return this._promptId;
+  }
+
+  /**
+   * Record a structured `file_operation` analytics event (read/write/edit) with a
+   * privacy-preserving path hash and size-guarded content hash. Delegates to
+   * {@link buildFileOperationEvent} (reuses the existing hashing helpers) and routes
+   * through the normal {@link log} pipeline so the event is retained/exported like any
+   * other. Mirrors Claude's logFileOperation. */
+  logFileOperation(params: FileOperationParams): void {
+    this.log('file_operation', buildFileOperationEvent(params));
+  }
+
+  /**
+   * Classify a finished command for local git/PR usage ({@link classifyGitOperation}),
+   * increment the commit/PR counters, and emit one `git_operation` event per matched
+   * operation. A non-zero exit or a non-git/PR command is a no-op. The counters feed
+   * the usage view (Claude's getCommitCounter/getPrCounter parity). */
+  trackGitOperation(command: string, exitCode: number): void {
+    const c = classifyGitOperation(command, exitCode);
+    if (c.operations.length === 0) return;
+    this._commitCount += c.commitDelta;
+    this._prCount += c.prDelta;
+    for (const operation of c.operations) this.log('git_operation', { operation });
+  }
+
+  /** Local successful-commit count this session (usage view). */
+  getCommitOperationCount(): number {
+    return this._commitCount;
+  }
+
+  /** Local PR-create count this session (usage view). */
+  getPrOperationCount(): number {
+    return this._prCount;
+  }
+
+  /**
+   * Compute the per-source incremental-context delta (only the NEW user messages
+   * since this source's previous call) via a lazily-created
+   * {@link IncrementalContextTracker}, AND emit a privacy-safe `context_delta` event
+   * carrying the SOURCE and `new_context_message_count` (never the raw message bodies
+   * — those stay local). Returns the delta so a caller can additionally trace content
+   * under an explicit opt-in. Mirrors Claude's betaSessionTracing new_context tracking. */
+  recordIncrementalContext<T>(
+    source: string,
+    messages: readonly T[],
+    hashOf: (m: T) => string,
+    isUser: (m: T) => boolean,
+  ): IncrementalContextDelta<T> {
+    if (!this._incrementalContext) this._incrementalContext = new IncrementalContextTracker();
+    const delta = this._incrementalContext.delta(source, messages, hashOf, isUser);
+    if (delta.count > 0) {
+      this.log('context_delta', { source, new_context_message_count: delta.count });
+    }
+    return delta;
+  }
+
   setAllowedSources(sources: string[] | null): void {
     this._allowedSources = sources ? new Set(sources) : null;
   }
@@ -1886,6 +2182,15 @@ export class AnalyticsTracker {
     if (this._processMetrics) {
       const pm = this._processMetrics.sample();
       if (pm) recordData = { ...recordData, process: pm };
+    }
+
+    // Per-prompt correlation id: stamped onto every EVENT so a session's events can
+    // be grouped to the specific prompt/turn that produced them. Deliberately an
+    // event-level dimension (never a resource/metric one, where it would be unbounded
+    // cardinality) — mirrors Claude's getPromptId() `prompt.id` attribute. An explicit
+    // `prompt.id` already in the data wins.
+    if (this._promptId !== undefined && !('prompt.id' in recordData)) {
+      recordData = { ...recordData, 'prompt.id': this._promptId };
     }
 
     // In-memory events keep the RAW data for faithful local introspection; the
@@ -2061,6 +2366,11 @@ export class AnalyticsTracker {
     // A reset begins a fresh logical session, so forget deduped content hashes —
     // content seen before reset should log in full again afterwards.
     this._dedup?.reset();
+    // Fresh session: forget per-source incremental-context hashes so the next delta
+    // reports from the start, and zero the local usage counters.
+    this._incrementalContext?.reset();
+    this._commitCount = 0;
+    this._prCount = 0;
   }
 
   /** The resolved beta detailed-content-tracing config (flag + dedicated endpoint). */
