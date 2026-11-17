@@ -3438,6 +3438,32 @@ export function resolvePromptCacheStrategy(env: NodeJS.ProcessEnv = process.env)
   return raw === 'system_prompt' || raw === 'none' ? raw : 'tool_based';
 }
 
+/**
+ * Cache-preserving tool denial for a forked / derived request.
+ *
+ * Parity: Claude Code's AgentSummary fork (`services/AgentSummary/agentSummary.ts`)
+ * shares the parent agent's prompt cache by sending the IDENTICAL cache-key params —
+ * system prompt, messages prefix, model, thinking config AND the full `tools` array —
+ * then forbids every call via a `canUseTool` callback that returns `behavior:'deny'`.
+ * It deliberately does NOT send `tools:[]`, because dropping the tools block changes
+ * the request's cached prefix and busts the shared prompt cache (a cache miss on the
+ * forked side-question/summary).
+ *
+ * AMI's provider stream has no per-call `canUseTool` callback layer, so the exact
+ * provider-level equivalent is `tool_choice: 'none'`: the identical tools array is
+ * still advertised to the model (so the cached tools prefix is byte-matched) but the
+ * model is forbidden from invoking any of them — the fork can only narrate, never act.
+ * Unlike `tools:[]`, `tool_choice` is a top-level request parameter that is NOT part
+ * of the cached content blocks, so forcing it to `'none'` preserves the cache key.
+ *
+ * Returns a shallow copy with `toolChoice` forced to `'none'`; the caller must send
+ * the parent request's tools alongside it (an empty tools array makes the choice a
+ * no-op, since {@link resolveModel} omits `toolChoice` when no tools are advertised).
+ */
+export function withCacheSafeToolDeny(config: ProviderConfig): ProviderConfig {
+  return { ...config, toolChoice: 'none' };
+}
+
 // ---------------------------------------------------------------------------
 // repairToolCall — fix hallucinated tool names at the stream level
 // ---------------------------------------------------------------------------
