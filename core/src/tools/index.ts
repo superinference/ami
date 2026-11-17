@@ -28,6 +28,7 @@ import { skillTool } from './skill';
 import { cronCreateTool } from './cron-create';
 import { cronDeleteTool } from './cron-delete';
 import { cronListTool } from './cron-list';
+import { cronGetTool } from './cron-get';
 import { scheduleWakeupTool } from './schedule-wakeup';
 import { enterWorktreeTool } from './enter-worktree';
 import { exitWorktreeTool } from './exit-worktree';
@@ -167,6 +168,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     cronCreateTool,
     cronDeleteTool,
     cronListTool,
+    cronGetTool,
     scheduleWakeupTool,
     enterWorktreeTool,
     exitWorktreeTool,
@@ -254,6 +256,7 @@ export { skillTool } from './skill';
 export { cronCreateTool, getCronScheduler, resetCronScheduler, MAX_CRON_PROMPT_LEN, isSelfSchedulingPrompt, findDuplicateCronJob } from './cron-create';
 export { cronDeleteTool } from './cron-delete';
 export { cronListTool } from './cron-list';
+export { cronGetTool } from './cron-get';
 export { scheduleWakeupTool } from './schedule-wakeup';
 export { enterWorktreeTool } from './enter-worktree';
 export { exitWorktreeTool } from './exit-worktree';

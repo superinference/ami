@@ -308,6 +308,29 @@ export class CronScheduler {
     this.busyCheck = fn;
   }
 
+  /** Register a drain callback invoked by {@link cancelPending} when a job is
+   *  explicitly cancelled (cron_delete). A tick fires a due job by handing its
+   *  run to `onDue` (the engine enqueues it as a system message); if the user
+   *  then deletes that job, clearing the future timer alone is not enough — the
+   *  already-enqueued (but not yet consumed) run would still execute the stale
+   *  prompt. The engine registers a drain that removes those pending runs for the
+   *  id and returns how many were dropped, so a cancel is a true abort, not just
+   *  "stop future scheduling". Mirrors Claude's killShellTasks drain
+   *  (dequeueAllMatching) alongside clearing the timer. */
+  private cancelDrain: ((id: string) => number) | null = null;
+  setCancelDrain(fn: ((id: string) => number) | null): void {
+    this.cancelDrain = fn;
+  }
+
+  /** Drop any already-enqueued/in-flight run for `id` via the registered drain
+   *  and return how many were cancelled (0 when nothing was pending or no drain
+   *  is registered). Called by cron_delete after removing the job. */
+  cancelPending(id: string): number {
+    if (!this.cancelDrain) return 0;
+    const n = this.cancelDrain(id);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
   /** Enable/disable assistant-mode bypass of the busy/idle gate at runtime. */
   setAssistantMode(on: boolean): void {
     this.assistantMode = on;

@@ -76,6 +76,12 @@ export const cronDeleteTool: ToolDefinition = {
         type: 'boolean',
         description: 'True on an ignoreMissing no-op where the single target id was already gone.',
       },
+      inFlightCancelled: {
+        type: 'number',
+        description:
+          'How many already-enqueued/in-flight scheduled runs were also aborted by this cancel ' +
+          '(a run a tick had already dispatched before the delete). 0 when the delete only stopped future scheduling.',
+      },
     },
     required: ['deleted'],
   },
@@ -158,14 +164,27 @@ export const cronDeleteTool: ToolDefinition = {
     const deleted: string[] = [];
     const missing: string[] = [];
     const unauthorized: Array<{ id: string; message: string }> = [];
+    // Count of already-enqueued/in-flight runs aborted alongside the deletes, so a
+    // cancel is a true abort (drain pending work) not just "stop future scheduling"
+    // — mirrors Claude's killShellTasks dequeueAllMatching alongside clearing timers.
+    let inFlightCancelled = 0;
     for (const id of ids) {
       try {
-        if (sched.delete(id, context.agentId)) deleted.push(id);
-        else missing.push(id);
+        if (sched.delete(id, context.agentId)) {
+          deleted.push(id);
+          // Only a job that actually existed could have a pending/in-flight run.
+          inFlightCancelled += sched.cancelPending(id);
+        } else {
+          missing.push(id);
+        }
       } catch (err) {
         unauthorized.push({ id, message: err instanceof Error ? err.message : String(err) });
       }
     }
+    // Suffix appended to any success message when a dispatched run was also aborted.
+    const inFlightNote = inFlightCancelled > 0
+      ? ` Also aborted ${inFlightCancelled} already-dispatched run(s).`
+      : '';
 
     // Legacy single-id path: preserve the exact output + errorCodes, plus the new
     // ignoreMissing idempotency behavior.
@@ -185,7 +204,10 @@ export const cronDeleteTool: ToolDefinition = {
       }
       // Verb aligned with the tool's "Cancel" description (parity: Claude's
       // `Cancelled job <id>.`).
-      return { output: `Cancelled job ${id}.`, metadata: { deleted: 1, deletedIds: [id] } };
+      return {
+        output: `Cancelled job ${id}.${inFlightNote}`,
+        metadata: { deleted: 1, deletedIds: [id], inFlightCancelled },
+      };
     }
 
     // Bulk / all path: aggregate a summary. Authorization failures are always a
@@ -214,6 +236,9 @@ export const cronDeleteTool: ToolDefinition = {
         metadata: { errorCode: unauthorized.length > 0 ? 2 : 1, deleted: deleted.length, deletedIds: deleted },
       };
     }
-    return { output: body, metadata: { deleted: deleted.length, deletedIds: deleted } };
+    return {
+      output: `${body}${inFlightNote}`,
+      metadata: { deleted: deleted.length, deletedIds: deleted, inFlightCancelled },
+    };
   },
 };
