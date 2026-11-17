@@ -169,6 +169,18 @@ export class LSPClient implements DiagnosticSource {
    */
   private handshakes: Map<string, Promise<boolean>> = new Map();
   /**
+   * Monotonic initialization generation, bumped by {@link shutdown}. A `startServer`
+   * handshake captures the generation at its start and re-checks it after every
+   * `await`; if `shutdown()` (or any teardown) bumped it while the handshake was in
+   * flight, the now-STALE handshake is abandoned instead of resolving into — and
+   * clobbering — the newer client state (e.g. re-recording a server as `error`
+   * after shutdown already cleared it). This is the AMI analogue of Claude Code's
+   * `initializationGeneration` guard (services/lsp/manager.ts): the stale promise's
+   * resolution becomes a no-op. Without it, a shutdown mid-handshake leaves a
+   * phantom `failed` server in `getInitializationStatus()`/`getServerStatus()`.
+   */
+  private generation = 0;
+  /**
    * Retained per-language lifecycle status. Unlike the live `servers` map (which a
    * crash removes), this survives a crash so the failure state + reason stay
    * attributable — the AMI analogue of Claude's per-`LSPServerInstance` state.
@@ -303,6 +315,10 @@ export class LSPClient implements DiagnosticSource {
     const config = this.configFor(language);
     if (!config) return false;
 
+    // Capture the init generation so every `await` below can detect a `shutdown()`
+    // that raced this handshake and abandon the now-stale start (see `generation`).
+    const generation = this.generation;
+
     // Only stdio transport is implemented. `socket` is a valid config value
     // (Claude-Code schema parity) but we refuse to spawn rather than silently
     // treat it as stdio, so a misconfiguration fails loudly and visibly.
@@ -420,6 +436,13 @@ export class LSPClient implements DiagnosticSource {
       // Waiting here deterministically catches spawn failure as a start error.
       await this.awaitSpawn(proc);
 
+      // A `shutdown()` may have raced the spawn — if so this handshake is stale;
+      // abandon it without recording a spurious error over the cleared state.
+      if (this.isStale(generation)) {
+        this.abandonStale(language);
+        return false;
+      }
+
       // The child may have died the instant after it spawned (a server that
       // crashes on startup). Writing the initialize frame into a dead stream would
       // just block until the request timeout, so bail out fast instead. `onGone`
@@ -443,6 +466,12 @@ export class LSPClient implements DiagnosticSource {
         this.initializeParams(workspaceFolder, config),
         config.startupTimeout ?? DEFAULT_REQUEST_TIMEOUT_MS,
       );
+      // A `shutdown()` while the initialize was in flight makes this result stale;
+      // discard it so it cannot flip a torn-down server back to `running`.
+      if (this.isStale(generation)) {
+        this.abandonStale(language);
+        return false;
+      }
       conn.capabilities = (result as { capabilities?: unknown })?.capabilities;
       this.rawNotify(conn, 'initialized', {});
       conn.initialized = true;
@@ -458,6 +487,14 @@ export class LSPClient implements DiagnosticSource {
       log('lsp', `LSP server "${language}" initialized`);
       return true;
     } catch (e) {
+      // A `shutdown()` that killed the server mid-handshake surfaces here as a
+      // rejected initialize. That is an EXPECTED consequence of teardown, not a
+      // server failure — abandon the stale handshake silently rather than writing
+      // a phantom `error` status over state shutdown already cleared.
+      if (this.isStale(generation)) {
+        this.abandonStale(language);
+        return false;
+      }
       // Don't clobber a more specific error already recorded by the exit handler
       // (e.g. "crashed with exit code N") — the generic init-failure wrapper here
       // fires second when a crash rejected the in-flight initialize request.
@@ -469,6 +506,29 @@ export class LSPClient implements DiagnosticSource {
     } finally {
       this.pendingInits = Math.max(0, this.pendingInits - 1);
     }
+  }
+
+  /**
+   * True when the init generation captured at the start of a handshake no longer
+   * matches the current one — i.e. a `shutdown()` raced the handshake and its
+   * result/rejection must be treated as a no-op (see {@link generation}).
+   */
+  private isStale(generation: number): boolean {
+    return this.generation !== generation;
+  }
+
+  /**
+   * Tear down the residue of a stale handshake (one invalidated by a concurrent
+   * `shutdown()`): drop the half-open connection AND any per-language bookkeeping
+   * the aborted start had begun to write (status/crash/diagnostic-failure), so the
+   * cleared client state is not left with a phantom entry for a server that was
+   * shut down. Idempotent and safe when the entries are already gone.
+   */
+  private abandonStale(language: string): void {
+    this.clearServer(language);
+    this.serverStatus.delete(language);
+    this.crashCounts.delete(language);
+    this.diagnosticFailures.delete(language);
   }
 
   /** Merge a partial status update into the retained per-language status record. */
@@ -1007,6 +1067,22 @@ export class LSPClient implements DiagnosticSource {
     return out;
   }
 
+  /**
+   * Number of files with an in-flight `getDiagnostics` wait — i.e. documents the
+   * client has synced and is still awaiting a `publishDiagnostics` for. The AMI
+   * analogue of Claude Code's `getPendingLSPDiagnosticCount()` monitoring accessor
+   * (LSPDiagnosticRegistry): a non-zero count means diagnostics are still settling,
+   * which a `/doctor`-style introspection surface can report instead of guessing
+   * whether "no diagnostics" means clean or not-yet-arrived.
+   */
+  getPendingDiagnosticCount(): number {
+    let count = 0;
+    for (const waiters of this.diagnosticWaiters.values()) {
+      if (waiters.length > 0) count++;
+    }
+    return count;
+  }
+
   private waitForDiagnostics(key: string, timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve) => {
       const list = this.diagnosticWaiters.get(key) ?? [];
@@ -1015,6 +1091,10 @@ export class LSPClient implements DiagnosticSource {
         if (current) {
           const idx = current.indexOf(onPublish);
           if (idx !== -1) current.splice(idx, 1);
+          // Drop the key once its last waiter times out so the pending count (and
+          // the map) reflects only files genuinely still awaiting diagnostics — a
+          // settled timeout is no longer "pending".
+          if (current.length === 0) this.diagnosticWaiters.delete(key);
         }
         resolve();
       }, timeoutMs);
@@ -1054,6 +1134,10 @@ export class LSPClient implements DiagnosticSource {
   }
 
   shutdown(): void {
+    // Bump the init generation FIRST so any handshake still in flight observes the
+    // change on its next `await` and abandons itself (via `abandonStale`) instead
+    // of resolving into the state we are about to clear.
+    this.generation++;
     // Snapshot the open documents before we clear them — gracefulStop needs them
     // to emit `textDocument/didClose` for each server it is tearing down.
     const openUris = [...this.openedDocuments];
@@ -1100,7 +1184,15 @@ export class LSPClient implements DiagnosticSource {
     const detach = (): void => {
       this.servers.delete(language);
       this.setStatus(language, { state: 'stopped' });
-      for (const [, entry] of conn.pending) clearTimeout(entry.timer);
+      // Reject (not just cancel the timer of) every still-pending request so an
+      // in-flight handshake/request racing this stop settles IMMEDIATELY instead
+      // of hanging until its (unref'd) timeout — which may never fire if the loop
+      // is otherwise idle after teardown. The generation guard then treats the
+      // rejection as a stale no-op.
+      for (const [, entry] of conn.pending) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`LSP server for "${language}" stopped`));
+      }
       conn.pending.clear();
       // Drop the crash listeners so the server's OWN graceful exit (prompted by the
       // `exit` notification) is not mis-counted as a crash.

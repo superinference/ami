@@ -99,6 +99,24 @@ describe('lspDiagnosticsTool', () => {
     assert.ok(res.output.includes('No diagnostics reported'));
   });
 
+  it('surfaces the still-indexing pending count when a connected server has not published yet', async () => {
+    const fake = fakeClient({ getAllDiagnostics: () => [], isConnected: () => true });
+    (fake as LspDiagClient & { getPendingDiagnosticCount: () => number }).getPendingDiagnosticCount = () => 2;
+    mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
+    const res = await lspDiagnosticsTool.execute!({}, ctx);
+    assert.ok(res.output.includes('No diagnostics reported'));
+    assert.ok(res.output.includes('2 file(s) still awaiting diagnostics'));
+  });
+
+  it('omits the pending note when nothing is awaiting diagnostics', async () => {
+    const fake = fakeClient({ getAllDiagnostics: () => [], isConnected: () => true });
+    (fake as LspDiagClient & { getPendingDiagnosticCount: () => number }).getPendingDiagnosticCount = () => 0;
+    mock.method(_lspDiagHooks, 'getLSPClient', () => fake);
+    const res = await lspDiagnosticsTool.execute!({}, ctx);
+    assert.ok(res.output.includes('No diagnostics reported'));
+    assert.ok(!res.output.includes('awaiting diagnostics'));
+  });
+
   it('reports a disconnected affordance when no server is connected', async () => {
     const fake = fakeClient({ getAllDiagnostics: () => [], isConnected: () => false });
     mock.method(_lspDiagHooks, 'getLSPClient', () => fake);

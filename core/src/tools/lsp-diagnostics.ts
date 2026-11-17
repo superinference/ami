@@ -24,6 +24,13 @@ export interface LspDiagClient {
   getDiagnostics(filePath: string): Promise<DiagnosticFile | null>;
   getAllDiagnostics(): DiagnosticFile[];
   isConnected(): boolean;
+  /**
+   * Files still awaiting a `publishDiagnostics` from their language server, so the
+   * empty-workspace branch can distinguish "clean" from "not yet indexed" instead
+   * of guessing. Optional on this minimal view — the real client always provides it
+   * (see `LSPClient.getPendingDiagnosticCount`); a bare test stub may omit it.
+   */
+  getPendingDiagnosticCount?(): number;
   diagnostics: {
     hasBaseline(filePath: string): boolean;
     getNewDiagnostics(filePaths?: string[]): Promise<DiagnosticFile[]>;
@@ -382,10 +389,18 @@ export const lspDiagnosticsTool: ToolDefinition = {
         if (!client.isConnected()) {
           return { output: 'No LSP server is currently connected; diagnostics appear once a server indexes an opened file.' };
         }
+        // PARITY (additive): a connected server may still be indexing — surface how
+        // many files are awaiting a publishDiagnostics so "no diagnostics" is not
+        // mistaken for "clean" when results are merely not-yet-arrived (Claude's
+        // getPendingLSPDiagnosticCount monitoring signal).
+        const pending = client.getPendingDiagnosticCount?.() ?? 0;
+        const pendingNote = pending > 0
+          ? ` (${pending} file(s) still awaiting diagnostics from the language server)`
+          : '';
         return {
-          output: minSeverity
+          output: (minSeverity
             ? `No ${minSeverity}-level (or higher) diagnostics reported in the workspace.`
-            : 'No diagnostics reported in the workspace.',
+            : 'No diagnostics reported in the workspace.') + pendingNote,
         };
       }
       const total = totalDiagnostics(all);
