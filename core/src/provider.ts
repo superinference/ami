@@ -63,6 +63,7 @@ import type {
   ToolInputSchema,
   StreamChunk,
   ThinkingConfig,
+  RetryErrorKind,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -4310,7 +4311,7 @@ export async function* streamChatCompletionWithRetry(
   messages: Message[],
   tools: ToolDefinition[],
   abortSignal: AbortSignal,
-  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; heartbeatIntervalMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number | null) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number; generateTextImpl?: typeof generateText },
+  options?: { thinking?: ThinkingConfig; repairToolCall?: ToolCallRepairFunction<ToolSet>; requestTimeoutMs?: number; idleTimeoutMs?: number; maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; maxTotalWaitMs?: number; heartbeatIntervalMs?: number; querySource?: QuerySource; onRetry?: (attempt: number, maxRetries: number, delayMs: number, statusCode: number | null, errorKind: RetryErrorKind) => void; streamImpl?: typeof streamChatCompletion; nowFn?: () => number; generateTextImpl?: typeof generateText },
 ): AsyncGenerator<StreamChunk> {
   // Test seam: the underlying single-attempt stream. Defaults to the real
   // streamChatCompletion so production behavior is unchanged; tests inject a
@@ -4384,11 +4385,11 @@ export async function* streamChatCompletionWithRetry(
   // `status` is `null` for a connection-level failure that produced NO HTTP response
   // (timeout / network drop), distinct from `0`/a real HTTP status (parity: Claude's
   // SDKAPIRetryMessage `error_status: number | null`).
-  const waitBeforeRetry = (delayMs: number, attempt: number, status: number | null): Promise<void> =>
+  const waitBeforeRetry = (delayMs: number, attempt: number, status: number | null, kind: RetryErrorKind): Promise<void> =>
     sleepWithRetryHeartbeat(
       delayMs,
       abortSignal,
-      options?.onRetry ? (remainingMs) => options.onRetry!(attempt + 1, maxRetries, remainingMs, status) : undefined,
+      options?.onRetry ? (remainingMs) => options.onRetry!(attempt + 1, maxRetries, remainingMs, status, kind) : undefined,
       heartbeatInterval,
     );
 
@@ -4408,6 +4409,9 @@ export async function* streamChatCompletionWithRetry(
     let timedOut = false;
     let networkRetry = false;
     let staleConnection = false;
+    // Set when the inactivity watchdog (not the hard request-timeout) aborted the
+    // stream, so a retry can report `stream_idle` distinctly from `connection_timeout`.
+    let idleFired = false;
 
     // Inactivity watchdog: kill a stream that goes quiet (connection open, no
     // bytes) far sooner than the total request timeout. Reset on every chunk.
@@ -4434,7 +4438,7 @@ export async function* streamChatCompletionWithRetry(
       idleWarnTimer = setTimeout(() => {
         log('api', `Streaming idle warning: no chunks received for ${Math.round(idleMs / 2 / 1000)}s`, undefined, 'warn');
       }, idleMs / 2);
-      idleTimer = setTimeout(() => requestAbort.abort(), idleMs);
+      idleTimer = setTimeout(() => { idleFired = true; requestAbort.abort(); }, idleMs);
     };
     const trackStall = () => {
       const at = now();
@@ -4484,7 +4488,7 @@ export async function* streamChatCompletionWithRetry(
             // smaller than what overflowed); otherwise the retry would overflow again.
             if (adjusted !== null && adjusted < overflow.maxTokens) {
               config = { ...config, maxTokens: adjusted };
-              if (options?.onRetry) options.onRetry(attempt + 1, maxRetries, 0, 400);
+              if (options?.onRetry) options.onRetry(attempt + 1, maxRetries, 0, 400, 'http');
               break; // retry with the reduced max_tokens
             }
           }
@@ -4580,12 +4584,18 @@ export async function* streamChatCompletionWithRetry(
           // SDKAPIRetryMessage `error_status: number | null`). A body-detected overload
           // reports as 529 so the callback sees the overload it is actually retrying.
           const retryStatus = statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : null);
+          // Classify the retry cause: a real (or body-detected 529) HTTP status is
+          // `http`; a null-status forced retry is a degenerate/empty stream
+          // (`stream_idle`) or an otherwise code-less connection drop (`connection_reset`).
+          const retryKind: RetryErrorKind = retryStatus !== null
+            ? 'http'
+            : emptyStream ? 'stream_idle' : 'connection_reset';
           if (options?.onRetry) {
-            options.onRetry(attempt + 1, maxRetries, delayMs, retryStatus);
+            options.onRetry(attempt + 1, maxRetries, delayMs, retryStatus, retryKind);
           }
 
           try {
-            await waitBeforeRetry(delayMs, attempt, retryStatus);
+            await waitBeforeRetry(delayMs, attempt, retryStatus, retryKind);
           } catch {
             yield { type: 'error', error: 'Request aborted' };
             return;
@@ -4701,11 +4711,14 @@ export async function* streamChatCompletionWithRetry(
         const timeoutDelay = jitteredDelay(Math.min(baseDelay * Math.pow(2, attempt), maxDelay));
         // No HTTP response was produced (request timed out) — report `null`, not a
         // fabricated status, so the retry event reflects a connection-level failure.
+        // Distinguish the inactivity-watchdog abort (`stream_idle`) from the hard
+        // request-timeout (`connection_timeout`).
+        const timeoutKind: RetryErrorKind = idleFired ? 'stream_idle' : 'connection_timeout';
         if (options?.onRetry) {
-          options.onRetry(attempt + 1, maxRetries, timeoutDelay, null);
+          options.onRetry(attempt + 1, maxRetries, timeoutDelay, null, timeoutKind);
         }
         try {
-          await waitBeforeRetry(timeoutDelay, attempt, null);
+          await waitBeforeRetry(timeoutDelay, attempt, null, timeoutKind);
         } catch {
           yield { type: 'error', error: 'Request aborted' };
           return;
@@ -4731,10 +4744,10 @@ export async function* streamChatCompletionWithRetry(
       // response — report `null`, not a fabricated status, so the retry event reflects
       // that there was no server status to classify.
       if (options?.onRetry) {
-        options.onRetry(attempt + 1, maxRetries, netDelay, null);
+        options.onRetry(attempt + 1, maxRetries, netDelay, null, 'connection_reset');
       }
       try {
-        await waitBeforeRetry(netDelay, attempt, null);
+        await waitBeforeRetry(netDelay, attempt, null, 'connection_reset');
       } catch {
         yield { type: 'error', error: 'Request aborted' };
         return;

@@ -107,6 +107,22 @@ export interface TextContent {
   text: string;
 }
 
+/**
+ * Closed allowlist of image media types the provider vision APIs accept (parity:
+ * Claude's imageResizer sniff targets — PNG/JPEG/GIF/WebP). A declared type outside
+ * this set (e.g. the WSL-clipboard `image/bmp`, or a spoofed `image/svg+xml`) must be
+ * rejected or normalized before it reaches the provider. Single source of truth for
+ * {@link isSupportedImageMediaType} and the mint-boundary normalization. */
+export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
+export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
+
+/** True when `mt` is one of the provider-accepted {@link IMAGE_MEDIA_TYPES}. Used at
+ *  the image-mint boundary to reject/normalize a declared media type that no vision
+ *  API will accept. */
+export function isSupportedImageMediaType(mt: string | undefined | null): mt is ImageMediaType {
+  return typeof mt === 'string' && (IMAGE_MEDIA_TYPES as readonly string[]).includes(mt);
+}
+
 export interface ImageContent {
   type: 'image';
   source: {
@@ -1181,6 +1197,22 @@ export interface UserQuestionOption {
   dimDescription?: boolean;
 }
 
+/**
+ * A per-question annotation the user attached to their AskUserQuestion answer,
+ * relayed back to the model as structured context (parity: Claude's AskUserQuestion
+ * per-option preview/notes annotation value). Keyed by question text in the
+ * `user_question` {@link EngineEvent}'s `annotations` map. Typed (rather than an
+ * opaque `unknown`) so the preview the user actually chose and any free-text notes
+ * are discriminable by both the renderer and the model-facing result builder.
+ */
+export interface UserQuestionAnnotation {
+  /** The preview content of the option the user selected, when the question used
+   *  previews — lets the model see WHICH concrete artifact the user picked. */
+  preview?: string;
+  /** Free-text notes the user added alongside their selection. */
+  notes?: string;
+}
+
 /** Three-state terminal outcome of a (sub)agent/task, distinguishing a clean finish
  *  from an error from a user/abort stop (parity: Claude's task_notification `status`:
  *  'completed' | 'failed' | 'stopped'). Richer than a bare success boolean. */
@@ -1281,6 +1313,19 @@ export function reconcileSessionMode(
  */
 export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry';
 
+/**
+ * Why a request is being retried, carried on the `retry_attempt` {@link EngineEvent}
+ * so a frontend can render a connection/timeout/idle retry distinctly from an
+ * HTTP-status retry (which has a real `statusCode`). Parity: Claude's withRetry cause
+ * classification (services/api/withRetry.ts) distinguishing HTTP errors from
+ * connection resets, request timeouts, and idle-stream aborts.
+ *   - `http`               — the server returned a real HTTP status (429/500/503/529…).
+ *   - `connection_reset`   — a connection-level network failure (ECONNRESET/EPIPE/…) with no HTTP response.
+ *   - `connection_timeout` — the request hard-timeout fired before any response.
+ *   - `stream_idle`        — the inactivity watchdog aborted a quiet-but-open stream.
+ */
+export type RetryErrorKind = 'http' | 'connection_reset' | 'connection_timeout' | 'stream_idle';
+
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -1305,15 +1350,20 @@ export type EngineEvent =
   | { type: 'error'; error: string }
   // `statusCode` is `null` for a connection-level failure that produced NO HTTP
   // response (timeout / network drop), distinct from a real HTTP status such as 429
-  // or 503 (parity: Claude's SDKAPIRetryMessage `error_status: number | null`).
-  | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode: number | null }
+  // or 503 (parity: Claude's SDKAPIRetryMessage `error_status: number | null`). It is
+  // now OPTIONAL: a connection/timeout/idle retry may omit it entirely and carry only
+  // `errorKind`, so a frontend never has to render a meaningless "HTTP null".
+  // `errorKind` discriminates WHY the retry fired (parity: Claude's withRetry cause
+  // classification) so connection/timeout/idle retries render distinctly from an
+  // HTTP-status retry even when no status is present.
+  | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode?: number | null; errorKind?: RetryErrorKind }
   | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string }
   | { type: 'provider_changed'; provider: string; model: string; reason: string }
   | { type: 'checkpoint_created'; checkpointId: string; files: string[] }
   | { type: 'analytics_summary'; summary: Record<string, number> }
   | { type: 'superinference_state'; state: { value: number; entropy: number; eig: number; step: number; ppv: number }; stopReason: { type: string; detail: string } }
   | { type: 'suggest_file_save'; content: string; suggestedPath: string; lineCount: number }
-  | { type: 'user_question'; toolCallId: string; question: string; options: UserQuestionOption[]; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, unknown>; defaultIndex?: number;
+  | { type: 'user_question'; toolCallId: string; question: string; options: UserQuestionOption[]; allowFreeText: boolean; header?: string; multiSelect?: boolean; answers?: string[]; annotations?: Record<string, UserQuestionAnnotation>; defaultIndex?: number;
       /** Dimmed secondary context shown beside the prompt title: a terse summary of
        *  the TOOL INPUT that triggered this question (e.g. the command/file a
        *  permission-style ask refers to), so the user sees WHAT is being asked about
