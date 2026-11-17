@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { resolveConfigDir } from '../reference-journal';
+import { resolveCacheDir } from '../reference-journal';
 import { redactCredentials } from '../credential-guard';
 
 /**
@@ -56,11 +56,17 @@ export interface McpLogSinkOptions {
 
 /**
  * The per-server dated JSONL log path (Claude-parity `getMCPLogsPath(serverName)`):
- * `<configDir>/mcp-logs-<sanitized-server>/<YYYY-MM-DD>.jsonl`. The server name is
- * sanitized to one safe segment so it can never traverse outside the config dir.
+ * `<cacheDir>/mcp-logs-<sanitized-server>/<YYYY-MM-DD>.jsonl`. The server name is
+ * sanitized to one safe segment so it can never traverse outside the base dir.
+ *
+ * These are TRANSIENT, discardable diagnostics, so they default to the cache dir
+ * ({@link resolveCacheDir}) — honoring `XDG_CACHE_HOME` as a knob distinct from the
+ * durable data dir (parity: Claude's `cachePaths` cache base). With no XDG cache
+ * env set the cache dir IS the data dir, so the default location is unchanged; an
+ * explicit `configDir` override always wins.
  */
 export function getMcpServerLogPath(serverName: string, opts?: McpLogSinkOptions): string {
-  const base = opts?.configDir ?? resolveConfigDir();
+  const base = opts?.configDir ?? resolveCacheDir();
   return path.join(base, `mcp-logs-${sanitizeMcpLogSegment(serverName)}`, `${mcpLogDateStamp(opts?.now)}.jsonl`);
 }
 

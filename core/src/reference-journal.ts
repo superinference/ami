@@ -144,6 +144,53 @@ export function resolveConfigDir(env: NodeJS.ProcessEnv = process.env, homedir?:
   return resolved;
 }
 
+/** Env-keyed memo for {@link resolveCacheDir} (see {@link _configDirCache}). */
+const _cacheDirCache = new Map<string, string>();
+
+/**
+ * Resolve the TRANSIENT cache dir for discardable diagnostics (per-server MCP logs,
+ * error traces) as a config knob distinct from the durable data dir — parity with
+ * Claude Code's `cachePaths` (`envPaths('claude-cli').cache`, which honors
+ * `XDG_CACHE_HOME` and the platform cache root). Precedence:
+ *  1. An explicit storage override (CLAUDE_CONFIG_DIR / SUPERINFERENCE_DATA_DIR)
+ *     wins and keeps cache co-located with data, so a user/test that pins one dir
+ *     gets everything in it (deterministic).
+ *  2. Else `XDG_CACHE_HOME` when set + non-dangerous ({@link isDangerousStorageRoot})
+ *     → `<XDG_CACHE_HOME>/ami`, honoring the XDG Base Directory spec so transient
+ *     cache lives under the platform cache root, separate from durable state.
+ *  3. Else the durable data dir ({@link resolveConfigDir}) — cache and data share
+ *     one root (prior behaviour; no XDG env present).
+ * Overrides are tilde-expanded (gh-30794) and NFC-normalized. Memoized per env;
+ * `homedir` is an injectable test seam.
+ */
+export function resolveCacheDir(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
+  const cacheKey = JSON.stringify([
+    env.CLAUDE_CONFIG_DIR, env.SUPERINFERENCE_DATA_DIR, env.XDG_CACHE_HOME, env.HOME, homedir,
+  ]);
+  const cached = _cacheDirCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  let resolved: string;
+  const override = resolveStorageOverride(env, homedir);
+  if (override) {
+    resolved = override;
+  } else {
+    const xdg = env.XDG_CACHE_HOME;
+    if (xdg && xdg.trim()) {
+      const expanded = expandConfigDir(xdg, env, homedir);
+      if (isDangerousStorageRoot(expanded)) {
+        logError('resolve-cache-dir', 'rejecting dangerous XDG_CACHE_HOME override', { value: xdg });
+        resolved = resolveConfigDir(env, homedir);
+      } else {
+        resolved = path.join(expanded.normalize('NFC'), 'ami');
+      }
+    } else {
+      resolved = resolveConfigDir(env, homedir);
+    }
+  }
+  _cacheDirCache.set(cacheKey, resolved);
+  return resolved;
+}
+
 /**
  * One-time, idempotent migration of durable config from the pre-rename `~/.superinference` into
  * `~/.ami` (issue #21 defect 1): the .superinference→.ami rename moved every plugin/skill/
@@ -552,10 +599,26 @@ export function journalPathFor(cwd: string, sessionId: string, env: NodeJS.Proce
   return file;
 }
 
-/** Absolute path of a sidechain/subagent journal file (projects/<slug>/subagents/...). */
-export function subagentJournalPathFor(cwd: string, agentId: string, env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * Absolute path of a sidechain/subagent journal file
+ * (`projects/<slug>/subagents/[<run>/]agent-<id>.jsonl`). An optional `subdir`
+ * groups related subagent transcripts under a run folder (e.g. a workflow /
+ * task run id) so a downstream dashboard can roll the run up as one unit —
+ * parity with Claude Code's agentId→subdir grouping map
+ * (`setAgentTranscriptSubdir` → `subagents/workflows/<runId>/agent-<id>.jsonl`).
+ * The subdir is sanitized ({@link sanitizeId}) so a hostile / separator-bearing
+ * run id can never traverse outside the `subagents` root; an empty / whitespace
+ * subdir keeps the prior flat layout. The result is boundary-checked.
+ */
+export function subagentJournalPathFor(
+  cwd: string,
+  agentId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  subdir?: string,
+): string {
   const base = path.join(resolveConfigDir(env), 'projects', projectSlug(cwd), 'subagents');
-  const file = path.join(base, `agent-${sanitizeId(agentId)}.jsonl`);
+  const dir = subdir && subdir.trim() ? path.join(base, sanitizeId(subdir)) : base;
+  const file = path.join(dir, `agent-${sanitizeId(agentId)}.jsonl`);
   assertPathWithin(file, base);
   return file;
 }
