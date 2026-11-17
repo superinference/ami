@@ -2,6 +2,11 @@ import { ToolDefinition } from '../types';
 
 export const askUserQuestionTool: ToolDefinition = {
   name: 'AskUserQuestion',
+  // Concise capability phrase for tool_search discovery, distinct from the long
+  // DESCRIPTION (parity with Claude's `searchHint`). tool_search weights a curated
+  // searchHint above the prose description when ranking a deferred tool, so a
+  // query like "multiple choice" or "prompt the user" surfaces this tool by intent.
+  searchHint: 'prompt the user with a multiple-choice question',
   description:
     'Ask the user a question when you need clarification, need them to choose between options, ' +
     'or need their input before proceeding. Use this instead of guessing. ' +
@@ -140,6 +145,13 @@ export const askUserQuestionTool: ToolDefinition = {
     additionalProperties: false,
   },
   isReadOnly: true,
+  // Compact projection fed to the auto-mode security classifier (parity with
+  // Claude's `toAutoClassifierInput(input) => questions.map(q => q.question).join(' | ')`).
+  // The classifier keys on the question texts rather than the full argument blob
+  // (option labels/previews/annotations), giving a stable textual signature of what
+  // is being asked. Handles both the multi-question (`questions[]`) and single-question
+  // shorthand (`question`) shapes; a call with no question text projects to '' (skip).
+  toAutoClassifierInput: askUserToAutoClassifierInput,
   // Cap the (user/model-derived) answer+annotation text that flows back into the
   // model context (parity with Claude's `maxResultSizeChars: 100_000`). The tool is
   // handled specially by the engine, which reads this field to bound the result.
@@ -168,6 +180,32 @@ export function capAskUserResult(output: string, cap: number = ASK_USER_MAX_RESU
   // the result is always <= cap.
   if (marker.length >= cap) return output.slice(0, cap);
   return output.slice(0, cap - marker.length) + marker;
+}
+
+/**
+ * Project an AskUserQuestion tool input to the compact signature fed to the
+ * auto-mode security classifier (parity with Claude's
+ * `toAutoClassifierInput(input) => input.questions.map(q => q.question).join(' | ')`).
+ *
+ * The classifier reasons about WHAT is being asked, so only the question texts are
+ * projected — the option labels, previews, and annotations are elided. Both input
+ * shapes the tool accepts are supported: the multi-question `questions[]` array and
+ * the single-question `question` shorthand. Non-string / empty question texts are
+ * dropped; when nothing remains the projection is `''`, which the classifier treats
+ * as "skip" (parity with Claude's `'' = skip` convention on this hook).
+ */
+export function askUserToAutoClassifierInput(input: Record<string, unknown>): string {
+  const texts: string[] = [];
+  const questions = input.questions;
+  if (Array.isArray(questions)) {
+    for (const q of questions) {
+      const t = (q as { question?: unknown } | null)?.question;
+      if (typeof t === 'string' && t.trim().length > 0) texts.push(t);
+    }
+  } else if (typeof input.question === 'string' && input.question.trim().length > 0) {
+    texts.push(input.question);
+  }
+  return texts.join(' | ');
 }
 
 // ---------------------------------------------------------------------------
