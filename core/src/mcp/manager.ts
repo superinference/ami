@@ -16,6 +16,14 @@ import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
 import { classifyMcpToolForCollapse } from './classify-collapse';
+import {
+  resolveEnvSecretRefs,
+  resolveKeychainSecretRefs,
+  headersHaveKeychainSecretRef,
+  describeSecretRef,
+  defaultMcpSecretStore,
+  type McpSecretStore,
+} from './secret-store';
 import { McpToolPoller, type McpToolPollSpec } from './tool-polling';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { EventEmitter } from 'events';
@@ -749,8 +757,23 @@ export async function resolveMcpServerHeaders(
   config: McpServerConfig,
   run: HeadersHelperRunner = defaultHeadersHelperRunner,
   logHooks?: HeadersHelperLogHooks,
+  secretStore: McpSecretStore = defaultMcpSecretStore(),
 ): Promise<Record<string, string>> {
+  // Static headers: `${VAR}` + `${secret:env:...}` already resolved by
+  // resolveEnvVars; now resolve any `${secret:keychain:...}` refs against the OS
+  // keychain. An unresolved (absent / unavailable / timed-out) keychain ref
+  // leaves its literal token in place AND is recorded as a config warning so the
+  // dropped credential is visible rather than silently sent as a broken token.
   const staticHeaders = config.headers ? resolveEnvVars(config.headers) : {};
+  for (const [name, value] of Object.entries(staticHeaders)) {
+    if (!headersHaveKeychainSecretRef({ [name]: value })) continue;
+    const { resolved, unresolved } = await resolveKeychainSecretRefs(value, secretStore);
+    staticHeaders[name] = resolved;
+    for (const ref of unresolved) {
+      logHooks?.onError?.(new Error(`unresolved keychain secret ref ${describeSecretRef(ref)} for header "${name}"`));
+    }
+    if (resolved !== value) logHooks?.onDebug?.(`Resolved keychain secret ref(s) for header "${name}"`);
+  }
   if (!config.headersHelper) return staticHeaders;
   try {
     logHooks?.onDebug?.('Executing headersHelper to get dynamic headers');
@@ -782,7 +805,11 @@ export async function resolveMcpServerHeaders(
 function resolveEnvVars(headers: Record<string, string>): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    resolved[key] = expandEnvVars(value);
+    // `${VAR}` expansion first, then `${secret:env:NAME}` references (both are
+    // plain env lookups, safe without workspace trust). `${secret:keychain:...}`
+    // refs are intentionally left as literal tokens here — they are resolved on
+    // the async, trust-gated keychain pass in {@link resolveMcpServerHeaders}.
+    resolved[key] = resolveEnvSecretRefs(expandEnvVars(value));
   }
   return resolved;
 }
@@ -977,6 +1004,13 @@ export class McpManager extends EventEmitter {
   _pullImage: typeof pullImage = pullImage;
   /** MCP client factory seam (see {@link McpClientFactory}). */
   _createClient: McpClientFactory = (options) => new McpClient(options);
+  /**
+   * OS-keychain secret-store seam ({@link McpSecretStore}) used to resolve
+   * `${secret:keychain:...}` header refs at connect time. Defaults to the real
+   * platform keychain; overridable in tests so keychain resolution can be driven
+   * deterministically without a real keychain.
+   */
+  _secretStore: McpSecretStore = defaultMcpSecretStore();
   /**
    * Per-server structured log sink seams (Claude-parity `logMCPError`/`logMCPDebug`).
    * Default to the real on-disk JSONL writers; overridable in tests so the per-server
@@ -2406,21 +2440,25 @@ export class McpManager extends EventEmitter {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // For http/sse servers with a headersHelper, refresh dynamic auth headers
-        // right before the handshake so rotating/short-lived tokens are current —
-        // but ONLY when the workspace-trust boundary allows executing the (arbitrary)
-        // helper script (an untrusted project `.mcp.json` must not run code until its
-        // server is approved). When untrusted, skip the helper, record a recoverable
-        // warning diagnostic, and fall back to the static headers already applied at
-        // client creation so the connect still proceeds.
-        if (config?.headersHelper && (config.transport === 'http' || config.transport === 'sse')) {
+        // For http/sse servers, refresh resolved auth headers right before the
+        // handshake when EITHER a `headersHelper` (rotating/short-lived tokens) OR
+        // a `${secret:keychain:...}` header ref (secret-at-rest in the OS keychain)
+        // needs an async resolve. Both are gated by the SAME workspace-trust
+        // boundary: an untrusted project `.mcp.json` must neither run an arbitrary
+        // helper script NOR siphon the user's OS keychain into a header it would
+        // then POST to its own server URL. When untrusted, skip, record a
+        // recoverable warning diagnostic, and fall back to the static (env-only)
+        // headers already applied at client creation so the connect still proceeds.
+        const needsKeychain = headersHaveKeychainSecretRef(config?.headers);
+        if ((config?.headersHelper || needsKeychain) && (config?.transport === 'http' || config?.transport === 'sse')) {
           if (this.isHeadersHelperTrusted(name)) {
             client.setHeaders(await resolveMcpServerHeaders(name, config, undefined, {
               onDebug: (msg) => this._logMcpDebug(name, msg, this.mcpLogOpts()),
               onError: (err) => this._logMcpError(name, err, this.mcpLogOpts()),
-            }));
+            }, this._secretStore));
           } else {
-            const warning = `headersHelper not executed: the project MCP server "${name}" must be approved before its config-supplied helper script can run (workspace-trust boundary)`;
+            const what = config?.headersHelper ? 'config-supplied helper script' : 'OS-keychain secret references';
+            const warning = `${config?.headersHelper ? 'headersHelper' : 'keychain secret refs'} not resolved: the project MCP server "${name}" must be approved before its ${what} can run (workspace-trust boundary)`;
             coreLog('mcp', warning);
             const existing = this._configWarnings.get(name) ?? [];
             if (!existing.includes(warning)) {
