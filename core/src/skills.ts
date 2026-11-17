@@ -66,6 +66,21 @@ export interface SkillDefinition {
    *  command/skill `progressMessage`, which defaults to `'running'`). Resolved —
    *  with the default fallback — via {@link skillProgressMessage}. */
   progressMessage?: string;
+  /** When true, invoking this skill/command JUMPS the message queue and executes
+   *  at once instead of waiting for the next stop point (parity with Claude's
+   *  command `immediate`). Checked via {@link isSkillImmediate}. */
+  immediate?: boolean;
+  /** The shell a skill/command's inline `!`-blocks run under (parity with Claude's
+   *  `shell:` frontmatter). Absent ⇒ the executor defaults to bash — resolve with
+   *  the fallback via {@link shellForExecution}. Parsed/validated via
+   *  {@link parseShellFrontmatter}. */
+  shell?: FrontmatterShell;
+  /** Author-defined named template variables substituted into the skill body:
+   *  every `{{key}}` token in {@link content} is replaced with `templateVars[key]`
+   *  (parity with Claude's bundled-skill `SKILL_MODEL_VARS`) so centrally-maintained
+   *  wording updates in one place. An unknown token is left intact. Applied via
+   *  {@link applySkillTemplateVariables}. */
+  templateVars?: Record<string, string>;
   /** When true, the skill's invocation ARGUMENTS are sensitive and must be masked
    *  (as `***`) wherever the invocation is echoed — the permission-prompt summary,
    *  transcript, and conversation history (parity with Claude's command
@@ -181,6 +196,19 @@ export interface AgentDefinition {
   /** Per-agent display color used to tint the subagent's badge/label in listings
    *  (parity with Claude's agent `color`). `undefined` ⇒ the UI picks a default. */
   color?: AgentColorName;
+  /** Display color for the agent's DESCRIPTION badge, distinct from {@link color}
+   *  (which tints the agent-type badge) — parity with Claude's AgentProgressLine
+   *  `descriptionColor`. Normalized/validated via {@link parseAgentColor}. */
+  descriptionColor?: AgentColorName;
+  /** Drop the project CLAUDE.md/AGENTS.md context from this subagent's prompt to
+   *  save tokens (parity with Claude's agent `omitClaudeMd`, e.g. the read-only
+   *  Plan agent which can still Read it on demand). An invalid (non-boolean) value
+   *  surfaces a load warning via {@link validateAgentDefinition}. */
+  omitClaudeMd?: boolean;
+  /** Require plan-mode approval before this delegated agent may implement/mutate
+   *  (parity with Claude's swarm teammate `planModeRequired`). An invalid
+   *  (non-boolean) value surfaces a load warning via {@link validateAgentDefinition}. */
+  planModeRequired?: boolean;
   /** Persistent-memory storage scope for the agent (parity with Claude's agent
    *  `memory`): user / project / local. */
   memory?: AgentMemoryScope;
@@ -449,6 +477,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
   'disableModelInvocation', 'userInvocable', 'loadedFrom', 'filePath',
   'immediate', 'userFacingName', 'requiresArgument', 'missingArgumentMessage',
   'isSensitive', 'disableNonInteractive', 'supportsNonInteractive',
+  'shell', 'templateVars',
 ]);
 
 /**
@@ -847,6 +876,15 @@ export function validateAgentDefinition(
   if (raw.systemPromptMode !== undefined && parseSystemPromptMode(raw.systemPromptMode) === undefined) {
     warnings.push(`Unknown systemPromptMode "${raw.systemPromptMode}" (valid: ${SYSTEM_PROMPT_MODES.join(', ')})`);
   }
+  if (raw.descriptionColor !== undefined && parseAgentColor(raw.descriptionColor) === undefined) {
+    warnings.push(`Unknown descriptionColor "${raw.descriptionColor}" (valid: ${AGENT_COLORS.join(', ')}, or "automatic")`);
+  }
+  if (raw.omitClaudeMd !== undefined && parseBooleanFlag(raw.omitClaudeMd).invalid) {
+    warnings.push(`Invalid omitClaudeMd "${raw.omitClaudeMd}" (expected true/false)`);
+  }
+  if (raw.planModeRequired !== undefined && parseBooleanFlag(raw.planModeRequired).invalid) {
+    warnings.push(`Invalid planModeRequired "${raw.planModeRequired}" (expected true/false)`);
+  }
 
   if (opts?.knownSkills && raw.skills) {
     const known = new Set(opts.knownSkills);
@@ -881,14 +919,14 @@ export function validateAgentDefinition(
  * {@link SkillDefinition.content} is returned unchanged.
  */
 export async function resolveSkillPrompt(
-  skill: Pick<SkillDefinition, 'content' | 'getPromptForCommand'>,
+  skill: Pick<SkillDefinition, 'content' | 'getPromptForCommand' | 'templateVars'>,
   args: string = '',
 ): Promise<string> {
   if (typeof skill.getPromptForCommand === 'function') {
     const out = await skill.getPromptForCommand(args);
-    return typeof out === 'string' ? out : '';
+    return applySkillTemplateVariables(typeof out === 'string' ? out : '', skill.templateVars);
   }
-  return skill.content;
+  return applySkillTemplateVariables(skill.content, skill.templateVars);
 }
 
 /**
@@ -1165,4 +1203,117 @@ export function formatSkillUpdates(updates: SkillUpdate[]): string {
   return parseSkillUpdates(updates)
     .map((u) => `- ${u.section}: ${u.change}`)
     .join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Additive skill/agent config knobs + display formatters — pure core building
+// blocks mirroring Claude Code capabilities AMI's skills library was missing:
+// immediate-queue flag, per-file shell selection, a human tool-name joiner, a
+// progressive argument hint, an admin-trusted source gate, author template
+// variables, and the built-in-agent discriminator. The SkillManager (common/),
+// task tool, and `/skills`/`/agents` listings wire these into the real paths.
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a skill/command declares {@link SkillDefinition.immediate} (parity
+ * with Claude's command `immediate`): it should bypass the message queue and run
+ * at once rather than waiting for the next stop point. Only an explicit `true`
+ * counts — a truthy-but-not-`true` value never silently jumps the queue.
+ */
+export function isSkillImmediate(skill: Pick<SkillDefinition, 'immediate'>): boolean {
+  return skill.immediate === true;
+}
+
+/**
+ * The shells accepted in a skill/command's `shell:` frontmatter for `!`-block
+ * execution (parity with Claude's `FrontmatterShell`).
+ */
+export const FRONTMATTER_SHELLS = ['bash', 'powershell'] as const;
+export type FrontmatterShell = (typeof FRONTMATTER_SHELLS)[number];
+
+/** The shell used when a skill/command declares none (parity with Claude, which
+ *  defaults `!`-block execution to bash). */
+export const DEFAULT_SHELL: FrontmatterShell = 'bash';
+
+/**
+ * Parse + validate a raw frontmatter `shell:` value (parity with Claude's
+ * `parseShellFrontmatter`). Absent/null/empty ⇒ `undefined` (the caller defaults
+ * to bash via {@link shellForExecution}); a recognized value (case-insensitive,
+ * trimmed) ⇒ that shell; an unrecognized value ⇒ `undefined` so a garbled shell
+ * silently falls back to bash rather than failing the skill load.
+ */
+export function parseShellFrontmatter(value: unknown): FrontmatterShell | undefined {
+  if (value === undefined || value === null) return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === '') return undefined;
+  return (FRONTMATTER_SHELLS as readonly string[]).includes(normalized)
+    ? (normalized as FrontmatterShell)
+    : undefined;
+}
+
+/**
+ * Resolve the shell a skill/command's `!`-blocks execute under, applying the
+ * {@link DEFAULT_SHELL} fallback when none was declared (parity with Claude's
+ * caller-side bash default).
+ */
+export function shellForExecution(shell: FrontmatterShell | undefined): FrontmatterShell {
+  return shell ?? DEFAULT_SHELL;
+}
+
+/**
+ * Format a tool-name list for human display (parity with Claude Code's
+ * `getToolsDisplay`, ConfirmStep): `undefined` ⇒ `'All tools'` (unset means no
+ * restriction), `[]` ⇒ `'None'`, one name ⇒ that name (or `'None'` when blank), a
+ * pair ⇒ `'a and b'`, and three+ ⇒ an Oxford-comma list `'a, b, and c'`.
+ */
+export function formatToolNameList(toolNames: readonly string[] | undefined): string {
+  if (toolNames === undefined) return 'All tools';
+  if (toolNames.length === 0) return 'None';
+  if (toolNames.length === 1) return toolNames[0] || 'None';
+  if (toolNames.length === 2) return toolNames.join(' and ');
+  return `${toolNames.slice(0, -1).join(', ')}, and ${toolNames[toolNames.length - 1]}`;
+}
+
+/**
+ * Compute a progressive argument hint showing only the arg names NOT yet filled
+ * (parity with Claude's `generateProgressiveArgumentHint`): for `argNames` and
+ * the args typed so far, returns e.g. `'[arg2] [arg3]'`, or `undefined` once
+ * every positional arg is filled (or over-filled) so the hint disappears.
+ */
+export function progressiveArgumentHint(
+  argNames: readonly string[],
+  typedArgs: readonly string[],
+): string | undefined {
+  const remaining = argNames.slice(typedArgs.length);
+  if (remaining.length === 0) return undefined;
+  return remaining.map((name) => `[${name}]`).join(' ');
+}
+
+/**
+ * Substitute author-defined `{{key}}` template variables into a skill body
+ * (parity with Claude's bundled-skill `SKILL_MODEL_VARS` substitution). Every
+ * `{{key}}` whose `key` is present in `vars` is replaced with its value (an
+ * empty-string mapping is honored); an unknown token is left intact. With no
+ * `vars` the content is returned unchanged. This is DISTINCT from the invocation
+ * `$name`/`$ARGUMENTS` positional substitution (owned by the SkillManager): it is
+ * a skill-owned, centrally-maintained wording map, not user-supplied args.
+ */
+export function applySkillTemplateVariables(
+  content: string,
+  vars: Record<string, string> | undefined,
+): string {
+  if (!vars || typeof content !== 'string') return content;
+  return content.replace(/\{\{(\w+)\}\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : match,
+  );
+}
+
+/**
+ * True when an agent definition is a BUILT-IN agent (parity with Claude Code's
+ * `isBuiltIn = source === 'built-in'`). The discriminator that gates built-in
+ * vs. custom treatment — e.g. editability of the definition and the extra
+ * custom-agent tool-denylist that applies only to non-built-in agents.
+ */
+export function isBuiltInAgent(agent: Pick<AgentDefinition, 'source'>): boolean {
+  return agent.source === 'built-in';
 }
