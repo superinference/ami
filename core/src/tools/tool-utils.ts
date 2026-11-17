@@ -1115,7 +1115,11 @@ export function redactSecrets(content: string): string {
 
   // 6. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
   // (The simpler `key: "value"` form is covered by the shared credential-assignment rule above.)
-  out = out.replace(/("(?:password|secret|token|api_?key|access_?key|secret_?key|client_secret|auth)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
+  // PARITY ADD (Claude Code SECRET_FIELD_NAMES — bridge/debugUtils.ts): redact by JSON
+  // FIELD NAME regardless of the value's shape, so an opaque custom token under
+  // "access_token"/"session_ingress_token"/"environment_secret" (values that match no
+  // provider prefix) is scrubbed on the export/log path, not just known-shape tokens.
+  out = out.replace(/("(?:password|secret|token|api_?key|access_?token|access_?key|secret_?key|client_secret|auth|session_ingress_token|environment_secret)"\s*:\s*")[^"]{6,}(")/gi, '$1[REDACTED-SECRET]$2');
   // 7. Unquoted KEY=value assignments (e.g. PASSWORD=mysecret, export API_KEY=abc123).
   // eslint-disable-next-line security/detect-unsafe-regex -- anchored (^|\s), fixed keyword alternation, no overlap
   out = out.replace(/((?:^|\s)(?:export\s+)?(?:PASSWORD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|SECRET_?KEY|CLIENT_SECRET|AUTH|PRIVATE_?KEY|GITHUB_?TOKEN|OPENAI_?KEY|ANTHROPIC_?KEY|DATABASE_?URL|DB_?PASS(?:WORD)?)\s*=\s*)\S{6,}/gim, '$1[REDACTED-SECRET]');
