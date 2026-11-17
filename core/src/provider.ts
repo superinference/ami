@@ -18,7 +18,7 @@ import { createHuggingFace } from '@ai-sdk/huggingface';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, getPromptCachingEnabled } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic } from './error-classifier';
@@ -901,6 +901,40 @@ export function withGzipCompression(
 }
 
 /**
+ * Add Anthropic's per-tool `eager_input_streaming: true` field to every tool in a
+ * RAW Anthropic Messages request body (fine-grained tool streaming). This is set
+ * on the wire body rather than through the AI SDK because the SDK exposes no
+ * per-tool passthrough for it. Returns the original text unchanged on a non-JSON
+ * body, a body with no `tools` array, or when the knob is off — so it is a safe
+ * no-op in every path except first-party Anthropic with the opt-in set.
+ *
+ * Gated (by the caller) to the first-party `api.anthropic.com` path only: proxies
+ * (LiteLLM etc.) and Bedrock/Vertex reject this field with a 400, exactly as
+ * documented in Claude Code's `buildToolSchema` (utils/api.ts) — which is why the
+ * field is applied here, after provider routing has confirmed the native path.
+ */
+export function withEagerToolStreaming(
+  baseFetch: typeof globalThis.fetch = globalThis.fetch,
+): typeof globalThis.fetch {
+  return (input, init) => {
+    if (init && typeof init.body === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(init.body);
+        if (isPlainRecord(parsed) && Array.isArray(parsed.tools) && parsed.tools.length > 0) {
+          parsed.tools = parsed.tools.map((t) =>
+            isPlainRecord(t) ? { ...t, eager_input_streaming: true } : t,
+          );
+          init = { ...init, body: JSON.stringify(parsed) };
+        }
+      } catch {
+        // Non-JSON body — leave it untouched.
+      }
+    }
+    return baseFetch(input, init);
+  };
+}
+
+/**
  * OpenAI routes a conversation to one cache when every turn sends the same
  * `prompt_cache_key`. vLLM and other compatible servers reject or ignore
  * unknown fields, so the key is attached only for official OpenAI hosts.
@@ -1234,6 +1268,23 @@ function tokenEfficientToolsEnabled(): boolean {
   return (
     isEnvTruthy(process.env.SUPERINFERENCE_TOKEN_EFFICIENT_TOOLS) ||
     isEnvTruthy(process.env.CLAUDE_CODE_TOKEN_EFFICIENT_TOOLS)
+  );
+}
+
+/**
+ * Fine-grained tool streaming (`eager_input_streaming`) opt-in. Without it the
+ * Anthropic API buffers the ENTIRE tool-input JSON before emitting any
+ * `input_json_delta`, so a tool with a large input (a big file write, a long
+ * patch) can hang for minutes with no visible progress. With it the provider
+ * streams the input eagerly as it is generated. Off by default (experimental +
+ * first-party-only); opt in via `SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING`
+ * (or the Claude-compatible `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`).
+ * Mirrors Claude Code's `tengu_fgts` / env gate (utils/api.ts).
+ */
+export function fineGrainedToolStreamingEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING)
   );
 }
 
@@ -1903,10 +1954,18 @@ export function resolveModel(config: ProviderConfig) {
     // (1h TTL) + 1M-context + interleaved-thinking / token-efficient-tools (experimental,
     // kill-switchable) + any ANTHROPIC_BETAS. All ride one comma-separated header; deduped.
     const uniqueBetas = computeAnthropicBetas(model, { cacheTtl: config.cacheTtl, includeCacheTtlBeta: true, disableBetas: config.disableBetas });
+    // Fine-grained tool streaming is a first-party-only wire field: apply it ONLY on
+    // the direct api.anthropic.com path (no custom gateway), since proxies reject it
+    // with a 400. A custom baseUrl means a gateway, so the opt-in is skipped there.
+    const firstPartyAnthropic = !baseUrl || isFirstPartyBaseUrl(baseUrl, ['anthropic.com']);
+    const nativeBase = withGzipCompression(headerFetch ?? proxyFetch);
+    const nativeFetch = (firstPartyAnthropic && fineGrainedToolStreamingEnabled())
+      ? withEagerToolStreaming(nativeBase)
+      : nativeBase;
     return createAnthropic({
       apiKey,
       baseURL: baseUrl || undefined,
-      fetch: withGzipCompression(headerFetch ?? proxyFetch),
+      fetch: nativeFetch,
       ...(uniqueBetas.length > 0 ? { headers: { 'anthropic-beta': uniqueBetas.join(',') } } : {}),
     })(model);
   }
@@ -2575,6 +2634,17 @@ export async function* streamChatCompletion(
   // Proactively cap outbound media so the request can never exceed the API's hard
   // per-request media limit (drops oldest images first).
   const capped = stripExcessMediaItems(sanitized);
+  // Proactively validate each surviving image against the API's per-image base64
+  // ceiling BEFORE sending, so an oversized image fails fast with a message naming
+  // exactly which image is too big — instead of a confusing mid-request 400 that
+  // identifies none. Surfaced as a terminal (non-retryable) error chunk, matching
+  // AMI's error convention and Claude Code's validateImagesForAPI boundary check.
+  try {
+    validateImagesForAPI(capped);
+  } catch (err) {
+    yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
+    return;
+  }
   let coreMessages = convertMessages(capped);
 
   if (isAnthropic) {

@@ -1,5 +1,7 @@
 import type { Message, ToolDefinition } from './types';
 import { isEnvTruthy } from './analytics';
+import { API_IMAGE_MAX_BASE64_SIZE } from './tools/file-read';
+import { formatFileSize } from './utils/format';
 
 /** Anthropic's hard per-request media ceiling (images + documents). The API rejects a
  *  request carrying more than this with a confusing error, so we proactively strip the
@@ -61,6 +63,71 @@ export function stripExcessMediaItems(
     });
     return before === toRemove ? m : { ...m, content: filtered };
   });
+}
+
+/**
+ * A single oversized image located by its position in the outbound message array.
+ * `messageIndex` is the 0-based index into the `Message[]` passed to the API;
+ * `imageIndex` is the 0-based index of the image AMONG THE IMAGES in that message.
+ */
+export interface OversizedImage {
+  messageIndex: number;
+  imageIndex: number;
+  /** Byte length of the base64-encoded image data (what the API actually counts). */
+  base64Size: number;
+}
+
+/**
+ * Thrown by {@link validateImagesForAPI} when one or more outbound images exceed
+ * the API's per-image base64 ceiling. Carries the structured list so a caller/UI
+ * can act on it, while `message` is a human-readable, actionable summary naming
+ * exactly which images are too big. Parity: Claude Code's `ImageSizeError`.
+ */
+export class ImageSizeError extends Error {
+  readonly oversized: readonly OversizedImage[];
+  readonly limit: number;
+  constructor(oversized: readonly OversizedImage[], limit: number) {
+    const list = oversized
+      .map(o => `message ${o.messageIndex} image ${o.imageIndex} (${formatFileSize(o.base64Size)} base64)`)
+      .join(', ');
+    super(
+      `${oversized.length} image${oversized.length === 1 ? '' : 's'} exceed the API limit of ` +
+      `${formatFileSize(limit)} base64 each: ${list}. Resize or crop ` +
+      `${oversized.length === 1 ? 'it' : 'them'}, or inspect with bash instead of attaching.`,
+    );
+    this.name = 'ImageSizeError';
+    this.oversized = oversized;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Proactively validate that no outbound image exceeds the API's per-image base64
+ * ceiling ({@link API_IMAGE_MAX_BASE64_SIZE}) BEFORE the request is sent. Without
+ * this, an oversized image surfaces as a confusing mid-request 400 that names no
+ * image; here the turn fails fast with an actionable {@link ImageSizeError} that
+ * identifies each offending image by message/image index. Parity: Claude Code's
+ * `validateImagesForAPI`. A no-op (returns normally) when every image is within
+ * the limit, so it is safe to call unconditionally in the request path.
+ */
+export function validateImagesForAPI(
+  messages: Message[],
+  limit = API_IMAGE_MAX_BASE64_SIZE,
+): void {
+  const oversized: OversizedImage[] = [];
+  messages.forEach((m, messageIndex) => {
+    if (!Array.isArray(m.content)) return;
+    let imageIndex = 0;
+    for (const block of m.content) {
+      if (block.type !== 'image') continue;
+      const data = block.source?.data;
+      if (typeof data === 'string' && data.length > limit) {
+        oversized.push({ messageIndex, imageIndex, base64Size: data.length });
+      }
+      imageIndex++;
+    }
+  });
+  if (oversized.length > 0) throw new ImageSizeError(oversized, limit);
 }
 
 export function sanitizeToolCallIds(
