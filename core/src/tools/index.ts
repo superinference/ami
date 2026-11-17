@@ -47,6 +47,7 @@ import { agenticFetchTool } from './agentic-fetch';
 import { advisorTool } from './advisor';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
+import { replTool } from './repl-tool';
 
 /** Sources whose tools form the cache-stable BUILT-IN prefix partition. Everything
  *  else (MCP, installed plugins, user tools) sorts into the suffix partition. */
@@ -207,6 +208,12 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     lspDiagnosticsTool,
     lspReferencesTool,
     lspTool,
+    // PARITY (additive): REPL code-interpreter tool. Gated by its own
+    // isEnabled() => isReplModeEnabled() (opt-in via AMI_REPL), so when REPL mode
+    // is off it is dropped at registration and the pool is unchanged. When on, it
+    // is advertised and the primitive tools it wraps are hidden from direct
+    // tool-calling by the advertise-time filter (see common/src/tool-pool.ts).
+    replTool,
   ];
 
   // PARITY (additive): apply the operator-configurable AMI_DENY_TOOLS blocklist so a
@@ -376,6 +383,19 @@ export {
 } from './advisor';
 export { scoutTool } from './scout';
 export { endConversationTool, resetEndedConversations, isConversationEnded, countPendingWork } from './end-conversation';
+export {
+  replTool,
+  runReplCode,
+  isReplModeEnabled,
+  getReplPrimitiveTools,
+  getReplOnlyToolNames,
+  filterReplOnlyTools,
+  REPL_TOOL_NAME,
+  REPL_MODE_ENV,
+  REPL_MODE_ENV_COMPAT,
+  DEFAULT_REPL_TIMEOUT_MS,
+  MAX_REPL_TIMEOUT_MS,
+} from './repl-tool';
 export { isReadOnlyBashCommand, BashResultCache } from './bash-cache';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './command-normalize';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection } from './input-sanitizer';
