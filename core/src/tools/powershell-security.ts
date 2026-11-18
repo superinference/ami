@@ -1144,87 +1144,219 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
 // deliberately absent.
 // ---------------------------------------------------------------------------
 
-export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set([
+/**
+ * Per-cmdlet read-only flag configuration. Mirrors Claude Code's
+ * readOnlyValidation.ts CMDLET_ALLOWLIST `CommandConfig`:
+ *   - `safeFlags` — the ONLY flags the cmdlet may carry and still be a pure read
+ *     (lowercase, leading dash — the runtime comparison form). A flag outside
+ *     this set ∪ {@link COMMON_PARAMETERS} makes the command non-read-only (→ a
+ *     prompt). Side-effecting / remote / external-entity flags (-ComputerName,
+ *     -CimSession, Get-WinEvent -FilterXml/-FilterHashtable) are deliberately
+ *     omitted so they are NOT auto-allowed.
+ *   - `allowAllFlags` — the cmdlet's entire flag surface is display/selection
+ *     only (Format-*, Select-Object, Get-ComputerInfo, …); every flag is
+ *     accepted. The dangerous-arg VALUE vectors those cmdlets have in Claude
+ *     (calculated-property hashtables, `$env:` leaks, script blocks) are already
+ *     rejected wholesale by {@link PS_READONLY_DISQUALIFY_RE} — strictly more
+ *     conservative than Claude's per-arg `argLeaksValue` element-type whitelist.
+ *
+ * COMMON_PARAMETERS (-Verbose/-ErrorAction/-ErrorVariable/…) are merged in at
+ * check time, so they are never restated here.
+ */
+export type PowerShellReadOnlyConfig = {
+  /** Flags this read-only cmdlet accepts (lowercase, leading dash). */
+  safeFlags?: readonly string[];
+  /** When true, every flag is accepted (whole flag surface is read-only). */
+  allowAllFlags?: boolean;
+};
+
+/**
+ * PowerShell read-only cmdlet allowlist keyed by canonical (lowercase) cmdlet
+ * name → its {@link PowerShellReadOnlyConfig}. Single source of truth for both
+ * membership ({@link POWERSHELL_READONLY_CMDLETS}) and the per-cmdlet safe-flag
+ * gate in {@link isReadOnlyPowerShellCommand}.
+ */
+export const POWERSHELL_READONLY_CONFIG: Record<string, PowerShellReadOnlyConfig> = {
   // Filesystem / item inspection (read).
-  'get-childitem',
-  'get-content',
-  'get-item',
-  'get-itemproperty',
-  'get-itempropertyvalue',
-  'get-acl',
-  'get-filehash',
+  'get-childitem': {
+    safeFlags: [
+      '-path', '-literalpath', '-filter', '-include', '-exclude', '-recurse',
+      '-depth', '-name', '-force', '-attributes', '-directory', '-file',
+      '-hidden', '-readonly', '-system',
+    ],
+  },
+  'get-content': {
+    safeFlags: [
+      '-path', '-literalpath', '-totalcount', '-head', '-tail', '-raw',
+      '-encoding', '-delimiter', '-readcount',
+    ],
+  },
+  'get-item': { safeFlags: ['-path', '-literalpath', '-force', '-stream'] },
+  'get-itemproperty': { safeFlags: ['-path', '-literalpath', '-name'] },
+  'get-itempropertyvalue': { safeFlags: ['-path', '-literalpath', '-name'] },
+  'get-acl': {
+    safeFlags: ['-path', '-literalpath', '-audit', '-filter', '-include', '-exclude'],
+  },
+  'get-filehash': {
+    safeFlags: ['-path', '-literalpath', '-algorithm', '-inputstream'],
+  },
   // Navigation (cwd change only — inert; compound write/multi-cd caught earlier).
-  'get-location',
-  'set-location',
-  'push-location',
-  'pop-location',
+  'get-location': { safeFlags: ['-psprovider', '-psdrive', '-stack', '-stackname'] },
+  'set-location': { safeFlags: ['-path', '-literalpath', '-passthru', '-stackname'] },
+  'push-location': { safeFlags: ['-path', '-literalpath', '-passthru', '-stackname'] },
+  'pop-location': { safeFlags: ['-passthru', '-stackname'] },
   // Text searching / filtering (read).
-  'select-string',
-  'compare-object',
-  // Object inspection / pipeline shaping (output only).
-  'select-object',
-  'sort-object',
-  'group-object',
-  'where-object',
-  'measure-object',
-  'get-member',
-  'get-unique',
-  'get-random',
+  'select-string': {
+    safeFlags: [
+      '-path', '-literalpath', '-pattern', '-inputobject', '-simplematch',
+      '-casesensitive', '-quiet', '-list', '-notmatch', '-allmatches',
+      '-encoding', '-context', '-raw', '-noemphasis',
+    ],
+  },
+  'compare-object': {
+    safeFlags: [
+      '-referenceobject', '-differenceobject', '-property', '-syncwindow',
+      '-casesensitive', '-culture', '-excludedifferent', '-includeequal', '-passthru',
+    ],
+  },
+  // Object inspection / pipeline shaping (output only). Selection/ordering flags
+  // are harmless; dangerous arg VALUES are caught by PS_READONLY_DISQUALIFY_RE.
+  'select-object': { allowAllFlags: true },
+  'sort-object': { allowAllFlags: true },
+  'group-object': { allowAllFlags: true },
+  'where-object': { allowAllFlags: true },
+  'measure-object': { allowAllFlags: true },
+  'get-member': {
+    safeFlags: ['-inputobject', '-membertype', '-name', '-static', '-view', '-force'],
+  },
+  'get-unique': { safeFlags: ['-inputobject', '-asstring', '-caseinsensitive', '-ontype'] },
+  'get-random': {
+    safeFlags: ['-inputobject', '-minimum', '-maximum', '-count', '-setseed', '-shuffle'],
+  },
   // Formatters / output (pipeline → host/string, no write).
-  'format-table',
-  'format-list',
-  'format-wide',
-  'format-custom',
-  'format-hex',
-  'out-string',
-  'out-host',
-  'write-output',
-  'write-host',
+  'format-table': { allowAllFlags: true },
+  'format-list': { allowAllFlags: true },
+  'format-wide': { allowAllFlags: true },
+  'format-custom': { allowAllFlags: true },
+  'format-hex': {
+    safeFlags: ['-path', '-literalpath', '-inputobject', '-encoding', '-count', '-offset'],
+  },
+  'out-string': { allowAllFlags: true },
+  'out-host': { allowAllFlags: true },
+  'write-output': { safeFlags: ['-inputobject', '-noenumerate'] },
+  'write-host': {
+    safeFlags: ['-object', '-nonewline', '-separator', '-foregroundcolor', '-backgroundcolor'],
+  },
   // Converters (pipeline → object/string, no file write).
-  'convertfrom-csv',
-  'convertto-csv',
-  'convertfrom-json',
-  'convertto-json',
-  'convertto-html',
-  'convertto-xml',
-  // Path utilities (read / compute).
-  'join-path',
-  'join-string',
-  'split-path',
-  'resolve-path',
-  'convert-path',
-  'test-path',
+  'convertfrom-csv': { safeFlags: ['-inputobject', '-delimiter', '-header', '-useculture'] },
+  'convertto-csv': {
+    safeFlags: ['-inputobject', '-delimiter', '-notypeinformation', '-noheader', '-usequotes'],
+  },
+  'convertfrom-json': { safeFlags: ['-inputobject', '-depth', '-ashashtable', '-noenumerate'] },
+  'convertto-json': {
+    safeFlags: ['-inputobject', '-depth', '-compress', '-enumsasstrings', '-asarray'],
+  },
+  'convertto-html': {
+    safeFlags: [
+      '-inputobject', '-property', '-head', '-title', '-body', '-pre', '-post',
+      '-as', '-fragment',
+    ],
+  },
+  'convertto-xml': { safeFlags: ['-inputobject', '-depth', '-as', '-notypeinformation'] },
+  // Path utilities (read / compute). -Resolve omitted (touches the filesystem).
+  'join-path': { safeFlags: ['-path', '-childpath', '-additionalchildpath'] },
+  'join-string': {
+    safeFlags: [
+      '-inputobject', '-property', '-separator', '-outputprefix', '-outputsuffix',
+      '-singlequote', '-doublequote', '-formatstring',
+    ],
+  },
+  'split-path': {
+    safeFlags: [
+      '-path', '-literalpath', '-qualifier', '-noqualifier', '-parent', '-leaf',
+      '-leafbase', '-extension', '-isabsolute',
+    ],
+  },
+  'resolve-path': { safeFlags: ['-path', '-literalpath', '-relative'] },
+  'convert-path': { safeFlags: ['-path', '-literalpath'] },
+  'test-path': {
+    safeFlags: [
+      '-path', '-literalpath', '-pathtype', '-filter', '-include', '-exclude',
+      '-isvalid', '-newerthan', '-olderthan',
+    ],
+  },
   // System / environment info (read).
-  'get-date',
-  'get-alias',
-  'get-help',
-  'get-history',
-  'get-host',
-  'get-culture',
-  'get-uiculture',
-  'get-timezone',
-  'get-uptime',
-  'get-computerinfo',
-  'get-hotfix',
-  'get-process',
-  'get-service',
-  'get-module',
-  'get-psdrive',
-  'get-psprovider',
-  'get-cimclass',
-  // Network info (read).
-  'get-netadapter',
-  'get-netipaddress',
-  'get-netipconfiguration',
-  'get-netroute',
-  'get-dnsclient',
-  'get-dnsclientcache',
-  // Event log (read).
-  'get-eventlog',
-  'get-winevent',
+  'get-date': { safeFlags: ['-date', '-format', '-uformat', '-displayhint', '-asutc'] },
+  'get-alias': { safeFlags: ['-name', '-definition', '-scope', '-exclude'] },
+  // NOTE (intentional AMI superset divergence): Claude removed Get-Help from its
+  // allowlist (module-autoload hazard via pipelined -Name). AMI keeps it
+  // read-only (allowAllFlags) to preserve the long-standing `Get-Help` auto-allow
+  // perk; the autoload attack still requires a $-bearing form rejected by
+  // PS_READONLY_DISQUALIFY_RE.
+  'get-help': { allowAllFlags: true },
+  'get-history': { safeFlags: ['-id', '-count'] },
+  'get-host': { allowAllFlags: true },
+  'get-culture': { allowAllFlags: true },
+  'get-uiculture': { allowAllFlags: true },
+  'get-timezone': { safeFlags: ['-name', '-id', '-listavailable'] },
+  'get-uptime': { allowAllFlags: true },
+  'get-computerinfo': { allowAllFlags: true },
+  'get-hotfix': { safeFlags: ['-id', '-description'] },
+  'get-process': {
+    safeFlags: ['-name', '-id', '-module', '-fileversioninfo', '-includeusername'],
+  },
+  'get-service': {
+    safeFlags: [
+      '-name', '-displayname', '-dependentservices', '-requiredservices',
+      '-include', '-exclude',
+    ],
+  },
+  'get-module': {
+    safeFlags: ['-name', '-listavailable', '-all', '-fullyqualifiedname', '-psedition'],
+  },
+  'get-psdrive': { safeFlags: ['-name', '-psprovider', '-scope'] },
+  'get-psprovider': { safeFlags: ['-psprovider'] },
+  'get-cimclass': {
+    safeFlags: ['-classname', '-namespace', '-methodname', '-propertyname', '-qualifiername'],
+  },
+  // Network info (read). -ComputerName / -CimSession (remote) deliberately absent.
+  'get-netadapter': {
+    safeFlags: ['-name', '-interfacedescription', '-interfaceindex', '-physical'],
+  },
+  'get-netipaddress': {
+    safeFlags: ['-interfaceindex', '-interfacealias', '-addressfamily', '-type'],
+  },
+  'get-netipconfiguration': {
+    safeFlags: ['-interfaceindex', '-interfacealias', '-detailed', '-all'],
+  },
+  'get-netroute': {
+    safeFlags: ['-interfaceindex', '-interfacealias', '-addressfamily', '-destinationprefix'],
+  },
+  'get-dnsclient': { safeFlags: ['-interfaceindex', '-interfacealias'] },
+  'get-dnsclientcache': {
+    safeFlags: ['-entry', '-name', '-type', '-status', '-section', '-data'],
+  },
+  // Event log (read). -FilterXml/-FilterHashtable (XXE → SSRF) deliberately
+  // absent; -FilterXPath (plain pattern) stays.
+  'get-eventlog': {
+    safeFlags: [
+      '-logname', '-newest', '-after', '-before', '-entrytype', '-index',
+      '-instanceid', '-message', '-source', '-username', '-asbaseobject', '-list',
+    ],
+  },
+  'get-winevent': {
+    safeFlags: [
+      '-logname', '-listlog', '-listprovider', '-providername', '-path',
+      '-maxevents', '-filterxpath', '-force', '-oldest',
+    ],
+  },
   // Timing (inert).
-  'start-sleep',
-]);
+  'start-sleep': { safeFlags: ['-seconds', '-milliseconds', '-duration'] },
+};
+
+export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set(
+  Object.keys(POWERSHELL_READONLY_CONFIG),
+);
 
 // Constructs that make a command un-analyzable as a pure read, so their presence
 // fails the read-only classification closed (never auto-allow): variables /
@@ -1237,21 +1369,43 @@ export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set([
 // whitelist and keeps this a cheap synchronous check for the classifier.
 const PS_READONLY_DISQUALIFY_RE = /[$`{}()@&>]/;
 
-// SSRF / XXE defense: a handful of cmdlets are read-ONLY for data but accept a
-// flag that triggers an outbound network request or external-entity resolution.
-// They stay on {@link POWERSHELL_READONLY_CMDLETS} for their benign forms, but
-// an invocation carrying one of these flags must NOT auto-allow (it falls
-// through to a prompt). Parity with Claude's readOnlyValidation.ts removal of
-// `-FilterXml`/`-FilterHashtable` from Get-WinEvent's safeFlags (XXE: a
-// `-FilterXml` DOCTYPE SYSTEM external entity → HTTP GET; `-FilterHashtable`
-// can embed `<QueryList>` XML). `-FilterXPath` (plain pattern, no entities)
-// stays allowed. Select-Xml / Test-Json / Get-WmiObject / Get-CimInstance are
-// NOT in the allowlist at all (deliberately omitted), so they already prompt.
-// The alt-dash class matches PowerShell's `-`-equivalent prefixes (hyphen, the
-// three Unicode dashes, and `/`).
-const PS_READONLY_DANGEROUS_FLAG_RE: ReadonlyMap<string, RegExp> = new Map([
-  ['get-winevent', /(?:^|\s)[-‒–—―−/]filter(?:xml|hashtable)\b/i],
-]);
+/**
+ * Per-cmdlet safe-flag gate. Returns true when EVERY flag token in `segment`
+ * (after the command name) is in the cmdlet's safeFlags set ∪
+ * {@link COMMON_PARAMETERS}, or the cmdlet declares `allowAllFlags`. A flag
+ * outside that surface — a side-effecting / remote / external-entity flag such
+ * as `-ComputerName`, `-CimSession`, or Get-WinEvent `-FilterXml` — returns
+ * false so the command is NOT auto-allowed. Mirrors Claude Code's
+ * readOnlyValidation.ts CMDLET_ALLOWLIST `safeFlags`/`allowAllFlags` check +
+ * COMMON_PARAMETERS merge; positional (non-flag) values are not gated here
+ * (dangerous value forms are rejected wholesale by PS_READONLY_DISQUALIFY_RE).
+ *
+ * `cmdlet` is the already-normalized (lowercase, module/.exe-stripped) name the
+ * caller resolved; it is guaranteed present in {@link POWERSHELL_READONLY_CONFIG}.
+ */
+function powerShellFlagsAllowed(segment: string, cmdlet: string): boolean {
+  const config = POWERSHELL_READONLY_CONFIG[cmdlet];
+  if (config === undefined) {
+    return false;
+  }
+  if (config.allowAllFlags === true) {
+    return true;
+  }
+  const allowed = new Set<string>([...(config.safeFlags ?? []), ...COMMON_PARAMETERS]);
+  const tokens = segment.trim().match(/\S+/g) ?? [];
+  // tokens[0] is the command name; validate every flag token after it.
+  for (let i = 1; i < tokens.length; i++) {
+    const norm = normalizeParamToken(tokens[i]!);
+    if (!norm.startsWith('-')) {
+      continue; // positional value, not a flag
+    }
+    const name = norm.split(':')[0]!; // drop a colon-bound value (-Path:x)
+    if (!allowed.has(name)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * True if `command` is a PowerShell command composed solely of allowlisted
@@ -1299,12 +1453,12 @@ export function isReadOnlyPowerShellCommand(command: string): boolean {
     if (!POWERSHELL_READONLY_CMDLETS.has(name)) {
       return false;
     }
-    // SSRF/XXE: an allowlisted read cmdlet carrying a network/external-entity
-    // flag (e.g. `Get-WinEvent -FilterXml`) must not auto-allow — fall through
-    // to a prompt. Checked against the ORIGINAL segment text so the flag casing
-    // and alt-dash prefix are preserved.
-    const dangerousFlagRe = PS_READONLY_DANGEROUS_FLAG_RE.get(name);
-    if (dangerousFlagRe !== undefined && dangerousFlagRe.test(segment)) {
+    // Per-cmdlet safe-flag gate: an allowlisted read cmdlet carrying a flag
+    // outside its read-only surface (a side-effecting / remote / external-entity
+    // flag like `-ComputerName`, `-CimSession`, or Get-WinEvent `-FilterXml`)
+    // must not auto-allow — fall through to a prompt. COMMON_PARAMETERS
+    // (-Verbose/-ErrorAction/…) are merged in automatically.
+    if (!powerShellFlagsAllowed(segment, name)) {
       return false;
     }
   }
