@@ -75,6 +75,19 @@ describe('getProcessCommand (POSIX)', () => {
     assert.equal(seen, PROCESS_COMMAND_TIMEOUT_MS);
     assert.equal(PROCESS_COMMAND_TIMEOUT_MS, 1000);
   });
+
+  // Claude Code's getAncestorCommandsAsync reads ALL ancestor commands in a single
+  // `ps` invocation and must therefore use a NUL ('\0') record separator so a
+  // command line containing an interior newline does not corrupt the split
+  // (genericProcessUtils.ts:L115-L156). AMI reads exactly one pid per invocation,
+  // so there is no cross-record parsing to corrupt — an embedded newline is part of
+  // the one command and must survive intact (only leading/trailing whitespace is
+  // trimmed). This locks that newline-safety invariant so the one-pid design is not
+  // later "optimised" into a separator-dependent batched read.
+  it('preserves interior newlines in a command line (NUL-separator robustness)', () => {
+    mockExec('linux', () => '  sh -c "foo\nbar baz"  \n');
+    assert.equal(getProcessCommand(4321), 'sh -c "foo\nbar baz"');
+  });
 });
 
 // --- getProcessCommand (Windows) ------------------------------------------
