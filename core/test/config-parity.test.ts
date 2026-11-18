@@ -129,6 +129,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       diffTool: 'auto', defaultShell: 'bash',
       exampleFiles: ['a.ts'], exampleFilesGeneratedAt: 1,
       companyAnnouncements: ['hi'], allowUnsandboxedCommands: false,
+      copyFullResponse: false,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
