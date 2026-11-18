@@ -5979,16 +5979,42 @@ function cpCreatesLink(seg: string): boolean {
 }
 
 /**
+ * True when a segment is a PowerShell `New-Item` (or its `ni` alias) that creates
+ * a filesystem LINK — `-ItemType SymbolicLink | Junction | HardLink`. Mirrors
+ * Claude Code's isSymlinkCreatingCommand breadth (PowerShellTool/modeValidation.ts
+ * L82-117): the `-ItemType` parameter is matched across its PowerShell
+ * abbreviations (`-it`…`-itemtype`) and the `-Type` alias (`-ty`…`-type`),
+ * tolerating a Unicode-dash or forward-slash parameter prefix, a backtick escape,
+ * and a colon-/equals-/space-bound value in optional quotes. A non-link item type
+ * (File/Directory) or a New-Item with no -ItemType is NOT a link creator.
+ */
+function powershellSegmentCreatesLink(seg: string): boolean {
+  // Normalize: drop PowerShell backtick escapes and fold any Unicode dash variant
+  // to ASCII '-' so parameter abbreviations/prefixes match uniformly.
+  const norm = seg.replace(/`/g, '').replace(/[‐-―−﹘﹣－]/g, '-');
+  const base = segmentBaseCommand(norm).toLowerCase();
+  if (base !== 'new-item' && base !== 'ni') return false;
+  // -ItemType / -Type (and all PowerShell abbreviations) bound to a link value.
+  // The parameter may be introduced by '-' or a PowerShell '/' prefix; the value
+  // may be separated by ':' , '=' or whitespace and optionally quoted.
+  // Abbreviations enumerated explicitly (not nested optionals) so the pattern has
+  // no ambiguous backtracking: -it…-itemtype and the -ty…-type alias.
+  return /(?:^|\s)[-/](?:it|ite|item|itemt|itemty|itemtyp|itemtype|ty|typ|type)(?:[:=]|\s+)["']?(?:symboliclink|junction|hardlink)\b/i.test(norm);
+}
+
+/**
  * True when a compound segment CREATES a filesystem link (symbolic or hard).
  * Mirrors Claude Code's isSymlinkCreatingCommand breadth (SymbolicLink /
  * Junction / HardLink): on bash the link creators are `ln`, the `link` coreutil
- * (hard link), and `cp` with a link flag (`-s`/`--symbolic-link`/`-l`/`--link`).
+ * (hard link), and `cp` with a link flag (`-s`/`--symbolic-link`/`-l`/`--link`);
+ * on PowerShell (Windows, same bash tool) a `New-Item -ItemType
+ * SymbolicLink|Junction|HardLink`.
  */
 function segmentCreatesLink(seg: string): boolean {
   const base = segmentBaseCommand(seg);
   if (base === 'ln' || base === 'link') return true;
   if (base === 'cp') return cpCreatesLink(seg);
-  return false;
+  return powershellSegmentCreatesLink(seg);
 }
 
 export function detectSymlinkCreateCompound(command: string): { escalate: boolean; reason?: string } {
