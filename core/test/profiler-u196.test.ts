@@ -22,8 +22,9 @@ describe('Profiler.formatTimeline column alignment', () => {
     p.mark('a');
     p.mark('b');
     const out = p.formatTimeline();
-    // Cumulative column padded to width 7, delta to width 6.
-    assert.match(out, /a {2} {6}0ms {2}Δ {5}0ms {2}5\.0MB/);
+    // Cumulative column padded to width 7, delta to width 6; memory via the
+    // shared formatFileSize humanizer (RSS + Heap, Claude profilerBase parity).
+    assert.match(out, /a {2} {6}0ms {2}Δ {5}0ms {2}RSS: 10MB, Heap: 5MB/);
   });
 
   it('honours custom totalPad/deltaPad widths', () => {
@@ -33,7 +34,7 @@ describe('Profiler.formatTimeline column alignment', () => {
     const narrow = p.formatTimeline({ totalPad: 2, deltaPad: 1 });
     // Wider pad → more leading spaces before the "0ms".
     assert.ok(wide.indexOf('0ms') > narrow.indexOf('0ms'), 'wider totalPad pushes the cumulative column right');
-    assert.match(narrow, /a {2} 0ms {2}Δ0ms {2}5\.0MB/);
+    assert.match(narrow, /a {2} 0ms {2}Δ0ms {2}RSS: 10MB, Heap: 5MB/);
   });
 
   it('reports no checkpoints when empty regardless of pad opts', () => {

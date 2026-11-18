@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { percentile as linearPercentile, Reservoir, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+import { formatFileSize } from './utils/format';
 
 /**
  * Render milliseconds as seconds with one fixed decimal place (e.g. `1234` → `"1.2s"`).
@@ -568,11 +569,16 @@ export class Profiler {
   }
 
   /**
-   * Render the timeline as aligned text (label, +cumulative, Δdelta, heap MB).
+   * Render the timeline as aligned text (label, +cumulative, Δdelta, RSS/Heap).
    * `totalPad`/`deltaPad` control the padStart widths of the cumulative and delta
    * columns so callers can align to their expected magnitude (Claude's
    * formatTimelineLine uses 8/7 for startup, 10/9 for query); defaults match the
    * previous hard-coded 7/6 so existing callers are unchanged.
+   *
+   * Memory is rendered via the shared {@link formatFileSize} humanizer — the SAME
+   * helper every other size/limit message uses — so a GB-scale RSS reads as `2GB`
+   * instead of the old ad-hoc heap-only `2048.0MB`, and both RSS and Heap are shown
+   * (parity with Claude's profilerBase formatTimelineLine `RSS: .., Heap: ..`).
    */
   formatTimeline(opts?: FormatTimelineOpts): string {
     const rows = this.getTimeline();
@@ -581,7 +587,7 @@ export class Profiler {
     const deltaPad = opts?.deltaPad ?? 6;
     const pad = Math.max(...rows.map(r => r.label.length));
     return rows
-      .map(r => `${r.label.padEnd(pad)}  ${String(r.cumulativeMs).padStart(totalPad)}ms  Δ${String(r.deltaMs).padStart(deltaPad)}ms  ${(r.heapBytes / 1_048_576).toFixed(1)}MB`)
+      .map(r => `${r.label.padEnd(pad)}  ${String(r.cumulativeMs).padStart(totalPad)}ms  Δ${String(r.deltaMs).padStart(deltaPad)}ms  RSS: ${formatFileSize(r.rssBytes)}, Heap: ${formatFileSize(r.heapBytes)}`)
       .join('\n');
   }
 
