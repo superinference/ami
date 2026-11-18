@@ -56,6 +56,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       allowedMcpServers: ['a'], deniedMcpServers: ['a'], managedMcpServers: {}, statusLine: 'l', sandboxExcludedCommands: ['a'],
       env: {}, tipsEnabled: true, tipsOverride: {}, composerHintsEnabled: true, composerHintsOverride: {},
       migrationVersion: 1, worktree: { symlinkDirectories: ['a'] }, cleanupPeriodDays: 1,
+      webFetch: { allowedDomains: ['example.com'], blockedDomains: ['evil.test'] },
       attribution: { commit: 'x', pr: 'y' }, disabledMcpServers: ['a'], enabledMcpServers: ['a'],
       language: 'japanese', subagentDefaultModel: 'haiku', memoryExcludes: ['**/AGENTS.md'],
       externalMemoryImportsApproved: true, externalMemoryImportRoots: ['/srv/shared'],

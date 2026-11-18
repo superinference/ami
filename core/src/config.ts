@@ -287,6 +287,25 @@ export interface ProjectConfig {
    */
   worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[]; tmux?: boolean };
   /**
+   * Persistent `web_fetch` domain policy (parity: Claude Code's preapproved /
+   * trusted-docs domain list persisted as a saved setting, as opposed to the
+   * per-REQUEST `allowed_domains` / `blocked_domains` tool params). A saved policy
+   * lets an operator pin a durable allow/deny-list once instead of repeating it on
+   * every call:
+   *  - `blockedDomains` is ALWAYS enforced — a matching host is refused regardless of
+   *    any per-request allow-list (deny wins), so an org/project deny-list cannot be
+   *    overridden from the tool call.
+   *  - `allowedDomains`, when non-empty, restricts `web_fetch` to those hosts UNLESS
+   *    the individual request supplies its own `allowed_domains` (a per-request
+   *    allow-list overrides the saved baseline for that one call).
+   * Entries use the same host/path grammar as the request params (consumed by
+   * {@link matchDomainRule}): a bare host (`example.com`, subdomain-inclusive) or a
+   * path-scoped entry (`github.com/anthropics`, segment-boundary matched). Read by
+   * `core/core/src/tools/web-fetch.ts` off the project config tier (like
+   * `toolOutputMaxChars`).
+   */
+  webFetch?: { allowedDomains?: string[]; blockedDomains?: string[] };
+  /**
    * Commit / PR attribution override (parity: Claude Code's `attribution.commit` /
    * `attribution.pr` settings). When `commit` is a non-empty string it REPLACES the
    * default `Co-Authored-By: AMI …` trailer the git_commit tool appends; when it is
@@ -1618,7 +1637,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['superinference', 'object'], ['managedMcpServers', 'object'],
   ['enabledPlugins', 'object'], ['env', 'object'],
   ['tipsOverride', 'object'], ['composerHintsOverride', 'object'],
-  ['worktree', 'object'], ['attribution', 'object'],
+  ['worktree', 'object'], ['webFetch', 'object'], ['attribution', 'object'],
   ['skillUsage', 'object'],
   ['preferencesShown', 'object'], ['noticeSeenCounts', 'object'],
   ['githubRepoPaths', 'object'],
@@ -2167,6 +2186,19 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     }
     if (wt.tmux !== undefined && !matchesConfigFieldType(wt.tmux, 'boolean')) {
       issues.push({ field: 'worktree.tmux', message: `must be a boolean (got ${describeJsonType(wt.tmux)})`, value: wt.tmux, tip: getConfigValidationTip('worktree.tmux', { kind: 'type', type: 'boolean' }) });
+    }
+  }
+  // 5b. Nested `webFetch.allowedDomains` / `webFetch.blockedDomains` must each be a
+  //     string[] when present. Step 1 only guards that `webFetch` is an object; a
+  //     non-array (or non-string element) would otherwise flow into the web_fetch
+  //     domain-policy matcher and silently no-op. Skip when the outer object type was
+  //     already flagged.
+  if (config.webFetch !== undefined && !typeInvalid.has('webFetch')) {
+    const wf = config.webFetch as Record<string, unknown>;
+    for (const key of ['allowedDomains', 'blockedDomains'] as const) {
+      if (wf[key] !== undefined && !matchesConfigFieldType(wf[key], 'string[]')) {
+        issues.push({ field: `webFetch.${key}`, message: `must be a string[] (got ${describeJsonType(wf[key])})`, value: wf[key], tip: getConfigValidationTip(`webFetch.${key}`, { kind: 'type', type: 'string[]' }) });
+      }
     }
   }
   // 6. `statusLine` union: a bare command string OR a `{ command, padding }` object

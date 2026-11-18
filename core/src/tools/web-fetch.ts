@@ -401,9 +401,12 @@ export const webFetchTool: ToolDefinition = {
     // by the GLOBAL tool-output default (project `toolOutputMaxChars` config / the
     // AMI_TOOL_OUTPUT_MAX_CHARS env override), so one knob tunes every tool's spill
     // threshold (parity: Claude Code's getPersistenceThreshold global clamp).
+    // Load the project-tier config ONCE: it supplies both the tool-output spill cap
+    // and the persistent web_fetch domain policy enforced below.
+    const projectConfig = loadProjectConfig(context.cwd);
     const outputMaxChars = resolveToolOutputMaxChars(
       MAX_RESPONSE_LENGTH,
-      loadProjectConfig(context.cwd)?.toolOutputMaxChars,
+      projectConfig?.toolOutputMaxChars,
     );
     // Test-only dependency seam (defaults to the retrying httpGetWithRetry, which
     // transparently retries transient network/5xx failures with exponential
@@ -478,6 +481,25 @@ export const webFetchTool: ToolDefinition = {
     if (blockedDomains && blockedDomains.length > 0) {
       if (blockedDomains.some(d => matchDomainRule(host, parsedUrl.pathname, d))) {
         return { output: `Error: Domain "${host}" is blocked.`, isError: true };
+      }
+    }
+
+    // Persistent web_fetch domain POLICY (saved `webFetch` config, distinct from the
+    // per-request allowed_domains/blocked_domains above): an operator can pin a durable
+    // allow/deny-list once instead of repeating it on every call.
+    //  - blockedDomains ALWAYS wins: a matching host is refused regardless of any
+    //    per-request allow-list, so a saved deny-list cannot be overridden from the call.
+    //  - allowedDomains, when non-empty, is the baseline allow-list UNLESS this request
+    //    supplied its own allowed_domains (which overrides the saved baseline above).
+    const domainPolicy = projectConfig?.webFetch;
+    const policyBlocked = domainPolicy?.blockedDomains;
+    if (policyBlocked && policyBlocked.length > 0 && policyBlocked.some(d => matchDomainRule(host, parsedUrl.pathname, d))) {
+      return { output: `Error: Domain "${host}" is blocked by the web_fetch domain policy.`, isError: true };
+    }
+    const policyAllowed = domainPolicy?.allowedDomains;
+    if ((!allowedDomains || allowedDomains.length === 0) && policyAllowed && policyAllowed.length > 0) {
+      if (!policyAllowed.some(d => matchDomainRule(host, parsedUrl.pathname, d))) {
+        return { output: `Error: Domain "${host}" is not in the web_fetch allowed-domains policy.`, isError: true };
       }
     }
 
