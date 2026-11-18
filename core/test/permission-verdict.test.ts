@@ -98,9 +98,13 @@ describe('holdsOver', () => {
 });
 
 describe('mostRestrictiveVerdict', () => {
-  it('returns allow for empty array', () => {
+  it('returns passthrough (abstain) for empty array', () => {
+    // FUNCTIONAL CHANGE (labeled): an empty evaluator chain is "nobody had an
+    // opinion" = abstain, now expressed by the lattice's neutral `passthrough`
+    // element (was `allow`). The caller resolves a passthrough against its own
+    // default. Parity: Claude's passthrough falls through to the normal flow.
     const result = mostRestrictiveVerdict([]);
-    assert.equal(result.decision, 'allow');
+    assert.equal(result.decision, 'passthrough');
   });
 
   it('returns single verdict unchanged', () => {
@@ -155,5 +159,51 @@ describe('mostRestrictiveVerdict', () => {
     const b: PermissionVerdict = { decision: 'ask' };
     const result = mostRestrictiveVerdict([a, b]);
     assert.strictEqual(result, a);
+  });
+
+  // ---- passthrough (abstain) — the 4th, neutral lattice element -------------
+  it('ranks passthrough below allow (neutral element)', () => {
+    assert.equal(verdictRank('passthrough'), 0);
+    assert.ok(verdictRank('passthrough') < verdictRank('allow'));
+  });
+
+  it('a real verdict holds over a passthrough (abstain never wins)', () => {
+    assert.equal(holdsOver({ decision: 'allow' }, { decision: 'passthrough' }), true);
+    assert.equal(holdsOver({ decision: 'passthrough' }, { decision: 'allow' }), false);
+  });
+
+  it('skips passthrough evaluators and picks the first decisive verdict', () => {
+    const result = mostRestrictiveVerdict([
+      { decision: 'passthrough' },
+      { decision: 'allow', rule: 'allow-rule' },
+      { decision: 'passthrough' },
+    ]);
+    assert.equal(result.decision, 'allow');
+    assert.equal(result.rule, 'allow-rule');
+  });
+
+  it('returns passthrough when every evaluator abstains', () => {
+    const result = mostRestrictiveVerdict([
+      { decision: 'passthrough' },
+      { decision: 'passthrough' },
+    ]);
+    assert.equal(result.decision, 'passthrough');
+  });
+
+  it('still elevates deny over an abstaining evaluator', () => {
+    const result = mostRestrictiveVerdict([
+      { decision: 'passthrough' },
+      { decision: 'ask' },
+      { decision: 'deny', reason: 'blocked' },
+    ]);
+    assert.equal(result.decision, 'deny');
+    assert.equal(result.reason, 'blocked');
+  });
+
+  it('carries classifier provenance on a bash-classifier verdict', () => {
+    const v: PermissionVerdict = {
+      decision: 'ask', classifier: 'bash', matchedRule: 'Bash(rm:*)',
+    };
+    assert.deepEqual(mostRestrictiveVerdict([{ decision: 'passthrough' }, v]), v);
   });
 });

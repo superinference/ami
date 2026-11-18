@@ -6,7 +6,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { addFileGlobRuleToGitignore } from './utils/git';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, stripHeredocBodies, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS, canonicalizePowerShellCommandName } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
@@ -488,7 +488,20 @@ export interface AutoModeSafetyContext {
  * each carrying an optional human-readable `reason` recorded against the denial log.
  */
 export interface AutoModeSafetyVerdict {
-  decision: 'allow' | 'ask' | 'deny';
+  /**
+   * `allow` confirms the deterministic auto-approval; `ask` downgrades it to a
+   * prompt; `deny` blocks it. `passthrough` is an explicit ABSTAIN ("no opinion —
+   * defer to the deterministic decision"), the first-class spelling of what a
+   * classifier previously could only express by returning `undefined`. It lets a
+   * composable/layered classifier decline to weigh in without being read as a
+   * positive `allow`. Mirrors Claude Code's `PermissionResult.behavior:
+   * 'passthrough'` and consolidates with the {@link PermissionVerdict} /
+   * {@link HookVerdict} `passthrough` abstain vocabulary (one canonical word for
+   * "defer" across the engine). Treated identically to `allow`/`undefined` by
+   * {@link PermissionManager.check}: the deterministic auto-approval stands and no
+   * downgrade reason or denial is recorded.
+   */
+  decision: 'allow' | 'ask' | 'deny' | 'passthrough';
   /** Why the classifier downgraded the approval (recorded for the UI / denial log). */
   reason?: string;
 }
@@ -1003,6 +1016,14 @@ export interface RecentDenial {
   display: string;
   /** What produced the denial. */
   source: 'rule' | 'hardline' | 'classifier' | 'mode';
+  /**
+   * When `source === 'classifier'`, WHICH classifier produced it — `'bash'` for the
+   * deterministic bash command classifier, `'auto-mode'` for the injected autonomous
+   * safety classifier. Lets `/permissions` show HOW a call was gated (parity with
+   * Claude's `ClassifierApproval.classifier` discriminant). Absent for non-classifier
+   * sources.
+   */
+  classifier?: 'bash' | 'auto-mode';
   /** Optional explanation. */
   reason?: string;
   /** Deterministic risk tier of the denied action, so a reviewer can triage the
@@ -1017,10 +1038,38 @@ export interface RecentDenial {
 // ---------------------------------------------------------------------------
 
 export interface PermissionVerdict {
-  decision: 'allow' | 'deny' | 'ask';
+  /**
+   * The outcome of a single permission evaluator.
+   *
+   * `passthrough` is a FOURTH, NEUTRAL outcome distinct from a terminal
+   * `allow`/`deny`/`ask`: a layered/composable evaluator can observe a tool call
+   * and DECLINE to decide ("no opinion — defer to the next evaluator"), without
+   * pinning the result to `allow`. It is the identity element of the
+   * {@link mostRestrictiveVerdict} lattice — a `passthrough` never overrides a
+   * real verdict and is always overridden by one, so a chain of evaluators can
+   * abstain until one of them actually decides. Mirrors Claude Code's
+   * `PermissionResult.behavior: 'passthrough'` (types/permissions.ts) and
+   * consolidates with the {@link HookVerdict} `passthrough` state in
+   * `hook-protection.ts` (one canonical abstain vocabulary across the engine).
+   */
+  decision: 'allow' | 'deny' | 'ask' | 'passthrough';
   rule?: string;
   source?: string;
   reason?: string;
+  /**
+   * Which classifier produced this verdict, when it came from one (vs a static
+   * rule): `'bash'` for the deterministic bash command classifier, `'auto-mode'`
+   * for the injected autonomous-safety classifier. Lets a UI explain HOW a tool
+   * use was gated/approved — parity with Claude's `ClassifierApproval.classifier`
+   * discriminant (utils/classifierApprovals.ts). Absent for static-rule verdicts.
+   */
+  classifier?: 'bash' | 'auto-mode';
+  /**
+   * For a `'bash'`-classifier verdict, the specific matched rule/pattern the
+   * classifier decided under (parity: `ClassifierApproval.matchedRule`), so a
+   * reviewer can answer "which rule approved this command". Absent otherwise.
+   */
+  matchedRule?: string;
 }
 
 export function verdictRank(decision: string): number {
@@ -1029,6 +1078,10 @@ export function verdictRank(decision: string): number {
     case 'modify': return 2;
     case 'ask': return 2;
     case 'allow': return 1;
+    // `passthrough` (abstain / "no opinion") is the lattice's neutral element:
+    // strictly below `allow`, so it never holds over a real verdict and is always
+    // overridden by one. An unknown decision shares this floor (fail-neutral).
+    case 'passthrough': return 0;
     default: return 0;
   }
 }
@@ -1043,8 +1096,18 @@ export function holdsOver(held: PermissionVerdict, answer: PermissionVerdict): b
   return heldHasAttribution && !answerHasAttribution;
 }
 
+/**
+ * Combine a chain of layered permission evaluators into one decision under the
+ * strictest-wins lattice. `passthrough` (abstain) is the neutral element: it never
+ * holds over a real verdict and is always overridden by one, so a chain of
+ * evaluators can defer until one actually decides. When EVERY evaluator abstains
+ * (all `passthrough`) the result is itself `passthrough` — "no layer had an
+ * opinion", which the caller resolves against its own default (parity with
+ * Claude's passthrough falling through to the normal permission flow). An empty
+ * chain is treated as abstain for the same reason.
+ */
 export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): PermissionVerdict {
-  if (verdicts.length === 0) return { decision: 'allow' };
+  if (verdicts.length === 0) return { decision: 'passthrough' };
   let best = verdicts[0];
   for (let i = 1; i < verdicts.length; i++) {
     if (holdsOver(verdicts[i], best)) {
@@ -1790,6 +1853,37 @@ function stripQuotedSections(command: string): string {
   // Remove single-quoted sections
   result = result.replace(/'[^']*'/g, '');
   return result;
+}
+
+/**
+ * True when a command cannot be tokenized by a real shell because a quote is left
+ * open — an UNBALANCED single or double quote. A single-pass quote-state walker with
+ * bash escape semantics: `\` escapes the next char OUTSIDE single quotes (inside
+ * `'…'` a backslash is literal and cannot escape the closing quote); double quotes
+ * are inert inside single quotes and vice-versa. If the scan ends still inside a
+ * quote, the shell's own tokenizer would error — so the naive whitespace/regex
+ * splitting AMI's classifier uses would see a DIFFERENT token stream than the shell.
+ *
+ * The permission classifier calls this to FAIL CLOSED: an unparseable command is
+ * classified `'unsafe'` (→ an explicit prompt) rather than being split with naive
+ * regexes and possibly auto-allowed. Mirrors Claude Code's "parse first, return
+ * passthrough / require-permission when parsing fails" gate (BashTool
+ * readOnlyValidation.ts: tryParseShellCommand → requires permission on failure).
+ */
+export function hasUnbalancedQuotes(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (escaped) { escaped = false; continue; }
+    // A backslash escapes the next char everywhere EXCEPT inside single quotes,
+    // where it is a literal (bash: single quotes have no escape mechanism).
+    if (c === '\\' && !inSingle) { escaped = true; continue; }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+  }
+  return inSingle || inDouble;
 }
 
 /**
@@ -5160,6 +5254,23 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   const rulePrefix = permissionRuleExtractPrefix(pattern);
   if (rulePrefix !== null && commandHasRulePrefix(strippedRaw, rulePrefix)) return true;
   if (matchPattern(pattern, strippedRaw)) return true;
+  // Env-prefix-scoped rule parity: Claude deliberately KEEPS leading `VAR=...`
+  // assignments in the matchable command prefix (`GOEXPERIMENT=synctest go test`,
+  // `PYTHONPATH=/tmp python3`) so an allow/deny rule can be scoped to a command
+  // TOGETHER WITH its specific env prefix (utils/bash/commands.ts L478-484). AMI
+  // otherwise strips env vars before matching, which makes a rule that names a
+  // SAFE_ENV_VARS prefix (e.g. `Bash(GOEXPERIMENT=synctest go test:*)`) unmatchable
+  // — `GOEXPERIMENT` is stripped from the command, so the prefix never lines up.
+  // When the RULE pattern ITSELF carries a leading env-var assignment, also match it
+  // against the command's RAW (unstripped) form. Additive + safe: only a rule that
+  // literally names the env prefix benefits — a bare `go test:*` rule still sees only
+  // the stripped command (the raw `GOEXPERIMENT=… go test` would NOT satisfy a bare
+  // `go test` prefix), so this never broadens an un-scoped allow.
+  if (ENV_VAR_ASSIGN_RE.test(pattern.trimStart())) {
+    const rawSub = sub.trim();
+    if (rulePrefix !== null && commandHasRulePrefix(rawSub, rulePrefix)) return true;
+    if (matchPattern(pattern, rawSub)) return true;
+  }
   // PowerShell cross-alias rule matching (Windows only — AMI's bash tool runs
   // PowerShell on Windows): a rule written for one spelling of a cmdlet also
   // matches the command's OTHER spellings of the same canonical cmdlet, so a
@@ -5885,7 +5996,12 @@ export class PermissionManager {
     } finally {
       this.classifierCheckingListener?.(false, toolName);
     }
-    if (!verdict || verdict.decision === 'allow') return 'allow';
+    // `allow`, an explicit `passthrough` abstain, or no verdict all FAIL OPEN to
+    // the deterministic auto-approval — the classifier declined to tighten it, so
+    // no downgrade reason or denial is recorded. `passthrough` is the first-class
+    // "no opinion" spelling of returning `undefined` (parity: Claude's passthrough
+    // falling through to the normal flow).
+    if (!verdict || verdict.decision === 'allow' || verdict.decision === 'passthrough') return 'allow';
     // Downgrade. Carry the reason to deriveDecisionReason so the prompt / denial
     // message can explain WHY the classifier gated this autonomous call.
     this._pendingClassifierReason = verdict.reason ?? '';
@@ -5895,7 +6011,7 @@ export class PermissionManager {
     // is NOT recorded — matching how a mode-driven `ask` does not trip the breaker.
     if (verdict.decision === 'deny') {
       const display = typeof input.command === 'string' ? input.command : toolName;
-      this.recordDenial(display, 'classifier', verdict.reason);
+      this.recordDenial(display, 'classifier', verdict.reason, 'auto-mode');
     }
     return verdict.decision;
   }
@@ -6656,6 +6772,16 @@ export class PermissionManager {
     const trimmed = stripped.trim();
     if (!trimmed) return 'safe';
 
+    // Fail-closed on an UNPARSEABLE command: if a quote is left open a real shell's
+    // tokenizer would error, so the naive whitespace/regex splitting below would see
+    // a different token stream than the shell actually runs — a parser differential
+    // that could hide a dangerous command (e.g. `echo "ls` auto-allowed as a bare
+    // `echo`). Classify it `'unsafe'` so it prompts rather than being proven safe.
+    // Heredoc bodies are stripped first so a legitimate `'`/`"` inside a heredoc body
+    // (not shell syntax) never trips the balance check. Mirrors Claude Code's
+    // tryParseShellCommand → require-permission-on-parse-failure gate.
+    if (hasUnbalancedQuotes(stripHeredocBodies(trimmed))) return 'unsafe';
+
     // Unwrap shell control structures so classification sees the body
     // commands, not the loop/if keywords. The original trimmed is kept
     // for regex checks that need the full command syntax (like rm -rf).
@@ -7193,7 +7319,12 @@ export class PermissionManager {
    * the single canonical denial recorder — do not add a parallel one. `source`
    * distinguishes a model/classifier block from a rule/hardline/mode deny.
    */
-  recordDenial(display?: string, source: RecentDenial['source'] = 'rule', reason?: string): void {
+  recordDenial(
+    display?: string,
+    source: RecentDenial['source'] = 'rule',
+    reason?: string,
+    classifier?: RecentDenial['classifier'],
+  ): void {
     this.consecutiveDenials++;
     this.totalDenials++;
     if (display !== undefined) {
@@ -7204,7 +7335,10 @@ export class PermissionManager {
         source === 'mode'
           ? undefined
           : classifyPermissionRisk('bash', { command: display }).riskLevel;
-      this._recentDenials.unshift({ display, source, reason, riskLevel, timestamp: Date.now() });
+      this._recentDenials.unshift({
+        display, source, reason, riskLevel, timestamp: Date.now(),
+        ...(classifier !== undefined ? { classifier } : {}),
+      });
       if (this._recentDenials.length > this.MAX_RECENT_DENIALS) {
         this._recentDenials.length = this.MAX_RECENT_DENIALS;
       }
