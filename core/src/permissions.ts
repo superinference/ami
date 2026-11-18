@@ -4545,6 +4545,61 @@ export function resolveConfigFolderScope(
   return matchConfigFolderRoot(filePath, cwd)?.scope ?? null;
 }
 
+/** Config folders that host a `skills/` subdir. `.ami-plugin` is excluded — plugin
+ *  bundles are not user-authored skills, so they get no skill-scoped grant. */
+const SKILL_CONFIG_FOLDER_NAMES = ['.ami', '.claude'] as const;
+
+/**
+ * When a write targets a file inside `<configRoot>/skills/<name>/…` (project or
+ * global), return that ONE skill's name plus a NARROW, least-privilege session rule
+ * scoped to just that skill dir — instead of the broad `<configRoot>/*` grant that
+ * would also hand over settings.json, hooks/, and every OTHER skill. Lets a user
+ * iterate on a single skill without granting blanket config-folder access. Mirrors
+ * Claude's `getClaudeSkillScope` (utils/permissions/filesystem.ts L101-157), widened
+ * to AMI's config folders (`.ami`, `.claude`) and both project + global skill dirs.
+ *
+ * Returns `null` (caller falls back to the broad config-folder grant) when the path
+ * is not inside a skill dir, is a loose file directly under `skills/` (no skill
+ * segment), or the skill segment is UNSAFE: empty, `.`, contains `..` (traversal), or
+ * carries a glob metacharacter (`* ? [ ]`) that would widen the pattern to ALL skills
+ * or enable pattern injection.
+ */
+export function getSkillScopeRule(
+  filePath: string,
+  cwd: string = process.cwd(),
+): { skillName: string; skillDir: string; ruleContent: string } | null {
+  if (!filePath) return null;
+  const abs = path.resolve(cwd, expandPath(filePath));
+  const absFolded = normalizeCaseForComparison(abs);
+  const home = os.homedir();
+  const bases: string[] = [];
+  for (const name of SKILL_CONFIG_FOLDER_NAMES) {
+    bases.push(path.resolve(cwd, name, 'skills'));
+    bases.push(path.join(home, name, 'skills'));
+  }
+  for (const base of bases) {
+    const baseFolded = normalizeCaseForComparison(base);
+    if (!absFolded.startsWith(baseFolded + path.sep)) continue;
+    // Slice the ORIGINAL (un-folded) path so the skill name keeps its real case —
+    // downstream path-glob matching is case-sensitive on POSIX.
+    const rest = abs.slice(base.length + path.sep.length);
+    const sepIdx = rest.indexOf(path.sep);
+    // Require a separator: the file must be INSIDE the skill dir, not a loose file
+    // directly under skills/ (which gets no skill scope).
+    if (sepIdx <= 0) return null;
+    const skillName = rest.slice(0, sepIdx);
+    // Reject empty/`.`/traversal (`..`) — a traversal segment would escape the skill
+    // dir and the broad-grant fallback is safer than a bad narrow rule.
+    if (!skillName || skillName === '.' || skillName.includes('..')) return null;
+    // Reject glob metacharacters: a skill literally named `*` (valid on POSIX) would
+    // produce `…/skills/*/*` and match EVERY skill, defeating the narrowing.
+    if (/[*?[\]]/.test(skillName)) return null;
+    const skillDir = path.join(base, skillName);
+    return { skillName, skillDir, ruleContent: `${skillDir}${path.sep}*` };
+  }
+  return null;
+}
+
 /**
  * Compute the pre-baked {@link PermissionUpdate} *suggestions* to attach to an
  * ask/deny permission decision — the "always allow X" candidates a prompt can
@@ -4712,6 +4767,18 @@ export function buildPermissionSuggestions(
       return suggestions;
     }
     const suggestions: PermissionUpdate[] = [];
+    // A write under `<configRoot>/skills/<name>/` offers a NARROW, least-privilege
+    // "allow edits to this skill only" session grant FIRST — scoped to just that one
+    // skill dir — so iterating on a skill does not require the blanket config-folder
+    // grant below (which would also expose settings.json, hooks/, and other skills).
+    // Mirrors Claude's getClaudeSkillScope skill-scoped addRules suggestion.
+    const skillScope = getSkillScopeRule(filePath, process.cwd());
+    if (skillScope) {
+      suggestions.push({
+        type: 'addRules', behavior: 'allow', destination: 'session',
+        rules: [{ toolName: canonical, ruleContent: skillScope.ruleContent }],
+      });
+    }
     // A write/create inside the agent's OWN config folder also offers a broader,
     // SESSION-scoped grant for that whole config folder — Claude's config-folder
     // "allow editing its own settings for this session" option — so the user is
