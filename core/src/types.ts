@@ -1843,6 +1843,17 @@ export interface EngineConfig {
   agentDepth?: number;
   /** Maximum subagent nesting depth (default 5). */
   maxAgentDepth?: number;
+  /** The agent type/name this engine runs as when forked (the `subagent_type` or the
+   *  built-in mode). Combined with {@link agentIsBuiltIn} to derive the agent
+   *  query-source provenance tag (`agent:builtin:<type>` / `agent:default` /
+   *  `agent:custom`) stamped on this engine's turn/api-call analytics events so local
+   *  usage introspection can be segmented by agent category. Absent on the main thread.
+   *  Parity: Claude's getQuerySourceForAgent (promptCategory.ts). */
+  agentType?: string;
+  /** Whether {@link agentType} names a BUILT-IN agent identity (vs a user-defined/custom
+   *  one). Non-built-in collapses the provenance tag to `agent:custom` so a custom agent
+   *  name never leaks into analytics. */
+  agentIsBuiltIn?: boolean;
   /** Maximum USD budget for the session. If set, the engine stops when total cost exceeds this amount. */
   maxBudgetUsd?: number;
   /** Wall-clock session limit in milliseconds. If set, the engine stops when elapsed time exceeds this. */

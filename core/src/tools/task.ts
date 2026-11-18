@@ -3461,6 +3461,11 @@ export const taskTool: ToolDefinition = {
       detachedMode: !!context.detachedMode,
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
+      // Agent provenance for the child's query-source analytics tag (parity: Claude's
+      // getQuerySourceForAgent). The raw type is only emitted for a BUILT-IN identity;
+      // a custom agent collapses to `agent:custom` in the helper so its name never leaks.
+      agentType: subagentType || mode,
+      agentIsBuiltIn: subagentIsBuiltIn,
       // Thinking is DISABLED by default for non-fork subagents to control
       // output-token cost across a fleet of delegations (mirrors Claude's runAgent,
       // which sets thinkingConfig {type:'disabled'} for regular sub-agents and only
