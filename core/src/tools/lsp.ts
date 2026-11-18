@@ -9,6 +9,7 @@ import {
 import { isLspEnabled } from './tool-gates';
 import { plural } from './tool-utils';
 import { filterGitIgnoredLocations } from './lsp-gitignore-filter';
+import { groupBy } from '../utils/group-by';
 
 /**
  * Position-based semantic LSP tool — parity with Claude Code's LSPTool.
@@ -121,14 +122,7 @@ const NO_RESULT_MESSAGE: Record<LspOperation, string> = {
 
 /** Group items by their rendered file path, preserving insertion order. */
 function groupByFile<T>(items: T[], uriOf: (item: T) => string | undefined): Map<string, T[]> {
-  const byFile = new Map<string, T[]>();
-  for (const item of items) {
-    const key = formatUri(uriOf(item));
-    const existing = byFile.get(key);
-    if (existing) existing.push(item);
-    else byFile.set(key, [item]);
-  }
-  return byFile;
+  return groupBy(items, (item) => formatUri(uriOf(item)));
 }
 
 function methodFor(op: LspOperation): string {

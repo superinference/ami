@@ -288,6 +288,7 @@ export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tok
 export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } from './tool-analytics';
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
+export { groupBy } from './utils/group-by';
 export { treeify } from './utils/treeify';
 export type { TreeNode, TreeValue, TreeifyOptions, TreeColorRole } from './utils/treeify';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';

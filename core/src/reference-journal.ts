@@ -23,6 +23,7 @@ import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
+import { memoizeWithLRU } from './utils/memoize';
 import { log, logError } from './logger';
 import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked } from './config';
 
@@ -501,12 +502,18 @@ export function canonicalizePath(p: string): string {
   return p.normalize('NFC');
 }
 
-/** Memoize the expensive git-root resolution per input cwd — `projectStateDir`
- *  and friends are called many times per turn and must not re-spawn `git`. */
-const _gitRootCache = new Map<string, string>();
-
 /** Hard ceiling so a wedged git invocation can never hang project-path resolution. */
 const GIT_ROOT_TIMEOUT_MS = 2_000;
+
+/**
+ * Upper bound on distinct cwds whose git-root resolution is cached. `projectStateDir`
+ * and friends are called many times per turn (often with `dirname(file)` across many
+ * directories), so the result MUST be memoized — but with a BOUNDED LRU, not an
+ * unbounded Map: a long-running session editing files across hundreds of directories
+ * would otherwise accumulate cache entries forever. Parity with Claude Code's
+ * `findGitRoot`, which wraps the walk in `memoizeWithLRU(…, 50)` for the same reason.
+ */
+const GIT_ROOT_CACHE_MAX = 50;
 
 /**
  * Resolve `cwd` to the canonical MAIN git-worktree root so EVERY worktree (and
@@ -519,15 +526,18 @@ const GIT_ROOT_TIMEOUT_MS = 2_000;
  * linked worktree, so its parent is the main worktree root; we fall back to
  * `--show-toplevel` (current worktree root) and finally to {@link canonicalizePath}
  * of the cwd when `cwd` is not inside a git repo. Result is canonicalized and
- * cached. Never throws.
+ * cached (bounded LRU, {@link GIT_ROOT_CACHE_MAX} entries, keyed by `cwd`).
+ * Never throws.
+ *
+ * The `.cache` surface (`size`/`clear`/`has`/`get`) is an introspection/diagnostic
+ * seam: it lets an operator (or a test) observe that the cache stays bounded and
+ * reset it between isolated runs.
  */
-export function canonicalGitRoot(cwd: string): string {
-  const cached = _gitRootCache.get(cwd);
-  if (cached !== undefined) return cached;
-  const resolved = resolveGitRootUncached(cwd);
-  _gitRootCache.set(cwd, resolved);
-  return resolved;
-}
+export const canonicalGitRoot = memoizeWithLRU(
+  resolveGitRootUncached,
+  (cwd: string) => cwd,
+  GIT_ROOT_CACHE_MAX,
+);
 
 function runGit(args: string, cwd: string): string | null {
   try {

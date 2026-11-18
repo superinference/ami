@@ -19,6 +19,7 @@ import { abbreviateHome, isPathWithin } from './utils/path';
 import { scanForSecrets } from './tools/tool-utils';
 import { resolveConfiguredMemoryExcludes, resolveConfiguredExternalMemoryImports, resolveTeamMemoryLoadingEnabled } from './config';
 import { sequential } from './utils/sequential';
+import { groupBy } from './utils/group-by';
 import {
   isMemoryFileAccess,
   classifyToolSessionFileType,
@@ -3923,13 +3924,8 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       '',
     ];
 
-    // Group facts by category
-    const grouped = new Map<string, SessionFact[]>();
-    for (const fact of facts) {
-      const group = grouped.get(fact.category) || [];
-      group.push(fact);
-      grouped.set(fact.category, group);
-    }
+    // Group facts by category (shared, prototype-safe grouping helper).
+    const grouped = groupBy(facts, (fact) => fact.category);
 
     for (const [category, categoryFacts] of grouped) {
       lines.push(`### ${category}`);
