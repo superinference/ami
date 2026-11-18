@@ -160,6 +160,14 @@ export function resolveGitDir(startPath: string): string | null {
  * {@link resolveGitDir} before reading `HEAD`, so an agent/task running inside a
  * `.ami/worktrees/` worktree records its actual branch instead of an empty
  * string. Returns `''` on a detached HEAD, a non-repo, or any read failure.
+ *
+ * Defense-in-depth: the branch name is read directly off disk (`.git/HEAD`),
+ * which is attacker-controlled in a cloned/downloaded repo, and then flows into
+ * the journal's `gitBranch` field and the cross-agent spend-by-branch view. A
+ * tampered HEAD (`ref: refs/heads/$(…)`, control chars, `..` traversal) must not
+ * propagate, so the extracted ref is run through {@link isSafeRefName} and a
+ * name that fails the allowlist reads as `''` — parity with Claude's filesystem
+ * git reader, which validates every ref it reads from disk (gitFilesystem.ts).
  */
 export function readGitBranchFromDisk(cwd: string): string {
   const gitDir = resolveGitDir(cwd);
@@ -167,7 +175,10 @@ export function readGitBranchFromDisk(cwd: string): string {
   try {
     const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
     const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-    return m ? m[1] : '';
+    if (!m) return '';
+    const branch = m[1];
+    // Reject a tampered/unsafe ref read off disk before it reaches any consumer.
+    return isSafeRefName(branch) ? branch : '';
   } catch {
     return '';
   }
@@ -689,6 +700,60 @@ export function cleanupStaleWorktrees(
   }
 
   return { cleaned, failed };
+}
+
+/**
+ * Tear down the CURRENT session's worktree at interrupt/shutdown, NON-age-gated,
+ * when (and only when) it is change-free — the missing eager cleanup path.
+ *
+ * {@link cleanupStaleWorktrees} is the recurring, age-gated + throttled sweep:
+ * it never reclaims a same-session worktree created via `enter_worktree` because
+ * that worktree is always fresh (mtime < the age cutoff) and a throttled sweep
+ * may skip entirely. So a worktree entered in a session that is then interrupted
+ * (SIGTERM/SIGHUP/orphan-TTY) leaks until it is 30 days old. Claude destroys each
+ * session-created worktree immediately on shutdown regardless of age
+ * (utils/swarm/teamHelpers.ts cleanupSession → destroyWorktree); this is AMI's
+ * equivalent for the interactive `enter_worktree` session.
+ *
+ * SAFETY (never lose work): removal happens ONLY when {@link countWorktreeChanges}
+ * reports zero uncommitted AND zero unpushed commits — a dirty or unverifiable
+ * (`null`) worktree is KEPT so uncommitted work survives for review, matching
+ * AMI's "cleaned up if no changes, preserved for review otherwise" contract. On a
+ * successful removal the module's `currentSession` is cleared so a later sweep /
+ * repeated shutdown does not try to re-remove it.
+ *
+ * Returns true only when a worktree was actually removed. Best-effort and fully
+ * guarded, mirroring the sibling teardown hooks drained from engine.shutdown().
+ */
+export function removeSessionWorktreeIfClean(session: WorktreeSession | null = currentSession): boolean {
+  if (!session?.worktreePath) return false;
+  const worktreePath = session.worktreePath;
+  if (!fs.existsSync(worktreePath)) {
+    // Already gone — clear the stale reference if it was the active session.
+    if (session === currentSession) currentSession = null;
+    return false;
+  }
+  // Fail-closed: a dirty / unverifiable worktree is NEVER removed here. Count the
+  // session's own commits precisely via the recorded base commit so a base branch
+  // that itself has unpushed commits does not block cleanup of a work-free worktree.
+  const changes = countWorktreeChanges(worktreePath, session.originalCwd, {
+    baseCommit: session.originalHeadCommit,
+  });
+  if (changes === null || changes.uncommitted > 0 || changes.unpushed > 0) {
+    return false;
+  }
+  try {
+    gitExec(['worktree', 'remove', '--force', worktreePath], { cwd: session.originalCwd, timeout: 10000, stdio: 'ignore' });
+  } catch {
+    return false; // leave the worktree for the age-gated sweep rather than error
+  }
+  // Tear down the bound tmux session, if any, so a removed worktree never orphans
+  // its background multiplexer session (parity with the exit_worktree teardown).
+  if (session.tmuxSessionName) {
+    try { killTmuxSession(session.tmuxSessionName); } catch { /* best effort */ }
+  }
+  if (session === currentSession) currentSession = null;
+  return true;
 }
 
 /**

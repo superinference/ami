@@ -1467,8 +1467,13 @@ export function setupIsolatedWorktree(baseCwd: string, name: string): string {
  */
 export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, runningAgentCount: number): boolean {
   try {
-    const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
-    const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
+    // `--no-optional-locks`: a read-only status/rev-list must not take git's
+    // optional index lock, so this background cleanliness check can never contend
+    // with a concurrent git operation the user is running in the worktree (parity:
+    // Claude prefixes all read-only status reads with --no-optional-locks,
+    // utils/git.ts getIsClean/getChangedFiles).
+    const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
+    const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
     if (shouldRemoveWorktree(status, unpushed, runningAgentCount)) {
       child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', worktreePath], { cwd: baseCwd, timeout: 10000 });
       return true;
