@@ -13,6 +13,8 @@ import {
   buildRequestIdHeader,
   withRequestIdDebugTrace,
   REQUEST_ID_HEADER,
+  extractProviderRequestId,
+  PROVIDER_RESPONSE_REQUEST_ID_HEADERS,
   INTERLEAVED_THINKING_BETA,
   withExtraBody,
   streamChatCompletion,
@@ -124,6 +126,33 @@ describe('endpointAcceptsClientRequestId — managed-gateway gating', () => {
   });
   it('buildRequestIdHeader still injects by default', () => {
     assert.ok(buildRequestIdHeader()[REQUEST_ID_HEADER]);
+  });
+});
+
+describe('extractProviderRequestId — server correlation id from response headers', () => {
+  it('returns undefined when headers are omitted or empty', () => {
+    assert.equal(extractProviderRequestId(undefined), undefined);
+    assert.equal(extractProviderRequestId({}), undefined);
+  });
+  it('matches the first known header name, case-insensitively', () => {
+    assert.equal(extractProviderRequestId({ 'Anthropic-Request-Id': 'req_1' }), 'req_1');
+    assert.equal(extractProviderRequestId({ 'X-Request-Id': 'req_2' }), 'req_2');
+    assert.equal(extractProviderRequestId({ 'request-id': 'req_3' }), 'req_3');
+    assert.equal(extractProviderRequestId({ 'openai-request-id': 'req_4' }), 'req_4');
+  });
+  it('matches the echoed client request-id header', () => {
+    assert.equal(extractProviderRequestId({ [REQUEST_ID_HEADER]: 'req_client' }), 'req_client');
+  });
+  it('prefers anthropic-request-id over other present headers (first-match order)', () => {
+    const id = extractProviderRequestId({ 'x-request-id': 'b', 'anthropic-request-id': 'a' });
+    assert.equal(id, 'a');
+  });
+  it('ignores unrelated headers', () => {
+    assert.equal(extractProviderRequestId({ 'content-type': 'text/event-stream' }), undefined);
+  });
+  it('exposes the header priority list with anthropic-request-id first', () => {
+    assert.equal(PROVIDER_RESPONSE_REQUEST_ID_HEADERS[0], 'anthropic-request-id');
+    assert.ok(PROVIDER_RESPONSE_REQUEST_ID_HEADERS.includes(REQUEST_ID_HEADER));
   });
 });
 

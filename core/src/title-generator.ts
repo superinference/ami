@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { ProviderConfig, Message, StreamChunk } from './types';
-import { streamChatCompletion } from './provider';
+import { streamChatCompletion, extractProviderRequestId } from './provider';
 import { contentToText } from './session';
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './utils/display-tags';
 
@@ -357,29 +357,6 @@ function extractJsonStringField(raw: string, fields: readonly string[]): string 
   return block ? fromObject(block[0]) : undefined;
 }
 
-/** Response-header names a provider/gateway may carry a per-request correlation
- *  id under (first match wins), used as the aux-query `messageId` (parity with
- *  Claude recording `response.message.id`). Lower-cased lookup. */
-const MESSAGE_ID_HEADERS = [
-  'anthropic-request-id',
-  'x-superinference-request-id',
-  'x-request-id',
-  'request-id',
-  'openai-request-id',
-] as const;
-
-/** Pull a correlation id out of a response's headers (case-insensitive), if any. */
-function extractMessageId(headers?: Record<string, string>): string | undefined {
-  if (!headers) return undefined;
-  const lower: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
-  for (const name of MESSAGE_ID_HEADERS) {
-    const v = lower[name];
-    if (v) return v;
-  }
-  return undefined;
-}
-
 export interface AuxQueryFailure { reason: AuxQueryErrorReason; error?: string }
 export interface AuxQueryOutcome {
   /** Raw concatenated model output (empty on an outer failure). */
@@ -445,7 +422,7 @@ export async function runAuxQuery(
         break;
       }
       if (chunk.type === 'done') {
-        messageId = extractMessageId((chunk as StreamChunk).responseHeaders);
+        messageId = extractProviderRequestId((chunk as StreamChunk).responseHeaders);
         break;
       }
     }

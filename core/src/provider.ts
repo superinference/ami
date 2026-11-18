@@ -983,6 +983,43 @@ export function appendRequestIdToError(errorText: string | undefined, requestId:
 }
 
 /**
+ * Response-header names a provider/gateway may carry a per-request correlation id
+ * under (first match wins). This is the SERVER-returned id surfaced on a `done` /
+ * `error` chunk's {@link StreamChunk.responseHeaders} — distinct from the CLIENT
+ * id minted via {@link buildRequestIdHeader} ({@link REQUEST_ID_HEADER}), though
+ * the latter is in the list so a gateway that echoes it back is still matched.
+ * Single source for every caller that needs the generation request-id (title /
+ * branch-name aux queries, the cache-preserving prompt-suggestion fork): parity
+ * with Claude Code recording `response.message.id` / the first assistant message's
+ * `requestId` for RL-dataset joins. Lower-cased lookup.
+ */
+export const PROVIDER_RESPONSE_REQUEST_ID_HEADERS = [
+  'anthropic-request-id',
+  REQUEST_ID_HEADER,
+  'x-request-id',
+  'request-id',
+  'openai-request-id',
+] as const;
+
+/**
+ * Pull the provider/gateway correlation id out of a response's headers
+ * (case-insensitive, first {@link PROVIDER_RESPONSE_REQUEST_ID_HEADERS} match).
+ * Returns `undefined` when no header is present or `headers` is omitted. Used to
+ * capture the generation request-id of a forked/background LLM run so it can be
+ * joined back to telemetry / RL datasets (parity: Claude's `generationRequestId`).
+ */
+export function extractProviderRequestId(headers?: Record<string, string>): string | undefined {
+  if (!headers) return undefined;
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  for (const name of PROVIDER_RESPONSE_REQUEST_ID_HEADERS) {
+    const v = lower[name];
+    if (v) return v;
+  }
+  return undefined;
+}
+
+/**
  * Wrap a fetch so each outgoing API request emits a debug trace of its pathname
  * and client request-id to the shared logger (gated by `AMI_DEBUG_LOG_LEVEL` /
  * component filter, like every other `log()` call — no new env knob). The id is
