@@ -335,6 +335,29 @@ export class CronScheduler {
   /** Bound process-exit release registered while this scheduler owns the lock, so
    *  an abrupt termination still frees the lock. Null when not registered. */
   private exitRelease: (() => void) | null = null;
+  /** Injectable programmatic kill-switch, polled once at tick entry. While it
+   *  returns true, tick() bails before firing/ageing anything — an already-running
+   *  scheduler stops dead mid-session without being torn down, and firing resumes
+   *  the moment it flips back. This is the CALLBACK form of the env-var
+   *  {@link CronScheduler.isDisabled} gate: a consumer (e.g. a feature gate, or a
+   *  teammate session that must let the lead own scheduled-task firing) can stop
+   *  this scheduler instance without an env var. Mirrors Claude's isKilled() option
+   *  (src/utils/cronScheduler.ts). Null = never killed by callback. */
+  private killSwitch: (() => boolean) | null = null;
+  /** Optional per-task predicate applied before ANY side effect. A job for which
+   *  this returns false is entirely invisible to this scheduler instance: never
+   *  fired, never stamped, never deleted/expired, never surfaced as missed, and
+   *  absent from getNextFireTime(). Lets one scheduler be scoped to a subset of the
+   *  tasks sharing a scheduled_tasks.json (e.g. a subagent session that should only
+   *  fire its OWN jobs). Mirrors Claude's per-task filter option
+   *  (src/utils/cronScheduler.ts). Null = every job is visible. */
+  private taskFilter: ((job: CronJob) => boolean) | null = null;
+  /** Optional liveness resolver for a job's owning teammate/sub-agent (agentId).
+   *  When set and it reports a job's agentId is gone, a due recurring cron owned by
+   *  that vanished teammate is pruned (with a diagnostic) instead of firing into
+   *  nowhere every tick. Null = no target tracking (jobs always fire). Mirrors
+   *  Claude's onFireTask orphaned-cron cleanup (src/hooks/useScheduledTasks.ts). */
+  private agentAliveCheck: ((agentId: string) => boolean) | null = null;
 
   constructor(cwd: string, sessionId?: string, jitterConfig: CronJitterConfig = DEFAULT_CRON_JITTER) {
     // Fail fast on a mis-specified jitter config (inverted one-shot window, a
@@ -407,6 +430,40 @@ export class CronScheduler {
   /** Enable/disable assistant-mode bypass of the busy/idle gate at runtime. */
   setAssistantMode(on: boolean): void {
     this.assistantMode = on;
+  }
+
+  /** Register (or clear with null) the injectable programmatic kill-switch polled
+   *  at tick entry. Complements the AMI_DISABLE_CRON env gate with a callback a
+   *  consumer can flip at runtime (feature gate, teammate-vs-lead firing policy). */
+  setKillSwitch(fn: (() => boolean) | null): void {
+    this.killSwitch = fn;
+  }
+
+  /** Register (or clear with null) the per-task filter predicate. Honored by every
+   *  task-visiting path (getDueJobs, getNextFireTime, detectMissedTasks, expireOld)
+   *  so a filtered-out job is fully invisible to this scheduler instance. */
+  setTaskFilter(fn: ((job: CronJob) => boolean) | null): void {
+    this.taskFilter = fn;
+  }
+
+  /** Register (or clear with null) the owning-teammate liveness resolver used to
+   *  prune a due recurring cron whose target agent has disappeared. */
+  setAgentAliveCheck(fn: ((agentId: string) => boolean) | null): void {
+    this.agentAliveCheck = fn;
+  }
+
+  /** True when the scheduler is currently gated off — either by the env kill-switch
+   *  ({@link CronScheduler.isDisabled}) or the injectable {@link setKillSwitch}
+   *  callback. Introspection surface so a diagnostic can report whether ticks are
+   *  firing at all. */
+  isKilled(): boolean {
+    return CronScheduler.isDisabled() || (this.killSwitch?.() ?? false);
+  }
+
+  /** True when `job` is visible to this scheduler instance under the registered
+   *  {@link setTaskFilter} predicate (always true when no filter is set). */
+  private isVisible(job: CronJob): boolean {
+    return !this.taskFilter || this.taskFilter(job);
   }
 
   /** True when assistant-mode bypass is in effect — either set via setAssistantMode
@@ -633,6 +690,7 @@ export class CronScheduler {
   getNextFireTime(): number | null {
     let min = Infinity;
     for (const job of this.jobs.values()) {
+      if (!this.isVisible(job)) continue; // filtered-out jobs don't count toward the next fire
       if (typeof job.nextRun === 'number' && job.nextRun < min) min = job.nextRun;
     }
     return min === Infinity ? null : min;
@@ -642,6 +700,7 @@ export class CronScheduler {
     const now = Date.now();
     const due: CronJob[] = [];
     for (const job of this.jobs.values()) {
+      if (!this.isVisible(job)) continue; // filtered-out jobs are never fired
       if (!job.nextRun) continue;
       if (job.recurring) {
         // Forward jitter spreads recurring fires to avoid thundering herds; the
@@ -778,8 +837,10 @@ export class CronScheduler {
     // the scheduler started. Poll it every tick so an already-running scheduler
     // stops firing (and ageing) the moment the gate flips, without being torn
     // down — the timer keeps running and firing resumes if the gate clears.
-    // Mirrors Claude's isKilled() option (polled once per check() tick).
-    if (CronScheduler.isDisabled()) return;
+    // Mirrors Claude's isKilled() option (polled once per check() tick). The env
+    // gate and the injectable callback kill-switch ({@link setKillSwitch}) are both
+    // polled here so either can stop an already-running scheduler mid-session.
+    if (this.isKilled()) return;
     // Operator may retune jitter live (no restart); re-resolve once per tick.
     this.jitterConfig = this.resolveRuntimeJitter();
     // Keep our durable lease fresh (heartbeat) and detect if it was stolen/removed.
@@ -796,6 +857,16 @@ export class CronScheduler {
     // then one write persists them all at the end of the tick.
     let durableFired = false;
     for (const job of due) {
+      // Orphan cleanup: a recurring cron owned by a teammate/sub-agent that has
+      // disappeared would otherwise fire into nowhere every tick. When a liveness
+      // resolver is registered and reports the owner is gone, log a diagnostic and
+      // prune the job instead of firing it. Mirrors Claude's onFireTask orphaned-
+      // cron removal (src/hooks/useScheduledTasks.ts).
+      if (job.agentId && this.agentAliveCheck && !this.agentAliveCheck(job.agentId)) {
+        coreLog('cron', `teammate ${job.agentId} gone, removing orphaned cron ${job.id}`);
+        this.delete(job.id); // delete() clears any timer and persists if durable
+        continue;
+      }
       if (job.durable && !this.acquireLock()) continue;
       if (job.durable) durableFired = true;
       this.markRun(job.id, true);
@@ -957,6 +1028,7 @@ export class CronScheduler {
     const now = Date.now();
     const missed: CronJob[] = [];
     for (const job of this.jobs.values()) {
+      if (!this.isVisible(job)) continue; // filtered-out jobs are never surfaced as missed
       if (job.recurring) {
         // Recurring: a scheduled fire fell between the last fire and now.
         const nextRun = this.safeComputeNextRun(job.cron, job.lastFiredAt ?? job.createdAt, job.utc);
@@ -1181,6 +1253,7 @@ export class CronScheduler {
   private expireOld(onDue?: (job: CronJob) => void): void {
     const now = Date.now();
     for (const [id, job] of this.jobs) {
+      if (!this.isVisible(job)) continue;     // filtered-out jobs are never expired by this instance
       if (!job.recurring) continue;
       if (job.permanent) continue;            // permanent jobs never age out
       const maxAgeDays = job.maxAgeDays ?? MAX_AGE_DAYS;
