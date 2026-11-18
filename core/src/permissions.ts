@@ -3307,6 +3307,78 @@ function matchPattern(pattern: string, value: string, caseInsensitive = false): 
 }
 
 /**
+ * Resolve a FILE permission-rule pattern to its `(relativePattern, root)` pair,
+ * mirroring Claude Code's `patternWithRoot`
+ * (references/claude/claude-code-main/src/utils/permissions/filesystem.ts L852-917).
+ *
+ * The pattern's leading sigil chooses the directory it is anchored to, so the SAME
+ * rule string resolves to the SAME file regardless of which settings tier it came
+ * from. AMI previously matched file rules as raw globs against the literal path
+ * string, so a root-relative rule (`//etc/**`), a home-relative rule (`~/.ssh/**`)
+ * or a project-relative rule (`/src/**`) silently never matched a real absolute
+ * path — AMI even generates `//abs/**` suggestions via {@link createReadRuleSuggestion}
+ * that could not match. This restores per-root resolution:
+ *  - `//x`  → root `/` (filesystem-root-relative); one leading slash is dropped.
+ *  - `~/x`  → root = the NFC-normalized home directory.
+ *  - `/x`   → root = `sourceRoot` (the directory the rule's settings tier lives in,
+ *             i.e. the project root for project/local settings).
+ *  - bare `x` / `./x` → root `null` (root-agnostic); a leading `./` is stripped so
+ *    `./.env` matches `.env`.
+ */
+export function patternWithRoot(
+  pattern: string,
+  sourceRoot: string,
+  home: string = os.homedir(),
+): { relativePattern: string; root: string | null } {
+  if (pattern.startsWith('//')) {
+    return { relativePattern: pattern.slice(1), root: '/' };
+  }
+  if (pattern.startsWith('~/')) {
+    return { relativePattern: pattern.slice(1), root: home.normalize('NFC') };
+  }
+  if (pattern.startsWith('/')) {
+    return { relativePattern: pattern, root: sourceRoot };
+  }
+  const normalized = pattern.startsWith('./') ? pattern.slice(2) : pattern;
+  return { relativePattern: normalized, root: null };
+}
+
+/**
+ * Match a ROOTED file-rule pattern (`//…`, `~/…`, `/…`) against an absolute
+ * candidate path after resolving the pattern against its root via
+ * {@link patternWithRoot}. Returns `null` for a root-agnostic (bare / `./`) pattern
+ * so the caller falls back to AMI's existing raw-glob matcher — this keeps
+ * bare-pattern behavior byte-for-byte unchanged and makes the rooted-form resolution
+ * purely ADDITIVE (it can only make a rooted rule that previously could not match
+ * start matching the file it names).
+ *
+ * A trailing `/**` is treated gitignore-style: it matches BOTH the directory itself
+ * and everything inside it (parity with Claude stripping `/**` before handing the
+ * pattern to the `ignore` library, which matches a bare `dir` against `dir` and
+ * `dir/anything`).
+ */
+export function matchRootedFileRulePattern(
+  pattern: string,
+  absPath: string,
+  opts: { sourceRoot?: string; home?: string; caseInsensitive?: boolean } = {},
+): boolean | null {
+  const { relativePattern, root } = patternWithRoot(
+    pattern,
+    opts.sourceRoot ?? process.cwd(),
+    opts.home ?? os.homedir(),
+  );
+  if (root === null) return null; // root-agnostic — caller uses the raw matcher
+  const ci = opts.caseInsensitive ?? false;
+  const absPattern = path.posix.join(root.replace(/\\/g, '/'), relativePattern);
+  const candidate = absPath.replace(/\\/g, '/');
+  if (absPattern.endsWith('/**')) {
+    const base = absPattern.slice(0, -3);
+    if (ci ? candidate.toLowerCase() === base.toLowerCase() : candidate === base) return true;
+  }
+  return matchPattern(absPattern, candidate, ci);
+}
+
+/**
  * Normalize line continuations (backslash + newline) in a bash command.
  * Bash treats `\<newline>` as a line join — stripping it reveals the
  * actual command that will execute, preventing pattern-bypass via
@@ -5824,9 +5896,12 @@ export class PermissionManager {
 
       if (rule.pattern) {
         const inputStr = this.inputToString(toolName, input);
-        const matched = toolName === 'bash' && typeof input.command === 'string'
+        const matched = (toolName === 'bash' && typeof input.command === 'string'
           ? matchBashPattern(rule.pattern, inputStr, rule.action)
-          : matchPattern(rule.pattern, inputStr);
+          : matchPattern(rule.pattern, inputStr))
+          // ADDITIVE: a rooted file-rule pattern (`//abs/**`, `~/x`, `/src/**`) that
+          // the raw matcher cannot resolve still matches its named file per-root.
+          || this.matchFilePathRuleWithRoot(rule, toolName, input);
         if (matched) {
           const effective = (rule.action === 'allow' &&
             (isDestructiveToolCall || (codeExecDowngradeMode && this.isDangerousCodeExecAllow(rule)))) ? 'ask' : rule.action;
@@ -5961,9 +6036,12 @@ export class PermissionManager {
       if (!this.toolNameMatches(rule.tool, toolName)) continue;
       if (rule.paramPattern && !this.paramMatches(rule.paramPattern, input)) continue;
       const matches = rule.pattern
-        ? (toolName === 'bash' && command
+        ? ((toolName === 'bash' && command
             ? matchBashPattern(rule.pattern, command, rule.action)
             : matchPattern(rule.pattern, this.inputToString(toolName, input)))
+            // Attribute a verdict produced by the rooted file-rule resolution (above)
+            // to the rule that matched, so the reason is not left unattributed.
+            || this.matchFilePathRuleWithRoot(rule, toolName, input))
         : true;
       if (matches && (rule.action === decision)) {
         return {
@@ -7189,6 +7267,38 @@ export class PermissionManager {
       for (const hop of getPathsForPermissionCheck(expandPath(fp, process.cwd()))) forms.add(hop);
     } catch { /* resolution failure (e.g. a non-existent write target) — literal only */ }
     return [...forms];
+  }
+
+  /**
+   * ADDITIVE per-root match for a FILE-PATH rule whose pattern is written in a
+   * ROOTED form (`//abs/**`, `~/.ssh/**`, `/src/**`) that AMI's raw-glob matcher
+   * cannot resolve against an absolute candidate path. Resolves the pattern against
+   * its root via {@link matchRootedFileRulePattern} and matches it against the
+   * ABSOLUTE candidate path (and every symlink hop, so a rooted deny/ask/allow rule
+   * cannot be bypassed via an in-workspace symlink). Returns `false` for bash/non-file
+   * tools, content-less rules, or root-agnostic patterns (the existing raw matcher
+   * already handles those unchanged). Mirrors Claude's `matchingRuleForInput`
+   * (utils/permissions/filesystem.ts L955) per-root resolution step.
+   */
+  private matchFilePathRuleWithRoot(
+    rule: Pick<PermissionRule, 'pattern'>,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): boolean {
+    if (!rule.pattern) return false;
+    if (!FILE_PATH_RULE_TOOLS.has(normalizeToolName(toolName))) return false;
+    const fp = input.file_path ?? input.path;
+    if (typeof fp !== 'string' || !fp) return false;
+    const ci = this.pathRuleCaseInsensitive(toolName);
+    const abs = path.resolve(process.cwd(), expandPath(fp, process.cwd()));
+    const forms = new Set<string>([abs]);
+    try {
+      for (const hop of getPathsForPermissionCheck(abs)) forms.add(hop);
+    } catch { /* resolution failure — literal absolute form only */ }
+    for (const form of forms) {
+      if (matchRootedFileRulePattern(rule.pattern, form, { caseInsensitive: ci }) === true) return true;
+    }
+    return false;
   }
 
   /**
