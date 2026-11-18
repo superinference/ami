@@ -5,11 +5,16 @@ import {
   getVariablesByScope,
   deriveSecurityFlags,
   commandHasArgAbbreviation,
+  resolveToCanonical,
+  isPowerShellParameter,
 } from './powershell-parser';
 import type {
   ParsedPowerShellCommand,
   ParsedCommandElement,
+  CommandElementType,
 } from './powershell-parser';
+// Reuse the canonical filesystem-operation discriminant (no duplicate type).
+import type { FileOperationType } from '../permissions';
 
 /**
  * PowerShell Constrained Language Mode (CLM) type-cast security boundary.
@@ -1314,6 +1319,447 @@ export function isReadOnlyPowerShellCommand(command: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Per-cmdlet path-parameter configuration + path extraction.
+//
+// Mirrors Claude Code's PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
+// extractPathsFromCommand. Each config entry declares, per cmdlet, which
+// parameters carry filesystem paths (validated), which are switches (consume no
+// value), and which are value-taking non-path params (consume a value, not a
+// path). The SECURITY MODEL is fail-safe: ANY -Param the config does not
+// recognize sets `hasUnvalidatablePathArg` so the caller forces an ask — this
+// ends the "a missing switch swallows the positional path" whack-a-mole.
+//
+// Three OPTIONAL per-cmdlet knobs tune extraction (each with an explicit default
+// so an omitted knob behaves identically to the reference):
+//   - leafOnlyPathParams (default: none) — a param (e.g. New-Item -Name) that
+//     PowerShell resolves RELATIVE TO another param, not cwd. Only a simple leaf
+//     filename is extracted; any value containing `/`, `\`, `.`, or `..` forces
+//     an ask (it would resolve against the wrong base).
+//   - positionalSkip (default: 0) — number of leading positional args that are
+//     NOT filesystem paths (e.g. 1 for Invoke-WebRequest, whose positional-0 is
+//     a `-Uri` URL). Without this a URL is mis-extracted as a path.
+//   - optionalWrite (default: false) — a write cmdlet that only touches disk when
+//     a path param is present (e.g. iwr/irm without -OutFile write to the
+//     pipeline, not disk). Skips the "write with no target → ask" rule.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-cmdlet parameter configuration consumed by
+ * {@link extractPowerShellCommandPaths}. Common parameters (-Verbose,
+ * -ErrorAction, …) are NOT listed here — they are merged in from
+ * {@link COMMON_SWITCHES} / {@link COMMON_VALUE_PARAMS} at lookup time. Parameter
+ * names are lowercase with a leading dash to match runtime comparison.
+ */
+export type CmdletPathConfig = {
+  /** Whether this cmdlet reads or writes to the filesystem. */
+  operationType: FileOperationType;
+  /** Parameters that accept file paths (extracted + validated). */
+  pathParams: string[];
+  /** Switch parameters that take NO value (next arg is NOT consumed). */
+  knownSwitches: string[];
+  /** Value-taking params that are NOT paths (next arg consumed, not validated). */
+  knownValueParams: string[];
+  /**
+   * Params accepting a leaf filename resolved by PowerShell relative to ANOTHER
+   * param (not cwd). Safe to extract only when the value is a simple leaf (no
+   * `/`, `\`, `.`, `..`); non-leaf values force an ask. Default: none.
+   */
+  leafOnlyPathParams?: string[];
+  /**
+   * Number of leading positional args to SKIP (not extracted as paths) — used
+   * where positional-0 is a non-path value (e.g. Invoke-WebRequest's -Uri URL).
+   * Default: 0.
+   */
+  positionalSkip?: number;
+  /**
+   * When true, the cmdlet only writes to disk when a pathParam is present;
+   * without one it is effectively a read (output → pipeline). Skips the "write
+   * with no target path" forced-ask. Cmdlets that ALWAYS write must NOT set this.
+   * Default: false.
+   */
+  optionalWrite?: boolean;
+};
+
+/**
+ * Per-cmdlet path-parameter table. Keyed by the canonical (alias-resolved,
+ * lowercase) cmdlet name — look up with {@link resolveToCanonical}.
+ */
+export const CMDLET_PATH_CONFIG: Record<string, CmdletPathConfig> = {
+  // ─── Write/create operations ──────────────────────────────────────────────
+  'set-content': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction', '-nonewline', '-asbytestream'],
+    knownValueParams: ['-value', '-filter', '-include', '-exclude', '-credential', '-encoding', '-stream'],
+  },
+  'add-content': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction', '-nonewline', '-asbytestream'],
+    knownValueParams: ['-value', '-filter', '-include', '-exclude', '-credential', '-encoding', '-stream'],
+  },
+  'remove-item': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-recurse', '-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
+  },
+  'clear-content': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
+  },
+  'out-file': {
+    operationType: 'write',
+    // -Path is PowerShell's documented ALIAS for -FilePath.
+    pathParams: ['-filepath', '-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-append', '-force', '-noclobber', '-nonewline', '-whatif', '-confirm'],
+    knownValueParams: ['-inputobject', '-encoding', '-width'],
+  },
+  'tee-object': {
+    operationType: 'write',
+    pathParams: ['-filepath', '-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-append'],
+    knownValueParams: ['-inputobject', '-variable', '-encoding'],
+  },
+  'export-csv': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-append', '-force', '-noclobber', '-notypeinformation', '-includetypeinformation', '-useculture', '-noheader', '-whatif', '-confirm'],
+    knownValueParams: ['-inputobject', '-delimiter', '-encoding', '-quotefields', '-usequotes'],
+  },
+  'export-clixml': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-noclobber', '-whatif', '-confirm'],
+    knownValueParams: ['-inputobject', '-depth', '-encoding'],
+  },
+  'new-item': {
+    operationType: 'write',
+    // -Path is position 0. -Name (leaf-only) is resolved RELATIVE TO -Path, so a
+    // non-leaf value forces an ask (it would resolve against the wrong base).
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    leafOnlyPathParams: ['-name'],
+    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-itemtype', '-value', '-credential', '-type'],
+  },
+  'copy-item': {
+    operationType: 'write',
+    // -Path (source) + -Destination (dest) both extracted + validated as write.
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destination'],
+    knownSwitches: ['-container', '-force', '-passthru', '-recurse', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-fromsession', '-tosession'],
+  },
+  'move-item': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destination'],
+    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential'],
+  },
+  'rename-item': {
+    operationType: 'write',
+    // -NewName is leaf-only per docs and Rename-Item rejects `..`, so it is a
+    // knownValueParam (not leafOnly) — unlike New-Item -Name which accepts it.
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-newname', '-credential', '-filter', '-include', '-exclude'],
+  },
+  'set-item': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-value', '-credential', '-filter', '-include', '-exclude'],
+  },
+  'invoke-webrequest': {
+    operationType: 'write',
+    pathParams: ['-outfile', '-infile'],
+    positionalSkip: 1, // positional-0 is -Uri (URL), not a filesystem path
+    optionalWrite: true, // only writes with -OutFile; bare iwr is pipeline-only
+    knownSwitches: ['-allowinsecureredirect', '-allowunencryptedauthentication', '-disablekeepalive', '-nobodyprogress', '-passthru', '-preservefileauthorizationmetadata', '-resume', '-skipcertificatecheck', '-skipheadervalidation', '-skiphttperrorcheck', '-usebasicparsing', '-usedefaultcredentials'],
+    knownValueParams: ['-uri', '-method', '-body', '-contenttype', '-headers', '-maximumredirection', '-maximumretrycount', '-proxy', '-proxycredential', '-retryintervalsec', '-sessionvariable', '-timeoutsec', '-token', '-transferencoding', '-useragent', '-websession', '-credential', '-authentication', '-certificate', '-certificatethumbprint', '-form', '-httpversion'],
+  },
+  'invoke-restmethod': {
+    operationType: 'write',
+    pathParams: ['-outfile', '-infile'],
+    positionalSkip: 1,
+    optionalWrite: true,
+    knownSwitches: ['-allowinsecureredirect', '-allowunencryptedauthentication', '-disablekeepalive', '-followrellink', '-nobodyprogress', '-passthru', '-preservefileauthorizationmetadata', '-resume', '-skipcertificatecheck', '-skipheadervalidation', '-skiphttperrorcheck', '-usebasicparsing', '-usedefaultcredentials'],
+    knownValueParams: ['-uri', '-method', '-body', '-contenttype', '-headers', '-maximumfollowrellink', '-maximumredirection', '-maximumretrycount', '-proxy', '-proxycredential', '-responseheaderstvariable', '-retryintervalsec', '-sessionvariable', '-statuscodevariable', '-timeoutsec', '-token', '-transferencoding', '-useragent', '-websession', '-credential', '-authentication', '-certificate', '-certificatethumbprint', '-form', '-httpversion'],
+  },
+  'expand-archive': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destinationpath'],
+    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm'],
+    knownValueParams: [],
+  },
+  'compress-archive': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destinationpath'],
+    knownSwitches: ['-force', '-update', '-passthru', '-whatif', '-confirm'],
+    knownValueParams: ['-compressionlevel'],
+  },
+  'set-itemproperty': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-name', '-value', '-type', '-filter', '-include', '-exclude', '-credential', '-inputobject'],
+  },
+  'new-itemproperty': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-name', '-value', '-propertytype', '-type', '-filter', '-include', '-exclude', '-credential'],
+  },
+  'remove-itemproperty': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-name', '-filter', '-include', '-exclude', '-credential'],
+  },
+  'clear-item': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential'],
+  },
+  'export-alias': {
+    operationType: 'write',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-append', '-force', '-noclobber', '-passthru', '-whatif', '-confirm'],
+    knownValueParams: ['-name', '-description', '-scope', '-as'],
+  },
+  // ─── Read operations ──────────────────────────────────────────────────────
+  'get-content': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-usetransaction', '-wait', '-raw', '-asbytestream'],
+    knownValueParams: ['-readcount', '-totalcount', '-tail', '-first', '-head', '-last', '-filter', '-include', '-exclude', '-credential', '-delimiter', '-encoding', '-stream'],
+  },
+  'get-childitem': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-recurse', '-force', '-name', '-usetransaction', '-followsymlink', '-directory', '-file', '-hidden', '-readonly', '-system'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-depth', '-attributes', '-credential'],
+  },
+  'get-item': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-force', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
+  },
+  'get-filehash': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: [],
+    knownValueParams: ['-algorithm', '-inputstream'],
+  },
+  'test-path': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-isvalid', '-usetransaction'],
+    knownValueParams: ['-filter', '-include', '-exclude', '-pathtype', '-credential', '-olderthan', '-newerthan'],
+  },
+  'select-string': {
+    operationType: 'read',
+    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
+    knownSwitches: ['-simplematch', '-casesensitive', '-quiet', '-list', '-notmatch', '-allmatches', '-noemphasis', '-raw'],
+    knownValueParams: ['-inputobject', '-pattern', '-include', '-exclude', '-encoding', '-context', '-culture'],
+  },
+};
+
+/**
+ * Element types safe to treat as a static filesystem path. Anything else
+ * (Variable, SubExpression, ExpandableString, ScriptBlock, …) is a
+ * runtime-computed value whose path cannot be statically validated — it forces
+ * an ask. Mirrors Claude's SAFE_PATH_ELEMENT_TYPES.
+ */
+const SAFE_PATH_ELEMENT_TYPES: ReadonlySet<CommandElementType> = new Set<CommandElementType>(['StringConstant', 'Parameter']);
+
+/**
+ * True if a lowercase parameter name (leading dash) matches any entry in
+ * `paramList`, honoring PowerShell's unambiguous-prefix matching (`-Lit` matches
+ * `-LiteralPath`). Mirrors Claude's `matchesParam`.
+ */
+function matchesCmdletParam(paramLower: string, paramList: readonly string[]): boolean {
+  for (const p of paramList) {
+    if (p === paramLower || (paramLower.length > 1 && p.startsWith(paramLower))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True if a colon-syntax value (`-Path:<value>`) contains expression constructs
+ * (arrays, subexpressions, variables, backtick escapes) that mask the real
+ * runtime path. The outer CommandParameterAst hides these from the AST walk, so
+ * they are detected textually. Mirrors Claude's `hasComplexColonValue`.
+ */
+function hasComplexColonValue(rawValue: string): boolean {
+  return (
+    rawValue.includes(',') ||
+    rawValue.startsWith('(') ||
+    rawValue.startsWith('[') ||
+    rawValue.includes('`') ||
+    rawValue.includes('@(') ||
+    rawValue.startsWith('@{') ||
+    rawValue.includes('$')
+  );
+}
+
+/**
+ * Extract filesystem paths from a parsed PowerShell command element using
+ * {@link CMDLET_PATH_CONFIG}. Returns the extracted `paths`, the cmdlet's
+ * `operationType`, `hasUnvalidatablePathArg` (true when any unknown -Param or
+ * non-static value means the invocation cannot be statically validated → the
+ * caller must ask), and the resolved `optionalWrite` knob.
+ *
+ * Mirrors Claude Code's PowerShellTool/pathValidation.ts `extractPathsFromCommand`,
+ * including the three config knobs (leafOnlyPathParams / positionalSkip /
+ * optionalWrite) with their defaults (none / 0 / false).
+ */
+export function extractPowerShellCommandPaths(cmd: ParsedCommandElement): {
+  paths: string[];
+  operationType: FileOperationType;
+  hasUnvalidatablePathArg: boolean;
+  optionalWrite: boolean;
+} {
+  const canonical = resolveToCanonical(cmd.name);
+  const config = CMDLET_PATH_CONFIG[canonical];
+
+  if (config === undefined) {
+    return { paths: [], operationType: 'read', hasUnvalidatablePathArg: false, optionalWrite: false };
+  }
+
+  const switchParams = [...config.knownSwitches, ...COMMON_SWITCHES];
+  const valueParams = [...config.knownValueParams, ...COMMON_VALUE_PARAMS];
+
+  const paths: string[] = [];
+  const args = cmd.args;
+  const elementTypes = cmd.elementTypes;
+  let hasUnvalidatablePathArg = false;
+  let positionalsSeen = 0;
+  const positionalSkip = config.positionalSkip ?? 0;
+
+  const checkArgElementType = (argIdx: number): void => {
+    if (elementTypes === undefined) return;
+    const et = elementTypes[argIdx + 1];
+    if (et !== undefined && !SAFE_PATH_ELEMENT_TYPES.has(et)) {
+      hasUnvalidatablePathArg = true;
+    }
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === undefined) continue;
+
+    const argElementType = elementTypes ? elementTypes[i + 1] : undefined;
+    if (isPowerShellParameter(arg, argElementType)) {
+      // Normalize Unicode dash to ASCII `-` and split off any colon-bound value.
+      const normalized = '-' + arg.slice(1);
+      const colonIdx = normalized.indexOf(':', 1);
+      const paramName = colonIdx > 0 ? normalized.substring(0, colonIdx) : normalized;
+      const paramLower = paramName.toLowerCase();
+
+      if (matchesCmdletParam(paramLower, config.pathParams)) {
+        let value: string | undefined;
+        if (colonIdx > 0) {
+          const rawValue = arg.substring(colonIdx + 1);
+          if (hasComplexColonValue(rawValue)) {
+            hasUnvalidatablePathArg = true;
+          } else {
+            value = rawValue;
+          }
+        } else {
+          const nextVal = args[i + 1];
+          const nextType = elementTypes ? elementTypes[i + 2] : undefined;
+          if (nextVal !== undefined && !isPowerShellParameter(nextVal, nextType)) {
+            value = nextVal;
+            checkArgElementType(i + 1);
+            i++;
+          }
+        }
+        if (value !== undefined && value.length > 0) {
+          paths.push(value);
+        }
+      } else if (config.leafOnlyPathParams && matchesCmdletParam(paramLower, config.leafOnlyPathParams)) {
+        let value: string | undefined;
+        if (colonIdx > 0) {
+          const rawValue = arg.substring(colonIdx + 1);
+          if (hasComplexColonValue(rawValue)) {
+            hasUnvalidatablePathArg = true;
+          } else {
+            value = rawValue;
+          }
+        } else {
+          const nextVal = args[i + 1];
+          const nextType = elementTypes ? elementTypes[i + 2] : undefined;
+          if (nextVal !== undefined && !isPowerShellParameter(nextVal, nextType)) {
+            value = nextVal;
+            checkArgElementType(i + 1);
+            i++;
+          }
+        }
+        if (value !== undefined) {
+          if (value.includes('/') || value.includes('\\') || value === '.' || value === '..') {
+            // Non-leaf: cannot resolve correctly without joining against -Path.
+            hasUnvalidatablePathArg = true;
+          } else {
+            paths.push(value);
+          }
+        }
+      } else if (matchesCmdletParam(paramLower, switchParams)) {
+        // Known switch — takes no value; do not consume the next arg.
+      } else if (matchesCmdletParam(paramLower, valueParams)) {
+        if (colonIdx > 0) {
+          const rawValue = arg.substring(colonIdx + 1);
+          if (hasComplexColonValue(rawValue)) {
+            hasUnvalidatablePathArg = true;
+          }
+        } else {
+          const nextArg = args[i + 1];
+          const nextArgType = elementTypes ? elementTypes[i + 2] : undefined;
+          if (nextArg !== undefined && !isPowerShellParameter(nextArg, nextArgType)) {
+            checkArgElementType(i + 1);
+            i++;
+          }
+        }
+      } else {
+        // Unknown parameter — we do not understand this invocation. Fail safe.
+        hasUnvalidatablePathArg = true;
+        // Defense-in-depth: a colon-bound value might still be a path; extract it
+        // so deny-rule matching still runs.
+        if (colonIdx > 0) {
+          const rawValue = arg.substring(colonIdx + 1);
+          if (!hasComplexColonValue(rawValue)) {
+            paths.push(rawValue);
+          }
+        }
+      }
+      continue;
+    }
+
+    // Positional argument. Skip the configured number of leading non-path
+    // positionals (e.g. iwr's -Uri URL) before extracting the rest as paths.
+    if (positionalsSeen < positionalSkip) {
+      positionalsSeen++;
+      continue;
+    }
+    positionalsSeen++;
+    checkArgElementType(i);
+    paths.push(arg);
+  }
+
+  return {
+    paths,
+    operationType: config.operationType,
+    hasUnvalidatablePathArg,
+    optionalWrite: config.optionalWrite ?? false,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // AST-based PowerShell security validator.
 //
 // Mirrors Claude Code's PowerShellTool/powershellSecurity.ts
@@ -1596,6 +2042,35 @@ export function powershellCommandIsSafe(
     }
     if (flags.hasAssignments) {
       return askResult('Command modifies environment variables');
+    }
+  }
+
+  // Per-cmdlet path-parameter constraints (CMDLET_PATH_CONFIG). For every command
+  // whose cmdlet has a path config, extract its filesystem paths. The fail-safe
+  // security model asks when the invocation cannot be statically understood:
+  //   1. hasUnvalidatablePathArg — an unknown -Param, a non-static (Variable /
+  //      SubExpression / array) path value, or a non-leaf leaf-only value. We
+  //      cannot tell which path the command touches, so we ask.
+  //   2. a write cmdlet with NO extractable path and NOT optionalWrite — e.g.
+  //      `Set-Content` without a target. optionalWrite cmdlets (iwr/irm without
+  //      -OutFile write to the pipeline, not disk) are exempt.
+  // Mirrors Claude Code's PowerShellTool/pathValidation.ts
+  // checkPathConstraintsForStatement path-arg handling.
+  for (const cmd of allCommands) {
+    const extracted = extractPowerShellCommandPaths(cmd);
+    if (extracted.hasUnvalidatablePathArg) {
+      return askResult(
+        `${cmd.name} has a path argument that cannot be statically validated`,
+      );
+    }
+    if (
+      extracted.operationType !== 'read' &&
+      !extracted.optionalWrite &&
+      extracted.paths.length === 0
+    ) {
+      return askResult(
+        `${cmd.name} writes to the filesystem but no target path could be determined`,
+      );
     }
   }
 
