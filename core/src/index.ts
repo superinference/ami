@@ -422,6 +422,8 @@ export type { CustomizationSurface, StrictPluginOnlyPolicy } from './plugin-only
 export { reviewManagedSettings, managedApprovalPath, loadManagedApproval, saveManagedApproval, MANAGED_SETTINGS_DECISIONS } from './managed-settings-guard';
 export type { ManagedSettingsDecision, ManagedSettingsReview } from './managed-settings-guard';
 export { normalizeCommand, deobfuscateEnvExpansion, collapseWhitespace } from './tools/command-normalize';
+export { getCommandSpec, loadFigSpec, isSafeCommandSpecName, valueFlagsForCommand, BUILTIN_COMMAND_SPECS } from './tools/command-spec-registry';
+export type { CommandSpec, CommandOption, CommandArgument } from './tools/command-spec-registry';
 export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateToolName, validateToolDefinition, canonicalToolName, filterAvailableTools, toolMatchesName, findToolByName, TOOL_NAME_PATTERN, MAX_TOOL_NAME_LENGTH } from './tools/tool-registry-guard';
 export type { ToolConflict, RegistrableToolLike, ToolRegistryGuardOptions } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';

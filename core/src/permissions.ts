@@ -8,6 +8,7 @@ import { addFileGlobRuleToGitignore } from './utils/git';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
+import { valueFlagsForCommand } from './tools/command-spec-registry';
 import { unwrapWrapperChain } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -2661,7 +2662,7 @@ function extractBaseCommands(command: string, depth = 0): string[] {
       // Added alongside the raw adjacent-token bases above — never replaces them —
       // so existing matches are preserved. Mirrors Claude's findFirstSubcommand
       // spec-driven flag-value skipping (utils/shell/specPrefix.ts).
-      const spec = BASH_COMMAND_SPECS[cmd];
+      const spec = bashSpecFor(cmd);
       if (spec) {
         const sub = skipGlobalFlags(tokens, i + 1, spec);
         if (sub !== i + 1 && sub < tokens.length && !tokens[sub]!.startsWith('-')) {
@@ -2702,7 +2703,7 @@ function allSegmentsKnown(command: string): boolean {
     // flag-skipped `command subcommand` prefix, so `git -C /repo status` matches
     // `git status`. Mirrors Claude's spec-driven prefix extraction.
     if (!found && cmdTokens.length > 0) {
-      const spec = BASH_COMMAND_SPECS[cmdTokens[0]!];
+      const spec = bashSpecFor(cmdTokens[0]!);
       if (spec) {
         const sub = skipGlobalFlags(cmdTokens, 1, spec);
         for (let j = 2; j <= 3 && sub + (j - 2) < cmdTokens.length; j++) {
@@ -3518,6 +3519,21 @@ function flagTakesValue(flag: string, spec: BashCommandSpec | undefined): boolea
 }
 
 /**
+ * Resolve the {@link BashCommandSpec} for a command: the hand-maintained
+ * {@link BASH_COMMAND_SPECS} table first, then — for a command the table does not
+ * cover — a spec derived from the extensible command-spec registry's built-in
+ * value-flags ({@link valueFlagsForCommand}). This is the wiring that lets the
+ * registry widen flag-value skipping (and thus SAFE_PREFIXES matching) to more
+ * CLIs (e.g. `make -C dir test` → `make test`) without a second hardcoded table.
+ */
+function bashSpecFor(cmd: string): BashCommandSpec | undefined {
+  const existing = BASH_COMMAND_SPECS[cmd];
+  if (existing) return existing;
+  const valueFlags = valueFlagsForCommand(cmd);
+  return valueFlags ? { valueFlags } : undefined;
+}
+
+/**
  * Advance past leading global flags (and the values `spec` says they consume)
  * starting at `tokens[start]`, returning the index of the first non-flag token —
  * the real subcommand. `git -C /repo status` → the index of `status`;
@@ -3560,7 +3576,7 @@ export function getSimpleCommandPrefix(command: string): string | null {
   }
   const cmd = tokens[i];
   if (!cmd) return null;
-  const spec = BASH_COMMAND_SPECS[cmd];
+  const spec = bashSpecFor(cmd);
   // Skip leading global flags (and any value they consume) to reach the subcommand.
   i = skipGlobalFlags(tokens, i + 1, spec);
   // Resolve the effective depth: a COMPOUND (`command firstSubcommand`) override
