@@ -1314,7 +1314,8 @@ export const ENGINE_EVENT_TYPES = [
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
   'external_import_blocked', 'peer_message', 'background_task_complete',
-  'hook_response', 'max_turns_reached', 'classifier_checking', 'done',
+  'hook_response', 'max_turns_reached', 'classifier_checking',
+  'skill_improvement', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1666,6 +1667,23 @@ export type EngineEvent =
    *  `subscribeClassifierChecking` in `classifierApprovals.ts`). Emitted only when a
    *  classifier is installed and actually consulted for this call. */
   | { type: 'classifier_checking'; toolName: string; checking: boolean }
+  /** The skill-improvement lifecycle surfaced a user/introspection-facing signal.
+   *  AMI can write learned corrections back into a project `SKILL.md` (the `/skill
+   *  improve` flow + `SkillImprovementSurvey` apply affordance); this event makes
+   *  that otherwise-silent feature OBSERVABLE so the TUI, a diagnostic, and
+   *  `ami --introspect` can see WHEN it fired — mirroring Claude Code's structured
+   *  `skill_improvement_detected` signal (utils/hooks/skillImprovement.ts) and its
+   *  survey appeared/responded lifecycle events (hooks/useSkillImprovementSurvey.ts),
+   *  minus the vendor telemetry routing. `phase` discriminates the moment:
+   *    - `'detected'` — the classifier proposed `updateCount` edits for `skillName`
+   *      (the once-per-detection signal; `applied` omitted);
+   *    - `'responded'` — the user acted on a proposal: `applied` is `true` when the
+   *      SKILL.md was actually rewritten, `false` when the suggestion was dismissed.
+   *  `updateCount` is the number of proposed edits (carried on both phases so a
+   *  frontend can show "N improvements"). Emitted from a SINGLE engine site
+   *  ({@link drainSkillImprovementNotices}) so the TUI and the detached/SDK runner
+   *  receive an identical shape (the TUI↔CLI parity invariant). */
+  | { type: 'skill_improvement'; phase: 'detected' | 'responded'; skillName: string; updateCount: number; applied?: boolean }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**
