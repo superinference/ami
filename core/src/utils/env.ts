@@ -167,6 +167,15 @@ export const AMI_ENV_INT_LIMITS: readonly EnvLimitSpec[] = [
   { name: 'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', defaultValue: 20, upperLimit: 1000, min: 1 },
   { name: 'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION', defaultValue: 200, upperLimit: 100_000, min: 1 },
   { name: 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH', defaultValue: 0, upperLimit: 100, min: 0 },
+  // Output-length caps (parity: Claude Code's Doctor env-validation surface,
+  // Doctor.tsx L142-161 — BASH_MAX_OUTPUT_LENGTH / TASK_MAX_OUTPUT_LENGTH). These
+  // are the knobs the bash/task tools already clamp at their enforcing call sites
+  // (resolveBashMaxOutput → BASH_MAX_OUTPUT_UPPER_LIMIT; resolveTaskMaxChars →
+  // TASK_MAX_OUTPUT_UPPER_LIMIT, default DEFAULT_TASK_MAX_CHARS); surfacing them
+  // here so a misconfigured output cap is REPORTED by /doctor, not only silently
+  // clamped. Bounds kept in lock-step with those constants by a drift test.
+  { name: 'BASH_MAX_OUTPUT_LENGTH', defaultValue: 200_000, upperLimit: 200_000, min: 1 },
+  { name: 'TASK_MAX_OUTPUT_LENGTH', defaultValue: 32_000, upperLimit: 160_000, min: 1 },
 ];
 
 /**
