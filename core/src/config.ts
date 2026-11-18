@@ -693,6 +693,15 @@ export interface ProjectConfig {
    */
   copyOnSelect?: boolean;
   /**
+   * Persisted "always copy the full response" preference for `/copy` (parity: Claude
+   * Code's global-config `copyFullResponse` — commands/copy/copy.tsx L89-L92,L356-L369).
+   * When `true`, `/copy --list` bypasses the code-block picker menu entirely and copies
+   * the full reply directly (the picker's `always` opt-in, surfaced in AMI as
+   * `/copy --always`, persists this knob). Unset/`false` keeps the interactive
+   * `--list`/`--block` block-selection flow. Settable via `/config set copyFullResponse`.
+   */
+  copyFullResponse?: boolean;
+  /**
    * Interactive-TUI layout mode (parity: Claude Code's `isFullscreenEnvEnabled()`
    * fullscreen-vs-scrollback toggle). Defaults ON: AMI renders in the terminal's
    * ALTERNATE SCREEN buffer (a fixed-height fullscreen canvas that leaves the host
@@ -1982,7 +1991,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
   // cli env knobs by {@link applyConfigStartupKnobs} — declared here so they are
   // recognized (no spurious unknown-key warning) + base-type validated.
-  ['verbose', 'boolean'], ['copyOnSelect', 'boolean'], ['fullscreen', 'boolean'],
+  ['verbose', 'boolean'], ['copyOnSelect', 'boolean'], ['copyFullResponse', 'boolean'], ['fullscreen', 'boolean'],
   ['syntaxHighlightingDisabled', 'boolean'], ['showThinkingSummaries', 'boolean'],
   ['messageIdleNotifThresholdMs', 'number'], ['spinnerVerbs', 'object'],
   ['backgroundTasksEnabled', 'boolean'],
@@ -3772,6 +3781,7 @@ export function mergeConfigs(
     // dropped by the merge, so a file-tier value never reached the runtime.
     if (layer.verbose !== undefined) merged.verbose = layer.verbose;
     if (layer.copyOnSelect !== undefined) merged.copyOnSelect = layer.copyOnSelect;
+    if (layer.copyFullResponse !== undefined) merged.copyFullResponse = layer.copyFullResponse;
     if (layer.fullscreen !== undefined) merged.fullscreen = layer.fullscreen;
     if (layer.syntaxHighlightingDisabled !== undefined) merged.syntaxHighlightingDisabled = layer.syntaxHighlightingDisabled;
     if (layer.showThinkingSummaries !== undefined) merged.showThinkingSummaries = layer.showThinkingSummaries;
