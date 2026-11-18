@@ -813,6 +813,37 @@ export interface SessionListEntry {
 }
 
 /**
+ * Introspection counts for a {@link SessionManager.list} / {@link SessionManager.listWithDiagnostics}
+ * pass — the data that answers "why didn't my session show up in /resume?". Mirrors
+ * Claude Code's resume-discovery debug lines (sessionStorage.ts `found N session files`
+ * / `enriched N, M filtered out, K visible` + per-session filter reasons): instead of
+ * silently dropping an unreadable/filtered row, the listing tallies how many files were
+ * found, how many are visible, and how many were skipped broken down by reason, so a
+ * missing session is diagnosable rather than invisible.
+ */
+export interface SessionListDiagnostics {
+  /** Total session files discovered on disk ({@link SessionManager.listFiles}). */
+  found: number;
+  /** Entries returned to the caller (visible rows after every filter). */
+  listed: number;
+  /** Rows dropped for any reason (sum of {@link skippedByReason} values). */
+  skipped: number;
+  /** Per-reason skip tally — e.g. `unreadable`, `sidechain`, `current-session`,
+   *  `duplicate-id`, `empty`, `branch-filter`, `tag-filter`, `pr-filter`. A reason
+   *  with no drops is simply absent from the map. */
+  skippedByReason: Record<string, number>;
+}
+
+/** The skip reasons {@link SessionManager.list} records into a {@link SessionListDiagnostics}
+ *  sink. Exported so a consumer (e.g. the `/sessions` / `/resume` renderer) can label
+ *  each reason without re-deriving the string set. */
+export const SESSION_SKIP_REASONS = [
+  'unreadable', 'sidechain', 'current-session', 'duplicate-id',
+  'empty', 'branch-filter', 'tag-filter', 'pr-filter',
+] as const;
+export type SessionSkipReason = (typeof SESSION_SKIP_REASONS)[number];
+
+/**
  * Metadata recovered by a bounded head/tail read of a session file WITHOUT a full
  * `JSON.parse` of its transcript ({@link SessionManager.readSessionMetaLite}). Only
  * top-level scalar fields are extractable this way (the first-prompt preview and the
@@ -1680,8 +1711,33 @@ export class SessionManager {
      *  to {@link INITIAL_ENRICH_COUNT}. Pass `Infinity` to force a full parse of every
      *  row (the pre-enrichment behaviour). Parity: Claude's progressive enrichment. */
     enrichCount?: number;
+    /** Optional diagnostics sink: when supplied, {@link list} populates it with the
+     *  found/listed/skipped-by-reason counts for this pass (the introspection surface
+     *  behind {@link listWithDiagnostics} + the `/sessions` result's `diagnostics`),
+     *  so a session that is silently filtered out becomes diagnosable. */
+    diagnostics?: SessionListDiagnostics;
   } = {}): SessionListEntry[] {
     const files = this.listFiles();
+    // Diagnostics sink (parity: Claude's resume-discovery debug counts). `found` is
+    // every discovered file; `skip`/`skipN` tally dropped rows by reason as the pass
+    // runs; `listed` is stamped with the final visible count before returning.
+    const diag = opts.diagnostics;
+    if (diag) {
+      diag.found = files.length;
+      diag.listed = 0;
+      diag.skipped = 0;
+      diag.skippedByReason = {};
+    }
+    const skip = (reason: SessionSkipReason): void => {
+      if (!diag) return;
+      diag.skipped += 1;
+      diag.skippedByReason[reason] = (diag.skippedByReason[reason] ?? 0) + 1;
+    };
+    const skipN = (reason: SessionSkipReason, n: number): void => {
+      if (!diag || n <= 0) return;
+      diag.skipped += n;
+      diag.skippedByReason[reason] = (diag.skippedByReason[reason] ?? 0) + n;
+    };
 
     // Cheap stat-only pass: carry mtime (for candidate ordering) + size (reused
     // for fileSize so we never stat a file twice). A stat race just omits the file.
@@ -1721,29 +1777,29 @@ export class SessionManager {
         || (fileSize !== undefined && fileSize >= SKIP_PRECOMPACT_THRESHOLD);
       if (lite) {
         const entry = this.liteEntry(filePath, fileSize);
-        if (!entry) continue;
-        if (entry.isSidechain && !opts.includeSidechain) continue;
+        if (!entry) { skip('unreadable'); continue; }
+        if (entry.isSidechain && !opts.includeSidechain) { skip('sidechain'); continue; }
         const liteKey = String(entry.id);
-        if (opts.excludeId !== undefined && liteKey === String(opts.excludeId)) continue;
-        if (seenIds.has(liteKey)) continue;
+        if (opts.excludeId !== undefined && liteKey === String(opts.excludeId)) { skip('current-session'); continue; }
+        if (seenIds.has(liteKey)) { skip('duplicate-id'); continue; }
         seenIds.add(liteKey);
-        if (opts.dropEmpty && entry.summary === undefined) continue;
+        if (opts.dropEmpty && entry.summary === undefined) { skip('empty'); continue; }
         entries.push(entry);
         continue;
       }
 
       // Preview only needs inline data — skip blob rehydration for speed.
       const session = this.readSessionFile(filePath, false);
-      if (!session) continue;
+      if (!session) { skip('unreadable'); continue; }
 
       // Subagent sidechain transcripts never pollute the resume picker unless the
       // caller explicitly opts in (parity: Claude filters `isSidechain` logs out).
-      if (session.isSidechain && !opts.includeSidechain) continue;
+      if (session.isSidechain && !opts.includeSidechain) { skip('sidechain'); continue; }
 
       const idKey = String(session.id);
       // Exclude the live current session so it can't appear in its own picker.
-      if (opts.excludeId !== undefined && idKey === String(opts.excludeId)) continue;
-      if (seenIds.has(idKey)) continue;
+      if (opts.excludeId !== undefined && idKey === String(opts.excludeId)) { skip('current-session'); continue; }
+      if (seenIds.has(idKey)) { skip('duplicate-id'); continue; }
       seenIds.add(idKey);
 
       enriched++;
@@ -1752,7 +1808,7 @@ export class SessionManager {
       const summary = resolveSessionSummary(session, { lastPrompt, firstPrompt: preview });
       // Optionally drop a metadata-only session (no title and no real prompts),
       // matching Claude's listSessionsImpl which returns null for such logs.
-      if (opts.dropEmpty && summary === undefined) continue;
+      if (opts.dropEmpty && summary === undefined) { skip('empty'); continue; }
 
       // messageCount / gitBranch / metadata come at ~zero extra cost from the
       // already-parsed inline JSON; fileSize is reused from the stat pass.
@@ -1786,11 +1842,15 @@ export class SessionManager {
     let scoped = entries;
     if (opts.filterByBranch !== undefined) {
       const branch = opts.filterByBranch;
+      const before = scoped.length;
       scoped = scoped.filter(e => e.gitBranch === branch);
+      skipN('branch-filter', before - scoped.length);
     }
     if (opts.filterByTag !== undefined && opts.filterByTag.trim() !== '') {
       const tag = opts.filterByTag;
+      const before = scoped.length;
       scoped = scoped.filter(e => e.tag === tag);
+      skipN('tag-filter', before - scoped.length);
     }
 
     // PR scope filter (parity: Claude's filteredLogs PR filter) — applied after the
@@ -1798,12 +1858,32 @@ export class SessionManager {
     const filtered = opts.filterByPr !== undefined
       ? filterSessionsByPr(scoped, opts.filterByPr)
       : scoped;
+    skipN('pr-filter', scoped.length - filtered.length);
 
     // Sort by date descending (most recent first), ties broken on id for a stable,
     // deterministic paginated window — via the shared {@link compareSessionEntriesByDate}
     // comparator (reused by the cross-project aggregator so ordering never diverges).
     filtered.sort(compareSessionEntriesByDate);
+    if (diag) diag.listed = filtered.length;
     return filtered;
+  }
+
+  /**
+   * {@link list} plus the resume-discovery {@link SessionListDiagnostics} for the
+   * same pass — the introspection surface that answers "why didn't my session show up
+   * in /resume?" (parity: Claude's `/resume: enriched N, M filtered out, K visible`
+   * debug counts). Returns the visible entries AND a found/listed/skipped-by-reason
+   * tally, so `/sessions` can report how many files were on disk and why each hidden
+   * one was dropped, instead of silently omitting it. The entries are byte-for-byte
+   * what {@link list} returns with the same `opts` (the shared loop fills the sink —
+   * no second enumeration, no divergent filtering).
+   */
+  listWithDiagnostics(
+    opts: Parameters<SessionManager['list']>[0] = {},
+  ): { entries: SessionListEntry[]; diagnostics: SessionListDiagnostics } {
+    const diagnostics: SessionListDiagnostics = { found: 0, listed: 0, skipped: 0, skippedByReason: {} };
+    const entries = this.list({ ...opts, diagnostics });
+    return { entries, diagnostics };
   }
 
   /**
