@@ -1038,10 +1038,18 @@ export interface ProcessMetrics {
   heapTotal: number;
   heapUsed: number;
   external: number;
+  /** Memory held by allocated `ArrayBuffer`/`SharedArrayBuffer` (included in `external`);
+   *  surfaced separately so a buffer leak is distinguishable from other native memory. */
+  arrayBuffers: number;
   cpuUserUs: number;
   cpuSystemUs: number;
   /** CPU utilization since the previous sample (undefined on the first sample). */
   cpuPercent?: number;
+  /** The cgroup/container memory ceiling in bytes (`process.constrainedMemory()`), when the
+   *  process runs under a constraint (>0). Undefined when unconstrained or unsupported — so a
+   *  container's memory headroom is observable alongside `rss` (parity: Claude's
+   *  buildProcessMetrics `constrainedMemory`). */
+  constrainedMemory?: number;
 }
 
 /** Injectable process readers for {@link ProcessMetricsSampler} (deterministic tests). */
@@ -1050,6 +1058,9 @@ export interface ProcessMetricsDeps {
   cpuUsage?: () => NodeJS.CpuUsage;
   uptime?: () => number;
   now?: () => number;
+  /** The cgroup memory ceiling reader (`process.constrainedMemory`). Returns 0/undefined when
+   *  unconstrained; a reader that throws is treated as unsupported. */
+  constrainedMemory?: () => number | undefined;
 }
 
 /**
@@ -1066,12 +1077,19 @@ export class ProcessMetricsSampler {
   private readonly _cpu: () => NodeJS.CpuUsage;
   private readonly _uptime: () => number;
   private readonly _now: () => number;
+  private readonly _constrained: () => number | undefined;
 
   constructor(deps: ProcessMetricsDeps = {}) {
     this._mem = deps.memoryUsage ?? (() => process.memoryUsage());
     this._cpu = deps.cpuUsage ?? (() => process.cpuUsage());
     this._uptime = deps.uptime ?? (() => process.uptime());
     this._now = deps.now ?? Date.now;
+    // `process.constrainedMemory` is a Node 20+ (and Bun) API; absent on older/other
+    // runtimes, so bind it only when present and default to the no-constraint reader.
+    this._constrained = deps.constrainedMemory
+      ?? (typeof process.constrainedMemory === 'function'
+        ? () => process.constrainedMemory!()
+        : () => undefined);
   }
 
   sample(): ProcessMetrics | undefined {
@@ -1089,15 +1107,25 @@ export class ProcessMetricsSampler {
       }
       this._prevCpu = cpu;
       this._prevWallMs = now;
+      // cgroup/container memory ceiling: 0 (unconstrained), undefined (unsupported), or a
+      // non-finite reading are all treated as "no ceiling" — only a real positive limit is
+      // surfaced, so an unconstrained host never reports a meaningless 0-byte ceiling.
+      let constrained: number | undefined;
+      try {
+        const c = this._constrained();
+        if (typeof c === 'number' && Number.isFinite(c) && c > 0) constrained = c;
+      } catch { /* reader unsupported — leave undefined */ }
       return {
         uptime: this._uptime(),
         rss: mem.rss,
         heapTotal: mem.heapTotal,
         heapUsed: mem.heapUsed,
         external: mem.external,
+        arrayBuffers: mem.arrayBuffers,
         cpuUserUs: cpu.user,
         cpuSystemUs: cpu.system,
         ...(cpuPercent !== undefined ? { cpuPercent } : {}),
+        ...(constrained !== undefined ? { constrainedMemory: constrained } : {}),
       };
     } catch {
       return undefined;
@@ -1128,6 +1156,100 @@ export function getCiContext(env: NodeJS.ProcessEnv = process.env): Record<strin
     if (v) out[attr] = v;
   }
   return out;
+}
+
+/**
+ * Whether the process is running in a Continuous-Integration environment — the canonical
+ * `CI` env knob read through {@link isEnvTruthy} so `1`/`true`/`yes` all count and an
+ * explicit `0`/`false` does not (parity: Claude Code's `env.isCI = isEnvTruthy(process.env.CI)`).
+ * AGENTS.md's build scripts already *assume* CI-awareness (`CI=true skips local-only steps`);
+ * this makes the flag a first-class, testable read instead of scattered ad-hoc `process.env.CI`
+ * checks. `env` is injectable so callers/tests pass a fixed environment.
+ */
+export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env.CI);
+}
+
+/** Injectable filesystem probes for {@link detectDeploymentEnvironment} (deterministic tests). */
+export interface DeploymentEnvDeps {
+  /** Reads a hypervisor/identity file (default `fs.readFileSync`); used for AWS EC2 detection. */
+  readFileSync?: (p: string) => string;
+  /** Existence probe (default `fs.existsSync`); used for the `/.dockerenv` container marker. */
+  existsSync?: (p: string) => boolean;
+  /** Host platform, for the `unknown-<platform>` fallback (default `process.platform`). */
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Classify the runtime deployment environment from its env knobs + container markers,
+ * returning a canonical lower-case name (parity: Claude Code's `detectDeploymentEnvironment`,
+ * utils/env.ts). The precedence is fixed — most specific first — so e.g. GitHub Actions is
+ * reported as `github-actions` rather than the generic `ci`, and a cloud dev container
+ * (`codespaces`/`gitpod`/`replit`) wins over the orchestration/`docker` fallback:
+ *  1. cloud dev environments (codespaces, gitpod, replit, glitch)
+ *  2. cloud platforms (vercel, railway, render, netlify, heroku, fly.io, cloudflare-pages,
+ *     deno-deploy, aws-lambda/fargate/ecs/ec2, gcp-cloud-run/gcp, azure-*, digitalocean,
+ *     huggingface-spaces)
+ *  3. CI/CD platforms (github-actions, gitlab-ci, circleci, buildkite, generic `ci`)
+ *  4. container orchestration (kubernetes, docker)
+ *  5. `unknown-<platform>` else `unknown`.
+ * Pure + injectable (`env`, fs probes, platform) so it is deterministic in tests, and
+ * provider-neutral (no vendor coupling). Never throws — fs probes are isolated.
+ */
+export function detectDeploymentEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: DeploymentEnvDeps = {},
+): string {
+  const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, { encoding: 'utf8' }));
+  const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
+  const platform = deps.platform ?? process.platform;
+
+  // 1. Cloud development environments.
+  if (isEnvTruthy(env.CODESPACES)) return 'codespaces';
+  if (env.GITPOD_WORKSPACE_ID) return 'gitpod';
+  if (env.REPL_ID || env.REPL_SLUG) return 'replit';
+  if (env.PROJECT_DOMAIN) return 'glitch';
+
+  // 2. Cloud platforms.
+  if (isEnvTruthy(env.VERCEL)) return 'vercel';
+  if (env.RAILWAY_ENVIRONMENT_NAME || env.RAILWAY_SERVICE_NAME) return 'railway';
+  if (isEnvTruthy(env.RENDER)) return 'render';
+  if (isEnvTruthy(env.NETLIFY)) return 'netlify';
+  if (env.DYNO) return 'heroku';
+  if (env.FLY_APP_NAME || env.FLY_MACHINE_ID) return 'fly.io';
+  if (isEnvTruthy(env.CF_PAGES)) return 'cloudflare-pages';
+  if (env.DENO_DEPLOYMENT_ID) return 'deno-deploy';
+  if (env.AWS_LAMBDA_FUNCTION_NAME) return 'aws-lambda';
+  if (env.AWS_EXECUTION_ENV === 'AWS_ECS_FARGATE') return 'aws-fargate';
+  if (env.AWS_EXECUTION_ENV === 'AWS_ECS_EC2') return 'aws-ecs';
+  try {
+    if (read('/sys/hypervisor/uuid').trim().toLowerCase().startsWith('ec2')) return 'aws-ec2';
+  } catch { /* ENOENT off EC2 — ignore */ }
+  if (env.K_SERVICE) return 'gcp-cloud-run';
+  if (env.GOOGLE_CLOUD_PROJECT) return 'gcp';
+  if (env.WEBSITE_SITE_NAME || env.WEBSITE_SKU) return 'azure-app-service';
+  if (env.AZURE_FUNCTIONS_ENVIRONMENT) return 'azure-functions';
+  if (env.APP_URL?.includes('ondigitalocean.app')) return 'digitalocean-app-platform';
+  if (env.SPACE_CREATOR_USER_ID) return 'huggingface-spaces';
+
+  // 3. CI/CD platforms (specific before the generic `ci`).
+  if (isEnvTruthy(env.GITHUB_ACTIONS)) return 'github-actions';
+  if (isEnvTruthy(env.GITLAB_CI)) return 'gitlab-ci';
+  if (env.CIRCLECI) return 'circleci';
+  if (env.BUILDKITE) return 'buildkite';
+  if (isEnvTruthy(env.CI)) return 'ci';
+
+  // 4. Container orchestration.
+  if (env.KUBERNETES_SERVICE_HOST) return 'kubernetes';
+  try {
+    if (exists('/.dockerenv')) return 'docker';
+  } catch { /* probe failed — ignore */ }
+
+  // 5. Platform-specific fallback.
+  if (platform === 'darwin') return 'unknown-darwin';
+  if (platform === 'linux') return 'unknown-linux';
+  if (platform === 'win32') return 'unknown-win32';
+  return 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -3277,11 +3399,13 @@ export function truncateContent(
 export const OTEL_CARDINALITY_DEFAULTS: Record<string, boolean> = {
   'session.id': true,
   'service.version': true,
+  'deployment.environment': true,
 };
 
 const CARDINALITY_ENV_KEYS: Record<string, string> = {
   'session.id': 'AMI_OTEL_INCLUDE_SESSION_ID',
   'service.version': 'AMI_OTEL_INCLUDE_VERSION',
+  'deployment.environment': 'AMI_OTEL_INCLUDE_DEPLOYMENT',
 };
 
 /**
@@ -3308,10 +3432,19 @@ export function buildTelemetryResourceAttrs(
   if (shouldIncludeTelemetryAttr('session.id', env)) attrs['session.id'] = sessionId;
   // Provider-neutral environment dimensions so a self-hosted collector can
   // segment usage: host platform/arch/node version, terminal type (only when
-  // resolved), and CI context (only under GitHub Actions).
+  // resolved), deployment environment, and CI context (only under GitHub Actions).
   Object.assign(attrs, getEnvironmentFingerprint(env));
   const terminal = detectTerminalType(env);
   if (terminal) attrs['terminal.type'] = terminal;
+  // Deployment environment (codespaces/docker/kubernetes/aws-*/…): a low-cardinality
+  // dimension so a collector can split usage by where AMI runs. The generic `unknown*`
+  // fallbacks carry no signal, so they are elided to keep the attribute meaningful.
+  if (shouldIncludeTelemetryAttr('deployment.environment', env)) {
+    const deployment = detectDeploymentEnvironment(env);
+    if (!deployment.startsWith('unknown')) attrs['deployment.environment'] = deployment;
+  }
+  // Generic CI flag (any CI, not just GitHub Actions) alongside the richer GitHub context.
+  if (isCI(env)) attrs['ci'] = 'true';
   const ci = getCiContext(env);
   if (ci) Object.assign(attrs, ci);
   return { ...attrs, ...extra };

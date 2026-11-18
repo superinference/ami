@@ -592,15 +592,165 @@ export function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+/** Parse the release triple of a version, ignoring any `-prerelease`/`+build` tag (so the
+ *  whole comparator engine shares {@link compareSemver}'s prerelease-agnostic contract). A
+ *  missing segment is 0 and a non-numeric segment (e.g. `x`) yields `NaN`, which the
+ *  wildcard expander below replaces. */
+function versionTriple(v: string): [number, number, number] {
+  const core = v.trim().replace(/^[v=\s]+/, '').split(/[-+]/)[0];
+  const segs = core.split('.');
+  const num = (s: string | undefined): number => {
+    if (s === undefined || s === '' || s === 'x' || s === 'X' || s === '*') return NaN;
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n >= 0 ? n : NaN;
+  };
+  return [num(segs[0]), num(segs[1]), num(segs[2])];
+}
+
+/** A concrete comparator: an operator applied against a fully-resolved version triple. */
+interface Comparator { op: '<' | '<=' | '>' | '>=' | '='; v: [number, number, number]; }
+
+function cmpTriple(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) { if (a[i] > b[i]) return 1; if (a[i] < b[i]) return -1; }
+  return 0;
+}
+
+function testComparator(ver: [number, number, number], c: Comparator): boolean {
+  const r = cmpTriple(ver, c.v);
+  switch (c.op) {
+    case '<': return r < 0;
+    case '<=': return r <= 0;
+    case '>': return r > 0;
+    case '>=': return r >= 0;
+    case '=': return r === 0;
+  }
+}
+
 /**
- * Whether `current` (the running AMI version) satisfies a skill's `required`
- * minimum version. An absent/empty `required` imposes no floor (returns true —
- * the graceful default), mirroring Claude Code's `checkBridgeMinVersion` which
- * passes when the configured minVersion is the default "0.0.0".
+ * Expand a single range token into the set of concrete {@link Comparator}s it implies
+ * (AND-ed together). Supports the common npm-style forms: caret (`^1.2.3`), tilde
+ * (`~1.2`), the comparators `>`/`>=`/`<`/`<=`/`=`, bare exacts (`1.2.3`), and `x`/`*`
+ * wildcards (`1.x`, `1.2.*`, `*`). A bare `*`/`x`/empty token imposes no bound (matches
+ * any version). Returns null for a token that cannot be parsed, so the whole range fails
+ * closed rather than silently matching. Prerelease/build tags are ignored (shared with
+ * {@link compareSemver}).
+ */
+function expandComparator(tokenRaw: string): Comparator[] | null {
+  const token = tokenRaw.trim();
+  if (token === '' || token === '*' || token === 'x' || token === 'X') return [];
+
+  const m = /^(\^|~|>=|<=|>|<|=|)\s*(.+)$/.exec(token);
+  if (!m) return null;
+  const op = m[1];
+  const t = versionTriple(m[2]);
+  // How many leading segments were explicitly pinned (stop at the first wildcard/missing).
+  let pinned = 0;
+  for (; pinned < 3; pinned++) if (Number.isNaN(t[pinned])) break;
+  if (pinned === 0) return op === '' ? [] : null; // "^x"/">=*" etc. — no lower bound
+  const lo: [number, number, number] = [t[0], Number.isNaN(t[1]) ? 0 : t[1], Number.isNaN(t[2]) ? 0 : t[2]];
+
+  if (op === '^') {
+    // Caret: compatible-within-leading-nonzero. ^1.2.3 → >=1.2.3 <2.0.0; ^0.2.3 → <0.3.0;
+    // ^0.0.3 → <0.0.4. Partial carets (^1.2 / ^0) widen the floor's missing segments to 0.
+    let hi: [number, number, number];
+    if (lo[0] !== 0) hi = [lo[0] + 1, 0, 0];
+    else if (lo[1] !== 0) hi = [0, lo[1] + 1, 0];
+    else hi = [0, 0, lo[2] + 1];
+    return [{ op: '>=', v: lo }, { op: '<', v: hi }];
+  }
+  if (op === '~') {
+    // Tilde: allow patch-level (or minor when only major is pinned) changes.
+    const hi: [number, number, number] = pinned === 1 ? [lo[0] + 1, 0, 0] : [lo[0], lo[1] + 1, 0];
+    return [{ op: '>=', v: lo }, { op: '<', v: hi }];
+  }
+  if (op === '' || op === '=') {
+    // A partial bare version (`1`, `1.2`) is an implicit range over the unpinned segments
+    // (1 → >=1.0.0 <2.0.0; 1.2 → >=1.2.0 <1.3.0); a full `1.2.3` is an exact match.
+    if (pinned === 3) return [{ op: '=', v: lo }];
+    const hi: [number, number, number] = pinned === 1 ? [lo[0] + 1, 0, 0] : [lo[0], lo[1] + 1, 0];
+    return [{ op: '>=', v: lo }, { op: '<', v: hi }];
+  }
+  return [{ op: op as Comparator['op'], v: lo }];
+}
+
+/** Expand a space-separated AND-group, honoring the `A - B` hyphen-range form. */
+function expandAndGroup(group: string): Comparator[] | null {
+  const g = group.trim();
+  // Hyphen range `A - B` — a standalone ` - ` (surrounded by whitespace) separates the two
+  // bounds. Located by indexOf (no nested-quantifier regex) to stay ReDoS-safe.
+  const dashIdx = g.indexOf(' - ');
+  if (dashIdx > 0) {
+    const lo = versionTriple(g.slice(0, dashIdx));
+    const hi = versionTriple(g.slice(dashIdx + 3));
+    if (Number.isNaN(lo[0]) || Number.isNaN(hi[0])) return null;
+    return [
+      { op: '>=', v: [lo[0], Number.isNaN(lo[1]) ? 0 : lo[1], Number.isNaN(lo[2]) ? 0 : lo[2]] },
+      { op: '<=', v: [hi[0], Number.isNaN(hi[1]) ? 0 : hi[1], Number.isNaN(hi[2]) ? 0 : hi[2]] },
+    ];
+  }
+  const out: Comparator[] = [];
+  for (const tok of group.trim().split(/\s+/)) {
+    const cs = expandComparator(tok);
+    if (cs === null) return null;
+    out.push(...cs);
+  }
+  return out;
+}
+
+/**
+ * Whether `version` satisfies a semver `range` expression — the boundary engine AMI
+ * previously lacked (it only had point-to-point {@link compareSemver}). Supports the
+ * npm-style forms: caret (`^1.2.0`), tilde (`~1.3`), comparators (`>=1.0.0 <2.0.0`),
+ * exact + partial versions (`1.2.3`, `1.2`, `1`), `x`/`*` wildcards (`1.x`, `*`), hyphen
+ * ranges (`1.2.3 - 2.0.0`), compound AND (space) and OR (`||`). An empty range matches
+ * any valid version; a malformed `version` or a wholly-unparseable range fails closed
+ * (false). Prerelease/build tags are compared by their release portion, consistent with
+ * {@link compareSemver}. Parity: Claude Code's `satisfies(version, range)` (utils/semver.ts),
+ * implemented dependency-free so it stays a self-contained core building block.
+ */
+export function satisfies(version: string, range: string): boolean {
+  if (typeof version !== 'string' || typeof range !== 'string') return false;
+  const ver = versionTriple(version);
+  if (Number.isNaN(ver[0])) return false; // not a usable version
+  const triple: [number, number, number] = [ver[0], Number.isNaN(ver[1]) ? 0 : ver[1], Number.isNaN(ver[2]) ? 0 : ver[2]];
+  const trimmed = range.trim();
+  if (trimmed === '' || trimmed === '*' || trimmed === 'x' || trimmed === 'X') return true;
+  // OR across `||` groups; within a group every comparator must hold (AND).
+  return trimmed.split('||').some(group => {
+    const comps = expandAndGroup(group);
+    if (comps === null) return false;
+    return comps.every(c => testComparator(triple, c));
+  });
+}
+
+/**
+ * Whether `current` (the running AMI version) satisfies a skill's `required` version
+ * constraint. An absent/empty `required` imposes no floor (returns true — the graceful
+ * default), mirroring Claude Code's `checkBridgeMinVersion` default "0.0.0".
+ *
+ * FUNCTIONAL (additive, labeled): `required` now accepts a FULL semver RANGE expression
+ * (`^2.0.0`, `>=2 <4`, `2.x || 3.x`, `1.2.3 - 2.0.0`) via {@link satisfies}, not just a
+ * single minimum. A plain `X.Y.Z` (no range operator) KEEPS AMI's documented "minimum
+ * floor" semantics (`>=`) — a deliberate superset divergence from npm's "exact" reading of
+ * a bare version, preserving existing skill `requires: "2.1.0"` manifests — while any
+ * operator/wildcard/compound/OR form is evaluated as a true range.
  */
 export function isAmiVersionCompatible(required: string | undefined, current: string): boolean {
   if (!required || typeof required !== 'string' || !required.trim()) return true;
-  return compareSemver(current, required) >= 0;
+  const req = required.trim();
+  // A bare version (digits/dots only, no range operator) is a MINIMUM floor (AMI's perk);
+  // anything with a range operator/wildcard/compound/OR is a full range expression.
+  if (isBareVersion(req)) return compareSemver(current, req) >= 0;
+  return satisfies(current, req);
+}
+
+/** Whether `s` is a plain `[v]MAJOR[.MINOR[.PATCH]]` version — all-numeric segments, no range
+ *  operator/wildcard. Hand-rolled (no nested-quantifier regex) to stay ReDoS-safe. */
+function isBareVersion(s: string): boolean {
+  const body = s[0] === 'v' || s[0] === 'V' ? s.slice(1) : s;
+  const parts = body.split('.');
+  if (parts.length < 1 || parts.length > 3) return false;
+  return parts.every(p => p.length > 0 && /^\d+$/.test(p));
 }
 
 // ---------------------------------------------------------------------------

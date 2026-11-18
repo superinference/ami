@@ -25,7 +25,7 @@ export type { SkillDefinition, AgentDefinition, SkillManagerLike, EffortLevel, A
 export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_ARG_NAME_LENGTH, MAX_SKILL_ARG_VALUE_LENGTH, MAX_SKILL_ARG_TOTAL_CHARS, AGENT_SOURCES, getAgentSourceDisplayName, coerceDescriptionToString, EFFORT_LEVELS, parseEffort, isValidEffort, parseArgumentNames, AGENT_PERMISSION_MODES, BUBBLE_PERMISSION_MODE, AGENT_DECLARABLE_PERMISSION_MODES, validateAgentDefinition, AGENT_COLORS, parseAgentColor, AGENT_MEMORY_SCOPES, parseMemoryScope, AGENT_ISOLATION_MODES, parseIsolationMode, parseBackgroundFlag, parseAgentSkills, parseAllowedAgentTypes, canSpawnAgentType, hasRequiredMcpServers, filterAgentsByMcpRequirements, SAFE_SKILL_PROPERTIES, skillHasOnlySafeProperties, parseSkillAliases, isSkillEnabled, requiredEnvSatisfied, agentFileNameMismatch, missingSkillArgumentMessage, resolveSkillPrompt, getSkillFile, skillProgressMessage, DEFAULT_SKILL_PROGRESS_MESSAGE, SKILL_LOADING_PROGRESS_MESSAGE, defaultProgressMessage, progressMessageForKind, estimateSkillFrontmatterTokens, resolveAgentSystemPrompt, parseSkillUpdates, isValidSkillImprovement, formatSkillUpdates, parseBooleanFlag, REDACTED_SKILL_ARGS, redactSkillArgs, isSkillHidden, skillUserFacingName, isSkillAvailableNonInteractive, buildPreloadedSkillsBlock, PRELOADED_SKILLS_HEADING, resolveSkillName, isSkillImmediate, FRONTMATTER_SHELLS, DEFAULT_SHELL, parseShellFrontmatter, shellForExecution, formatToolNameList, progressiveArgumentHint, applySkillTemplateVariables, isBuiltInAgent, agentMemoryScopeDisplay, formatAgentMemoryDimension, resolveAgentModelDisplay, formatAgentSkillsList, AGENT_NONEDITABLE_SOURCES, isAgentEditable, agentIdentityKey, recommendedAgentMemoryScope, agentMemoryScopeOptions, AGENT_CREATION_METHODS, parseAgentCreationMethod, agentCreationMethodOptions, getFilesForLanguage, buildInlineReference, requiredMcpServerReadiness, substituteNamedArgPlaceholders, contentReferencesArgName, skillPluginRoot, agentPluginRoot, skillKind, SKILL_KINDS, scopedToolAllowRules, mcpToolNamespacePrefix, isMcpToolOfServer, deriveMcpToolAllowlist, parseMcpServerWildcard, isBashToolAllowRule, allowlistGrantsBash, classifyAgentMcpServerSpecs } from './skills';
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult, SkillSourcePolicy } from './skill-catalog';
-export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256, isValidCatalogName, isValidGitRef, isSkillSourceAllowed, validateInstalledSkillManifest, INSTALLED_MANIFEST_SCHEMA_VERSION, compareSemver, isAmiVersionCompatible, formatSkillSourceSuffix } from './skill-catalog';
+export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256, isValidCatalogName, isValidGitRef, isSkillSourceAllowed, validateInstalledSkillManifest, INSTALLED_MANIFEST_SCHEMA_VERSION, compareSemver, satisfies, isAmiVersionCompatible, formatSkillSourceSuffix } from './skill-catalog';
 // --- archive safety: ZIP reader with path/size/bomb guards + Unix-mode recovery ---
 export { parseZipModes, extractZip, isArchivePathSafe, ArchiveSafetyError, ARCHIVE_LIMITS } from './archive-safety';
 export type { ExtractedEntry, ExtractResult, ArchiveLimits } from './archive-safety';
@@ -133,7 +133,7 @@ export {
   getFileExtensionForAnalytics, getFileExtensionsFromBashCommand, sanitizeAgentName, MAX_FILE_EXTENSION_LENGTH,
   detectTerminalType, getHostPlatformForAnalytics, HOST_PLATFORM_OVERRIDES, getEnvironmentFingerprint, detectWslForAnalytics,
   DEFAULT_SHUTDOWN_TIMEOUT_MS, resolveShutdownTimeoutMs, stripLocalOnlyFields, resolveLocalOnlyFields,
-  getCiContext, getOrCreateUserId, USER_ID_FILE, getUserBucket, NUM_USER_BUCKETS,
+  getCiContext, isCI, detectDeploymentEnvironment, getOrCreateUserId, USER_ID_FILE, getUserBucket, NUM_USER_BUCKETS,
   bucketHttpStatus, deriveHttpStatusFields,
   parseExporterTypes, resolveOtlpProtocol, OTLP_PROTOCOLS, isTelemetrySuppressedForTest,
   resolveExportIntervalMs, DEFAULT_EXPORT_INTERVALS, resolveFlushTimeoutMs,
@@ -152,7 +152,7 @@ export {
 } from './analytics';
 export type { TelemetryDiagLevel, TelemetryDiagLogger, TelemetryDiagLoggerDeps } from './analytics';
 export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps,
-  SinkName, ProcessMetrics, ProcessMetricsDeps, LocalOnlyFieldMatcher,
+  SinkName, ProcessMetrics, ProcessMetricsDeps, DeploymentEnvDeps, LocalOnlyFieldMatcher,
   FileOperationKind, FileOperationTool, FileOperationParams,
   GitOperationName, GitOperationClassification, IncrementalContextDelta } from './analytics';
 export { PRIVACY_LEVELS, ESSENTIAL_TRAFFIC_VARS, ESSENTIAL_TRAFFIC_DENY_ON_MISS } from './analytics';
