@@ -2672,8 +2672,22 @@ export function hasSuspiciousPathPattern(p: string): boolean {
  * checked). Bounded by `maxDepth` (SYMLOOP_MAX=40) with a visited-set loop guard.
  * Mirrors Claude's getPathsForPermissionCheck. Non-existent / unreadable hops stop
  * the walk gracefully and still return what was collected.
+ *
+ * `precomputedPathsToCheck` — when the caller ALREADY holds the canonical, fully
+ * symlink-resolved form of `filePath` (e.g. the output of `fs.realpathSync`), the
+ * hop list is trivially those paths and the lstat/readlink chain can be skipped
+ * entirely. Passing it returns a copy directly, saving up to `maxDepth` syscalls
+ * per inner check. Parity with Claude's `isPathAllowed(…, precomputedPathsToCheck)`
+ * canonical fast-path (utils/permissions/pathValidation.ts L139-146). Do NOT pass
+ * it for a non-canonical path (a nonexistent target, a path with unresolved
+ * symlink components) — parent-directory symlink resolution is still required there.
  */
-export function getPathsForPermissionCheck(filePath: string, maxDepth = 40): string[] {
+export function getPathsForPermissionCheck(
+  filePath: string,
+  maxDepth = 40,
+  precomputedPathsToCheck?: readonly string[],
+): string[] {
+  if (precomputedPathsToCheck) return [...precomputedPathsToCheck];
   const results: string[] = [];
   const visited = new Set<string>();
   let current = filePath;
@@ -2695,6 +2709,79 @@ export function getPathsForPermissionCheck(filePath: string, maxDepth = 40): str
     current = path.isAbsolute(target) ? target : path.resolve(path.dirname(norm), target);
   }
   return results;
+}
+
+/**
+ * Sentinel used by the session-stable base-realpath memo to represent "realpath
+ * failed" — the empty string is never a valid absolute realpath, and
+ * {@link memoizeWithLRU} cannot store `null`/`undefined` (its `Result` is
+ * `NonNullable`). A miss is NEVER retained (see
+ * {@link resolveSessionStableBaseRealpath}) so a base created later re-resolves.
+ */
+const _REALPATH_MISS = '';
+
+/**
+ * LRU-memoized `fs.realpathSync` for SESSION-STABLE permission bases — the launch
+ * cwd and user-granted read roots. {@link PermissionManager.isWithinWorkspace}
+ * realpath-resolves every base (cwd + each granted root) on EVERY path check to
+ * fold a symlinked workspace root; those bases do not change their canonical
+ * target within a session, so re-running the syscall per base per check is pure
+ * redundant I/O — N bases × M checks lstat/readlink walks. Memoizing collapses it
+ * to one realpath per distinct base. Parity with Claude's session-stable config
+ * path memoization (`memoize(getPathsForPermissionCheck)` /
+ * `getResolvedWorkingDirPaths`, utils/permissions/pathValidation.ts L126-128).
+ *
+ * Correctness: only SUCCESSFUL resolutions are cached; a failure (ENOENT /
+ * unreadable) is evicted immediately by {@link resolveSessionStableBaseRealpath}
+ * so a base that comes into existence later is not pinned to its earlier miss,
+ * and a changed/removed granted root is evicted explicitly when the root set
+ * mutates ({@link PermissionManager.registerAllowedRoot} /
+ * {@link PermissionManager.removeAllowedRoot}).
+ */
+const _baseRealpathMemo = memoizeWithLRU(
+  (base: string): string => {
+    try {
+      return fs.realpathSync(base);
+    } catch {
+      return _REALPATH_MISS;
+    }
+  },
+  (base: string) => base,
+  512,
+);
+
+/**
+ * Resolve a session-stable permission base (cwd / granted read root) to its
+ * canonical realpath, memoized via {@link _baseRealpathMemo}. Returns `null` when
+ * the base cannot be resolved (non-existent / unreadable) WITHOUT retaining that
+ * miss, so a later-created base re-resolves on the next call. Exposes the backing
+ * cache for invalidation and inspection.
+ */
+export function resolveSessionStableBaseRealpath(base: string): string | null {
+  const real = _baseRealpathMemo(base);
+  if (real === _REALPATH_MISS) {
+    // Do not retain a miss — a base can come into existence later in the session.
+    _baseRealpathMemo.cache.delete(base);
+    return null;
+  }
+  return real;
+}
+
+/** Invalidate one cached base realpath (called when a granted root is re-scoped
+ *  or removed so a changed symlink target is re-resolved). */
+export function invalidateSessionStableBaseRealpath(base: string): void {
+  _baseRealpathMemo.cache.delete(base);
+}
+
+/** Clear the entire session-stable base-realpath memo (test hook / full reset). */
+export function clearSessionStableBaseRealpathCache(): void {
+  _baseRealpathMemo.cache.clear();
+}
+
+/** Observe whether a base realpath is currently cached (no recency promotion).
+ *  For tests/diagnostics only. */
+export function hasSessionStableBaseRealpath(base: string): boolean {
+  return _baseRealpathMemo.cache.has(base);
 }
 
 /** System directories that should never be written to. */
@@ -5072,12 +5159,94 @@ export function dynamicAllowPatternToken(pattern: string | undefined): 'substitu
   return null;
 }
 
+/** The shape every permission-rule validator (built-in or per-tool custom)
+ *  returns — a boolean verdict plus optional actionable guidance. */
+export interface PermissionRuleValidationResult {
+  valid: boolean;
+  error?: string;
+  suggestion?: string;
+  examples?: string[];
+}
+
+/**
+ * A per-tool content validator: given the rule's parenthesized CONTENT (never the
+ * tool name), return whether it is a well-formed pattern for that specific tool.
+ * This is AMI's analogue of Claude's `toolValidationConfig[tool].customValidation`
+ * (utils/settings/toolValidationConfig.ts) — a pluggable hook consulted by
+ * {@link validatePermissionRule} BEFORE the generic bash/file checks, so a tool
+ * whose patterns follow neither bash-prefix nor file-glob syntax (WebFetch domains,
+ * WebSearch terms, …) can reject a malformed pattern with tailored guidance.
+ */
+export type ToolContentValidator = (content: string) => PermissionRuleValidationResult;
+
+/**
+ * Registry of per-tool content validators, keyed by AMI CANONICAL tool name (post
+ * {@link normalizeToolName}). Previously these checks lived as hardcoded `if
+ * (toolName === 'web_search')` / `'web_fetch'` branches inside
+ * {@link validatePermissionRule}; consolidating them into one pluggable table is
+ * the extensibility surface Claude exposes as `getCustomValidation` and AMI lacked
+ * — a new tool's pattern rules are added HERE, in one place, instead of growing the
+ * validator with another special case. Consumed via {@link getCustomValidation}.
+ */
+export const TOOL_CONTENT_VALIDATORS: Readonly<Record<string, ToolContentValidator>> = {
+  // WebSearch: patterns are allowed/blocked search TERMS — wildcards are
+  // meaningless and silently never match. Reject them with guidance.
+  web_search: (content) => {
+    if (content.includes('*') || content.includes('?')) {
+      return {
+        valid: false, error: 'WebSearch patterns cannot contain wildcards',
+        suggestion: 'Use a plain search term (wildcards are not supported for WebSearch)',
+        examples: ['web_search(weather)', 'web_search(stock prices)'],
+      };
+    }
+    return { valid: true };
+  },
+  // WebFetch: patterns match a DOMAIN, not a full URL or a URL with a path. AMI
+  // uses BARE-domain syntax (`web_fetch(example.com)`) — a deliberate divergence
+  // from Claude's required `domain:` prefix — so a domain that merely starts with
+  // "http" (e.g. `httpbin.org`) stays valid; only a `scheme://` at the start OR a
+  // stray `://` ANYWHERE (a malformed URL whose scheme isn't a clean leading token,
+  // e.g. `3http://x`) is rejected, AND a bare domain carrying a `/path` component
+  // (`example.com/api/*`) is rejected because matching is domain-only so the path
+  // silently never applies. Mirrors Claude's WebFetch validator (toolValidationConfig.ts).
+  web_fetch: (content) => {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(content) || content.includes('://')) {
+      return {
+        valid: false, error: 'WebFetch patterns must be a domain, not a URL',
+        suggestion: 'Drop the scheme and path — match on the domain only',
+        examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
+      };
+    }
+    if (content.includes('/')) {
+      return {
+        valid: false, error: 'WebFetch patterns match a domain, not a path',
+        suggestion: 'Drop the path — a WebFetch rule scopes a host, matching every path on it',
+        examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
+      };
+    }
+    return { valid: true };
+  },
+};
+
+/**
+ * The pluggable per-tool content validator for `toolName`, or `undefined` when the
+ * tool uses only the generic bash/file-glob pattern checks. The name is
+ * canonicalized first, so a Claude-spelled `WebFetch`/`WebSearch` resolves to the
+ * same validator as `web_fetch`/`web_search`. Parity with Claude Code's
+ * `getCustomValidation` (utils/settings/permissionValidation.ts L137-143).
+ */
+export function getCustomValidation(toolName: string): ToolContentValidator | undefined {
+  return TOOL_CONTENT_VALIDATORS[normalizeToolName(toolName)];
+}
+
 /**
  * Validate a user-supplied permission-rule string, returning an actionable
  * diagnostic. Catches empty rules, mismatched / empty parentheses, empty tool
  * names, and bash/file pattern mistakes (`:*` placement, `:*` in file patterns).
  * Mirrors Claude's validatePermissionRule, minus the Claude-specific
- * uppercase-first convention (AMI canonical tool names are lowercase).
+ * uppercase-first convention (AMI canonical tool names are lowercase); the
+ * per-tool content checks run through the pluggable {@link getCustomValidation}
+ * registry (parity with Claude's customValidation hook).
  */
 export function validatePermissionRule(rule: string): {
   valid: boolean; error?: string; suggestion?: string; examples?: string[];
@@ -5196,36 +5365,14 @@ export function validatePermissionRule(rule: string): {
       };
     }
   }
-  // Per-tool content validation (Claude's toolValidationConfig customValidation).
+  // Per-tool content validation via the pluggable {@link TOOL_CONTENT_VALIDATORS}
+  // registry (Claude's toolValidationConfig customValidation hook). Consulted for
+  // any tool with a registered validator (WebFetch domains, WebSearch terms, …).
   if (parsed.ruleContent !== undefined) {
-    // WebSearch: patterns are allowed/blocked search terms — wildcards are
-    // meaningless and silently never match. Reject them with guidance.
-    if (parsed.toolName === 'web_search') {
-      if (parsed.ruleContent.includes('*') || parsed.ruleContent.includes('?')) {
-        return {
-          valid: false, error: 'WebSearch patterns cannot contain wildcards',
-          suggestion: 'Use a plain search term (wildcards are not supported for WebSearch)',
-          examples: ['web_search(weather)', 'web_search(stock prices)'],
-        };
-      }
-    }
-    // WebFetch: patterns match a domain, not a full URL. Reject a URL-form
-    // pattern and point at the bare-domain form (Claude's WebFetch validator,
-    // toolValidationConfig.ts L55-66). AMI uses BARE-domain syntax
-    // (`web_fetch(example.com)`) — a deliberate divergence from Claude's required
-    // `domain:` prefix — so a domain that merely starts with "http" (e.g.
-    // `httpbin.org`) stays valid; only a `scheme://` at the start OR a stray
-    // `://` ANYWHERE (a malformed URL whose scheme isn't a clean leading token,
-    // e.g. `3http://x` or `foo bar://x`) is rejected. Catching `://` anywhere
-    // closes the gap where the leading-scheme regex missed a mid-string `://`.
-    if (parsed.toolName === 'web_fetch') {
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(parsed.ruleContent) || parsed.ruleContent.includes('://')) {
-        return {
-          valid: false, error: 'WebFetch patterns must be a domain, not a URL',
-          suggestion: 'Drop the scheme and path — match on the domain only',
-          examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
-        };
-      }
+    const customValidation = getCustomValidation(parsed.toolName);
+    if (customValidation) {
+      const customResult = customValidation(parsed.ruleContent);
+      if (!customResult.valid) return customResult;
     }
   }
   return { valid: true };
@@ -5781,6 +5928,9 @@ export class PermissionManager {
       const norm = path.normalize(abs).normalize('NFC');
       const prior = this.allowedReadRoots.get(norm);
       this.allowedReadRoots.set(norm, source);
+      // A newly-granted (or re-scoped) root must re-resolve its canonical realpath
+      // rather than reuse a stale session-stable memo entry for the same string.
+      invalidateSessionStableBaseRealpath(norm);
       // Only trace a real widening of the read boundary (idempotent re-grants of the
       // SAME source are silent), mirroring Claude's "Adding N director(y/ies)" trace.
       // A provenance change (e.g. session → projectSettings) is a meaningful upgrade
@@ -5805,6 +5955,9 @@ export class PermissionManager {
       // Unicode form can be revoked by the other (NFD vs NFC spelling).
       const norm = path.normalize(abs).normalize('NFC');
       const removed = this.allowedReadRoots.delete(norm);
+      // Drop the session-stable realpath memo for a revoked root so a later re-grant
+      // of the same path (possibly a changed symlink target) resolves fresh.
+      if (removed) invalidateSessionStableBaseRealpath(norm);
       // (parity: Claude's removeDirectories set-filter — a removed dir is dropped
       //  from the persisted `additionalDirectories` on the next saveRules too.)
       // Trace only an actual boundary shrink, mirroring Claude's "Removing N
@@ -7299,12 +7452,25 @@ export class PermissionManager {
    * the intermediate `id_rsa` hop is a credential path the deny must still catch.
    * Mirrors Claude's getPathsForPermissionCheck "match at any hop" semantics.
    */
-  private isForbiddenAtAnyHop(filePath: string, cwd: string): boolean {
+  private isForbiddenAtAnyHop(filePath: string, cwd: string, precomputedHops?: readonly string[]): boolean {
     const expanded = expandPath(filePath, cwd);
-    for (const hop of getPathsForPermissionCheck(expanded)) {
+    for (const hop of getPathsForPermissionCheck(expanded, 40, precomputedHops)) {
       if (this.isForbiddenReadPath(hop)) return true;
     }
     return false;
+  }
+
+  /**
+   * The canonical hop list for an input path when it needs NO symlink resolution —
+   * i.e. the NFC realpath (`resolved`) is byte-equal to the plain NFC-expanded form.
+   * In that case the symlink-hop walk is trivially `[resolved]`, so returning it
+   * lets {@link isForbiddenAtAnyHop} skip the lstat/readlink chain (parity: Claude's
+   * precomputedPathsToCheck canonical fast-path). Returns `undefined` when the path
+   * DID resolve through a symlink / `..` collapse, so the caller falls back to the
+   * full hop walk that still inspects every intermediate target.
+   */
+  private canonicalHopFastPath(filePath: string, cwd: string, resolved: string): readonly string[] | undefined {
+    return resolved === expandPath(filePath, cwd).normalize('NFC') ? [resolved] : undefined;
   }
 
   /**
@@ -7344,12 +7510,13 @@ export class PermissionManager {
     // never widens past the real directory tree, so it cannot cause a false allow.
     for (const base of [path.normalize(cwd), ...this.allowedReadRoots.keys()]) {
       if (contains(strip(base))) return true;
-      try {
-        const real = fs.realpathSync(base);
-        if (real !== base && contains(strip(real))) return true;
-      } catch {
-        // non-existent base — the normalized form above is the only candidate
-      }
+      // Session-stable: a base's canonical realpath is memoized so repeated checks
+      // don't re-pay the lstat/readlink walk per base (parity: Claude's
+      // memoize(getPathsForPermissionCheck) for session-stable config paths). A
+      // non-existent base resolves to null and is not cached, so the normalized
+      // form above stays the only candidate for it.
+      const real = resolveSessionStableBaseRealpath(base);
+      if (real !== null && real !== base && contains(strip(real))) return true;
     }
     return false;
   }
@@ -7367,8 +7534,9 @@ export class PermissionManager {
     if (this.isForbiddenReadPath(resolved)) return false;
     // Also inspect every symlink hop, not just the final realpath, so a forbidden
     // intermediate target in a symlink chain cannot be laundered behind an
-    // innocuous final file.
-    if (this.isForbiddenAtAnyHop(filePath, cwd)) return false;
+    // innocuous final file. When the path needed no symlink resolution the hop
+    // walk is trivially [resolved] — pass it so the lstat chain is skipped.
+    if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return false;
     // A shell-expansion / tilde-variant TOCTOU path is never silently auto-allowed
     // (it is kept literal here but rewritten by the shell at run time) — keep this
     // boundary consistent with classifyReadAccess, which gates it to a prompt.
@@ -7394,8 +7562,8 @@ export class PermissionManager {
     if (this.isForbiddenReadPath(resolved)) return 'deny';
     // A forbidden target at ANY symlink hop (not only the final realpath) is a
     // hard deny — a chain cannot launder a credential/system path behind an
-    // innocuous final file.
-    if (this.isForbiddenAtAnyHop(filePath, cwd)) return 'deny';
+    // innocuous final file. A path that needed no symlink resolution skips the walk.
+    if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return 'deny';
     // TOCTOU: a path carrying shell-expansion syntax ($/%/leading '=') or an
     // unsupported tilde variant (~user/~+/~-) is validated as a literal here but
     // rewritten by the shell at execution, so it can never be silently auto-allowed
