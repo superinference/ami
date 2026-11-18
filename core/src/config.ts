@@ -665,6 +665,22 @@ export interface ProjectConfig {
    */
   copyOnSelect?: boolean;
   /**
+   * Interactive-TUI layout mode (parity: Claude Code's `isFullscreenEnvEnabled()`
+   * fullscreen-vs-scrollback toggle). Defaults ON: AMI renders in the terminal's
+   * ALTERNATE SCREEN buffer (a fixed-height fullscreen canvas that leaves the host
+   * scrollback untouched on exit). An explicit `false` opts INTO a scrollback layout —
+   * the TUI stays on the normal screen so output accumulates in the terminal's native
+   * scrollback instead of a fullscreen overlay — by seeding the existing
+   * `AMI_NO_ALT_SCREEN` kill-switch that {@link import('../../../cli/src/render').detectTerminalCapabilities}'s
+   * `alternateScreen` capability already reads. AMI previously exposed this ONLY via the
+   * `AMI_NO_ALT_SCREEN` / `AMI_FORCE_ALT_SCREEN` env vars, never the persisted settings
+   * waterfall, so a user who prefers scrollback had to export an env var every session.
+   * `true` symmetrically seeds `AMI_FORCE_ALT_SCREEN` so the preference survives the
+   * tmux-control-mode auto-off default. Bridged by {@link applyConfigFullscreen}; an
+   * explicit `AMI_NO_ALT_SCREEN` / `AMI_FORCE_ALT_SCREEN` env value still WINS.
+   */
+  fullscreen?: boolean;
+  /**
    * Disable syntax highlighting of fenced code blocks and diff lines (parity: Claude
    * Code's `syntaxHighlightingDisabled` cosmetic config knob). When `true`, the single
    * highlight on/off source the cli reads (`syntaxHighlightEnabled` →
@@ -1555,7 +1571,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
   // cli env knobs by {@link applyConfigStartupKnobs} — declared here so they are
   // recognized (no spurious unknown-key warning) + base-type validated.
-  ['verbose', 'boolean'], ['copyOnSelect', 'boolean'],
+  ['verbose', 'boolean'], ['copyOnSelect', 'boolean'], ['fullscreen', 'boolean'],
   ['syntaxHighlightingDisabled', 'boolean'], ['showThinkingSummaries', 'boolean'],
   ['messageIdleNotifThresholdMs', 'number'], ['spinnerVerbs', 'object'],
   ['backgroundTasksEnabled', 'boolean'],
@@ -3250,6 +3266,7 @@ export function mergeConfigs(
     // dropped by the merge, so a file-tier value never reached the runtime.
     if (layer.verbose !== undefined) merged.verbose = layer.verbose;
     if (layer.copyOnSelect !== undefined) merged.copyOnSelect = layer.copyOnSelect;
+    if (layer.fullscreen !== undefined) merged.fullscreen = layer.fullscreen;
     if (layer.syntaxHighlightingDisabled !== undefined) merged.syntaxHighlightingDisabled = layer.syntaxHighlightingDisabled;
     if (layer.showThinkingSummaries !== undefined) merged.showThinkingSummaries = layer.showThinkingSummaries;
     if (layer.messageIdleNotifThresholdMs !== undefined) merged.messageIdleNotifThresholdMs = layer.messageIdleNotifThresholdMs;
@@ -3830,6 +3847,10 @@ export const SHOW_TURN_DURATION_ENV = 'AMI_SHOW_TURN_DURATION';
 export const VERBOSE_ENV = 'AMI_VERBOSE';
 /** Env opt-out (cli `copyOnSelectEnabled`) disabling terminal selection auto-copy. */
 export const NO_COPY_ON_SELECT_ENV = 'AMI_NO_COPY_ON_SELECT';
+/** Env kill-switch (cli `detectTerminalCapabilities`.alternateScreen) forcing scrollback layout. */
+export const NO_ALT_SCREEN_ENV = 'AMI_NO_ALT_SCREEN';
+/** Env force-on (cli `detectTerminalCapabilities`.alternateScreen) forcing fullscreen layout. */
+export const FORCE_ALT_SCREEN_ENV = 'AMI_FORCE_ALT_SCREEN';
 /** Env kill-switch (cli `syntaxHighlightEnabled`) disabling code/diff syntax highlighting. */
 export const SYNTAX_HIGHLIGHT_ENV = 'AMI_SYNTAX_HIGHLIGHT';
 /** Env knob (cli `getNotifyThreshold`) for the idle-before-notification threshold (ms). */
@@ -3911,6 +3932,33 @@ export function applyConfigCopyOnSelect(
   if (target[NO_COPY_ON_SELECT_ENV] !== undefined) return;
   if (config?.copyOnSelect === false) {
     target[NO_COPY_ON_SELECT_ENV] = '1';
+  }
+}
+
+/**
+ * Bridge the persisted {@link ProjectConfig.fullscreen} knob onto the existing
+ * `AMI_NO_ALT_SCREEN` / `AMI_FORCE_ALT_SCREEN` env overrides that the cli's
+ * {@link import('../../../cli/src/render').detectTerminalCapabilities} `alternateScreen`
+ * capability already reads — so a user can persist "use terminal scrollback instead of
+ * the fullscreen alternate-screen buffer" in the settings waterfall instead of exporting
+ * an env var every session (parity: Claude Code's `isFullscreenEnvEnabled()` layout
+ * toggle). An explicit env value for EITHER knob already present in `target` WINS (the
+ * user set it on the command line / shell), so config never overrides a live env choice.
+ * Otherwise `fullscreen === false` arms the `AMI_NO_ALT_SCREEN` kill-switch (scrollback
+ * layout) and `fullscreen === true` arms `AMI_FORCE_ALT_SCREEN` so the fullscreen
+ * preference survives the tmux-control-mode auto-off default. Unset is a no-op (the
+ * terminal-capability default decides). Wired into {@link applyConfigStartupKnobs}.
+ */
+export function applyConfigFullscreen(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  // An explicit env override for either direction wins over the persisted preference.
+  if (target[NO_ALT_SCREEN_ENV] !== undefined || target[FORCE_ALT_SCREEN_ENV] !== undefined) return;
+  if (config?.fullscreen === false) {
+    target[NO_ALT_SCREEN_ENV] = '1';
+  } else if (config?.fullscreen === true) {
+    target[FORCE_ALT_SCREEN_ENV] = '1';
   }
 }
 
@@ -4056,6 +4104,7 @@ export function applyConfigStartupKnobs(
   applyConfigTurnDuration(config, target);
   applyConfigVerbose(config, target);
   applyConfigCopyOnSelect(config, target);
+  applyConfigFullscreen(config, target);
   applyConfigSyntaxHighlighting(config, target);
   applyConfigIdleNotifThreshold(config, target);
   applyConfigSpinnerVerbs(config, target);

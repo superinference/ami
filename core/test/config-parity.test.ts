@@ -91,7 +91,7 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       terminalProgressBarEnabled: true, showTurnDuration: false,
       // Cosmetic / output-detail startup knobs (U010 w81): bridged to their cli env
       // knobs by applyConfigStartupKnobs; declared/validated/merged like the above.
-      verbose: true, copyOnSelect: false, syntaxHighlightingDisabled: true,
+      verbose: true, copyOnSelect: false, fullscreen: false, syntaxHighlightingDisabled: true,
       showThinkingSummaries: false, messageIdleNotifThresholdMs: 60000,
       spinnerVerbs: { mode: 'append', verbs: ['Churning'] },
       // Background-task gate (U010 w88): bridged to AMI_DISABLE_BACKGROUND_TASKS by
