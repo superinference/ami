@@ -47,3 +47,25 @@ export function createBoundedAbortController(max = DEFAULT_ABORT_MAX_LISTENERS):
   raiseAbortListenerCap(controller.signal, max);
   return controller;
 }
+
+/**
+ * Arm a one-shot abort/deadline timer that can NEVER keep the Node event loop (or
+ * the process) alive on its own. Equivalent to `setTimeout(fn, ms)` immediately
+ * followed by `timer.unref?.()`.
+ *
+ * Claude Code calls `timer.unref?.()` on every abort-timeout timer
+ * (`createCombinedAbortSignal`, utils/combinedAbortSignal.ts L35) precisely so a
+ * pending request/idle-watchdog timeout does not delay process exit on a path
+ * where its `clearTimeout` is skipped (e.g. an early `return`/`throw` before the
+ * `finally`). Callers still `clearTimeout` on the happy path; this only guarantees
+ * that a leaked timer cannot pin the loop. The `unref` is best-effort — some
+ * runtimes and fake-timer shims return a plain numeric handle with no `unref` — so
+ * it is called optionally and the raw timer handle is returned unchanged for a
+ * later `clearTimeout`. This is the ONE canonical home for the primitive
+ * (No-Duplication rule); every long-lived provider abort timer routes through it.
+ */
+export function armUnrefTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(fn, ms);
+  timer.unref?.();
+  return timer;
+}

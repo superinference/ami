@@ -25,6 +25,7 @@ import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCall
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
 import { createCombinedAbortSignal } from './utils/combined-abort-signal';
+import { armUnrefTimer } from './utils/abort';
 import { sleep } from './utils/sleep';
 import { parseRateLimitHeaders, shouldBackoff, suggestedWaitMs } from './rate-limit-parser';
 import { isGatewayRejection, findErrorCode, SSL_ERROR_CODES, connectionErrorDiagnostic, isAbort, detectPromptTooLong, parseMockRateLimit, MOCK_RATE_LIMIT_ENV, type MockRateLimitConfig } from './error-classifier';
@@ -4572,7 +4573,7 @@ export async function* runNonStreamingFallback(
   const onCallerAbort = () => fbAbort.abort();
   if (abortSignal.aborted) fbAbort.abort();
   else abortSignal.addEventListener('abort', onCallerAbort, { once: true });
-  const timer = setTimeout(() => fbAbort.abort(), timeoutMs);
+  const timer = armUnrefTimer(() => fbAbort.abort(), timeoutMs);
   try {
     yield* streamChatCompletion(cappedConfig, messages, tools, fbAbort.signal, {
       thinking: options?.thinking,
@@ -4681,7 +4682,7 @@ export async function* streamChatCompletionWithRetry(
 
     // Combine caller abort signal with per-request hard timeout
     const requestAbort = new AbortController();
-    const timeoutId = setTimeout(() => requestAbort.abort(), timeoutMs);
+    const timeoutId = armUnrefTimer(() => requestAbort.abort(), timeoutMs);
     const onCallerAbort = () => requestAbort.abort();
     abortSignal.addEventListener('abort', onCallerAbort, { once: true });
 
@@ -4715,10 +4716,10 @@ export async function* streamChatCompletionWithRetry(
       if (!idleMs) return;
       if (idleTimer) clearTimeout(idleTimer);
       if (idleWarnTimer) clearTimeout(idleWarnTimer);
-      idleWarnTimer = setTimeout(() => {
+      idleWarnTimer = armUnrefTimer(() => {
         log('api', `Streaming idle warning: no chunks received for ${Math.round(idleMs / 2 / 1000)}s`, undefined, 'warn');
       }, idleMs / 2);
-      idleTimer = setTimeout(() => { idleFired = true; requestAbort.abort(); }, idleMs);
+      idleTimer = armUnrefTimer(() => { idleFired = true; requestAbort.abort(); }, idleMs);
     };
     const trackStall = () => {
       const at = now();
