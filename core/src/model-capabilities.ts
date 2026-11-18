@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { formatTokenCount } from './token-format';
 import { capitalize } from './utils/string';
+import { instanceScopedTempName } from './utils/runtime-namespace';
 
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -863,7 +864,7 @@ export function writeModelCapabilitiesCache(
   const existing = readModelCapabilitiesCache(dir);
   if (existing && sameCacheModels(existing.models, sorted)) return false;
   const file = modelCapabilitiesCachePath(dir);
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = instanceScopedTempName(file);
   const payload: ModelCapabilityCacheFile = { models: sorted, timestamp: now };
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

@@ -271,6 +271,7 @@ export {
   OWNER_ONLY_DIR_MODE,
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
+export { runtimeInstancePid, isPidAlive, instanceScopedTempName, parseInstanceTempPid } from './utils/runtime-namespace';
 export { getGitBranch, isPathGitignored, getGlobalGitignorePath, addFileGlobRuleToGitignore } from './utils/git';
 export {
   captureUntrackedFiles,

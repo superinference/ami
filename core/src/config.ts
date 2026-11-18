@@ -5,6 +5,7 @@ import { log as coreLog } from './logger';
 import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRejectReason } from './env-protection';
 import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type SkillUsageStat } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
+import { instanceScopedTempName, parseInstanceTempPid, isPidAlive, runtimeInstancePid } from './utils/runtime-namespace';
 import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { escapeRegExp } from './utils/string';
 import { getErrnoCode } from './utils/errno';
@@ -5719,7 +5720,15 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   // settings symlink is updated in place rather than clobbered by a regular file
   // (parity: Claude's "if settings.json is a symlink, update the target file").
   const target = resolveConfigWriteTarget(filePath);
-  const tmpPath = target + '.tmp';
+  // PID-scoped scratch path: two AMI instances writing the SAME config file
+  // concurrently (e.g. the shared GLOBAL `~/.ami/config.json`) must NOT share one
+  // `<target>.tmp` — otherwise instance A's rename can promote instance B's
+  // half-written bytes, or A's cleanup can delete B's in-flight temp, corrupting
+  // the target. Embedding this process's PID gives each instance an isolated
+  // scratch namespace (parity: Claude's PID-scoped getSwarmSocketName). A crash
+  // leaves a PID-tagged orphan that {@link cleanupStaleConfigTmp} can reclaim
+  // only once that PID is dead.
+  const tmpPath = instanceScopedTempName(target);
   const json = JSON.stringify(data, null, 2) + '\n';
   // Snapshot the prior good content before overwriting it (throttled + rotated),
   // so a logically-bad write stays recoverable.
@@ -6542,29 +6551,55 @@ export function getSnapshotConfigValue<K extends keyof ProjectConfig>(
   return v === undefined ? undefined : structuredClone(v);
 }
 
+/**
+ * Recover or discard orphaned atomic-write temp files left beside `filePath` by a
+ * crashed {@link safeWriteConfig}. Scans the containing directory for both the
+ * PID-scoped `<base>.<pid>.tmp` scratch files this writer now produces AND any
+ * legacy un-scoped `<base>.tmp` orphan.
+ *
+ * Crucially, a PID-scoped orphan whose owner is a DIFFERENT, still-live process is
+ * an IN-FLIGHT write by a concurrent AMI instance — it is left untouched so this
+ * instance's recovery sweep never clobbers another instance's pending save. Only
+ * reclaimable orphans (a dead owner PID, this process's own leftover, or a legacy
+ * un-scoped temp) are promoted (if they hold valid config) or deleted (if corrupt).
+ *
+ * Returns `true` when at least one matching temp was found (recovered, deleted, or
+ * intentionally skipped as live), `false` when none exist.
+ */
 export function cleanupStaleConfigTmp(filePath: string): boolean {
-  const tmpPath = filePath + '.tmp';
+  const dir = path.dirname(filePath);
+  const baseName = path.basename(filePath);
+  let entries: string[];
   try {
-    if (!fsHooks.existsSync(tmpPath)) return false;
+    entries = fsHooks.readdirSync(dir) as string[];
   } catch {
     return false;
   }
-  try {
-    const content = fsHooks.readFileSync(tmpPath, 'utf-8') as string;
-    const validation = validateConfigJson(content);
-    if (validation.valid) {
-      try {
-        fsHooks.renameSync(tmpPath, filePath);
-      } catch {
-        fsHooks.writeFileSync(filePath, content, 'utf-8');
+  const ownPid = runtimeInstancePid();
+  let found = false;
+  for (const entry of entries) {
+    const ownerPid = parseInstanceTempPid(entry, baseName);
+    if (ownerPid === undefined) continue; // not a temp of this file
+    found = true;
+    // A different, still-live owner is mid-write — never reclaim its scratch file.
+    if (ownerPid !== null && ownerPid !== ownPid && isPidAlive(ownerPid)) continue;
+    const tmpPath = path.join(dir, entry);
+    try {
+      const content = fsHooks.readFileSync(tmpPath, 'utf-8') as string;
+      const validation = validateConfigJson(content);
+      if (validation.valid) {
+        try {
+          fsHooks.renameSync(tmpPath, filePath);
+        } catch {
+          fsHooks.writeFileSync(filePath, content, 'utf-8');
+          fsHooks.unlinkSync(tmpPath);
+        }
+      } else {
         fsHooks.unlinkSync(tmpPath);
       }
-    } else {
-      fsHooks.unlinkSync(tmpPath);
+    } catch {
+      try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
     }
-    return true;
-  } catch {
-    try { fsHooks.unlinkSync(tmpPath); } catch { /* best effort */ }
-    return true;
   }
+  return found;
 }

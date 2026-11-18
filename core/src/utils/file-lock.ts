@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { isPidAlive } from './runtime-namespace';
 
 /**
  * Canonical cross-process file lock for the whole AMI tree.
@@ -82,22 +83,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 function syncSleep(ms: number): void {
   if (ms <= 0) return;
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Whether `pid` refers to a live process. `process.kill(pid, 0)` sends no signal
- * but validates the target: it succeeds for a live process, raises ESRCH when no
- * such process exists (dead), and EPERM when the process exists but is owned by
- * another user (still alive). Anything that is not an explicit ESRCH is treated
- * as alive so we never steal a lock from a holder that is merely unowned by us.
- */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
 }
 
 /** Name of the PID metadata entry written inside the lock directory. */

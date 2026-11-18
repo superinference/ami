@@ -1,5 +1,6 @@
 import * as child_process from 'child_process';
 import { projectStateDir } from './reference-journal';
+import { instanceScopedTempName } from './utils/runtime-namespace';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -3090,7 +3091,7 @@ export class ProcessManager extends EventEmitter {
       records.push({ taskId: entry.taskId, pid: entry.pid, command: entry.command, description: entry.description, outputPath: entry.outputPath, startTime: entry.startTime });
     }
     try {
-      const tmp = `${this.registryPath()}.${process.pid}.tmp`;
+      const tmp = instanceScopedTempName(this.registryPath());
       fs.writeFileSync(tmp, JSON.stringify(records), 'utf-8');
       fs.renameSync(tmp, this.registryPath());
     } catch { /* best-effort — registry is an optimization */ }

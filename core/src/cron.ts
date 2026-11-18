@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { projectStateDir } from './reference-journal';
+import { instanceScopedTempName } from './utils/runtime-namespace';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { parseEnvBool } from './utils/env';
@@ -1353,7 +1354,7 @@ export class CronScheduler {
       // scheduled_tasks.json that loadDurable would reject and delete, losing every
       // durable job. On write failure the temp file is cleaned up and the existing
       // persisted state is left untouched.
-      const tmp = `${this.persistPath}.${process.pid}.tmp`;
+      const tmp = instanceScopedTempName(this.persistPath);
       try {
         this.rawWriteFile(tmp, data);
         fs.renameSync(tmp, this.persistPath);
