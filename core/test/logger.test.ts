@@ -831,6 +831,83 @@ describe('httpErrorContext', () => {
     const err = { url: 'https://api/p', statusCode: 502, responseBody: 'Bad Gateway' };
     assert.equal(httpErrorContext(err), '[url=https://api/p,status=502,body=Bad Gateway] ');
   });
+
+  // --- U060: network error code + request-body log hygiene -----------------
+  it('surfaces a bare network error code when there is no url (ECONNREFUSED)', () => {
+    // Parity with Claude Code api.ts: a pure network failure logs `err.code`.
+    assert.equal(httpErrorContext({ code: 'ECONNREFUSED' }), '[code=ECONNREFUSED] ');
+    assert.equal(httpErrorContext({ code: 'ETIMEDOUT' }), '[code=ETIMEDOUT] ');
+  });
+  it('still returns empty string for an error with neither url nor code', () => {
+    assert.equal(httpErrorContext({ status: 500 }), '');
+    assert.equal(httpErrorContext({ code: '' }), '');
+    assert.equal(httpErrorContext({ code: 123 as unknown as string }), '');
+  });
+  it('includes the code alongside url/status when both are present', () => {
+    const err = {
+      config: { url: 'https://api/q' },
+      code: 'ECONNRESET',
+      response: { status: 502, data: { message: 'down' } },
+    };
+    assert.equal(httpErrorContext(err), '[url=https://api/q,code=ECONNRESET,status=502,body=down] ');
+  });
+  it('NEVER reads the request body (config.data) — a token in the POST body is not logged', () => {
+    // Log-hygiene contract: config.data holds the outgoing POST body, which for a
+    // token-exchange request carries the raw secret. It must never reach the log.
+    const token = 'sk-secret-request-body-token-0123456789';
+    const err = {
+      code: 'ECONNABORTED',
+      config: {
+        url: 'https://auth/import-token',
+        data: JSON.stringify({ token }),
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      response: { status: 500 },
+    };
+    const out = httpErrorContext(err);
+    assert.ok(!out.includes(token), `request-body token leaked into log context: ${out}`);
+    assert.ok(!out.includes('Bearer'), `request Authorization header leaked: ${out}`);
+    // It should still produce useful, body-free metadata.
+    assert.equal(out, '[url=https://auth/import-token,code=ECONNABORTED,status=500] ');
+  });
+});
+
+describe('logError — request-body log hygiene (U060, end-to-end)', () => {
+  it('never writes a request-body/header token to the on-disk log via the httpError channel', () => {
+    __resetLoggerForTest();
+    process.env.AMI_DEBUG = '1'; // force persistence even under NODE_ENV=test
+    const written: string[] = [];
+    const appendMock = mock.method(fsHooks, 'appendFileSync', (_f: string, line: string) => {
+      written.push(String(line));
+    });
+    const mkdirMock = mock.method(fsHooks, 'mkdirSync', () => undefined);
+    const statMock = mock.method(fsHooks, 'statSync', () => { throw Object.assign(new Error('nf'), { code: 'ENOENT' }); });
+    try {
+      const token = 'sk-leak-via-logError-abcdef0123456789';
+      const err = {
+        code: 'ECONNREFUSED',
+        config: {
+          url: 'https://auth/import-token',
+          data: JSON.stringify({ token }),
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      };
+      logError('auth', 'import-token failed', { httpError: err });
+      const all = written.join('');
+      assert.ok(written.length > 0, 'expected an on-disk log write');
+      assert.ok(!all.includes(token), `token leaked into the debug log: ${all}`);
+      assert.ok(!all.includes('Bearer'), `Authorization header leaked into the debug log: ${all}`);
+      // The useful code/url is still recorded.
+      assert.ok(all.includes('code=ECONNREFUSED'), 'network code should be logged');
+      assert.ok(all.includes('https://auth/import-token'), 'request url should be logged');
+    } finally {
+      appendMock.mock.restore();
+      mkdirMock.mock.restore();
+      statMock.mock.restore();
+      delete process.env.AMI_DEBUG;
+      __resetLoggerForTest();
+    }
+  });
 });
 
 describe('extractServerMessage — JSON-string bodies', () => {

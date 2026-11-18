@@ -810,27 +810,47 @@ export function extractServerMessage(data: unknown): string | undefined {
 }
 
 /**
- * Build a bracketed `[url=…,status=…,body=…] ` prefix from an HTTP/network error
- * object for inclusion in the persisted error log. Duck-types three shapes so no
- * HTTP client dependency is required:
+ * Build a bracketed `[url=…,code=…,status=…,body=…] ` prefix from an HTTP/network
+ * error object for inclusion in the persisted error log. Duck-types three shapes
+ * so no HTTP client dependency is required:
  *   - axios-style (`error.config.url`, `error.response.status`, `error.response.data`),
  *   - fetch-style (`error.url`, `error.status`, `error.body`), and
  *   - AI SDK `APICallError` (`error.url`, `error.statusCode`, `error.responseBody`) —
  *     the shape every provider API failure actually arrives in on AMI's streaming
  *     path, so a logged provider error now names the endpoint and the server's own
  *     message instead of a bare `HTTP <status>`.
- * Returns `''` when no request context is found. Mirrors the axios-error
- * enrichment in Claude Code's `errorLogSink`.
+ *
+ * It additionally surfaces the network error CODE (`error.code`, e.g.
+ * `ECONNREFUSED` / `ETIMEDOUT`) so a pure connection failure that carries no url
+ * or status is still attributable — Claude Code's `api.ts` logs exactly
+ * `err.code ?? 'unknown'` on a network error. Returns `''` only when NOTHING safe
+ * to log is found.
+ *
+ * LOG HYGIENE (security contract): this is the single sanctioned wrapper for
+ * turning an HTTP/network error into log text. It reads ONLY the response/network
+ * metadata named above and **deliberately NEVER reads the REQUEST side** —
+ * `error.config.data` (the POST body, which for auth/token exchanges holds the raw
+ * credential) and `error.config.headers` (the `Authorization` header) are never
+ * touched, so a secret in the outgoing request can never reach the log through
+ * this path. Mirrors the explicit "do not log err.config.data" guard in Claude
+ * Code's `api.ts` and the axios-error enrichment in its `errorLogSink`.
  */
 export function httpErrorContext(error: unknown): string {
   if (!error || typeof error !== 'object') return '';
   const err = error as Record<string, unknown>;
   const config = err.config as Record<string, unknown> | undefined;
   const response = err.response as Record<string, unknown> | undefined;
+  const code = typeof err.code === 'string' && err.code !== '' ? err.code : undefined;
   const url = (config?.url ?? err.url) as unknown;
-  if (typeof url !== 'string' || url === '') return '';
+  if (typeof url !== 'string' || url === '') {
+    // No request URL. Still surface a bare network error CODE so a connection
+    // failure (ECONNREFUSED/ETIMEDOUT) remains attributable; the request body and
+    // headers are never read, mirroring Claude Code's "log err.code alone" guard.
+    return code ? `[code=${code}] ` : '';
+  }
 
   const parts = [`url=${url}`];
+  if (code) parts.push(`code=${code}`);
   const status = (response?.status ?? err.status ?? err.statusCode) as unknown;
   if (typeof status === 'number') parts.push(`status=${status}`);
   const body = extractServerMessage(response?.data ?? err.body ?? err.data ?? err.responseBody);
