@@ -18,7 +18,7 @@ import {
   wrapWithDocker,
   DEFAULT_DOCKER_IMAGE,
 } from './docker-sandbox';
-import { spillToolText } from './spill-output';
+import { spillToolTextWithMeta } from './spill-output';
 import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { classifyBashAccess, describeToolActivity } from './tool-activity-class';
@@ -1907,6 +1907,11 @@ export const bashTool: ToolDefinition = {
       return {
         output: `[background: true]\nBackground task started.\n  Task ID: ${taskId}\n  PID: ${task?.pid ?? 'unknown'}\n  Command: ${command}\n  Timeout: ${Math.round(bgTimeoutMs / 1000)}s\n\nUse task_output({ task_id: "${taskId}" }) to check status and output.\nUse task_kill({ task_id: "${taskId}" }) to stop it.\nUse task_list() to see all background tasks.`,
         isError: false,
+        // The model EXPLICITLY requested run_in_background — tag it so callers can
+        // distinguish a user/model-intended background task from an auto-moved one
+        // (the timeout path sets `assistantAutoBackgrounded`). Parity: Claude's
+        // ExecResult `backgroundedByUser` vs assistant auto-background discriminator.
+        metadata: { backgrounded: true, backgroundedByUser: true, taskId },
       };
     }
 
@@ -2024,7 +2029,8 @@ export const bashTool: ToolDefinition = {
       } catch { /* fall back to the in-memory preview */ }
       try { _bashHooks.unlinkSync(result.fullOutputPath); } catch { /* already gone */ }
     }
-    let stdout = spillToolText(context.cwd, 'bash', spillStdout, bashMaxChars);
+    const spilled = spillToolTextWithMeta(context.cwd, 'bash', spillStdout, bashMaxChars);
+    let stdout = spilled.text;
     // In container mode, explain a failure that was likely caused by sandbox
     // isolation (network off, or a host path not mounted inside the container) so
     // the model does not misdiagnose a blocked op as a real error.
@@ -2106,6 +2112,13 @@ export const bashTool: ToolDefinition = {
           ? { readOnly, preSpawnError: 'spawn-failure' }
           : { readOnly }),
         ...(pluginHintResult.recommendations.length ? { pluginHints: pluginHintResult.recommendations } : {}),
+        // When stdout overflowed the inline cap, the full output was persisted to
+        // disk; surface the path + byte size structurally so a programmatic caller
+        // need not re-parse the banner. Parity: Claude's ExecResult
+        // outputFilePath/outputFileSize (ShellCommand.ts #handleExit).
+        ...(spilled.outputFilePath
+          ? { outputFilePath: spilled.outputFilePath, outputFileSize: spilled.outputFileSize }
+          : {}),
       },
     };
   },

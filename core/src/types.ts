@@ -390,6 +390,14 @@ export interface ToolResult {
    *    auto-moved to the background in assistant/detached mode so the main agent
    *    stays responsive (Claude's `shouldAutoBackground` / assistant blocking
    *    budget). Accompanied by `backgrounded: true` and the `taskId`.
+   *  - `backgroundedByUser`: `true` when the model EXPLICITLY requested
+   *    `run_in_background: true` (as opposed to an auto-move on timeout, which sets
+   *    `assistantAutoBackgrounded`). Accompanied by `backgrounded: true` and the
+   *    `taskId`. Parity: Claude's `ExecResult.backgroundedByUser`.
+   *  - `outputFilePath` / `outputFileSize`: set when stdout overflowed the inline
+   *    cap and the FULL output was persisted to disk — the absolute path and its
+   *    byte size, so a programmatic caller reads them without re-parsing the spill
+   *    banner. Parity: Claude's `ExecResult.outputFilePath` / `outputFileSize`.
    *  - `pluginHints`: `PluginRecommendationHint[]` — install suggestions parsed
    *    from an `<ami-hint type="plugin" .../>` tag a command emitted on stderr
    *    (set only when `AMI_PLUGIN_HINTS` is enabled; Claude's stderr-hint plugin

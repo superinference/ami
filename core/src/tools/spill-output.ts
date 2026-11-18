@@ -194,8 +194,34 @@ export function buildSpillBanner(
 }
 
 /**
+ * Structured outcome of a spill. `text` is the head+tail+banner string the model
+ * sees (identical to {@link spillToolText}'s return). When the full payload was
+ * persisted to disk, {@link SpillResult.outputFilePath} and
+ * {@link SpillResult.outputFileSize} point a programmatic caller at the on-disk
+ * file WITHOUT re-parsing the banner — so a tool can carry them in its
+ * a ToolResult's `metadata`. They are both undefined when the output was
+ * returned verbatim (under the limit / non-finite limit) or the spill FAILED
+ * (disk full, permission denied, …), in which case only the banner records it.
+ *
+ * Parity: Claude Code's ExecResult `{ outputFilePath, outputFileSize }` structured
+ * fields (ShellCommand.ts) set when stdout overflows inline into a file on disk.
+ */
+export interface SpillResult {
+  /** Head + banner + tail — the bounded text the model receives. */
+  text: string;
+  /** Absolute path of the persisted full-output file (set only on a real spill). */
+  outputFilePath?: string;
+  /** Size in bytes of the persisted full-output file (set with outputFilePath). */
+  outputFileSize?: number;
+}
+
+/**
  * Keep a head and a tail of oversized tool text and write the full text
- * beside the workspace. Callers must not return a silent head slice.
+ * beside the workspace, returning BOTH the bounded display text and structured
+ * spill metadata ({@link SpillResult}). Callers that only need the text use the
+ * thin {@link spillToolText} wrapper; callers that want to surface the on-disk
+ * path/size in a ToolResult's `metadata` (parity: Claude's ExecResult
+ * outputFilePath/outputFileSize) use this directly.
  *
  * The spill filename is deterministic (content hash) and writes are idempotent
  * (skip if the identical file already exists), so replaying the same output does
@@ -204,10 +230,10 @@ export function buildSpillBanner(
  * A non-finite `limit` (Infinity / NaN) is a hard opt-out: such output is already
  * self-bounded by its producer, so it is passed through verbatim and never spilled.
  */
-export function spillToolText(cwd: string, prefix: string, text: string, limit: number, opts?: SpillOptions): string {
+export function spillToolTextWithMeta(cwd: string, prefix: string, text: string, limit: number, opts?: SpillOptions): SpillResult {
   // Non-finite limit = hard opt-out (self-bounded tools must never be spilled and
   // re-read circularly). Finite-and-under-limit output is returned unchanged.
-  if (!Number.isFinite(limit) || text.length <= limit) return text;
+  if (!Number.isFinite(limit) || text.length <= limit) return { text };
 
   let spillFile: string | null = null;
   let errCode: string | undefined;
@@ -292,5 +318,22 @@ export function spillToolText(cwd: string, prefix: string, text: string, limit: 
 
   const omitted = Math.max(0, text.length - headLen - (text.length - tailStart));
   const middle = buildSpillBanner(omitted, spillFile, errCode, text.length, effectiveOpts);
-  return text.slice(0, headLen) + middle + text.slice(tailStart);
+  const display = text.slice(0, headLen) + middle + text.slice(tailStart);
+  // Only a SUCCESSFUL spill (spillFile !== null) exposes the on-disk path/size; a
+  // failed spill (errCode set, spillFile null) records nothing structured — the
+  // banner already says the output could not be persisted.
+  return spillFile
+    ? { text: display, outputFilePath: spillFile, outputFileSize: Buffer.byteLength(text) }
+    : { text: display };
+}
+
+/**
+ * Keep a head and a tail of oversized tool text and persist the full text to disk.
+ * Thin wrapper over {@link spillToolTextWithMeta} for callers that need only the
+ * bounded display text (file_read, web-fetch, mcp, pdf). The structured on-disk
+ * path/size is available via {@link spillToolTextWithMeta} — do not re-derive it
+ * by parsing the banner.
+ */
+export function spillToolText(cwd: string, prefix: string, text: string, limit: number, opts?: SpillOptions): string {
+  return spillToolTextWithMeta(cwd, prefix, text, limit, opts).text;
 }
