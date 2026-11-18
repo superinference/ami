@@ -11,6 +11,8 @@ import { getSessionFileAttribution, computeCommitEffort, advanceEffortBaselines,
 import { resolveEntrypoint } from '../version';
 import { agentContributionRatio } from '../session';
 import { MemoryManager } from '../memory';
+import { journalPathFor, toAmiToolName } from '../reference-journal';
+import type { MemoryAccessEntry } from '../memory-file-detection';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
 
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: AMI <ami@superinference.org>';
@@ -276,24 +278,41 @@ export function aggregateAgentContributionPercent(
 }
 
 /**
- * Count the DISTINCT memory files the agent recalled (read) this session, from the
- * tool-context's `filesRead` set. A path counts when it falls inside the
- * workspace's memory directory per the canonical {@link MemoryManager.detectMemoryFileAccess}
- * predicate (reused — no duplicated memory-dir logic, §0b.6). Returns `0` when
- * nothing was read or no memory file was among the reads. Parity: Claude Code's
+ * Count the memory-file accesses the agent made this session for the
+ * "N memories recalled" attribution suffix. Walks the session reference journal
+ * (`journalPathFor(cwd, sessionId)`) — every completed assistant turn's
+ * `tool_use` blocks — and applies the canonical
+ * {@link MemoryManager.countMemoryFileAccessFromEntries} counter, which reuses the
+ * SAME {@link MemoryManager.detectMemoryFileAccess} predicate as the session
+ * file-access guard (§0b.6, one taxonomy). This covers read / grep / glob / edit /
+ * write accesses, not just reads. The journal persists REFERENCE tool names
+ * (`Read`/`Grep`/…), so {@link toAmiToolName} maps them back to the internal
+ * vocabulary the predicate speaks. Returns `0` when there is no session id, no
+ * journal yet, or no memory file was touched. Parity: Claude Code's
  * `countMemoryFileAccessFromEntries` / `memoryAccessCount`.
  */
 export function countMemoriesRecalled(
   cwd: string,
-  filesRead: ReadonlySet<string> | undefined,
+  sessionId: string | undefined,
 ): number {
-  if (!filesRead || filesRead.size === 0) return 0;
-  const mem = new MemoryManager(cwd);
-  let count = 0;
-  for (const fp of filesRead) {
-    if (mem.detectMemoryFileAccess('file_read', { file_path: fp })) count++;
+  if (!sessionId) return 0;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(journalPathFor(cwd, sessionId), 'utf-8');
+  } catch {
+    return 0; // no journal for this session yet (bare/test context)
   }
-  return count;
+  const entries: MemoryAccessEntry[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line) as MemoryAccessEntry);
+    } catch {
+      /* skip a malformed journal line */
+    }
+  }
+  if (entries.length === 0) return 0;
+  return new MemoryManager(cwd).countMemoryFileAccessFromEntries(entries, toAmiToolName);
 }
 
 /**
@@ -807,7 +826,7 @@ export const gitCommitTool: ToolDefinition = {
             // cumulative session total — parity with Claude Code's per-commit
             // "N-shotted" via the promptCountAtLastCommit baseline.
             promptCount: computeCommitEffort(context.sessionId).steers,
-            memoriesRecalled: countMemoriesRecalled(context.cwd, context.filesRead),
+            memoriesRecalled: countMemoriesRecalled(context.cwd, context.sessionId),
             // MEASURED staged change volume (incl. human/untracked-staged edits the
             // per-file agent store misses), captured pre-commit via the
             // chars-per-line heuristic.

@@ -20,6 +20,7 @@ import {
   type CommitAttributionNote,
 } from '../src/tools/git-commit';
 import type { ToolContext } from '../src/types';
+import { journalPathFor, buildAssistantEntry, appendEntry } from '../src/reference-journal';
 
 function ctx(cwd: string, overrides?: Partial<ToolContext>): ToolContext {
   return { cwd, abortSignal: new AbortController().signal, ...overrides };
@@ -162,23 +163,69 @@ describe('countMemoriesRecalled', () => {
     else process.env.AMI_MEMORY_DIR = prev;
   });
 
-  it('returns 0 when filesRead is undefined or empty', () => {
+  // Build a real reference journal (assistant tool_use lines) for a session so the
+  // counter exercises the true persisted transcript path, not a synthetic stub.
+  function writeJournal(
+    cwd: string,
+    sessionId: string,
+    toolUses: { name: string; input: unknown }[],
+    extra: string[] = [],
+  ): void {
+    const journalPath = journalPathFor(cwd, sessionId);
+    const entry = buildAssistantEntry({
+      uuid: 'u1',
+      parentUuid: null,
+      timestamp: new Date().toISOString(),
+      sessionId,
+      cwd,
+      gitBranch: 'main',
+      isSidechain: false,
+      messageId: `${sessionId}:1`,
+      model: 'claude-opus-4-8',
+      stopReason: 'tool_use',
+      usage: { promptTokens: 1, completionTokens: 1 },
+      content: toolUses.map((t, i) => ({ type: 'tool_use' as const, id: `t${i}`, name: t.name, input: t.input })),
+    });
+    appendEntry(journalPath, entry);
+    for (const line of extra) appendEntry(journalPath, JSON.parse(line));
+  }
+
+  it('returns 0 when the session id is undefined or no journal exists yet', () => {
     const cwd = mkTmp('ami-cwd-');
     assert.equal(countMemoriesRecalled(cwd, undefined), 0);
-    assert.equal(countMemoriesRecalled(cwd, new Set()), 0);
+    assert.equal(countMemoriesRecalled(cwd, 'no-such-session'), 0);
   });
 
-  it('counts only files read inside the memory directory', () => {
+  it('counts read/edit/write/grep memory accesses from the session journal, skipping non-memory and non-allowlisted tools', () => {
     const cwd = mkTmp('ami-cwd-');
+    const sessionId = 'sess-mem-1';
     const memA = path.join(memDir, 'topic.md');
-    const memB = path.join(memDir, 'nested', 'more.md');
-    fs.mkdirSync(path.dirname(memB), { recursive: true });
-    fs.writeFileSync(memA, 'a');
-    fs.writeFileSync(memB, 'b');
+    const memSession = path.join(memDir, 'session-7.md');
     const notMem = path.join(cwd, 'src.ts');
-    fs.writeFileSync(notMem, 'code');
-    const count = countMemoriesRecalled(cwd, new Set([memA, memB, notMem]));
-    assert.equal(count, 2);
+    writeJournal(cwd, sessionId, [
+      { name: 'file_read', input: { file_path: memA } },       // read inside memory dir → counts
+      { name: 'file_edit', input: { file_path: memA } },       // edit inside memory dir → counts
+      { name: 'file_write', input: { file_path: memSession } },// write inside memory dir → counts
+      { name: 'grep', input: { path: memSession } },           // grep a session-*.md → session_memory → counts
+      { name: 'file_read', input: { file_path: notMem } },     // ordinary project file → skip
+      { name: 'bash', input: { command: `cat ${memA}` } },     // not in the allowlist → skip
+    ]);
+    assert.equal(countMemoriesRecalled(cwd, sessionId), 4);
+  });
+
+  it('ignores user entries and malformed journal lines', () => {
+    const cwd = mkTmp('ami-cwd-');
+    const sessionId = 'sess-mem-2';
+    const memA = path.join(memDir, 'topic.md');
+    writeJournal(
+      cwd,
+      sessionId,
+      [{ name: 'file_read', input: { file_path: memA } }],
+      [JSON.stringify({ type: 'user', message: { content: 'hi' } })],
+    );
+    // Append a non-JSON line directly — must be skipped, not throw.
+    fs.appendFileSync(journalPathFor(cwd, sessionId), 'not-json\n');
+    assert.equal(countMemoriesRecalled(cwd, sessionId), 1);
   });
 });
 
@@ -238,14 +285,24 @@ describe('git_commit writes contribution stats into the attribution note (integr
       recordUserPrompt(sessionId);
       recordUserPrompt(sessionId);
 
-      // A memory file the agent recalled this session.
+      // A memory file the agent recalled this session — recorded as a real
+      // assistant tool_use in the session journal (the counter's data source).
       const memFile = path.join(memDir, 'notes.md');
       fs.writeFileSync(memFile, 'remember');
-      const filesRead = new Set<string>([memFile]);
+      appendEntry(
+        journalPathFor(repo, sessionId),
+        buildAssistantEntry({
+          uuid: 'u1', parentUuid: null, timestamp: new Date().toISOString(),
+          sessionId, cwd: repo, gitBranch: 'main', isSidechain: false,
+          messageId: `${sessionId}:1`, model: 'claude-opus-4-8', stopReason: 'tool_use',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          content: [{ type: 'tool_use', id: 't0', name: 'file_read', input: { file_path: memFile } }],
+        }),
+      );
 
       const res = await gitCommitTool.execute(
         { message: 'add feature', files: [rel] },
-        ctx(repo, { sessionId, filesRead }),
+        ctx(repo, { sessionId }),
       );
       assert.equal(res.isError, false, res.output);
 

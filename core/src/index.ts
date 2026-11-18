@@ -12,8 +12,8 @@ export { AUTO_DREAM_DEFAULTS, resolveAutoDreamConfig, consolidationLockPath, rea
 export type { AutoDreamConfig, ConsolidationGate, ConsolidationDebug, ConsolidationRunParams, ConsolidationStatus, ConsolidationTurn, ConsolidationProgress, ConsolidationScheduleReason, ConsolidationScheduleDecision, ConsolidationScheduler } from './memory-consolidation';
 export { SNAPSHOT_META_FILENAME, SYNCED_META_FILENAME, validateSnapshotMeta, validateSyncedMeta, readJsonFile, getSnapshotDirForAgent, checkAgentMemorySnapshot, writeAgentSnapshotMeta, saveAgentSyncedMeta, copySnapshotToLocal, initializeFromSnapshot, replaceFromSnapshot, SNAPSHOT_UPDATE_RESOLUTIONS, DEFAULT_SNAPSHOT_UPDATE_RESOLUTION, resolveSnapshotUpdateChoice, buildSnapshotMergePrompt, applySnapshotUpdateResolution } from './agent-memory-snapshot';
 export type { SnapshotMeta, SyncedMeta, SnapshotAction, SnapshotCheck, SnapshotUpdateResolution, SnapshotUpdateOutcome } from './agent-memory-snapshot';
-export { detectSessionFileType, detectSessionPatternType, classifyToolSessionFileType, isMemoryFileAccess } from './memory-file-detection';
-export type { SessionFileType, MemoryDirs } from './memory-file-detection';
+export { detectSessionFileType, detectSessionPatternType, classifyToolSessionFileType, isMemoryFileAccess, countMemoryFileAccessFromEntries, isAutoManagedMemoryPattern, MEMORY_ACCESS_TOOL_NAMES } from './memory-file-detection';
+export type { SessionFileType, MemoryDirs, MemoryAccessEntry, MemoryToolUseBlock } from './memory-file-detection';
 export { sequential } from './utils/sequential';
 export { sleep, withTimeout } from './utils/sleep';
 export type { SleepOptions } from './utils/sleep';

@@ -783,6 +783,28 @@ export function toReferenceToolName(name: string): string {
 }
 
 /**
+ * Reverse of {@link AMI_TO_CLAUDE_TOOL}: a persisted (reference-vocabulary) tool
+ * name → the canonical internal name. The forward map is many-to-one
+ * (`grep`/`find_references`/`search_symbols` all → `Grep`); the reverse keeps the
+ * FIRST internal name seen for each reference name (insertion order), which is the
+ * canonical one (`Grep` → `grep`, not `find_references`). Unknown / already-internal
+ * names (and MCP `mcp__x__y`) pass through unchanged.
+ */
+const REFERENCE_TO_AMI_TOOL: Record<string, string> = (() => {
+  const rev: Record<string, string> = {};
+  for (const [ami, ref] of Object.entries(AMI_TO_CLAUDE_TOOL)) {
+    if (!(ref in rev)) rev[ref] = ami;
+  }
+  return rev;
+})();
+
+/** Map a reference-vocabulary tool name back to the internal name. The inverse of
+ *  {@link toReferenceToolName}; identity for internal/unknown/MCP names. */
+export function toAmiToolName(name: string): string {
+  return REFERENCE_TO_AMI_TOOL[name] ?? name;
+}
+
+/**
  * Map our model ids to ids the dashboard's pricing table can resolve. Already-dated
  * snapshot ids (…-YYYYMMDD / …-NNNNNNNN) pass through; known families map to a
  * representative priceable snapshot; everything else passes through unchanged.

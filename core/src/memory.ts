@@ -29,8 +29,11 @@ import { groupBy } from './utils/group-by';
 import {
   isMemoryFileAccess,
   classifyToolSessionFileType,
+  countMemoryFileAccessFromEntries,
+  isAutoManagedMemoryPattern,
   type SessionFileType,
   type MemoryDirs,
+  type MemoryAccessEntry,
 } from './memory-file-detection';
 
 /**
@@ -4251,6 +4254,33 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    */
   classifyToolSessionFile(toolName: string, toolInput: unknown): SessionFileType | null {
     return classifyToolSessionFileType(toolName, toolInput, this._memoryDetectDirs());
+  }
+
+  /**
+   * Count the memory/session file accesses across a run of transcript entries for
+   * THIS workspace — the "N memories recalled" figure. Reuses the canonical
+   * {@link countMemoryFileAccessFromEntries} (same predicate as
+   * {@link detectMemoryFileAccess}), resolving the workspace's memory/transcript
+   * dirs. `normalizeToolName` maps persisted (reference-journal) tool names into
+   * the AMI domain the predicate speaks. Parity: Claude Code's
+   * `countMemoryFileAccessFromEntries`.
+   */
+  countMemoryFileAccessFromEntries(
+    entries: ReadonlyArray<MemoryAccessEntry>,
+    normalizeToolName?: (name: string) => string,
+  ): number {
+    return countMemoryFileAccessFromEntries(entries, this._memoryDetectDirs(), normalizeToolName);
+  }
+
+  /**
+   * Does a grep/glob PATTERN target auto-managed memory files only (never a
+   * user-managed instruction file)? Thin wrapper over the canonical
+   * {@link isAutoManagedMemoryPattern} so a consumer can classify a glob-only
+   * search (no concrete path) as a memory operation. Parity: Claude Code's
+   * `isAutoManagedMemoryPattern`.
+   */
+  isAutoManagedMemoryPattern(pattern: string): boolean {
+    return isAutoManagedMemoryPattern(pattern);
   }
 
   // ── Instruction source collection ─────────────────────────────────────

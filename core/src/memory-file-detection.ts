@@ -92,11 +92,15 @@ export function detectSessionPatternType(
   return null;
 }
 
-/** Pull the `file_path` from a path-taking tool's input (Read/Edit). */
+/** Pull the `file_path` from a path-taking tool's input (Read/Edit/Write). */
 function filePathFromInput(toolName: string, input: unknown): string | null {
   if (!input || typeof input !== 'object') return null;
   const o = input as Record<string, unknown>;
-  if (toolName === 'file_read' || toolName === 'file_edit') {
+  if (
+    toolName === 'file_read' ||
+    toolName === 'file_edit' ||
+    toolName === 'file_write'
+  ) {
     return typeof o.file_path === 'string' ? o.file_path : null;
   }
   return null;
@@ -117,7 +121,8 @@ export function classifyToolSessionFileType(
   const o = input as Record<string, unknown>;
   switch (toolName) {
     case 'file_read':
-    case 'file_edit': {
+    case 'file_edit':
+    case 'file_write': {
       const fp = typeof o.file_path === 'string' ? o.file_path : null;
       return fp ? detectSessionFileType(fp, dirs) : null;
     }
@@ -168,4 +173,103 @@ export function isMemoryFileAccess(
     return true;
   }
   return false;
+}
+
+/**
+ * The tool names whose calls can TOUCH a memory/session file — the allowlist a
+ * transcript walker filters `tool_use` blocks by before applying
+ * {@link isMemoryFileAccess}. Parity with Claude Code's
+ * `MEMORY_ACCESS_TOOL_NAMES` (utils/attribution.ts): read, grep, glob, edit and
+ * write (AMI tool names). A tool outside this set can never be a memory access,
+ * so the walker skips it cheaply before the structural predicate runs.
+ */
+export const MEMORY_ACCESS_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'file_read',
+  'grep',
+  'glob',
+  'file_edit',
+  'file_write',
+]);
+
+/** One `tool_use` block of an assistant transcript entry (the only block kind the
+ *  memory counter inspects — others are ignored). */
+export interface MemoryToolUseBlock {
+  type: string;
+  name?: unknown;
+  input?: unknown;
+}
+
+/**
+ * A minimal shape of one transcript entry (reference-journal `AssistantEntry` /
+ * Claude Code `Entry`): the walker only needs the entry `type` and the
+ * assistant message's `content` blocks. Deliberately structural so it accepts
+ * both a live {@link MemoryToolUseBlock}-bearing message and a persisted journal
+ * line without coupling to either concrete type.
+ */
+export interface MemoryAccessEntry {
+  type?: unknown;
+  message?: { content?: unknown } | null;
+}
+
+/**
+ * Count how many times the agent TOUCHED a memory/session file across a run of
+ * transcript entries — the figure feeding the "N memories recalled" attribution
+ * suffix. Walks each `assistant` entry's `tool_use` blocks, filters by
+ * {@link MEMORY_ACCESS_TOOL_NAMES}, then applies the SAME {@link isMemoryFileAccess}
+ * predicate the PostToolUse session-file-access guard uses — so a hook and this
+ * counter never disagree. Parity with Claude Code's
+ * `countMemoryFileAccessFromEntries` (utils/attribution.ts L213-243), covering
+ * read/grep/glob/edit/write (not just reads).
+ *
+ * `normalizeToolName` maps a stored tool name into the AMI tool-name domain the
+ * predicate/allowlist speak (the reference journal persists REFERENCE names —
+ * `Read`/`Grep`/… — so a journal-reading caller supplies a ref→ami map); it
+ * defaults to identity for callers that already pass AMI-named entries.
+ */
+export function countMemoryFileAccessFromEntries(
+  entries: ReadonlyArray<MemoryAccessEntry>,
+  dirs: MemoryDirs,
+  normalizeToolName: (name: string) => string = (n) => n,
+): number {
+  let count = 0;
+  for (const entry of entries) {
+    if (!entry || entry.type !== 'assistant') continue;
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as MemoryToolUseBlock;
+      if (b.type !== 'tool_use' || typeof b.name !== 'string') continue;
+      const amiName = normalizeToolName(b.name);
+      if (!MEMORY_ACCESS_TOOL_NAMES.has(amiName)) continue;
+      if (isMemoryFileAccess(amiName, b.input, dirs)) count++;
+    }
+  }
+  return count;
+}
+
+/** Normalized glob substrings that mark an auto-managed AGENT-memory store
+ *  (AMI's `agent-memory-local/` / `agent-memory-remote/` trees, plus the generic
+ *  `agent-memory/` form). These are curated by the memory system, never authored
+ *  by hand, so a glob reaching them is a memory operation. */
+const AGENT_MEMORY_GLOB_MARKERS = [
+  'agent-memory/',
+  'agent-memory-local/',
+  'agent-memory-remote/',
+];
+
+/**
+ * Does a GLOB/PATTERN target auto-managed memory files ONLY (never a
+ * user-managed instruction file like AGENTS.md / `.ami/rules/`)? True when the
+ * pattern reads as a session file ({@link detectSessionPatternType}) or reaches
+ * an agent-memory tree. Used by collapse/badge logic so a grep/glob whose only
+ * filter is a memory glob (no concrete path) is still recognized as a memory
+ * search. Parity with Claude Code's `isAutoManagedMemoryPattern`
+ * (utils/memoryFileDetection.ts L277-289).
+ */
+export function isAutoManagedMemoryPattern(pattern: string): boolean {
+  if (!pattern) return false;
+  if (detectSessionPatternType(pattern) !== null) return true;
+  const normalized = toComparable(pattern);
+  return AGENT_MEMORY_GLOB_MARKERS.some((m) => normalized.includes(m));
 }
