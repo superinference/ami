@@ -1144,6 +1144,115 @@ export function parseJsonc(raw: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// Config read caches + single invalidation point
+// ---------------------------------------------------------------------------
+//
+// Parity: Claude Code's settings cache (settingsCache.ts) is a set of memos behind
+// ONE resetSettingsCache() trigger fired on every settings write / --add-dir /
+// plugin-init / hooks-refresh. AMI's config layer likewise accreted several memos
+// (the content-keyed parseJsonc LRU above; the managed-path platform memo and the
+// per-tier identity cache below). {@link resetConfigCache} ties them to a SINGLE
+// invalidation point wired into {@link safeWriteConfig} so a config write never
+// leaves a stale read snapshot behind.
+
+/**
+ * Platform(+PROGRAMDATA)-keyed memo of the managed-config DEVICE-DEFAULT path, so
+ * the platform switch + join runs once per platform instead of on every resolve
+ * (parity: Claude's lodash-memoized `getManagedFilePath`). Keyed by platform (and, on
+ * Windows, the PROGRAMDATA that feeds the path) rather than memoized unconditionally,
+ * so a forced different `process.platform` / `PROGRAMDATA` still resolves correctly.
+ */
+const managedPathCache = new Map<string, string>();
+
+/**
+ * One in-memory per-tier config read cache keyed by file IDENTITY (absolute path +
+ * mtime + size), with NEGATIVE caching of absent files. A repeated load of an
+ * unchanged file is a pure memory hit (no readFileSync); any content change — our own
+ * {@link safeWriteConfig} OR another instance's write — changes mtime/size, misses,
+ * and re-reads, so a stale snapshot is never served. The cached tree is pristine and
+ * every caller receives a `structuredClone`, so a caller mutating its config cannot
+ * poison the cache. Parity: Claude's in-memory global-config cache + settingsCache's
+ * miss(undefined)/negative(null) distinction.
+ */
+interface TierConfigCacheEntry {
+  /** File mtime in ms; `-1` when the file is absent (negative-cache marker). */
+  mtimeMs: number;
+  /** File size in bytes; `-1` when absent. */
+  size: number;
+  /** Parsed config, or `null` for "no config at this path" (absent/corrupt). */
+  config: ProjectConfig | null;
+}
+const tierConfigCache = new Map<string, TierConfigCacheEntry>();
+
+/**
+ * The OS-conventional device-level managed-config path (no env override), memoized per
+ * platform. See {@link managedPathCache}. {@link getManagedConfigPath} applies the
+ * `SUPERINFERENCE_MANAGED_CONFIG` override first, then falls back here.
+ */
+function getManagedConfigDefaultPath(): string {
+  const key = process.platform === 'win32'
+    ? `win32|${process.env.PROGRAMDATA || ''}`
+    : String(process.platform);
+  const hit = managedPathCache.get(key);
+  if (hit !== undefined) return hit;
+  let resolved: string;
+  switch (process.platform) {
+    case 'darwin':
+      resolved = '/Library/Application Support/SuperInference/config.json';
+      break;
+    case 'win32':
+      resolved = path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'SuperInference', 'config.json');
+      break;
+    default:
+      resolved = '/etc/superinference/config.json';
+  }
+  managedPathCache.set(key, resolved);
+  return resolved;
+}
+
+/**
+ * Load a per-tier config through the file-identity read cache ({@link tierConfigCache}).
+ * Used by the project / local / global tier loaders so repeated reads of an unchanged
+ * file across the config waterfall and diagnostic sweeps are memory hits. The
+ * ConfigService watcher path deliberately calls {@link loadConfigFile} directly
+ * (uncached) — it reacts to a detected change and must always read fresh.
+ */
+function loadTierConfigCached(configPath: string): ProjectConfig | null {
+  // Stat for the identity key. An absent/unstattable file is a NEGATIVE identity
+  // (-1/-1) so the common "no config here" case is also a memory hit.
+  let mtimeMs = -1;
+  let size = -1;
+  try {
+    const st = fsHooks.statSync(configPath);
+    mtimeMs = st.mtimeMs;
+    size = st.size;
+  } catch {
+    // Absent / broken symlink / not inspectable → negative identity.
+  }
+  const cached = tierConfigCache.get(configPath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    return cached.config === null ? null : structuredClone(cached.config);
+  }
+  // Absent files skip loadConfigFile entirely (it would resolve to null anyway).
+  const config = mtimeMs === -1 ? null : loadConfigFile(configPath);
+  tierConfigCache.set(configPath, { mtimeMs, size, config });
+  return config === null ? null : structuredClone(config);
+}
+
+/**
+ * Clear EVERY config read memo in one call: the content-keyed parse LRU, the managed
+ * device-path memo, and the per-tier identity cache. This is the single invalidation
+ * point (parity: Claude's `resetSettingsCache`) fired by {@link safeWriteConfig} on
+ * every config write; call it too after a `--add-dir`, plugin install, or hooks
+ * refresh changes what the config layer would resolve.
+ */
+export function resetConfigCache(): void {
+  jsoncParseCache.clear();
+  managedPathCache.clear();
+  tierConfigCache.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Loaders
 // ---------------------------------------------------------------------------
 
@@ -1153,7 +1262,7 @@ export function parseJsonc(raw: string): unknown {
  */
 export function loadProjectConfig(cwd: string): ProjectConfig | null {
   const configPath = path.join(cwd, '.ami', 'config.json');
-  return loadConfigFile(configPath);
+  return loadTierConfigCached(configPath);
 }
 
 /**
@@ -1161,7 +1270,7 @@ export function loadProjectConfig(cwd: string): ProjectConfig | null {
  * This file is typically gitignored for user-specific overrides.
  */
 export function loadLocalConfig(cwd: string): ProjectConfig | null {
-  return loadConfigFile(path.join(cwd, '.ami', 'config.local.json'));
+  return loadTierConfigCached(path.join(cwd, '.ami', 'config.local.json'));
 }
 
 /**
@@ -1171,7 +1280,7 @@ export function loadLocalConfig(cwd: string): ProjectConfig | null {
 export function loadGlobalConfig(): ProjectConfig | null {
   const configPath = getGlobalConfigPath();
   if (!configPath) return null;
-  return loadConfigFile(configPath);
+  return loadTierConfigCached(configPath);
 }
 
 /**
@@ -1211,14 +1320,9 @@ export class ManagedConfigError extends Error {}
 export function getManagedConfigPath(): string {
   const override = process.env.SUPERINFERENCE_MANAGED_CONFIG;
   if (override) return override;
-  switch (process.platform) {
-    case 'darwin':
-      return '/Library/Application Support/SuperInference/config.json';
-    case 'win32':
-      return path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'SuperInference', 'config.json');
-    default:
-      return '/etc/superinference/config.json';
-  }
+  // The OS-conventional device-level path is memoized per platform (see
+  // {@link getManagedConfigDefaultPath}) so the switch + join runs once per process.
+  return getManagedConfigDefaultPath();
 }
 
 /**
@@ -5259,6 +5363,11 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   // Count a successful write to the shared GLOBAL config so pathological churn
   // (a save loop, two fighting instances) is observable before it corrupts the file.
   recordGlobalConfigWrite(target);
+  // Single invalidation point (parity: Claude's resetSettingsCache fired on write):
+  // the file we just wrote IS the new config, so drop every config read memo. The
+  // next loadProjectConfig/loadLocalConfig/loadGlobalConfig re-stats + re-reads the
+  // fresh bytes instead of serving a now-stale identity-cached snapshot.
+  resetConfigCache();
 }
 
 /**
