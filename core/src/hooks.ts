@@ -3381,6 +3381,18 @@ export class HookManager extends EventEmitter {
    *  bypasses processUserInput for the same reason). */
   private _engineHookDepth = 0;
   private _providerConfig: any = null;
+  /** Live conversation-history provider for engine-backed PROMPT hook evaluation.
+   *  When set (wired by the engine to its own message list), {@link runEngineHook}
+   *  prepends the returned messages before the hook's user message so the LLM judges
+   *  the condition against the ACTUAL conversation — e.g. a prompt hook that must
+   *  block only "if the user did not already agree earlier" needs to see the prior
+   *  turns, not just the single event payload. Parity: Claude Code's execPromptHook
+   *  optional `messages[]` → `messagesToQuery = [...messages, userMessage]`
+   *  (execPromptHook.ts:L28,L44-48). AGENT hooks are deliberately excluded: they
+   *  read the transcript FILE via a scoped Read grant instead (execAgentHook), so
+   *  they must not ALSO get the history inlined (double context). Unset = current
+   *  behavior (the self-contained prompt + event data only). */
+  private _conversationHistoryProvider?: () => Message[];
   private _cwd: string = process.cwd();
   private _sessionId: string = '';
   private _workspaceTrusted = false;
@@ -3552,6 +3564,11 @@ export class HookManager extends EventEmitter {
 
   setEngineFactory(factory: EngineFactory): void { this._engineFactory = factory; }
   setProviderConfig(config: any): void { this._providerConfig = config; }
+  /** Wire the live conversation history a PROMPT hook should evaluate against
+   *  (see {@link _conversationHistoryProvider}). The engine passes a thunk over its
+   *  own message list so the hook sees the conversation as it stands at fire time;
+   *  pass `undefined` to clear it. */
+  setConversationHistoryProvider(provider: (() => Message[]) | undefined): void { this._conversationHistoryProvider = provider; }
   setCwd(cwd: string): void { this._cwd = cwd; }
   setSessionId(id: string): void { this._sessionId = id; }
 
@@ -6687,6 +6704,22 @@ export class HookManager extends EventEmitter {
       }
     }
 
+    // PROMPT hooks evaluate a single-shot condition; when a conversation-history
+    // provider is wired, seed the hook sub-engine with the live conversation so the
+    // LLM judges the condition IN CONTEXT (e.g. "block only if the user did not
+    // already agree earlier") rather than against the self-contained event payload
+    // alone. The seeded messages become the sub-engine's prior turns and the hook's
+    // composed user message is appended by submit() — exactly Claude Code's
+    // execPromptHook `messagesToQuery = [...messages, userMessage]`. AGENT hooks are
+    // excluded on purpose: they inspect the transcript FILE via the scoped Read
+    // grant above, so inlining history too would double the context. An empty/absent
+    // history leaves the prior (no-seed) behavior unchanged.
+    const promptExtras: Record<string, unknown> = {};
+    if (kind === 'prompt' && this._conversationHistoryProvider) {
+      const history = this._conversationHistoryProvider();
+      if (history.length > 0) promptExtras.initialMessages = [...history];
+    }
+
     const engine = this._engineFactory({
       provider: providerConfig,
       cwd: this._cwd,
@@ -6697,6 +6730,7 @@ export class HookManager extends EventEmitter {
       // stays as the fallback, so a hook that answers in prose still parses.
       tools: [createVerificationOutputTool()],
       ...agentExtras,
+      ...promptExtras,
       // Run under the session's permission context (not blanket auto-allow unless
       // that is the session's mode), so a hook agent cannot exceed the user's grant.
       permissionMode: this._hookEnginePermissionMode,
