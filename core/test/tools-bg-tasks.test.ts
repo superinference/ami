@@ -31,7 +31,11 @@ describe('background task tools – definitions', () => {
   it('taskKillTool has correct name and is not read-only', () => {
     assert.equal(taskKillTool.name, 'task_kill');
     assert.equal(taskKillTool.isReadOnly, false);
-    assert.ok(taskKillTool.inputSchema.required?.includes('task_id'));
+    // U011: task_id is accepted but NOT unconditionally required — a `prune_idle`
+    // bulk stop targets "all idle agents" and needs no task_id, so the schema marks
+    // nothing required and the handler enforces task_id only on the per-task path.
+    assert.ok('task_id' in (taskKillTool.inputSchema.properties ?? {}));
+    assert.deepEqual(taskKillTool.inputSchema.required, []);
   });
 
   it('taskListTool has correct name and is read-only', () => {

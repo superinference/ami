@@ -114,6 +114,10 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // and the managed minimum-version floor — declared/validated/merged so a
       // config-file value is recognized (autoUpdatesChannel is an enum).
       autoUpdatesChannel: 'stable', minimumVersion: '1.2.3',
+      // Thinking/speculation engine gates (U010): speculative decoding toggle +
+      // always-think default — declared/validated/merged so a config-file value
+      // takes effect (isSpeculationEnabled / shouldEnableThinkingByDefault).
+      speculationEnabled: true, alwaysThinkingEnabled: true,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).

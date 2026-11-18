@@ -227,14 +227,14 @@ describe('enterWorktreeTool.execute', () => {
     assert.match(r.output, /Error creating worktree/);
   });
 
-  it('errors when the target worktree directory already exists', async () => {
+  it('errors when the target path exists but is not a valid git worktree', async () => {
     const repo = track(mkTmp());
     initRepoWithCommit(repo);
     const wtDir = path.join(repo, '.ami', 'worktrees', 'dup');
     fs.mkdirSync(wtDir, { recursive: true });
     const r = await enterWorktreeTool.execute({ name: 'dup' }, ctx({ cwd: repo }));
     assert.equal(r.isError, true);
-    assert.match(r.output, /already exists/);
+    assert.match(r.output, /not a valid git worktree|stale or corrupt/);
   });
 
   it('generates a memorable word slug when name is omitted', async () => {
