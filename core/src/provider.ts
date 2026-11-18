@@ -21,7 +21,7 @@ import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as pathJoin, dirname as pathDirname } from 'node:path';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripUnavailableToolReferences, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
 import { createCombinedAbortSignal } from './utils/combined-abort-signal';
@@ -3698,9 +3698,30 @@ export async function* streamChatCompletion(
   // injecting synthetic placeholders; otherwise the repair is applied and, when it
   // actually mutated the transcript, a diagnostic event is recorded so the root cause of
   // a corrupted transcript is traceable (parity: Claude's tengu_tool_result_pairing_repaired).
+  // Defend against stale/removed-tool references before pairing repair: an MCP server
+  // may have disconnected, a plugin tool removed, or the tier changed since the turn
+  // that issued a tool_call, leaving a transcript that points at a tool name no longer
+  // in THIS request's tool set. Anthropic rejects such references, so strip the
+  // orphaned tool_call (and its paired tool_result) and emit a diagnostic. Only runs
+  // when the request actually carries tools — a deliberately tool-less request keeps
+  // its historical tool turns untouched. Parity: Claude's
+  // stripUnavailableToolReferencesFromUserMessage.
+  const prunedForTools =
+    tools.length > 0
+      ? stripUnavailableToolReferences(nonSystemMessages, new Set(tools.map(t => t.name)), {
+          onStrip: (diag) => {
+            recordDiagnostic('warn', 'unavailable_tool_references_stripped', {
+              toolCallsDropped: diag.toolCallsDropped,
+              toolResultsDropped: diag.toolResultsDropped,
+              placeholdersInserted: diag.placeholdersInserted,
+              droppedToolNames: diag.droppedToolNames,
+            });
+          },
+        })
+      : nonSystemMessages;
   let healed: typeof nonSystemMessages;
   try {
-    healed = healOrphanedToolCalls(nonSystemMessages, {
+    healed = healOrphanedToolCalls(prunedForTools, {
       strict: getStrictToolResultPairing(),
       onRepair: (diag) => {
         recordDiagnostic('warn', 'tool_result_pairing_repaired', {

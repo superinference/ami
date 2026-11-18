@@ -523,3 +523,124 @@ export function filterOrphanedThinkingOnlyMessages(messages: Message[]): Message
   if (!messages.some(isThinkingOnly)) return messages;
   return messages.filter(m => !isThinkingOnly(m));
 }
+
+/** Placeholder substituted into an assistant turn that was emptied by stripping every
+ *  one of its tool_calls (a turn that had NO text, only now-unavailable tool_calls).
+ *  Parity: Claude's '[Tool references removed - tools no longer available]'. */
+export const UNAVAILABLE_TOOL_REFERENCE_PLACEHOLDER =
+  '[Tool references removed - tools no longer available]';
+
+/** Diagnostics describing what {@link stripUnavailableToolReferences} removed, so the
+ *  drop is observable (logged/emitted) instead of silent. Parity: Claude's
+ *  `logForDebugging('Filtering out tool_reference for unavailable tool: …')`. */
+export interface UnavailableToolReferenceDiagnostics {
+  /** Assistant tool_calls removed because their tool name was not available. */
+  toolCallsDropped: number;
+  /** tool_result messages removed because they answered a dropped tool_call. */
+  toolResultsDropped: number;
+  /** Assistant turns whose content was replaced by the placeholder (all tool_calls
+   *  stripped and no surviving text). */
+  placeholdersInserted: number;
+  /** Distinct tool names that were stripped, for the diagnostic payload. */
+  droppedToolNames: string[];
+}
+
+/** Options for {@link stripUnavailableToolReferences}. */
+export interface StripUnavailableToolReferencesOptions {
+  /** Content substituted when an assistant turn is emptied by the strip. Defaults to
+   *  {@link UNAVAILABLE_TOOL_REFERENCE_PLACEHOLDER}. */
+  placeholder?: string;
+  /** Observability hook invoked with {@link UnavailableToolReferenceDiagnostics} when
+   *  (and only when) the transform actually removed something. Parity: Claude logs the
+   *  drop; AMI surfaces it so a disconnected-MCP / removed-plugin tool reference is
+   *  traceable instead of silently repaired. */
+  onStrip?: (diagnostics: UnavailableToolReferenceDiagnostics) => void;
+}
+
+/**
+ * Strip references to tools that are NOT in the request's available tool set.
+ *
+ * Between turns a tool can vanish — an MCP server disconnects, a plugin is removed, a
+ * tier changes — leaving a transcript whose assistant `tool_calls` (and their matching
+ * `tool_result` messages) point at a tool name the provider no longer knows. Anthropic
+ * rejects such a request ("tool_use/tool_result refers to a tool not in the request")
+ * and the session wedges. {@link healOrphanedToolCalls} only reconciles id-pairing; it
+ * never checks the referenced tool NAME against what is actually available, so a
+ * stale-tool reference slips straight through to the provider.
+ *
+ * This transform closes that gap by taking the live {@link ToolDefinition} name set and:
+ *  - dropping every assistant `tool_call` whose `function.name` is absent from it;
+ *  - dropping the matching `tool_result` message (by `tool_call_id`);
+ *  - when an assistant turn is emptied (all tool_calls stripped AND no text content),
+ *    substituting a placeholder text block so the turn stays non-empty/valid.
+ *
+ * Order-preserving; returns the SAME reference when nothing references an unavailable
+ * tool (fast no-op). Mirrors Claude's `stripUnavailableToolReferencesFromUserMessage`,
+ * adapted to AMI's role-based {@link Message} shape (tool name lives on the assistant
+ * `tool_call`, not on the `tool_result`). Run BEFORE {@link healOrphanedToolCalls} so the
+ * heal pass sees a transcript already free of stale-tool references.
+ */
+export function stripUnavailableToolReferences(
+  messages: Message[],
+  availableToolNames: Iterable<string>,
+  options: StripUnavailableToolReferencesOptions = {},
+): Message[] {
+  const available =
+    availableToolNames instanceof Set
+      ? availableToolNames
+      : new Set<string>(availableToolNames);
+  const placeholder = options.placeholder ?? UNAVAILABLE_TOOL_REFERENCE_PLACEHOLDER;
+
+  // First pass: identify the tool_call ids that reference an unavailable tool, so the
+  // second pass can drop both the call and its paired result.
+  const unavailableCallIds = new Set<string>();
+  const droppedToolNames = new Set<string>();
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (!available.has(tc.function.name)) {
+          unavailableCallIds.add(tc.id);
+          droppedToolNames.add(tc.function.name);
+        }
+      }
+    }
+  }
+  if (unavailableCallIds.size === 0) return messages;
+
+  let toolCallsDropped = 0;
+  let toolResultsDropped = 0;
+  let placeholdersInserted = 0;
+  const result: Message[] = [];
+  for (const msg of messages) {
+    // Drop a tool_result that answered a now-unavailable tool_call.
+    if (msg.role === 'tool' && unavailableCallIds.has(msg.tool_call_id)) {
+      toolResultsDropped++;
+      continue;
+    }
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      const kept = msg.tool_calls.filter(tc => !unavailableCallIds.has(tc.id));
+      if (kept.length !== msg.tool_calls.length) {
+        toolCallsDropped += msg.tool_calls.length - kept.length;
+        const hasText = typeof msg.content === 'string' && msg.content.trim() !== '';
+        if (kept.length === 0 && !hasText) {
+          // Turn emptied entirely → substitute the placeholder text so the provider
+          // does not reject an empty assistant turn. Parity: Claude's placeholder block.
+          result.push({ ...msg, content: placeholder, tool_calls: undefined });
+          placeholdersInserted++;
+        } else {
+          result.push({ ...msg, tool_calls: kept.length > 0 ? kept : undefined });
+        }
+        continue;
+      }
+    }
+    result.push(msg);
+  }
+
+  options.onStrip?.({
+    toolCallsDropped,
+    toolResultsDropped,
+    placeholdersInserted,
+    droppedToolNames: [...droppedToolNames],
+  });
+  return result;
+}
