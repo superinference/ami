@@ -404,6 +404,13 @@ export interface ToolResult {
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
   structuredPatch?: DiffHunk[];
+  /** The edit's per-hunk {@link structuredPatch} was deliberately OMITTED (left
+   *  `[]`) because the file exceeded the diff-scan cap — the change happened but
+   *  its location could not be rendered. Parity: Claude's readEditContext
+   *  `truncated: true` signal, which lets a replay/introspection surface say
+   *  "edit location not shown — file too large to scan" instead of mistaking an
+   *  empty patch for "no change". Only set on a SUCCESSFUL, size-capped edit. */
+  structuredPatchTruncated?: boolean;
   /** The tool call was canceled before/while running (e.g. the surrounding batch
    *  was aborted) — distinct from a tool that ran and errored. Parity: Claude's
    *  `CANCEL_MESSAGE` content marker. Drives a dedicated "canceled" render state
@@ -1440,7 +1447,16 @@ export type EngineEvent =
        *  control send (see {@link shouldSuppressSendMessageTranscript}) — the parity
        *  of Claude Code's SendMessageTool renderToolResultMessage null-render branches
        *  (tools/SendMessageTool/UI.tsx). Absent/false → render normally. */
-      suppressTranscript?: boolean }
+      suppressTranscript?: boolean;
+      /** Per-hunk structured diff of a file-mutating result, forwarded from the
+       *  tool's {@link ToolResult.structuredPatch} so a consumer (the session
+       *  journal, a replay/introspection surface) can record WHERE an edit landed
+       *  without re-parsing `output`. Absent for non-mutating tools. */
+      structuredPatch?: DiffHunk[];
+      /** The structured patch was omitted because the file exceeded the diff-scan
+       *  cap (forwarded from {@link ToolResult.structuredPatchTruncated}) — the
+       *  edit succeeded but its location could not be rendered. */
+      structuredPatchTruncated?: boolean }
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }

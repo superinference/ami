@@ -25,7 +25,8 @@ import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { memoizeWithLRU } from './utils/memoize';
 import { log, logError } from './logger';
-import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked } from './config';
+import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked, stripBom } from './config';
+import type { DiffHunk } from './types';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
 export const COMPAT_VERSION = '2.1.307';
@@ -431,7 +432,7 @@ export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] 
   const cfgPath = dashboardConfigPath(env);
   if (cfgPath) {
     try {
-      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { claudeConfigDirs?: unknown };
+      const cfg = JSON.parse(stripBom(fs.readFileSync(cfgPath, 'utf8'))) as { claudeConfigDirs?: unknown };
       if (Array.isArray(cfg.claudeConfigDirs)) {
         for (const d of cfg.claudeConfigDirs) if (typeof d === 'string') dirs.push(d);
       }
@@ -816,13 +817,13 @@ export function buildAssistantEntry(a: AssistantEntryArgs): AssistantEntry {
   };
 }
 
-export interface StructuredPatchHunk {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-  lines: string[];
-}
+/**
+ * A per-hunk structured diff recorded on a tool_result journal line. This is the
+ * SAME shape as a file-mutating tool's {@link DiffHunk} — the journal reuses that
+ * ONE canonical type (no parallel definition) so the patch a replay/introspection
+ * surface reads is byte-identical to what the tool produced.
+ */
+export type StructuredPatchHunk = DiffHunk;
 
 export interface UserEntryArgs {
   uuid: string;
@@ -835,6 +836,14 @@ export interface UserEntryArgs {
   content: unknown;
   toolUseResult?: {
     structuredPatch?: StructuredPatchHunk[];
+    /**
+     * The structured patch was omitted (left empty) because the edited file
+     * exceeded the diff-scan cap — the edit happened but its location could not
+     * be rendered. Lets a replay/introspection surface distinguish "edit location
+     * not shown — file too large to scan" from a genuine no-op. Parity: Claude's
+     * readEditContext `truncated: true` signal.
+     */
+    truncated?: boolean;
     is_error?: boolean;
     agentId?: string;
   };
@@ -965,7 +974,7 @@ export function registerDataDir(dataDir: string, configPath: string): boolean {
     let cfg: Record<string, unknown> = {};
     if (fs.existsSync(configPath)) {
       try {
-        cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+        cfg = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf8'))) as Record<string, unknown>;
       } catch {
         cfg = {};
       }

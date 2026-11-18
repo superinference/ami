@@ -773,6 +773,7 @@ export async function writeEntireFile(
     return {
       output: diffOmittedSummary(resolved, lineCount),
       structuredPatch: [],
+      structuredPatchTruncated: true,
       metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false, userModified: context.userModified }),
     };
   }
@@ -970,6 +971,7 @@ async function applySequentialEdits(
       output: summary.join('\n'),
       isError: false,
       structuredPatch: [],
+      structuredPatchTruncated: true,
       metadata: buildEditMetadata({ filePath: resolved, editMode: 'multiple', replaceAll: false, userModified: context.userModified }),
     };
   }
@@ -1397,6 +1399,7 @@ export const fileEditTool: ToolDefinition = {
           return {
             output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
             structuredPatch: [],
+            structuredPatchTruncated: true,
             metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: true, userModified: context.userModified }),
           };
         }
@@ -1447,6 +1450,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
         structuredPatch: [],
+        structuredPatchTruncated: true,
         metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false, userModified: context.userModified }),
       };
     }
