@@ -33,6 +33,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log as coreLog } from '../logger';
+import { validateBoundedIntEnvVar } from '../config';
 import { isEnvTruthy } from '../privacy-level';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
 import { logMcpError as logMcpServerError, logMcpDebug as logMcpServerDebug, getMcpServerLogPath, type McpLogSinkOptions } from './log-sink';
@@ -124,13 +125,22 @@ export async function runBoundedPool<T>(items: T[], limit: number, worker: (item
 }
 
 const DEFAULT_MCP_DESCRIPTION_LENGTH = 2048;
+// Hard upper ceiling for SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH. A mistaken or
+// hostile value (e.g. =99999999) would let a single MCP server bloat EVERY tool
+// description and exhaust the model's context window (DoS). Parity: Claude Code's
+// validateBoundedIntEnvVar upper-limit cap + capped/invalid diagnostic logging.
+const MCP_DESCRIPTION_UPPER_LIMIT = 100_000;
 function getMcpMaxDescriptionLength(): number {
-  const env = process.env.SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH;
-  if (env) {
-    const n = parseInt(env, 10);
-    if (!Number.isNaN(n) && n > 0) return n;
-  }
-  return DEFAULT_MCP_DESCRIPTION_LENGTH;
+  // Route through the single canonical bounded-int env validator so a non-numeric/
+  // non-positive override falls back to the default (status 'invalid') and an
+  // over-ceiling override is CLAMPED to the limit (status 'capped') — each logged
+  // to the debug channel by the validator — instead of the old silent/unbounded
+  // parse that applied no ceiling at all.
+  return validateBoundedIntEnvVar(
+    'SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH',
+    process.env.SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH,
+    { default: DEFAULT_MCP_DESCRIPTION_LENGTH, min: 1, max: MCP_DESCRIPTION_UPPER_LIMIT },
+  ).effective;
 }
 
 /**

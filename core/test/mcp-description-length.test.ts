@@ -48,6 +48,27 @@ describe('MCP description length env var', () => {
     assert.equal(truncated.length, 2048);
   });
 
+  it('caps an over-limit env value to the upper limit (DoS guard, parity: validateBoundedIntEnvVar)', async () => {
+    // A mistaken/hostile huge override must be clamped to the upper ceiling so a
+    // single MCP server cannot bloat every tool description past the cap.
+    process.env[envKey] = '500000';
+    const { McpManager } = await import('../src/mcp/manager');
+    const manager = new McpManager();
+    const long = 'x'.repeat(120000);
+    const truncated = manager.truncateDescription(long);
+    assert.equal(truncated.length, 100000);
+    assert.ok(truncated.endsWith('...'));
+  });
+
+  it('falls back to default on a non-positive env value (<= 0)', async () => {
+    process.env[envKey] = '0';
+    const { McpManager } = await import('../src/mcp/manager');
+    const manager = new McpManager();
+    const long = 'g'.repeat(3000);
+    const truncated = manager.truncateDescription(long);
+    assert.equal(truncated.length, 2048);
+  });
+
   it('allows explicit maxLength parameter to override', async () => {
     const { McpManager } = await import('../src/mcp/manager');
     const manager = new McpManager();
