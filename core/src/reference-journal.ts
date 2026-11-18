@@ -194,6 +194,55 @@ export function resolveCacheDir(env: NodeJS.ProcessEnv = process.env, homedir?: 
 }
 
 /**
+ * The conventional per-user executable directory — `~/.local/bin` — honoring the
+ * same HOME-aware precedence as every other path resolver here ({@link resolveHome}:
+ * an explicit `homedir` override wins, then `$HOME`, then the OS passwd entry).
+ * Parity with Claude Code's `getUserBinDir()` (xdg.ts): "not technically XDG but
+ * follows the convention", the location a native per-user installer would place (or
+ * symlink) an executable so it lands on a dir that is commonly already on `PATH`.
+ * AMI's own native install root is `~/.ami/bin`; this exposes the broader
+ * cross-tool convention so a diagnostic (or future installer step) can reason about
+ * the standard user bin dir without re-deriving it. `homedir` is a test seam.
+ */
+export function getUserBinDir(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
+  return path.join(resolveHome(env, homedir), '.local', 'bin');
+}
+
+/**
+ * Whether `dir` is a member of the `PATH` env var. Each entry is trimmed, empty
+ * entries are skipped, and both sides are {@link path.resolve}d before comparing so
+ * `~/.local/bin`, `./bin` and a trailing-slash variant all match their canonical
+ * form; on Windows the comparison is case-insensitive (the filesystem is). A
+ * non-string / unset `PATH` is treated as empty. Shared by the native-install PATH
+ * reachability check and the `~/.local/bin` diagnostic so the membership rule lives
+ * in exactly one place.
+ */
+export function isDirOnPath(
+  dir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  let resolvedDir: string;
+  try {
+    resolvedDir = path.resolve(dir);
+  } catch {
+    resolvedDir = dir;
+  }
+  const isWindows = platform === 'win32';
+  const rawPath = typeof env.PATH === 'string' ? env.PATH : '';
+  return rawPath.split(path.delimiter).some((entry) => {
+    const e = entry.trim();
+    if (!e) return false;
+    try {
+      const r = path.resolve(e);
+      return isWindows ? r.toLowerCase() === resolvedDir.toLowerCase() : r === resolvedDir;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * One-time, idempotent migration of durable config from the pre-rename `~/.superinference` into
  * `~/.ami` (issue #21 defect 1): the .superinference→.ami rename moved every plugin/skill/
  * marketplace ROOT but no on-disk data, orphaning plugins installed by a pre-rename binary. We
