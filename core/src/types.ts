@@ -234,6 +234,15 @@ export interface UserMessage extends TranscriptMeta {
    *  message. Set only when non-empty (else omitted). Parity: Claude's
    *  `processTextPrompt({ imagePasteIds })` user-message field. */
   imagePasteIds?: number[];
+  /** Marks a message that carries hook-produced additional context (a SessionStart/
+   *  Setup `additionalContexts[]` aggregation — Claude's `hook_additional_context`
+   *  attachment). By default such a message is injected for the live turn but
+   *  FILTERED OUT of the saved transcript (so --resume re-derives fresh context by
+   *  re-running the hooks); the operator can opt in to persist it across resume via
+   *  `AMI_SAVE_HOOK_ADDITIONAL_CONTEXT` (Claude-compat
+   *  `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT`). The persistence decision lives in
+   *  the single `isLoggableMessage` save-filter (session.ts). */
+  hookAdditionalContext?: boolean;
 }
 
 export interface AssistantMessage extends TranscriptMeta {

@@ -91,6 +91,50 @@ export function isResumeAllProjectsEnabled(env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
+ * Env var that opts IN to persisting hook-produced additional-context messages into
+ * the saved transcript (so they survive `--resume`) instead of filtering them out on
+ * save. Honored alongside Claude's `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT` (AMI
+ * value first), matching the dual-env convention used by {@link isSessionPersistenceDisabled}
+ * / {@link isResumeAllProjectsEnabled}. Parity: Claude's
+ * `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT` gate in `isLoggableMessage`.
+ */
+export const SAVE_HOOK_ADDITIONAL_CONTEXT_ENV = 'AMI_SAVE_HOOK_ADDITIONAL_CONTEXT';
+
+/**
+ * Whether hook-produced additional-context messages ({@link isHookAdditionalContextMessage})
+ * are PERSISTED into the saved transcript rather than dropped on save. Off by default
+ * — AMI re-runs the SessionStart/Setup hooks on resume, so fresh context is derived
+ * each run and the stale copy is not needed; the operator opts in when they want the
+ * exact hook output preserved verbatim across `--resume`. Parity: Claude's
+ * {@link SAVE_HOOK_ADDITIONAL_CONTEXT_ENV} knob consulted by `isLoggableMessage`.
+ */
+export function isSaveHookAdditionalContextEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnvTruthy(env[SAVE_HOOK_ADDITIONAL_CONTEXT_ENV]) || isEnvTruthy(env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT);
+}
+
+/** True when a message carries hook-produced additional context (a SessionStart/
+ *  Setup `additionalContexts[]` aggregation — {@link UserMessage.hookAdditionalContext}).
+ *  Parity: Claude's `attachment.type === 'hook_additional_context'` check. */
+export function isHookAdditionalContextMessage(msg: Message): boolean {
+  return msg.role === 'user' && (msg as UserMessage).hookAdditionalContext === true;
+}
+
+/**
+ * The single canonical predicate deciding whether a message is PERSISTED into the
+ * saved transcript ({@link SessionManager.save}). Mirrors Claude's `isLoggableMessage`:
+ *  - engine-injected turn-local control nudges (`isMeta`) never persist;
+ *  - hook-produced additional-context messages are dropped UNLESS the operator opts
+ *    in via {@link isSaveHookAdditionalContextEnabled} (so they survive `--resume`);
+ *  - everything else is loggable.
+ * Reads load everything (this gates only writes), exactly like Claude.
+ */
+export function isLoggableMessage(msg: Message, env: NodeJS.ProcessEnv = process.env): boolean {
+  if ((msg as { isMeta?: boolean }).isMeta) return false;
+  if (isHookAdditionalContextMessage(msg)) return isSaveHookAdditionalContextEnabled(env);
+  return true;
+}
+
+/**
  * Content longer than this is offloaded to a content-addressed blob sidecar
  * rather than truncated in place. The value also caps the inline on-screen
  * preview stored next to the blob reference.
@@ -1403,7 +1447,13 @@ export class SessionManager {
     this.ensureDir();
     const safeId = sanitizeSessionId(session.id);
     const blobDir = this.blobDirFor(safeId);
-    const storedMessages = session.messages.map(m => this.offloadMessage(m, blobDir));
+    // Canonical save-persistence filter (parity: Claude's isLoggableMessage): drop
+    // engine-injected turn-local nudges (isMeta) and hook-produced additional-context
+    // messages (unless the operator opted in to persist them across --resume) BEFORE
+    // offloading, so the saved transcript carries only loggable messages.
+    const storedMessages = session.messages
+      .filter(m => isLoggableMessage(m))
+      .map(m => this.offloadMessage(m, blobDir));
     const filePath = path.join(this.sessionDir, `${safeId}.json`);
     assertPathWithin(filePath, this.sessionDir);
     // A user rename (customTitle) must never be clobbered by an auto-title save:
