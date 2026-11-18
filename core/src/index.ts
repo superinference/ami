@@ -273,6 +273,8 @@ export {
   stripTrailingSep,
   validatePathExpansionSafety,
 } from './utils/path';
+export { getSystemDirectories, defaultSystemDirectoryPlatform } from './utils/system-directories';
+export type { SystemDirectories, SystemDirectoriesOptions, SystemDirectoryPlatform } from './utils/system-directories';
 export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary } from './title-generator';
 export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun, ToolUseSummaryInput } from './title-generator';
 export { stripDisplayTags, stripInjectedContextTags } from './utils/display-tags';
