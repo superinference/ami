@@ -289,15 +289,23 @@ export {
 } from './github-repo-path-mapping';
 export {
   hardenProcess,
+  blockPtrace,
+  loadLibcPrctl,
+  bunFfiRequire,
   describeProcessHardening,
   processHardeningDisabled,
   PROCESS_HARDENING_DISABLE_ENV,
   COREDUMP_FILTER_PATH,
+  PR_SET_DUMPABLE,
 } from './utils/process-hardening';
 export type {
   ProcessHardeningStatus,
   ProcessHardeningResult,
   ProcessHardeningDeps,
+  CoreDumpHardeningResult,
+  PtraceHardeningStatus,
+  PtraceHardeningResult,
+  PrctlFn,
 } from './utils/process-hardening';
 export {
   expandPath,
