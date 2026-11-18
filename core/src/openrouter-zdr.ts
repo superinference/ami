@@ -13,6 +13,7 @@
 // branch is unit-testable.
 
 import { stripOpenRouterPrefix } from './provider';
+import { createCombinedAbortSignal } from './utils/combined-abort-signal';
 import type { ProviderConfig } from './types';
 
 export const OPENROUTER_ZDR_ENDPOINT = 'https://openrouter.ai/api/v1/endpoints/zdr';
@@ -127,16 +128,23 @@ export async function fetchZdrModelIds(
   const rawTimeout = opts.timeoutMs;
   const timeoutMs = (typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0)
     ? rawTimeout : 5000;
+  // Use the shared combined-signal helper's setTimeout/clearTimeout deadline instead
+  // of `AbortSignal.timeout(timeoutMs)`: that native timer is retained for the FULL
+  // timeout window even after the fetch settles. `deadline.cleanup()` in the finally
+  // frees the timer the instant the request resolves (or throws) on the happy path.
+  const deadline = createCombinedAbortSignal(undefined, { timeoutMs });
   try {
     const headers: Record<string, string> = {};
     if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
     const res = await doFetch(OPENROUTER_ZDR_ENDPOINT, {
       headers,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: deadline.signal,
     });
     if (!res.ok) return new Set();
     return parseZdrModelIds(await res.json());
   } catch {
     return new Set();
+  } finally {
+    deadline.cleanup();
   }
 }
