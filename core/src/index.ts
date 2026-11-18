@@ -247,6 +247,7 @@ export {
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch, isPathGitignored } from './utils/git';
+export { parseGitConfigValue, parseConfigString } from './git-config-parser';
 export {
   detectCurrentRepository,
   detectCurrentRepositoryWithHost,

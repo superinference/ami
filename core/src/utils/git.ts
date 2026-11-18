@@ -3,6 +3,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { parseGitConfigValue } from '../git-config-parser';
+
 /** Hard ceiling so a wedged git invocation can never hang a caller. */
 const GIT_BRANCH_TIMEOUT_MS = 2_000;
 
@@ -139,15 +141,31 @@ export function normalizeGitRemoteUrl(url: string): string | null {
 }
 
 /**
- * Read the raw `origin` remote URL for `cwd` via `git config --get
- * remote.origin.url`, or `null` when `cwd` has no `origin` remote, the value is
- * empty, or git is unavailable. Single no-shell, hard-timeout spawn point for
- * "what is this checkout's origin URL" so every repo-identity helper
- * ({@link getRepoRemoteHash}, {@link classifyRepoRemote}, and the
- * `detect-repository` resolver) shares one injection-safe reader instead of
- * re-spawning git with slightly different flags.
+ * Read the raw `origin` remote URL for `cwd`, or `null` when `cwd` has no
+ * `origin` remote or the value is empty. Single point for "what is this
+ * checkout's origin URL" so every repo-identity helper ({@link getRepoRemoteHash},
+ * {@link classifyRepoRemote}, and the `detect-repository` resolver) shares one
+ * reader instead of re-spawning git with slightly different flags.
+ *
+ * Reads `.git/config` DIRECTLY off disk FIRST, with no git subprocess
+ * ({@link parseGitConfigValue}). This is both safer and more robust than
+ * `git config --get`: it never processes a malicious repo's `include.path` /
+ * `includeIf.*.path` directives (arbitrary file read / command execution via
+ * `core.fsmonitor`, `core.sshCommand`, aliases, …), and it still resolves the
+ * URL when the git binary is absent, broken, or would hang. The common case
+ * (a plain `[remote "origin"] url = …`) is satisfied without spawning anything.
+ *
+ * Falls back to a no-shell `git config --get` subprocess only when the direct
+ * read yields nothing — e.g. the rare case where the remote is contributed by
+ * an `includeIf`-included file the direct parse cannot see. That subprocess is
+ * injection-safe and hard-timeout bounded.
  */
 export function getRemoteOriginUrl(cwd: string): string | null {
+  const gitDir = resolveGitDir(cwd);
+  if (gitDir) {
+    const fsUrl = parseGitConfigValue(gitDir, 'remote', 'origin', 'url');
+    if (fsUrl) return fsUrl;
+  }
   const res = runGit(cwd, ['config', '--get', 'remote.origin.url']);
   if (!res || res.code !== 0) return null;
   return res.stdout || null;
