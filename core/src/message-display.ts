@@ -50,6 +50,74 @@ export function isUnsuccessfulToolResult(state: ToolResultState): boolean {
   return state !== 'success';
 }
 
+/**
+ * Whether a tool result should be rendered to the user at all.
+ *
+ * A tool may mark its own result non-rendering via {@link ToolResult.suppressRender}
+ * when a higher-level lifecycle message already covers it (the per-item cleanup result
+ * is noise once a batched shutdown summary reports the same thing). This is the single
+ * canonical gate so every frontend suppresses identically instead of reading the flag
+ * ad hoc. The model always keeps `output`; only the user-facing render is skipped.
+ * Parity: Claude's `renderToolResultMessage` returning `null` to suppress a redundant
+ * result (TeamDeleteTool/UI.tsx).
+ */
+export function shouldRenderToolResult(result: ToolResult): boolean {
+  return result.suppressRender !== true;
+}
+
+// ---------------------------------------------------------------------------
+// Tool-use field summary (parity: SyntheticOutputTool renderToolUseMessage
+// — compact affordance of the structured fields a tool call is producing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact one-line summary of a tool call's structured input fields, for the
+ * tool-use header a frontend renders before a result arrives.
+ *
+ * Mirrors Claude's `SyntheticOutputTool.renderToolUseMessage`: with **≤ 3** keys it
+ * inlines them as `k: <value>, …` so the user sees exactly what is being produced;
+ * with **> 3** keys it collapses to `<n> fields: a, b, c…` (first three key names,
+ * ellipsis) to stay terse. Keys are taken in object order. A non-object / empty input
+ * yields an empty string (nothing to summarize). Values are coerced to a single-line
+ * string and bounded so one huge value can't blow out the header.
+ *
+ * Pure + platform-free: both the CLI and any other frontend derive the identical
+ * summary string from the same source, consistent with this module's other
+ * display discriminators.
+ */
+export function summarizeToolInputFields(
+  input: unknown,
+  opts: { maxInlineKeys?: number; maxValueChars?: number } = {},
+): string {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return '';
+  const maxInlineKeys = opts.maxInlineKeys ?? 3;
+  const maxValueChars = opts.maxValueChars ?? 40;
+  const keys = Object.keys(input as Record<string, unknown>);
+  if (keys.length === 0) return '';
+
+  if (keys.length <= maxInlineKeys) {
+    const rec = input as Record<string, unknown>;
+    return keys
+      .map(k => `${k}: ${summarizeFieldValue(rec[k], maxValueChars)}`)
+      .join(', ');
+  }
+  // > maxInlineKeys: name the first three fields, then an ellipsis.
+  return `${keys.length} fields: ${keys.slice(0, 3).join(', ')}…`;
+}
+
+/** Coerce a single structured-field value to a bounded one-line display string. */
+function summarizeFieldValue(value: unknown, maxValueChars: number): string {
+  let str: string;
+  if (value === null) str = 'null';
+  else if (typeof value === 'string') str = value;
+  else if (typeof value === 'object') str = Array.isArray(value) ? `[${value.length}]` : '{…}';
+  else str = String(value);
+  // Collapse newlines so a multi-line value stays on the one-line header.
+  str = str.replace(/\s*\n\s*/g, ' ');
+  if (str.length > maxValueChars) str = `${str.slice(0, maxValueChars - 1)}…`;
+  return str;
+}
+
 // ---------------------------------------------------------------------------
 // Tool-call display state (parity: AssistantToolUseMessage.tsx L110-L121,L186)
 // ---------------------------------------------------------------------------

@@ -513,6 +513,8 @@ export {
   TOOL_RESULT_STATES,
   classifyToolResultState,
   isUnsuccessfulToolResult,
+  shouldRenderToolResult,
+  summarizeToolInputFields,
   TOOL_CALL_DISPLAY_STATES,
   deriveToolCallDisplayState,
   systemMessageDisplay,

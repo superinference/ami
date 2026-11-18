@@ -1128,6 +1128,16 @@ export const teamCreateTool: ToolDefinition = {
   name: 'team_create',
   // PARITY (additive): declarative per-tool gate for the teammate subsystem.
   isEnabled: () => isTeammatesEnabled(),
+  // Concept synonyms for tool_search: neither "swarm" nor "multi-agent" appears in
+  // the human name, so without this hint a tool_search for those terms could not
+  // surface team_create. Parity: Claude's `searchHint: 'create a multi-agent swarm team'`.
+  searchHint: 'create a multi-agent swarm team collaborate parallel agents',
+  // Self-declared deferral: keep team_create OUT of the default advertised set and
+  // surface it on demand via tool_search (it is a specialized orchestration entry
+  // point most turns never need; its schema is large). Honored by the engine's
+  // per-tool deferral selection regardless of the global deferTools policy. Parity:
+  // Claude's `shouldDefer: true` on TeamCreateTool.
+  shouldDefer: true,
   description:
     'Create a team of agents for collaborative work. A team has a 1:1 correspondence with a task list and ' +
     'shares a memory directory; a team file records each member (name, agentId, agentType, model, per-member ' +

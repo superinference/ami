@@ -470,6 +470,17 @@ export interface ToolResult {
    *  Claude's BriefTool `output.data` (UI) vs `mapToolResultToToolResultBlockParam`
    *  model receipt. */
   userFacingContent?: string;
+  /** When true, a frontend MUST NOT render this tool result in the transcript — the
+   *  tool declares its own output redundant because a higher-level lifecycle message
+   *  already reports the same thing (e.g. a batched shutdown/cleanup summary covers a
+   *  per-item cleanup result). The model STILL receives `output` in its context; only
+   *  the user-facing render is suppressed, so this never hides information from the
+   *  model. Absent / `false` ⇒ render normally. Honor it uniformly via
+   *  {@link shouldRenderToolResult} rather than reading the flag directly. Parity:
+   *  Claude's `renderToolResultMessage` returning `null` to suppress a redundant
+   *  tool-result ("Suppress cleanup result — the batched shutdown message covers this",
+   *  TeamDeleteTool/UI.tsx). */
+  suppressRender?: boolean;
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
