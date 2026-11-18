@@ -4893,11 +4893,47 @@ export function partitionAllowedPromptRules<T extends { prompt?: unknown }>(
  * STRICT — they only match the literal stripped form — so de-obfuscation can
  * never *broaden* an allow into auto-approving an obfuscated command.
  */
+/**
+ * Extract the COMMAND PREFIX from a bash rule content written in Claude's `:*`
+ * prefix convention (`git commit:*` → `git commit`, `npm:*` → `npm`), or `null`
+ * when the content is not a prefix rule (no trailing `:*`, or nothing before it).
+ * Mirrors Claude's `permissionRuleExtractPrefix` (shellPermissionHelpers.ts
+ * L76-84). AMI's rule validator already BLESSES this form
+ * ({@link validatePermissionRule} accepts `bash(git:*)` and even suggests it as
+ * the canonical example) and {@link permissionRuleValueFromString} preserves the
+ * `:*` content verbatim — but the raw glob matcher treats the `:` literally, so a
+ * `git:*` rule never matched `git status`. This extractor lets {@link matchBashSub}
+ * honor the convention: a `prefix:*` rule matches a command that IS the prefix or
+ * begins with `prefix` followed by its arguments ({@link commandHasRulePrefix}).
+ */
+export function permissionRuleExtractPrefix(ruleContent: string): string | null {
+  if (!ruleContent.endsWith(':*')) return null;
+  const prefix = ruleContent.slice(0, -2).trim();
+  return prefix.length > 0 ? prefix : null;
+}
+
+/**
+ * True when `command` is covered by a rule prefix (Claude's `:*` convention): the
+ * command equals the prefix exactly, or starts with the prefix followed by a space
+ * (its arguments). Anchored on a word boundary so `ls:*` matches `ls -la` and bare
+ * `ls` but NOT `lsof` (a different command that merely shares the leading letters).
+ */
+function commandHasRulePrefix(command: string, prefix: string): boolean {
+  const c = command.trim();
+  if (!prefix) return false;
+  return c === prefix || c.startsWith(prefix + ' ');
+}
+
 function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
   // Allow rules strip only SAFE_ENV_VARS (an unsafe env prefix must break the
   // match → prompt); deny/ask rules strip ALL env vars so no prefix can hide a
   // denied command.
   const strippedRaw = stripEnvVarPrefix(sub, /* safeEnvOnly */ ruleAction === 'allow');
+  // Claude `cmd:*` prefix convention (validated + stored but previously unmatched):
+  // a `prefix:*` rule grants/denies the command prefix plus any arguments. Checked
+  // ahead of the glob match because `:` is otherwise a literal glob character.
+  const rulePrefix = permissionRuleExtractPrefix(pattern);
+  if (rulePrefix !== null && commandHasRulePrefix(strippedRaw, rulePrefix)) return true;
   if (matchPattern(pattern, strippedRaw)) return true;
   // PowerShell cross-alias rule matching (Windows only — AMI's bash tool runs
   // PowerShell on Windows): a rule written for one spelling of a cmdlet also
@@ -4921,7 +4957,11 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   // Strip env prefix FIRST (handles quoted values like FOO="a b"), THEN collapse
   // obfuscation and drop quote/backtick characters from the remaining command.
   const deob = deobfuscateEnvExpansion(strippedRaw).replace(/["'`]/g, '');
-  return deob !== strippedRaw && matchPattern(pattern, deob);
+  if (deob === strippedRaw) return false;
+  // A deny/ask `prefix:*` rule must also catch the de-obfuscated form so a denied
+  // prefix cannot be hidden behind quote/expansion obfuscation.
+  if (rulePrefix !== null && commandHasRulePrefix(deob, rulePrefix)) return true;
+  return matchPattern(pattern, deob);
 }
 
 function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
