@@ -40,7 +40,7 @@ import {
   SYSTEM_CA_NODE_OPTIONS,
 } from './utils/mtls';
 import { getCACertificates } from './ca-certs';
-import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
+import { resolveBedrockModelId, getBedrockInferenceProfiles, AWS_BEARER_TOKEN_BEDROCK_ENV } from './bedrock';
 import { assertValidStsEnvCredentials, readAwsIniCredentials } from './utils/aws';
 import { isEnvTruthy } from './analytics';
 import { log, logError, recordDiagnostic } from './logger';
@@ -809,13 +809,10 @@ function isVertexAIConfigured(): boolean {
   return !!(isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) || process.env.ANTHROPIC_VERTEX_PROJECT_ID);
 }
 
-/**
- * Env var carrying a Bedrock API key (bearer token). When set, Bedrock auth uses
- * this bearer token instead of SigV4/long-term AWS access keys. Mirrors Claude
- * Code's `AWS_BEARER_TOKEN_BEDROCK` branch (utils/model/bedrock.ts): its presence
- * skips credential refresh and selects API-key auth.
- */
-export const AWS_BEARER_TOKEN_BEDROCK_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
+// The Bedrock bearer-token env-var name is declared canonically in `./bedrock`
+// (alongside the other Bedrock env knobs) and re-exported here so this module's
+// existing importers keep resolving it from `provider`.
+export { AWS_BEARER_TOKEN_BEDROCK_ENV };
 
 /**
  * AWS region-resolution waterfall: `AWS_REGION` → `AWS_DEFAULT_REGION` →

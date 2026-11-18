@@ -21,6 +21,23 @@ export const BEDROCK_INFERENCE_PROFILES_ENV = 'AMI_BEDROCK_INFERENCE_PROFILES';
 export const BEDROCK_REGION_PREFIX_ENV = 'AMI_BEDROCK_REGION';
 
 /**
+ * Env var carrying a Bedrock API key (bearer token). When set, Bedrock auth uses
+ * this bearer token instead of SigV4 / long-term AWS access keys: its presence
+ * skips credential refresh and selects API-key auth. Canonical home for the
+ * constant (provider.ts re-exports it so its existing importers are unchanged).
+ * Mirrors Claude Code's `AWS_BEARER_TOKEN_BEDROCK` branch (utils/model/bedrock.ts).
+ */
+export const AWS_BEARER_TOKEN_BEDROCK_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
+
+/**
+ * Env var overriding the Bedrock gateway endpoint (a custom / proxy gateway).
+ * When unset, the region-derived `bedrock-runtime.<region>.amazonaws.com` endpoint
+ * is used instead. Mirrors Claude Code's `ANTHROPIC_BEDROCK_BASE_URL`
+ * (utils/model/bedrock.ts) — the single declaration consumed by provider-config.
+ */
+export const ANTHROPIC_BEDROCK_BASE_URL_ENV = 'ANTHROPIC_BEDROCK_BASE_URL';
+
+/**
  * Bedrock cross-region inference-profile prefixes. A region-scoped profile id
  * carries one of these as its leading dot-segment (e.g.
  * `eu.anthropic.claude-opus-4-6-v1:0`). Mirrors Claude Code's cross-region
@@ -152,4 +169,83 @@ export function resolveBedrockModelId(
   const region = getBedrockRegionPrefix(env);
   if (region && id.includes('.')) return applyBedrockRegionPrefix(id, region);
   return id;
+}
+
+/** What a Bedrock auth/config env knob controls. */
+export type BedrockAuthAffordanceKind = 'auth' | 'endpoint' | 'region' | 'model';
+
+/** One surfaced Bedrock auth/config affordance (env var + what it does). */
+export interface BedrockAuthAffordance {
+  /** The environment variable name. */
+  env: string;
+  /** Which concern the knob steers. */
+  affects: BedrockAuthAffordanceKind;
+  /** One-line human description surfaced to the user and in `ami --introspect`. */
+  description: string;
+}
+
+/**
+ * The Bedrock auth/config affordances AMI actually honors, surfaced so a user can
+ * discover the non-default ways to authenticate and target a Bedrock account
+ * WITHOUT reading source (parity: Claude Code exposes bearer-token auth, an
+ * endpoint override, and region selection in utils/model/bedrock.ts; AMI had the
+ * behavior wired but never advertised it). This is the SINGLE declaration consumed
+ * by both the `/providers` provider hint and the `ami --introspect` manifest — the
+ * behavior itself lives in {@link resolveBedrockGateway} (auth + endpoint),
+ * {@link getAWSRegion} (region), and {@link resolveBedrockModelId} (profiles).
+ */
+export const BEDROCK_AUTH_AFFORDANCES: readonly BedrockAuthAffordance[] = [
+  {
+    env: 'AWS_ACCESS_KEY_ID',
+    affects: 'auth',
+    description:
+      'SigV4 credentials (add AWS_SESSION_TOKEN for SSO / assume-role); the default auth path when no bearer token is set.',
+  },
+  {
+    env: AWS_BEARER_TOKEN_BEDROCK_ENV,
+    affects: 'auth',
+    description:
+      'Bedrock API-key (bearer-token) auth; when set it takes precedence over AWS access keys and skips SigV4 credential resolution (parity: Claude Code AWS_BEARER_TOKEN_BEDROCK).',
+  },
+  {
+    env: ANTHROPIC_BEDROCK_BASE_URL_ENV,
+    affects: 'endpoint',
+    description:
+      'Override the Bedrock gateway endpoint (custom / proxy gateway); otherwise the region-derived bedrock-runtime endpoint is used (parity: Claude Code ANTHROPIC_BEDROCK_BASE_URL).',
+  },
+  {
+    env: 'AWS_REGION',
+    affects: 'region',
+    description:
+      'Bedrock region (falls back to AWS_DEFAULT_REGION, then us-east-1); determines the default gateway endpoint host.',
+  },
+  {
+    env: BEDROCK_INFERENCE_PROFILES_ENV,
+    affects: 'model',
+    description:
+      'Comma-separated account inference-profile ids; a canonical model id is resolved to the matching region-scoped profile the account provisioned.',
+  },
+  {
+    env: BEDROCK_REGION_PREFIX_ENV,
+    affects: 'region',
+    description:
+      'Cross-region inference-profile prefix (us | eu | apac | global) applied to a provider-namespaced id when no explicit profile matches.',
+  },
+] as const;
+
+/**
+ * A compact, single-line key hint for the Amazon Bedrock entry of the `/providers`
+ * readout, composed from {@link BEDROCK_AUTH_AFFORDANCES} so the surfaced guidance
+ * stays in lock-step with the honored affordances (no second hand-maintained copy).
+ * Leads with the default SigV4/SSO path, then the bearer-token and endpoint-override
+ * alternatives — surfacing capabilities AMI had but never told the user about.
+ */
+export function bedrockProvidersKeyHint(): string {
+  const bearer = BEDROCK_AUTH_AFFORDANCES.find(a => a.env === AWS_BEARER_TOKEN_BEDROCK_ENV);
+  const endpoint = BEDROCK_AUTH_AFFORDANCES.find(a => a.env === ANTHROPIC_BEDROCK_BASE_URL_ENV);
+  return [
+    'AKIA... (+ AWS_SESSION_TOKEN for SSO / assume-role)',
+    `or set ${bearer?.env} for API-key (bearer-token) auth`,
+    `${endpoint?.env} overrides the gateway endpoint`,
+  ].join('; ');
 }
