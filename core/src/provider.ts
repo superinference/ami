@@ -43,6 +43,7 @@ import { assertValidStsEnvCredentials, readAwsIniCredentials } from './utils/aws
 import { isEnvTruthy } from './analytics';
 import { log, logError, recordDiagnostic } from './logger';
 import { partitionAndSortTools } from './tools/tool-utils';
+import { memoizeToolSchema } from './tools/tool-schema-cache';
 
 /**
  * Retry-After from response headers, in SECONDS. Delegates to the shared
@@ -2990,33 +2991,25 @@ export { inferProviderFromApiKey };
 
 type SdkToolEntry = { description: string; inputSchema: ReturnType<typeof jsonSchema> };
 
-/**
- * Identity-keyed cache of the per-tool SDK schema. `jsonSchema()` re-wraps a
- * tool's JSON schema on every request (the hot path runs once per model turn),
- * yet the tool objects in the registry are stable across turns. Keying by the
- * `ToolDefinition` identity means each tool's schema is converted exactly once
- * and the same immutable entry is reused thereafter; the WeakMap lets a dropped
- * tool be garbage-collected. Mirrors Claude Code's `toolSchemaCache`.
- */
-const toolSchemaCache = new WeakMap<ToolDefinition, SdkToolEntry>();
-
 export function convertToolsForSDK(tools: ToolDefinition[]): ToolSet {
   const sdkTools: Record<string, SdkToolEntry> = {};
   // Insert in the deterministic built-in-then-MCP sorted order (parity with
   // toolDefinitionsToOpenAI) so the AI-SDK ToolSet key order — and therefore the
   // Anthropic tool-block cache prefix — stays stable across turns as MCP servers
   // connect on demand.
+  //
+  // `jsonSchema()` re-wraps a tool's JSON schema on every request (the hot path
+  // runs once per model turn). The rendered entry is memoized in the session-scoped
+  // tool-schema cache keyed by NAME + stable schema (see tool-schema-cache.ts), so
+  // the frozen bytes survive an MCP reconnect that hands us a fresh ToolDefinition
+  // object (identity keying missed that) or a key-reordered-but-equal schema — the
+  // provider tool-block cache prefix no longer busts mid-session.
   for (const tool of partitionAndSortTools(tools)) {
-    let entry = toolSchemaCache.get(tool);
-    if (!entry) {
-      entry = {
-        description: tool.description,
-        inputSchema: jsonSchema(tool.inputSchema as any),
-        // NO execute function — we handle execution in our engine loop
-      };
-      toolSchemaCache.set(tool, entry);
-    }
-    sdkTools[tool.name] = entry;
+    sdkTools[tool.name] = memoizeToolSchema<SdkToolEntry>(tool, () => ({
+      description: tool.description,
+      inputSchema: jsonSchema(tool.inputSchema as any),
+      // NO execute function — we handle execution in our engine loop
+    }));
   }
   return sdkTools;
 }

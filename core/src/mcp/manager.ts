@@ -26,6 +26,7 @@ import {
 } from './secret-store';
 import { McpToolPoller, type McpToolPollSpec } from './tool-polling';
 import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
+import { clearToolSchemaCache } from '../tools/tool-schema-cache';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
@@ -3603,6 +3604,12 @@ export class McpManager extends EventEmitter {
     for (const [toolKey, entry] of this._allTools) {
       if (entry.serverName === serverName) this._allTools.delete(toolKey);
     }
+    // A reconnect / tools-changed re-advertises this server's tools as FRESH
+    // ToolDefinition objects whose description or schema bytes may differ while the
+    // tool NAME stays the same. Drop the session-scoped rendered-schema cache so the
+    // provider tool block re-renders from the new definitions instead of serving the
+    // bytes frozen for the previous advertisement. Lazy re-population keeps it cheap.
+    clearToolSchemaCache();
   }
 
   private async refreshToolsForServer(name: string): Promise<void> {
