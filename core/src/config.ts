@@ -1154,6 +1154,25 @@ export function isWorldWritable(mode: number): boolean {
 }
 
 /**
+ * Opt-out seam that relaxes the STRICTER trust check applied to a user-relocatable
+ * {@link SUPERINFERENCE_MANAGED_CONFIG} override (the foreign-owner refusal added by
+ * {@link assertTrustedManagedFile} when `relocatable` is set). CI and non-standard dev
+ * deployments that deliberately point the override at a fixture owned by neither root nor
+ * the current user set this to `1`/`true` to keep using the override; the base symlink +
+ * world-writable refusals ALWAYS apply regardless. Parity-additive: it restricts the
+ * AMI-only env override to an admin-grade trust boundary (Claude Code's managed path is a
+ * FIXED admin-only location the user cannot relocate) while keeping the override usable
+ * behind an explicit, auditable seam.
+ */
+export const MANAGED_CONFIG_ALLOW_UNTRUSTED_ENV = 'SUPERINFERENCE_MANAGED_CONFIG_ALLOW_UNTRUSTED';
+
+/** Whether the {@link MANAGED_CONFIG_ALLOW_UNTRUSTED_ENV} opt-out seam is engaged. */
+function managedOverrideUntrustedAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env[MANAGED_CONFIG_ALLOW_UNTRUSTED_ENV];
+  return v === '1' || v === 'true';
+}
+
+/**
  * Verify that a managed-policy file is a trustworthy source before it is read, and
  * throw {@link ManagedConfigError} (fail-closed) otherwise. This is AMI's analog of
  * Claude Code sourcing managed policy only from OS-protected, admin-only locations
@@ -1164,10 +1183,24 @@ export function isWorldWritable(mode: number): boolean {
  *  - on POSIX, a WORLD-WRITABLE regular file is refused — a policy file any user on
  *    the machine can rewrite is not a trust anchor.
  *
+ * When `relocatable` is set — i.e. the path came from the USER-settable
+ * {@link SUPERINFERENCE_MANAGED_CONFIG} override rather than the fixed device default — a
+ * STRICTER, admin-grade OWNERSHIP check additionally applies (unless the
+ * {@link MANAGED_CONFIG_ALLOW_UNTRUSTED_ENV} seam is engaged): a file owned by NEITHER root
+ * (uid 0) NOR the current euid is refused. An override pointed at another unprivileged
+ * user's file is a policy-injection vector (victim/root induced to honor attacker-owned
+ * "managed" policy), whereas a root-owned (admin) or self-owned (the user's own deliberate
+ * dev/test choice) file is a legitimate relocation. Group-writability is deliberately NOT
+ * refused even for an override: umask 002 routinely creates 0o664 files, so a self-owned
+ * group-writable override stays valid (consistent with {@link isWorldWritable}'s group
+ * tolerance). This closes the AMI-only relocation hole where an unprivileged user could
+ * redirect the authoritative managed-policy source at a file a DIFFERENT unprivileged
+ * principal controls — the fixed admin-only trust boundary Claude Code relies on.
+ *
  * Windows (no `process.getuid`) carries no meaningful POSIX mode bits, so only the
  * symlink check applies there.
  */
-function assertTrustedManagedFile(configPath: string): void {
+function assertTrustedManagedFile(configPath: string, relocatable = false): void {
   let stats: fs.Stats;
   try {
     stats = fsHooks.lstatSync(configPath);
@@ -1177,9 +1210,19 @@ function assertTrustedManagedFile(configPath: string): void {
   if (stats.isSymbolicLink()) {
     throw new ManagedConfigError(`Managed config at ${configPath} is a symlink; refusing to follow a redirected managed-policy source.`);
   }
-  // POSIX mode bits are only meaningful where the platform models uid/gid.
-  if (typeof process.getuid === 'function' && isWorldWritable(stats.mode)) {
+  // POSIX mode bits / ownership are only meaningful where the platform models uid/gid.
+  const getuid = process.getuid;
+  if (typeof getuid !== 'function') return;
+  if (isWorldWritable(stats.mode)) {
     throw new ManagedConfigError(`Managed config at ${configPath} is world-writable; refusing an untrusted managed-policy source (chmod o-w it).`);
+  }
+  // Stricter, admin-grade ownership trust for a user-relocatable override path (skippable
+  // via the explicit opt-out seam). The fixed device-default path does not carry this — it
+  // already lives in an admin-only OS location. A non-numeric uid (an exotic filesystem
+  // that does not report ownership) is treated as indeterminate, not as a violation.
+  if (!relocatable || managedOverrideUntrustedAllowed()) return;
+  if (typeof stats.uid === 'number' && stats.uid !== 0 && stats.uid !== getuid.call(process)) {
+    throw new ManagedConfigError(`Relocated managed config at ${configPath} (via SUPERINFERENCE_MANAGED_CONFIG) is owned by uid ${stats.uid} — refusing an override owned by neither root nor the current user (set ${MANAGED_CONFIG_ALLOW_UNTRUSTED_ENV}=1 to opt out).`);
   }
 }
 
@@ -1190,10 +1233,11 @@ function assertTrustedManagedFile(configPath: string): void {
  * field whose value is invalid is dropped (logged) while the valid remainder is
  * kept, so one bad enum/typed field never rejects the whole enterprise policy.
  */
-function parseManagedFile(configPath: string): ProjectConfig {
+function parseManagedFile(configPath: string, relocatable = false): ProjectConfig {
   // Tamper-resistance: refuse a symlinked or group/world-writable managed-policy
-  // file before trusting its contents (fail-closed on an untrusted source).
-  assertTrustedManagedFile(configPath);
+  // file before trusting its contents (fail-closed on an untrusted source). A
+  // user-relocatable override path additionally enforces admin-grade ownership.
+  assertTrustedManagedFile(configPath, relocatable);
   let raw: string;
   try {
     raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
@@ -1234,8 +1278,14 @@ export function loadManagedConfig(): ProjectConfig | null {
   // resolution instead of reading exactly one fixed path. Parity: Claude's
   // getMacOSPlistPaths highest-priority-first source selection.
   const candidates = getManagedConfigPaths();
+  // When the active source came from the USER-settable SUPERINFERENCE_MANAGED_CONFIG
+  // override (rather than a fixed OS-conventional device path), it is user-relocatable and
+  // must clear the stricter admin-grade trust bar (not group-writable, owned by root or
+  // self) before its policy is honored. The override also owns its drop-in dir, so those
+  // layers are relocatable too.
+  const relocatable = !!process.env.SUPERINFERENCE_MANAGED_CONFIG;
   const configPath = candidates.find(p => fsHooks.existsSync(p)) ?? candidates[candidates.length - 1]!;
-  let merged: ProjectConfig | null = fsHooks.existsSync(configPath) ? parseManagedFile(configPath) : null;
+  let merged: ProjectConfig | null = fsHooks.existsSync(configPath) ? parseManagedFile(configPath, relocatable) : null;
 
   // Layer `<activeBase>/config.d/*.json` drop-ins alphabetically (last file
   // wins) over the base. A broken drop-in fails closed, like the base file. The
@@ -1251,7 +1301,7 @@ export function loadManagedConfig(): ProjectConfig | null {
     entries = [];
   }
   for (const name of entries) {
-    const dropIn = parseManagedFile(path.join(dropInDir, name));
+    const dropIn = parseManagedFile(path.join(dropInDir, name), relocatable);
     merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
   }
   // OS-NATIVE managed policy (macOS configuration profile / Windows Group Policy) is
