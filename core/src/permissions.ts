@@ -5058,6 +5058,14 @@ export class PermissionManager {
   private strippedOverlyBroadBashRules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
+  /** Human-readable explanation for WHY bypass/auto-allow is currently blocked
+   *  (set alongside {@link _disableBypass}). Carried so `/permissions` and the
+   *  Shift+Tab "auto mode unavailable" message can tell the operator what to do
+   *  — e.g. "blocked by managed policy (disableBypassPermissionsMode)" — rather
+   *  than surfacing a bare boolean. Mirrors Claude's reason-differentiated
+   *  getAutoModeUnavailableReason (settings vs circuit-breaker vs org-allowlist).
+   *  Cleared when bypass is re-enabled. */
+  private _disableBypassReason?: string;
   /** Whether bypass-permissions mode was AVAILABLE when this session started
    *  (Claude's ToolPermissionContext.isBypassPermissionsModeAvailable). It is the
    *  POSITIVE counterpart to {@link _disableBypass}: a session launched directly in
@@ -6803,7 +6811,11 @@ export class PermissionManager {
     opts: { disabledBySettings?: boolean; modelSupportsAutoMode?: boolean } = {},
   ): AutoModeUnavailableReason | null {
     return classifyAutoModeUnavailableReason({
-      disabledBySettings: opts.disabledBySettings ?? false,
+      // The manager's OWN managed-policy bypass killswitch ({@link setDisableBypass})
+      // is a settings-category block — fold it in so the manager self-reports a
+      // `settings` reason without the caller having to re-derive it. An explicit
+      // `disabledBySettings` from the caller still wins when passed.
+      disabledBySettings: opts.disabledBySettings ?? this._disableBypass,
       circuitBroken: this.shouldAbort(),
       modelSupportsAutoMode: opts.modelSupportsAutoMode ?? true,
     });
@@ -6953,9 +6965,17 @@ export class PermissionManager {
   /**
    * Enable or disable the bypass-permissions guard.
    * When enabled, setMode() rejects 'bypassPermissions' and 'auto-allow'.
+   *
+   * `reason` is an optional human-readable explanation stored for the operator
+   * (surfaced via {@link disableBypassReason} and, through
+   * {@link autoModeUnavailableReason}, the Shift+Tab/auto-mode notification). It is
+   * recorded only when disabling and cleared when re-enabling, so a stale reason
+   * never lingers once the guard is lifted. Mirrors Claude's reason-differentiated
+   * auto-mode-unavailable wording (settings vs circuit-breaker vs org-allowlist).
    */
-  setDisableBypass(disable: boolean): void {
+  setDisableBypass(disable: boolean, reason?: string): void {
     this._disableBypass = disable;
+    this._disableBypassReason = disable ? reason : undefined;
   }
 
   /**
@@ -6963,6 +6983,17 @@ export class PermissionManager {
    */
   isDisableBypass(): boolean {
     return this._disableBypass;
+  }
+
+  /**
+   * The human-readable reason bypass/auto-allow is blocked, or `undefined` when
+   * bypass is permitted (or was disabled without a reason). Lets `/permissions`
+   * and the Shift+Tab message explain WHY auto-allow cannot be entered instead of
+   * showing a bare `bypassDisabled` boolean the operator cannot act on. Parity:
+   * Claude's `getAutoModeUnavailableNotification(reason)`.
+   */
+  disableBypassReason(): string | undefined {
+    return this._disableBypassReason;
   }
 
   /**
