@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execFileSync } from 'child_process';
 import {
   recordAgentFileContribution,
+  normalizeAttributionPath,
 } from '../src/tools/attribution-store';
 import {
   gitCommitTool,
@@ -92,7 +93,7 @@ describe('U244 — collectCommitFileContributions deleted flag', () => {
     git(dir, 'rm', '-q', 'd.txt');
 
     const sid = 'u244-del-' + Math.random();
-    recordAgentFileContribution(sid, path.resolve(dir, 'd.txt'), 'content', 7, 1);
+    recordAgentFileContribution(sid, normalizeAttributionPath(path.resolve(dir, 'd.txt'), dir), 'content', 7, 1);
 
     const out = collectCommitFileContributions(sid, dir, ['d.txt']);
     assert.equal(out.length, 1);
@@ -109,7 +110,7 @@ describe('U244 — collectCommitFileContributions deleted flag', () => {
     git(dir, 'add', 'm.txt');
 
     const sid = 'u244-mod-' + Math.random();
-    recordAgentFileContribution(sid, path.resolve(dir, 'm.txt'), 'second', 6, 1);
+    recordAgentFileContribution(sid, normalizeAttributionPath(path.resolve(dir, 'm.txt'), dir), 'second', 6, 1);
 
     const out = collectCommitFileContributions(sid, dir, ['m.txt']);
     assert.equal(out.length, 1);
