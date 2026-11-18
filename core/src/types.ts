@@ -1255,7 +1255,7 @@ export const ENGINE_EVENT_TYPES = [
   'tool_use_progress', 'tool_use_result', 'turn_complete', 'usage_update',
   'error', 'retry_attempt', 'error_classified', 'provider_changed',
   'checkpoint_created', 'analytics_summary', 'superinference_state',
-  'suggest_file_save', 'user_question', 'session_title', 'memory_warning',
+  'suggest_file_save', 'user_question', 'session_title', 'session_init', 'memory_warning',
   'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
@@ -1497,6 +1497,16 @@ export type EngineEvent =
        *  `toolInputSummary` rendered in the `titleRight` slot. */
       toolInputSummary?: string | null }
   | { type: 'session_title'; title: string }
+  /** A live per-session handshake snapshot emitted ONCE as the FIRST event of a
+   *  fresh session (before the first turn runs), so a remote-control / SDK /
+   *  detached consumer can obtain the session's resolved state in one message
+   *  instead of reconstructing it from later deltas: the `sessionId`, launch
+   *  `cwd`, active `model` + `permissionMode`, the resolved `tools` (names), the
+   *  live `mcpServers` ([{name,status}]) and the running `version`. Emitted from a
+   *  SINGLE engine site so the TUI and the detached/SDK runner receive an IDENTICAL
+   *  shape (the TUI↔CLI parity invariant). Parity: Claude Code's `system/init`
+   *  snapshot message (utils/messages/systemInit.ts `buildSystemInitMessage`). */
+  | { type: 'session_init'; sessionId: string; cwd: string; model: string; permissionMode: string; tools: string[]; mcpServers: { name: string; status: string }[]; version: string }
   | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
