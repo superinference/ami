@@ -9,6 +9,22 @@ function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'file-lock-'));
 }
 
+/**
+ * Seed a held lock in the on-disk format the primitive uses: an mkdir'd DIRECTORY
+ * `${target}.lock` with the holder PID recorded in its `pid` entry. Optionally
+ * backdate its mtime (seconds ago) to simulate a stale/crashed holder.
+ */
+function seedLock(target: string, pid: number | string, ageSec?: number): string {
+  const lockDir = `${target}.lock`;
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, 'pid'), String(pid));
+  if (ageSec !== undefined) {
+    const t = Date.now() / 1000 - ageSec;
+    fs.utimesSync(lockDir, t, t);
+  }
+  return lockDir;
+}
+
 test('withFileLock runs fn and returns its result', async () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
@@ -47,11 +63,8 @@ test('withFileLock serializes concurrent critical sections (no lost update)', as
 test('withFileLock steals a stale lock left by a crashed holder', async () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
-  const lockFile = `${target}.lock`;
-  // Simulate a crashed holder: a lock file with an old mtime.
-  fs.writeFileSync(lockFile, '99999');
-  const old = Date.now() / 1000 - 60; // 60s ago
-  fs.utimesSync(lockFile, old, old);
+  // Simulate a crashed holder: a lock dir with an old mtime.
+  seedLock(target, '99999', 60); // 60s ago
   const out = await withFileLock(target, () => 'ok', { staleMs: 1000, retries: 2 });
   assert.equal(out, 'ok');
 });
@@ -59,13 +72,12 @@ test('withFileLock steals a stale lock left by a crashed holder', async () => {
 test('withFileLock gives up after retries when lock stays held and fresh', async () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
-  const lockFile = `${target}.lock`;
-  fs.writeFileSync(lockFile, '1'); // fresh (now), never released
+  const lockFile = seedLock(target, process.pid); // fresh (now), live holder, never released
   await assert.rejects(
     withFileLock(target, () => 'never', { retries: 2, minTimeout: 1, maxTimeout: 2, staleMs: 10_000 }),
     /Could not acquire lock/,
   );
-  fs.unlinkSync(lockFile);
+  fs.rmSync(lockFile, { recursive: true });
 });
 
 test('DEFAULT_LOCK_OPTIONS matches the documented swarm budget', () => {
@@ -95,8 +107,7 @@ test('withFileLock steals a lock whose holder PID is dead even if its mtime is f
   // the recorded holder is dead, so the lock must be reclaimed immediately.
   const dir = tmp();
   const target = path.join(dir, 'state.json');
-  const lockFile = `${target}.lock`;
-  fs.writeFileSync(lockFile, String(deadPid())); // fresh mtime (now), dead holder
+  const lockFile = seedLock(target, deadPid()); // fresh mtime (now), dead holder
   const out = await withFileLock(target, () => 'stolen', {
     staleMs: 60_000, // large: mtime path alone would never steal
     retries: 2,
@@ -110,25 +121,22 @@ test('withFileLock steals a lock whose holder PID is dead even if its mtime is f
 test('withFileLock does NOT steal a fresh lock held by a live PID', async () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
-  const lockFile = `${target}.lock`;
-  fs.writeFileSync(lockFile, String(process.pid)); // our own live PID, fresh mtime
+  const lockFile = seedLock(target, process.pid); // our own live PID, fresh mtime
   await assert.rejects(
     withFileLock(target, () => 'never', { retries: 2, minTimeout: 1, maxTimeout: 2, staleMs: 60_000 }),
     /Could not acquire lock/,
   );
-  fs.unlinkSync(lockFile);
+  fs.rmSync(lockFile, { recursive: true });
 });
 
 test('withFileLock steals via mtime fallback when the holder PID is unreadable', async () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
-  const lockFile = `${target}.lock`;
   // Corrupt/non-numeric and empty PID content exercise readLockPid's null paths;
-  // the old mtime then drives the steal.
+  // the old mtime then drives the steal. Each iteration re-seeds the lock dir
+  // (the previous steal released it).
   for (const content of ['not-a-pid', '', '0']) {
-    fs.writeFileSync(lockFile, content);
-    const old = Date.now() / 1000 - 60;
-    fs.utimesSync(lockFile, old, old);
+    seedLock(target, content, 60); // 60s old
     const out = await withFileLock(target, () => 'ok', { staleMs: 1000, retries: 2, minTimeout: 1, maxTimeout: 2 });
     assert.equal(out, 'ok');
   }
@@ -165,7 +173,7 @@ test('onCompromised fires when the lock is deleted underneath the holder', async
   await withFileLock(
     target,
     async () => {
-      fs.unlinkSync(`${target}.lock`); // external removal
+      fs.rmSync(`${target}.lock`, { recursive: true }); // external removal
       await sleep(140); // span several refresh ticks (exercises the fired-once guard)
     },
     { staleMs: 100, refreshMs: 20, onCompromised: () => { fired = true; } },
@@ -181,7 +189,7 @@ test('onCompromised fires when another process takes over the lock', async () =>
   await withFileLock(
     target,
     async () => {
-      fs.writeFileSync(lockFile, String(process.pid + 1)); // a different PID now holds it
+      fs.writeFileSync(path.join(lockFile, 'pid'), String(process.pid + 1)); // a different PID now holds it
       await sleep(80);
     },
     { staleMs: 100, refreshMs: 20, onCompromised: (e) => { errors.push(e); } },
@@ -197,14 +205,14 @@ test('heartbeat tolerates a throwing onCompromised handler and a missing callbac
   await assert.doesNotReject(
     withFileLock(
       t1,
-      async () => { fs.unlinkSync(`${t1}.lock`); await sleep(60); },
+      async () => { fs.rmSync(`${t1}.lock`, { recursive: true }); await sleep(60); },
       { staleMs: 100, refreshMs: 20, onCompromised: () => { throw new Error('handler boom'); } },
     ),
   );
   // Compromise with no handler at all must be a no-op (optional-chaining path).
   const t2 = path.join(dir, 'b.json');
   await assert.doesNotReject(
-    withFileLock(t2, async () => { fs.unlinkSync(`${t2}.lock`); await sleep(60); }, { staleMs: 100, refreshMs: 20 }),
+    withFileLock(t2, async () => { fs.rmSync(`${t2}.lock`, { recursive: true }); await sleep(60); }, { staleMs: 100, refreshMs: 20 }),
   );
 });
 

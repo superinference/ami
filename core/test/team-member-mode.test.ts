@@ -20,6 +20,26 @@ function ctx(): ToolContext {
   return { cwd: tmp, sessionId: 'sess-1', abortSignal: new AbortController().signal } as ToolContext;
 }
 
+/**
+ * persistTeam flushes fire-and-forget under a cross-process file lock, so the
+ * on-disk write lands asynchronously. Poll the team file until `pred` holds
+ * (bounded) instead of a fixed sleep, so the assertion is robust to lock-acquire
+ * latency under heavy parallel test load rather than racing a single 50ms window.
+ */
+async function readTeamWhen(
+  teamFile: string,
+  pred: (raw: { members: { name: string; permissionMode?: string }[] }) => boolean,
+): Promise<{ members: { name: string; permissionMode?: string }[] }> {
+  for (let i = 0; i < 100; i++) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(teamFile, 'utf-8'));
+      if (pred(raw)) return raw;
+    } catch { /* not written / mid-write yet — retry */ }
+    await new Promise(r => setTimeout(r, 20));
+  }
+  return JSON.parse(fs.readFileSync(teamFile, 'utf-8'));
+}
+
 describe('per-teammate permission mode (gap: setMemberMode + getNextPermissionMode cycle)', () => {
   beforeEach(() => { resetTeam(); tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'team-mode-')); });
   afterEach(() => { resetTeam(); try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ } });
@@ -44,10 +64,11 @@ describe('per-teammate permission mode (gap: setMemberMode + getNextPermissionMo
     assert.equal(applied, 'auto-allow');
     const team = getCurrentTeam()!;
     assert.equal(team.members.find(m => m.name === 'worker')!.permissionMode, 'auto-allow');
-    // Persisted to disk (persistTeam flushes under a file lock, so allow it to settle).
-    await new Promise(r => setTimeout(r, 50));
-    const raw = JSON.parse(fs.readFileSync(path.join(tmp, '.ami', 'teams', 'sq', 'team.json'), 'utf-8'));
-    assert.equal(raw.members.find((m: { name: string }) => m.name === 'worker').permissionMode, 'auto-allow');
+    // Persisted to disk (persistTeam flushes fire-and-forget under a file lock);
+    // poll the team file until the mode lands rather than racing a fixed window.
+    const teamFile = path.join(tmp, '.ami', 'teams', 'sq', 'team.json');
+    const raw = await readTeamWhen(teamFile, (r) => r.members.find((m) => m.name === 'worker')?.permissionMode === 'auto-allow');
+    assert.equal(raw.members.find((m) => m.name === 'worker')!.permissionMode, 'auto-allow');
   });
 
   it('setMemberMode rejects an invalid mode and an unknown member', async () => {

@@ -14,6 +14,20 @@ function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'file-lock-sync-'));
 }
 
+/** Seed a held lock in its on-disk format: an mkdir'd DIRECTORY `${target}.lock`
+ *  whose `pid` entry records the holder PID. */
+function seedLock(target: string, pid: number | string): string {
+  const lockDir = `${target}.lock`;
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, 'pid'), String(pid));
+  return lockDir;
+}
+
+/** Read the holder PID recorded inside a lock directory. */
+function lockPid(target: string): string {
+  return fs.readFileSync(path.join(`${target}.lock`, 'pid'), 'utf-8');
+}
+
 test('withFileLockSync runs fn, returns its result, and releases the lock', () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
@@ -40,8 +54,7 @@ test('withFileLockSync steals a lock whose holder PID is dead, then runs', () =>
   // A lock file recording a provably-dead PID (PID 1 is init on Linux and alive,
   // so synthesize an impossible one). Use a very large PID unlikely to exist.
   const deadPid = 2 ** 31 - 1;
-  assert.ok(fs.existsSync ? true : true);
-  fs.writeFileSync(`${target}.lock`, String(deadPid));
+  seedLock(target, deadPid);
   const out = withFileLockSync(target, () => 'ran', { retries: 0 });
   assert.equal(out, 'ran', 'dead holder reclaimed immediately so fn ran with retries:0');
   assert.equal(fs.existsSync(`${target}.lock`), false, 'lock released');
@@ -53,8 +66,8 @@ test('withFileLockSync fires onCompromised and leaves the thief lock when stolen
   const errs: string[] = [];
   const out = withFileLockSync(target, () => {
     // Simulate a waiter judging us stale and stealing the lock: overwrite the lock
-    // file so it records a DIFFERENT pid than ours.
-    fs.writeFileSync(`${target}.lock`, String(process.pid + 1));
+    // dir's pid entry so it records a DIFFERENT pid than ours.
+    fs.writeFileSync(path.join(`${target}.lock`, 'pid'), String(process.pid + 1));
     return 'done';
   }, { onCompromised: (e) => errs.push(e.message) });
   assert.equal(out, 'done');
@@ -62,18 +75,18 @@ test('withFileLockSync fires onCompromised and leaves the thief lock when stolen
   assert.match(errs[0]!, /lost or taken over/);
   // We must NOT delete the thief's lock.
   assert.equal(fs.existsSync(`${target}.lock`), true, 'successor lock left intact');
-  assert.equal(fs.readFileSync(`${target}.lock`, 'utf-8'), String(process.pid + 1));
+  assert.equal(lockPid(target), String(process.pid + 1));
 });
 
 test('withFileLockSync throws after exhausting retries on a live-held lock', () => {
   const dir = tmp();
   const target = path.join(dir, 'state.json');
   // A lock held by THIS live process (our own PID) — never stale, never stealable.
-  fs.writeFileSync(`${target}.lock`, String(process.pid));
+  seedLock(target, process.pid);
   assert.throws(
     () => withFileLockSync(target, () => 'never', { retries: 1, minTimeout: 1, maxTimeout: 1, staleMs: 10 ** 9 }),
     /Could not acquire lock/,
   );
   // The pre-existing lock must survive (we never owned it, so never delete it).
-  assert.equal(fs.readFileSync(`${target}.lock`, 'utf-8'), String(process.pid));
+  assert.equal(lockPid(target), String(process.pid));
 });

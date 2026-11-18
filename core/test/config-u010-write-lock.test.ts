@@ -43,7 +43,9 @@ describe('U010 — cross-process advisory lock on updateConfigFile', () => {
 
   it('steals a stale/dead-holder lock so a crashed writer cannot wedge config forever', () => {
     // A leftover lock recording a provably-dead PID must be reclaimed immediately.
-    fs.writeFileSync(`${cfg}.lock`, String(2 ** 31 - 1));
+    // The lock is an mkdir'd DIRECTORY whose `pid` entry records the holder.
+    fs.mkdirSync(`${cfg}.lock`, { recursive: true });
+    fs.writeFileSync(path.join(`${cfg}.lock`, 'pid'), String(2 ** 31 - 1));
     const res = updateConfigFile(cfg, (cur) => ({ ...cur, model: 'after-steal' } as ProjectConfig), { retries: 0 });
     assert.equal(res.written, true, 'dead-holder lock reclaimed with retries:0, so the write proceeded');
     assert.equal(loadConfigFileChecked(cfg).config?.model, 'after-steal');
@@ -54,8 +56,8 @@ describe('U010 — cross-process advisory lock on updateConfigFile', () => {
     const res = updateConfigFile(
       cfg,
       (cur) => {
-        // Simulate a waiter stealing the lock mid-write by rewriting it with another PID.
-        fs.writeFileSync(`${cfg}.lock`, String(process.pid + 1));
+        // Simulate a waiter stealing the lock mid-write by rewriting its pid entry.
+        fs.writeFileSync(path.join(`${cfg}.lock`, 'pid'), String(process.pid + 1));
         return { ...cur, model: 'm2' } as ProjectConfig;
       },
       { onCompromised: (e) => compromised.push(e.message) },
@@ -63,7 +65,7 @@ describe('U010 — cross-process advisory lock on updateConfigFile', () => {
     assert.equal(res.written, true, 'the write still completes — a stolen lock is recoverable');
     assert.equal(compromised.length, 1, 'onCompromised fired instead of throwing');
     // Clean up the synthetic successor lock.
-    fs.rmSync(`${cfg}.lock`, { force: true });
+    fs.rmSync(`${cfg}.lock`, { recursive: true, force: true });
   });
 
   it('still re-reads FRESH on-disk state inside the lock (lost-update guard preserved)', () => {
