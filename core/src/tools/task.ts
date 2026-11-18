@@ -938,9 +938,18 @@ export function filterTeammateOnlyTools(
  * ({@link ASYNC_AGENT_ALLOWED_TOOLS}) minus the internal coordination plumbing
  * ({@link INTERNAL_WORKER_TOOLS}), sorted deterministically so the block is stable
  * across spawns (cache-friendly). Connected MCP servers are appended by name when
- * present.
+ * present. The NAMED agent types the coordinator may delegate to (via each worker's
+ * `subagent_type`) are appended too when known — mirroring Claude Code's practice of
+ * injecting the available config surface (MCP servers + plugin/agent catalog) into an
+ * agent's runtime context so it can delegate to the specialist it actually has rather
+ * than guessing. Without this a coordinator (whose own prompt is the lean subagent
+ * prompt, which does NOT enumerate the agent catalog) cannot see which specialized
+ * worker types exist and falls back to generic `mode:"general"` delegation.
  */
-export function buildCoordinatorWorkerContext(mcpServerNames: string[] = []): string {
+export function buildCoordinatorWorkerContext(
+  mcpServerNames: string[] = [],
+  agentTypeNames: string[] = [],
+): string {
   const workerTools = [...ASYNC_AGENT_ALLOWED_TOOLS]
     .filter(name => !INTERNAL_WORKER_TOOLS.has(name))
     .sort()
@@ -949,7 +958,33 @@ export function buildCoordinatorWorkerContext(mcpServerNames: string[] = []): st
   if (mcpServerNames.length > 0) {
     content += `\n\nWorkers also have access to MCP tools from these connected MCP servers: ${mcpServerNames.join(', ')}.`;
   }
+  if (agentTypeNames.length > 0) {
+    content += `\n\nYou can delegate to these specialized named agent types by setting a worker's subagent_type: ${agentTypeNames.join(', ')}.`;
+  }
   return content;
+}
+
+/**
+ * The names of the NAMED agent types this tool context can delegate to (built-in
+ * roster agents + user/project/plugin-contributed agent definitions), de-duplicated
+ * and sorted (locale-aware). Reads the optional skill manager's `listAgents()` roster
+ * — the SAME accessor the spawn path already uses to validate a `subagent_type` and
+ * to list "Available agents" in its not-found error — so there is no second
+ * agent-discovery path. Returns `[]` when there is no manager, it lacks the accessor,
+ * or the call throws, so callers never have to guard. Used to populate the
+ * coordinator's worker-capability affordance ({@link buildCoordinatorWorkerContext}).
+ */
+export function availableAgentTypeNames(context: ToolContext): string[] {
+  const mgr = context._skillManager;
+  if (!mgr || typeof mgr.listAgents !== 'function') return [];
+  try {
+    const names = mgr.listAgents()
+      .map(a => a && typeof a.name === 'string' ? a.name.trim() : '')
+      .filter(n => n.length > 0);
+    return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -3786,7 +3821,7 @@ export const taskTool: ToolDefinition = {
     // have and which MCP servers they can reach — otherwise it mis-delegates work
     // no worker tool can do. Prepended to the coordinator's first user turn.
     if (mode === 'coordinator') {
-      effectivePrompt = `${buildCoordinatorWorkerContext(connectedMcpServerNames(context))}\n\n---\n\n${effectivePrompt}`;
+      effectivePrompt = `${buildCoordinatorWorkerContext(connectedMcpServerNames(context), availableAgentTypeNames(context))}\n\n---\n\n${effectivePrompt}`;
     }
 
     // When the subagent runs in a git worktree distinct from the parent cwd — a
