@@ -1250,6 +1250,7 @@ export function resetConfigCache(): void {
   jsoncParseCache.clear();
   managedPathCache.clear();
   tierConfigCache.clear();
+  clearManagedConfigCache();
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,14 +1544,142 @@ function mergeManagedLayer(base: ProjectConfig, next: ProjectConfig): ProjectCon
   return merged;
 }
 
+/**
+ * One-entry memo of the merged managed-config RESULT keyed by a cheap file-identity
+ * SIGNATURE over every managed source (parity: Claude Code's `mdmCache` behind the
+ * explicit `clearMdmSettingsCache` clear hook). {@link loadManagedConfig} is re-invoked
+ * on EVERY config-waterfall merge — `getMergedConfig`, the detached config path, the
+ * `/doctor` sweep, the managed-tier change detector — and each call previously re-ran
+ * the full `existsSync` + `readFileSync` + `parseJsonc` chain across the candidate
+ * source(s) and their `config.d/` drop-ins. Managed policy is effectively static within
+ * a session, so this memoizes the parsed result and serves repeats as a memory hit.
+ *
+ * Invalidation is twofold and never serves a stale snapshot:
+ *  - IDENTITY: the signature folds in every candidate file's `mtime+size` (and the
+ *    drop-in dirs' listings + per-entry identity), so ANY on-disk change — an admin
+ *    editing the policy, AMI's own write, a drop-in added/removed — changes the
+ *    signature, misses the cache, and re-reads fresh (the managed-tier watcher's
+ *    change detection therefore keeps working through the cache).
+ *  - EXPLICIT: {@link clearManagedConfigCache} is fanned out from
+ *    {@link resetConfigCache} (fired by {@link safeWriteConfig} and the other write
+ *    paths), covering the inputs an `mtime+size` identity cannot observe (an OS-native
+ *    MDM/registry policy change), exactly as Claude Code clears `mdmCache` on a write.
+ *
+ * SAFE under the fs-mocked managed test suites: computing the signature requires a real
+ * {@link fsHooks.statSync} on each PRESENT source; when that stat cannot be taken (the
+ * mock seams stub `existsSync`/`readFileSync` but not `statSync`, so a fake path stats
+ * as absent/throws) the call is treated as UNCACHEABLE — it reads fresh and stores
+ * nothing — so a mocked scenario never serves a cached result from another `it`.
+ */
+interface ManagedConfigCacheEntry {
+  /** File-identity signature of every managed source at the time of the read. */
+  signature: string;
+  /** The merged managed config (or `null` for "no managed policy present"). */
+  config: ProjectConfig | null;
+}
+let managedConfigCache: ManagedConfigCacheEntry | null = null;
+
+/**
+ * Drop the memoized managed-config result so the next {@link loadManagedConfig} re-reads
+ * from disk + OS-native policy. Fanned out from {@link resetConfigCache} on every config
+ * write; the AMI analog of Claude Code's `clearMdmSettingsCache`.
+ */
+export function clearManagedConfigCache(): void {
+  managedConfigCache = null;
+}
+
+/**
+ * A cheap file-identity signature over EVERY managed-config input, or `null` when the
+ * read is UNCACHEABLE (a present source whose identity cannot be stat'd — the fs-mocked
+ * test path). Folds in, for each candidate, its absence or `mtime:size`, and for each
+ * candidate directory's `config.d/` the sorted eligible entries + their identities, so
+ * any on-disk change to the base policy OR a drop-in changes the signature. The OS-native
+ * MDM/registry layer has no file identity and is deliberately excluded here — it is
+ * covered by the explicit {@link clearManagedConfigCache} hook instead.
+ */
+function computeManagedConfigSignature(candidates: string[]): string | null {
+  const parts: string[] = [];
+  const seenDirs = new Set<string>();
+  for (const candidate of candidates) {
+    if (!fsHooks.existsSync(candidate)) {
+      parts.push(`${candidate}=A`);
+    } else {
+      let st: fs.Stats;
+      try {
+        st = fsHooks.statSync(candidate);
+      } catch {
+        // Present but unstattable (the fs-mocked test path): not safely cacheable.
+        return null;
+      }
+      // Fold in mode + ownership, not just mtime/size: the trust gate
+      // ({@link assertTrustedManagedFile}) rejects a world-writable or foreign-owned
+      // source, and a `chmod`/`chown` changes NEITHER mtime nor size — so a bare
+      // mtime+size identity would serve a now-untrusted file from cache and skip the
+      // re-check. Including mode/uid/gid forces a fresh trust evaluation on any such change.
+      parts.push(`${candidate}=${st.mtimeMs}:${st.size}:${st.mode}:${st.uid}:${st.gid}`);
+    }
+    // Fold in the candidate's `config.d/` drop-in dir (dedup across shared parents):
+    // which dir is ACTIVE depends on parsed content, so cover every candidate's dir —
+    // over-invalidation is harmless; a stale snapshot is not.
+    const dropInDir = path.join(path.dirname(candidate), 'config.d');
+    if (seenDirs.has(dropInDir)) continue;
+    seenDirs.add(dropInDir);
+    if (!fsHooks.existsSync(dropInDir)) {
+      parts.push(`${dropInDir}/=A`);
+      continue;
+    }
+    let entries: string[];
+    try {
+      entries = (fsHooks.readdirSync(dropInDir) as string[])
+        .filter(name => isEligibleManagedDropIn(name, dropInDir))
+        .sort();
+    } catch {
+      return null;
+    }
+    for (const name of entries) {
+      const dropInPath = path.join(dropInDir, name);
+      try {
+        const st = fsHooks.statSync(dropInPath);
+        parts.push(`${dropInPath}=${st.mtimeMs}:${st.size}:${st.mode}:${st.uid}:${st.gid}`);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return parts.join('|');
+}
+
 export function loadManagedConfig(): ProjectConfig | null {
+  const candidates = getManagedConfigPaths();
+  const signature = computeManagedConfigSignature(candidates);
+  if (signature !== null && managedConfigCache !== null && managedConfigCache.signature === signature) {
+    const cached = managedConfigCache.config;
+    return cached === null ? null : structuredClone(cached);
+  }
+  const merged = loadManagedConfigUncached(candidates);
+  if (signature !== null) {
+    managedConfigCache = { signature, config: merged };
+    return merged === null ? null : structuredClone(merged);
+  }
+  // Uncacheable read (couldn't stat a present source — e.g. under fs mocks): do not
+  // leave a now-potentially-stale entry from a prior cacheable call behind either.
+  managedConfigCache = null;
+  return merged;
+}
+
+/**
+ * Read + merge the managed-config layers from disk and OS-native policy WITHOUT the
+ * {@link managedConfigCache} memo. {@link loadManagedConfig} wraps this with the
+ * identity-keyed cache; this is also the fail-closed path used when the read is not
+ * safely cacheable.
+ */
+function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   const started = Date.now();
   // Resolve the ACTIVE managed source: the first ordered candidate that exists on
   // disk (per-user > device-level on macOS), falling back to the device-level
   // default when none is present. This gives priority-ordered multi-path MDM
   // resolution instead of reading exactly one fixed path. Parity: Claude's
   // getMacOSPlistPaths highest-priority-first source selection.
-  const candidates = getManagedConfigPaths();
   // When the active source came from the USER-settable SUPERINFERENCE_MANAGED_CONFIG
   // override (rather than a fixed OS-conventional device path), it is user-relocatable and
   // must clear the stricter admin-grade trust bar (not group-writable, owned by root or
