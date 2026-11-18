@@ -114,9 +114,15 @@ export function pythonBootstrapHint(
     return `No Python package manager (uv/pipx/pip) found to install "${tool}".`;
   }
   const { cmd, args } = pythonInstallCommand(tool, pm);
+  // pip → pip3 RUNTIME fallback (parity with installIt2, it2Setup.ts L112-125):
+  // `pip` can be present on PATH yet fail to install (e.g. a stale Python-2 `pip`),
+  // so the reference transparently retries with `pip3`. AMI never auto-installs, so
+  // the retry is surfaced as explicit user guidance rather than executed.
+  const pip3Fallback =
+    pm === 'pip' ? ` If \`${cmd}\` fails, retry with \`pip3 ${args.join(' ')}\`.` : '';
   // Surface the supply-chain advisory: the install should run from $HOME so a
   // project-local pip.conf/uv.toml cannot redirect the package index (the same
   // hardening pythonInstallCommand bakes into its `cwd`). The user runs this by
   // hand (AMI never auto-installs), so the guidance has to be explicit.
-  return `Install it with: ${cmd} ${args.join(' ')} (run it from your home directory so a project-local pip.conf/uv.toml can't redirect the package index).`;
+  return `Install it with: ${cmd} ${args.join(' ')} (run it from your home directory so a project-local pip.conf/uv.toml can't redirect the package index).${pip3Fallback}`;
 }

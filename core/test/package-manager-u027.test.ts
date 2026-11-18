@@ -87,6 +87,20 @@ describe('pythonBootstrapHint: human-readable affordance', () => {
     );
   });
 
+  it('surfaces the pip→pip3 runtime fallback when the selected manager is pip', () => {
+    // Parity with installIt2 (it2Setup.ts L112-125): pip may be on PATH yet fail
+    // (e.g. a stale py2 pip), so the reference retries with pip3. AMI never
+    // auto-installs, so the fallback is surfaced as explicit user guidance.
+    const hint = pythonBootstrapHint('ruff', probe(['pip']));
+    assert.match(hint, /pip install --user ruff/);
+    assert.match(hint, /pip3 install --user ruff/);
+  });
+
+  it('does NOT add a pip3 fallback for the uv/pipx managers', () => {
+    assert.doesNotMatch(pythonBootstrapHint('ruff', probe(['uv'])), /pip3/);
+    assert.doesNotMatch(pythonBootstrapHint('ruff', probe(['pipx'])), /pip3/);
+  });
+
   it('reports when no Python package manager is available', () => {
     assert.equal(
       pythonBootstrapHint('ruff', probe([])),

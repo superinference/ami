@@ -4,7 +4,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { whichSync, findOnPath, isBinaryInstalled, clearBinaryCache } from '../src/utils/which';
+import {
+  whichSync,
+  findOnPath,
+  isBinaryInstalled,
+  clearBinaryCache,
+  detectPackageManagers,
+  detectRuntimes,
+  KNOWN_PACKAGE_MANAGERS,
+  KNOWN_JS_RUNTIMES,
+} from '../src/utils/which';
 
 // ---------------------------------------------------------------------------
 // whichSync — cross-platform executable resolution (no-spawn fast path,
@@ -293,5 +302,48 @@ describe('isBinaryInstalled', () => {
     // Positive is cached: removing the binary does not change the cached answer.
     fs.rmSync(path.join(dir, 'late-tool'));
     assert.equal(isBinaryInstalled('late-tool'), true, 'stale positive served from cache');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectPackageManagers / detectRuntimes — system-wide, ordered, no-exec PATH
+// probes (parity with Claude Code's detectPackageManagers/detectRuntimes).
+// ---------------------------------------------------------------------------
+describe('detectPackageManagers / detectRuntimes', () => {
+  it('exposes the canonical ordered probe lists', () => {
+    assert.deepEqual([...KNOWN_PACKAGE_MANAGERS], ['npm', 'yarn', 'pnpm']);
+    assert.deepEqual([...KNOWN_JS_RUNTIMES], ['bun', 'deno', 'node']);
+  });
+
+  it('returns installed package managers in preference order (npm→yarn→pnpm)', () => {
+    // Only pnpm and npm present; order must follow the canonical list, not the
+    // order they were "discovered".
+    const present = new Set(['pnpm', 'npm']);
+    assert.deepEqual(
+      detectPackageManagers((cmd) => present.has(cmd)),
+      ['npm', 'pnpm'],
+    );
+  });
+
+  it('returns [] when no package manager is installed', () => {
+    assert.deepEqual(detectPackageManagers(() => false), []);
+  });
+
+  it('returns installed runtimes in preference order (bun→deno→node)', () => {
+    const present = new Set(['node', 'bun']);
+    assert.deepEqual(
+      detectRuntimes((cmd) => present.has(cmd)),
+      ['bun', 'node'],
+    );
+  });
+
+  it('defaults to the real PATH probe (no-exec): seeded binaries are detected', () => {
+    clearBinaryCache();
+    makeExe('npm');
+    makeExe('deno');
+    process.env.PATH = dir;
+    assert.deepEqual(detectPackageManagers(), ['npm']);
+    assert.deepEqual(detectRuntimes(), ['deno']);
+    clearBinaryCache();
   });
 });

@@ -204,6 +204,49 @@ export function firstAvailableBinary(
 }
 
 /**
+ * Node package managers probed, in Claude-Code preference order
+ * (`detectPackageManagers`, utils/env.ts): npm → yarn → pnpm. Exported so a
+ * caller/test shares the ONE canonical ordering instead of hardcoding its own.
+ */
+export const KNOWN_PACKAGE_MANAGERS = ['npm', 'yarn', 'pnpm'] as const;
+
+/**
+ * JavaScript runtimes probed, in Claude-Code preference order
+ * (`detectRuntimes`, utils/env.ts): bun → deno → node.
+ */
+export const KNOWN_JS_RUNTIMES = ['bun', 'deno', 'node'] as const;
+
+/**
+ * Which of the known Node PACKAGE MANAGERS are installed system-wide, returned in
+ * preference order (npm → yarn → pnpm). Parity with Claude Code's
+ * `detectPackageManagers` (utils/env.ts): a NO-EXEC PATH probe (via
+ * {@link isBinaryInstalled} → {@link whichSync}, which never runs the binary) used
+ * to tell which toolchains are available on the host — a DIFFERENT axis from
+ * inferring a single project package manager from lockfiles. Session-cached through
+ * the shared {@link isBinaryInstalled} probe (so this is effectively memoized and
+ * does not re-implement a second `which` loop). `isInstalled` is injectable so a
+ * test drives detection deterministically, reusing the one ordering primitive.
+ */
+export function detectPackageManagers(
+  isInstalled: (command: string) => boolean = isBinaryInstalled,
+): string[] {
+  return KNOWN_PACKAGE_MANAGERS.filter((pm) => isInstalled(pm));
+}
+
+/**
+ * Which of the known JS RUNTIMES are installed system-wide, returned in preference
+ * order (bun → deno → node). Parity with Claude Code's `detectRuntimes`
+ * (utils/env.ts); same no-exec, session-cached PATH probe as
+ * {@link detectPackageManagers}. Lets a caller prefer an installed runtime or
+ * advertise which runtimes a host provides.
+ */
+export function detectRuntimes(
+  isInstalled: (command: string) => boolean = isBinaryInstalled,
+): string[] {
+  return KNOWN_JS_RUNTIMES.filter((rt) => isInstalled(rt));
+}
+
+/**
  * Resolve an executable *name* to its full PATH path, returning the spawn-ready
  * `{ cmd, args }` pair (parity with Claude Code's `findExecutable`, which
  * replaced spawn-rx's `findActualExecutable`). `cmd` is the resolved absolute
