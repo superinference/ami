@@ -3839,11 +3839,17 @@ export class HookManager extends EventEmitter {
     }
     const outcome = { success: true };
     // Live progress streaming (Claude Code's emitHookProgress driven by
-    // startHookProgressInterval): for a command hook, poll its accumulating
-    // stdout/stderr while it runs and publish each changed snapshot on the
-    // lifecycle channel, so a long hook shows partial output instead of only a
-    // start + end. `live` is mutated in place by runCommandHookAsync.
-    const live = config.type === 'command' ? { stdout: '', stderr: '' } : undefined;
+    // startHookProgressInterval): poll the hook's accumulating output while it
+    // runs and publish each changed snapshot on the lifecycle channel, so a long
+    // hook shows partial output instead of only a start + end. `live` is mutated
+    // in place — by runCommandHookAsync for a command hook, and by the engine
+    // sub-stream for a prompt/agent hook (Claude Code's execPromptHook /
+    // execAgentHook live `setResponseLength` affordance while the model streams).
+    // HTTP hooks are a single request/response with no incremental output, so
+    // they keep the start+end-only lifecycle.
+    const live = config.type === 'command' || config.type === 'prompt' || config.type === 'agent'
+      ? { stdout: '', stderr: '' }
+      : undefined;
     const stopStream = live
       ? this.streamHookProgress(progress, () => Promise.resolve({ stdout: live.stdout, stderr: live.stderr, output: live.stdout + live.stderr }))
       : undefined;
@@ -6160,8 +6166,10 @@ export class HookManager extends EventEmitter {
     // (see buildHookEnv). Absent for non-arm callers / non-ingestible events.
     envFileHint?: { event: string; index: number },
     // Live-output sink for progress streaming: when supplied (sync command-hook
-    // path), runCommandHookAsync writes its accumulating stdout/stderr here on each
-    // chunk so {@link HookManager.streamHookProgress} can poll it mid-run.
+    // path, or a prompt/agent engine hook), the runner writes its accumulating
+    // output here as it arrives — runCommandHookAsync streams stdout/stderr, and
+    // {@link HookManager.runEngineHook} streams the model's accumulating text —
+    // so {@link HookManager.streamHookProgress} can poll it mid-run.
     liveOutput?: { stdout: string; stderr: string },
   ): Promise<string> {
     switch (config.type) {
@@ -6320,18 +6328,18 @@ export class HookManager extends EventEmitter {
         }
       }
       case 'prompt':
-        return this.runPromptHook(config, eventData, signal, outcome);
+        return this.runPromptHook(config, eventData, signal, outcome, liveOutput);
       case 'http':
         return this.runHttpHook(config, eventData, signal, outcome);
       case 'agent':
-        return this.runAgentHook(config, eventData, signal, outcome);
+        return this.runAgentHook(config, eventData, signal, outcome, liveOutput);
       default:
         return '';
     }
   }
 
-  private async runPromptHook(config: PromptHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome): Promise<string> {
-    const r = await this.runEngineHook('prompt', config.prompt, 'Event data', config.model, config.timeout, 30_000, eventData, signal);
+  private async runPromptHook(config: PromptHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome, live?: { stdout: string; stderr: string }): Promise<string> {
+    const r = await this.runEngineHook('prompt', config.prompt, 'Event data', config.model, config.timeout, 30_000, eventData, signal, live);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
     // Fail-OPEN: a prompt hook whose sub-engine errored/timed out returns '' —
@@ -6361,6 +6369,12 @@ export class HookManager extends EventEmitter {
     defaultMs: number,
     eventData: string,
     signal?: AbortSignal,
+    // Live-output sink (progress streaming): when supplied, the accumulating model
+    // text is mirrored here on each `text_delta` so {@link streamHookProgress} can
+    // publish incremental progress while the hook sub-engine runs — Claude Code's
+    // execPromptHook / execAgentHook live `setResponseLength` affordance. Absent
+    // for callers that don't stream progress (background/async firing).
+    live?: { stdout: string; stderr: string },
   ): Promise<{ output: string; error?: string }> {
     if (!this._engineFactory) {
       coreLog('hooks', `${kind} hook skipped: no engine factory available`);
@@ -6459,7 +6473,14 @@ export class HookManager extends EventEmitter {
     try {
       for await (const event of engine.submit(fullPrompt)) {
         if (abort.aborted()) break;
-        if (event.type === 'text_delta' && event.text) result += event.text;
+        if (event.type === 'text_delta' && event.text) {
+          result += event.text;
+          // Mirror the accumulating model text into the live sink so the progress
+          // poll surfaces partial output/length while the hook sub-engine streams
+          // (Claude Code's live setResponseLength affordance). No-op when the
+          // caller supplied no sink (background/async firing).
+          if (live) live.stdout = result;
+        }
         // A verification-tool call carries the verdict directly in its input — the
         // last such call wins (a hook calls it exactly once per its instruction).
         if (event.type === 'tool_use_start' && event.toolName === VERIFICATION_OUTPUT_TOOL_NAME) {
@@ -6721,8 +6742,8 @@ export class HookManager extends EventEmitter {
     }
   }
 
-  private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome): Promise<string> {
-    const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal);
+  private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome, live?: { stdout: string; stderr: string }): Promise<string> {
+    const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal, live);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
     // Fail-OPEN: surface a visible error notice when the agent hook errored so it
