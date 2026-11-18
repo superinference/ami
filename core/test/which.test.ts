@@ -247,6 +247,14 @@ describe('findOnPath — no-spawn lookup with injectable env', () => {
     assert.equal(findOnPath('anything', { PATH: '' }), null);
   });
 
+  it('returns null for an injected env with no PATH key (bash isExecutableOnPath contract)', () => {
+    // bash.ts isExecutableOnPath delegates `findOnPath(name, { PATH: pathValue })`;
+    // when pathValue is undefined the probe must resolve to null (no match) rather
+    // than fall back to process.env or throw — locking the consolidated contract.
+    makeExe('shouldnotmatch');
+    assert.equal(findOnPath('shouldnotmatch', { PATH: undefined }), null);
+  });
+
   it('never executes the candidate — a non-zero-exit script still resolves', () => {
     const p = path.join(dir, 'failing');
     fs.writeFileSync(p, '#!/bin/sh\nexit 3\n');

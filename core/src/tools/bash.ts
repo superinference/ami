@@ -26,6 +26,7 @@ import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataTe
 import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isSandboxEscapeDisabled } from './tool-gates';
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
 import { applySimulatedSedEdit } from './bash-sed-parser';
+import { findOnPath } from '../utils/which';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -1250,17 +1251,16 @@ export function describeSubprocessEnvIsolation(): {
   };
 }
 
-/** True if `name` resolves to an executable file on any dir of `pathValue`. */
+/**
+ * True if `name` resolves to an executable file on any dir of `pathValue`.
+ * Delegates to the canonical no-spawn {@link findOnPath} PATH resolver (which
+ * handles POSIX `X_OK`, win32 `PATHEXT`, and an injectable env) instead of
+ * re-implementing a second PATH scan here (No-Duplication: one `which`-style
+ * probe for the whole tree). `pathValue` is threaded through as the probed
+ * `PATH` so the python-shim decision stays deterministic/testable.
+ */
 function isExecutableOnPath(name: string, pathValue: string | undefined): boolean {
-  if (!pathValue) return false;
-  for (const dir of pathValue.split(path.delimiter)) {
-    if (!dir) continue;
-    try {
-      const p = path.join(dir, name);
-      if (fs.statSync(p).isFile()) { fs.accessSync(p, fs.constants.X_OK); return true; }
-    } catch { /* not in this dir */ }
-  }
-  return false;
+  return findOnPath(name, { PATH: pathValue }) !== null;
 }
 
 // Cache the resolved shim dir for the process (undefined = not yet computed, null = not applicable).
