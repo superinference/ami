@@ -31,7 +31,7 @@ import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness, BUBBLE_PERMISSION_MODE } from '../skills';
 import { withFrontmatterHookPluginRoot } from '../hooks';
-import { buildAgentMemoryPrompt } from '../memory';
+import { buildAgentMemoryPrompt, isAutoMemoryEnabled } from '../memory';
 import { log } from '../logger';
 
 /**
@@ -2926,7 +2926,14 @@ export const taskTool: ToolDefinition = {
       // the spawned agent starts already carrying its durable cross-run context.
       // Keyed on the parent's cwd (its canonical git root), not the eventual
       // worktree, so every spawn of this agent in the repo shares one store.
-      if (agentDef.memory) {
+      // Capability-gated: the per-agent memory block is only configured when the
+      // auto-memory capability is active (parity with Claude Code's MemoryStep
+      // `getSystemPrompt: isAutoMemoryEnabled() && memory && agentType ? …` and
+      // the agent-creation wizard only inserting MemoryStep when
+      // `isAutoMemoryEnabled()`). With `AMI_DISABLE_AUTO_MEMORY` set, a declared
+      // `memory` scope is inert — the agent spawns with no memory block, matching
+      // the rest of the gated auto-memory system (section/team/tool injection).
+      if (agentDef.memory && isAutoMemoryEnabled()) {
         const agentMemoryBlock = buildAgentMemoryPrompt(subagentType, agentDef.memory, context.cwd);
         agentSystemPrompt = agentSystemPrompt
           ? `${agentMemoryBlock}\n\n${agentSystemPrompt}`
