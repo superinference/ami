@@ -303,6 +303,16 @@ export interface SessionContext {
    *  and to spawned command hooks as the child-kill signal. Optional: when absent,
    *  executeSessionEnd synthesizes one from its own teardown budget. */
   signal?: AbortSignal;
+  /** Force SessionStart/Setup hooks that self-declare `async:true` to run
+   *  SYNCHRONOUSLY (blocking) for this invocation instead of being backgrounded
+   *  (Claude Code's `forceSyncExecution` option on executeSessionStart/
+   *  executeSetupHooks). Needed when the caller must have every hook's
+   *  `initialUserMessage` / `additionalContexts` available before the first turn
+   *  is assembled (e.g. a `source:'resume'` restore or a print-mode run), where
+   *  fire-and-forget backgrounding would otherwise drop a late-arriving message.
+   *  Only sessionStart/setup honor it; all other events ignore it. Default: the
+   *  hook's own `async` flag governs (unchanged behavior). */
+  forceSyncExecution?: boolean;
 }
 
 export interface SubagentContext {
@@ -3777,6 +3787,11 @@ export class HookManager extends EventEmitter {
     arr: T[],
     fn: T,
     event: string,
+    // Force an `async:true` hook to run SYNCHRONOUSLY for this invocation (Claude
+    // Code's forceSyncExecution). Threaded only by the sessionStart/setup arms from
+    // SessionContext.forceSyncExecution; every other caller leaves it false so the
+    // hook's own `async` flag governs as before.
+    forceSync = false,
   ): Promise<string> {
     // Index of this hook within its event array — keys the per-hook env-file path
     // so two hooks on the same event export into distinct, deterministic fragments.
@@ -3788,7 +3803,11 @@ export class HookManager extends EventEmitter {
     // "Running <event> hook…" indicator instead of a silent multi-second hang.
     const progress = this.hookProgressPayload(config, event, idx);
     this.emit('hookProgress', progress);
-    if (config.async) {
+    // forceSync (Claude Code's forceSyncExecution) overrides the hook's `async`
+    // opt-in: a sessionStart/setup hook that would normally be fire-and-forget is
+    // awaited inline so its initialUserMessage / additionalContexts are captured
+    // before the caller continues (a backgrounded result would arrive too late).
+    if (config.async && !forceSync) {
       this.fireAsyncHook(
         config, cwd, eventData, event, signal,
         config.once ? () => this.removeHookOnce(arr, fn, event) : undefined,
@@ -4767,7 +4786,7 @@ export class HookManager extends EventEmitter {
             // Thread the session lifecycle signal so a spawned SessionStart command
             // hook is killed when the session-start deadline/cancel fires (Claude
             // Code SessionContext signal parity).
-            const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.sessionStartHooks, fn, 'sessionStart');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.sessionStartHooks, fn, 'sessionStart', ctx.forceSyncExecution ?? false);
             const watchPaths = this.registerWatchPaths('sessionStart', result);
             // Claude Code accumulates `additionalContexts[]` from every SessionStart
             // hook into a single hook_additional_context attachment — carry them on
@@ -5030,7 +5049,7 @@ export class HookManager extends EventEmitter {
             // Scope on the Setup `trigger` (init | maintenance) when a matcher is set.
             if (!matcherAppliesToCtx('setup', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'setup', sessionId: ctx.sessionId, cwd: ctx.cwd, trigger: ctx.trigger });
-            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup');
+            const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup', ctx.forceSyncExecution ?? false);
             // Setup hooks, like SessionStart, may contribute model-facing
             // additionalContexts accumulated into one hook_additional_context
             // attachment (Claude Code's Setup additionalContexts aggregation).
