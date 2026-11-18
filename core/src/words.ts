@@ -138,6 +138,84 @@ export function pickRandom<T>(array: readonly T[]): T {
   return array[randomInt(array.length)]!;
 }
 
+/**
+ * Curated vocabulary of common English words each API-verified to tokenize as
+ * EXACTLY one token under the usual BPE vocabularies. Grouped by part of speech
+ * (articles/pronouns, verbs, nouns/adjectives, prepositions/conjunctions,
+ * adverbs, and common tech words) purely for readability — at runtime it is a
+ * flat pool. This single-token guarantee is what lets {@link generateLoremIpsum}
+ * treat "one word == one token", so generated filler can hit a requested token
+ * budget accurately rather than merely approximating character counts.
+ */
+export const ONE_TOKEN_WORDS: readonly string[] = [
+  // Articles & pronouns
+  'the', 'a', 'an', 'I', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him',
+  'her', 'us', 'them', 'my', 'your', 'his', 'its', 'our', 'this', 'that', 'what',
+  'who',
+  // Common verbs
+  'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does',
+  'did', 'will', 'would', 'can', 'could', 'may', 'might', 'must', 'shall',
+  'should', 'make', 'made', 'get', 'got', 'go', 'went', 'come', 'came', 'see',
+  'saw', 'know', 'take', 'think', 'look', 'want', 'use', 'find', 'give', 'tell',
+  'work', 'call', 'try', 'ask', 'need', 'feel', 'seem', 'leave', 'put',
+  // Common nouns & adjectives
+  'time', 'year', 'day', 'way', 'man', 'thing', 'life', 'hand', 'part', 'place',
+  'case', 'point', 'fact', 'good', 'new', 'first', 'last', 'long', 'great',
+  'little', 'own', 'other', 'old', 'right', 'big', 'high', 'small', 'large',
+  'next', 'early', 'young', 'few', 'public', 'bad', 'same', 'able',
+  // Prepositions & conjunctions
+  'in', 'on', 'at', 'to', 'for', 'of', 'with', 'from', 'by', 'about', 'like',
+  'through', 'over', 'before', 'between', 'under', 'since', 'without', 'and', 'or',
+  'but', 'if', 'than', 'because', 'as', 'until', 'while', 'so', 'though', 'both',
+  'each', 'when', 'where', 'why', 'how',
+  // Common adverbs
+  'not', 'now', 'just', 'more', 'also', 'here', 'there', 'then', 'only', 'very',
+  'well', 'back', 'still', 'even', 'much', 'too', 'such', 'never', 'again', 'most',
+  'once', 'off', 'away', 'down', 'out', 'up',
+  // Tech / common words
+  'test', 'code', 'data', 'file', 'line', 'text', 'word', 'number', 'system',
+  'program', 'set', 'run', 'value', 'name', 'type', 'state', 'end', 'start',
+];
+
+/**
+ * Generate token-budgeted filler ("lorem ipsum") text of approximately
+ * `targetTokens` tokens, assembled only from {@link ONE_TOKEN_WORDS} so the
+ * "one word == one token" approximation holds and the output lands near the
+ * requested budget. Useful for long-context testing (filling a conversation to a
+ * known size). Words are drawn with the module's unbiased, cryptographically
+ * strong {@link pickRandom}/{@link randomInt} rather than `Math.random`.
+ *
+ * Shape mirrors natural prose: sentences of 10–20 words ending in a period, with
+ * a paragraph break (~20% chance) between sentences. A non-positive, NaN, or
+ * infinite budget yields an empty string.
+ */
+export function generateLoremIpsum(targetTokens: number): string {
+  if (!Number.isFinite(targetTokens) || targetTokens <= 0) return '';
+  const target = Math.floor(targetTokens);
+  let tokens = 0;
+  let result = '';
+
+  while (tokens < target) {
+    // Sentence: 10–20 words.
+    const sentenceLength = 10 + randomInt(11);
+    let wordsInSentence = 0;
+
+    for (let i = 0; i < sentenceLength && tokens < target; i++) {
+      result += pickRandom(ONE_TOKEN_WORDS);
+      tokens++;
+      wordsInSentence++;
+      result += i === sentenceLength - 1 || tokens >= target ? '. ' : ' ';
+    }
+
+    // Paragraph break every few sentences (~20% chance per sentence).
+    if (wordsInSentence > 0 && randomInt(5) === 0 && tokens < target) {
+      result += '\n\n';
+    }
+  }
+
+  return result.trim();
+}
+
 /** Generate a random "adjective-verb-noun" slug (e.g. "cosmic-pondering-lighthouse"). */
 export function generateWordSlug(): string {
   return `${pickRandom(ADJECTIVES)}-${pickRandom(VERBS)}-${pickRandom(NOUNS)}`;

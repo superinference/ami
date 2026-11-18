@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { generateWordSlug, generateShortWordSlug, generateUniqueSlug, randomInt, pickRandom } from '../src/words';
+import { generateWordSlug, generateShortWordSlug, generateUniqueSlug, randomInt, pickRandom, ONE_TOKEN_WORDS, generateLoremIpsum } from '../src/words';
 
 const SLUG_RE = /^[a-z]+-[a-z]+-[a-z]+$/;
 
@@ -99,5 +99,58 @@ describe('words — generateUniqueSlug (collision-aware)', () => {
     const slug = generateUniqueSlug(() => { calls++; return true; }, 0);
     assert.equal(calls, 0);
     assert.match(slug, SLUG_RE);
+  });
+});
+
+describe('words — ONE_TOKEN_WORDS vocabulary', () => {
+  it('is a non-trivial pool of single-token words', () => {
+    assert.ok(ONE_TOKEN_WORDS.length >= 150, `expected a sizeable vocabulary, got ${ONE_TOKEN_WORDS.length}`);
+  });
+
+  it('every entry is a non-empty, whitespace-free word (so it stays a single token)', () => {
+    for (const w of ONE_TOKEN_WORDS) {
+      assert.equal(typeof w, 'string');
+      assert.ok(w.length > 0, 'no empty entries');
+      assert.ok(!/\s/.test(w), `"${w}" contains whitespace`);
+    }
+  });
+});
+
+describe('words — generateLoremIpsum (token-budgeted filler)', () => {
+  const VOCAB = new Set(ONE_TOKEN_WORDS);
+  const wordCount = (s: string) => (s.trim() === '' ? 0 : s.trim().split(/\s+/).length);
+
+  it('returns an empty string for a non-positive, NaN, or infinite budget', () => {
+    assert.equal(generateLoremIpsum(0), '');
+    assert.equal(generateLoremIpsum(-5), '');
+    assert.equal(generateLoremIpsum(NaN), '');
+    assert.equal(generateLoremIpsum(Infinity), '');
+  });
+
+  it('emits exactly the requested number of word-tokens (1 word == 1 token)', () => {
+    for (const target of [1, 7, 50, 137]) {
+      assert.equal(wordCount(generateLoremIpsum(target)), target, `target ${target}`);
+    }
+  });
+
+  it('floors a fractional budget to a whole token count', () => {
+    assert.equal(wordCount(generateLoremIpsum(10.9)), 10);
+  });
+
+  it('draws every word from the single-token vocabulary and is trimmed', () => {
+    const text = generateLoremIpsum(300);
+    assert.equal(text, text.trim(), 'output has no leading/trailing whitespace');
+    for (const raw of text.split(/\s+/)) {
+      const word = raw.replace(/\.$/, ''); // strip a sentence-ending period
+      assert.ok(VOCAB.has(word), `"${word}" is not in the vocabulary`);
+    }
+  });
+
+  it('shapes output into sentences and paragraphs for a large budget', () => {
+    const text = generateLoremIpsum(3000);
+    assert.ok(text.includes('. '), 'sentences end with a period');
+    // With ~150+ sentences at a ~20% per-sentence break rate, at least one
+    // paragraph break is effectively certain.
+    assert.ok(text.includes('\n\n'), 'has paragraph breaks');
   });
 });
