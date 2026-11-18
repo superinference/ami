@@ -3066,6 +3066,67 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
   return diagnostics;
 }
 
+/**
+ * One FILE-based config tier in the merge waterfall: its source, resolved path, and
+ * whether it is ACTIVELY contributing to the effective config (the file exists and
+ * parsed to a config object). Parity: one row of Claude Code's Settings status
+ * `buildSettingSourcesProperties()` active-source list.
+ */
+export interface ActiveConfigSource {
+  /** The config tier this entry describes. */
+  source: ConfigSource;
+  /** Human-readable provenance name ({@link getConfigSourceName}). */
+  sourceName: string;
+  /** Absolute path of the tier's config file (reported even when absent). */
+  path: string;
+  /**
+   * True when the file exists and loaded to a non-null config — i.e. the tier actually
+   * contributes to the merged config. False when the file is absent, unparseable, or
+   * (for the managed tier) rejected as untrusted/broken.
+   */
+  active: boolean;
+}
+
+/**
+ * Enumerate the FILE-based config tiers in precedence order (HIGHEST first) with each
+ * tier's resolved path and whether it is ACTIVELY contributing to the effective config.
+ *
+ * This answers "which config files are actually in effect, and in what precedence
+ * order" — distinct from {@link resolveSettingsFilePaths} (lists the four POSSIBLE tier
+ * paths regardless of existence) and {@link collectConfigDiagnostics} (surfaces only
+ * tiers that have ERRORS). A user/operator can see their live config source stack at a
+ * glance. Parity: Claude Code's Settings status `buildSettingSourcesProperties()`
+ * active-source enumeration.
+ *
+ * Order (highest precedence first): `local` > `project` > `global` > `managed` — the
+ * SAME ordering {@link mergeConfigs} applies for the file tiers (a higher tier's value
+ * overrides a lower one). The `cli`/`env` tiers are intentionally omitted: they are not
+ * files on disk. An absent/unparseable file is still listed (`active:false`) so the
+ * full possible stack is visible for diagnosis. Managed-tier activeness fails OPEN: an
+ * untrusted/broken managed policy (which throws {@link ManagedConfigError} at load) is
+ * reported `active:false` rather than crashing this diagnostic.
+ */
+export function collectActiveConfigSources(cwd: string): ActiveConfigSource[] {
+  let managedActive = false;
+  try {
+    managedActive = loadManagedConfig() !== null;
+  } catch {
+    // A present-but-untrusted/broken managed policy fails closed at load; here it is
+    // simply reported inactive rather than tearing down the whole introspection surface.
+    managedActive = false;
+  }
+  const globalPath = getGlobalConfigPath();
+  const entries: Array<{ source: ConfigSource; path: string; active: boolean }> = [
+    { source: 'local', path: getLocalConfigPath(cwd), active: loadLocalConfig(cwd) !== null },
+    { source: 'project', path: getProjectConfigPath(cwd), active: loadProjectConfig(cwd) !== null },
+    ...(globalPath
+      ? [{ source: 'global' as const, path: globalPath, active: loadGlobalConfig() !== null }]
+      : []),
+    { source: 'managed', path: getManagedConfigPath(), active: managedActive },
+  ];
+  return entries.map(e => ({ ...e, sourceName: getConfigSourceName(e.source) }));
+}
+
 // ---------------------------------------------------------------------------
 // Internal-write suppression (parity: Claude's changeDetector.ts
 // markInternalWrite / consumeInternalWrite). When AMI writes a config file
