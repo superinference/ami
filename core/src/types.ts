@@ -402,6 +402,12 @@ export interface ToolResult {
    *    from an `<ami-hint type="plugin" .../>` tag a command emitted on stderr
    *    (set only when `AMI_PLUGIN_HINTS` is enabled; Claude's stderr-hint plugin
    *    recommendation).
+   *  - `sedSimulatedEdit`: `true` when a `sed -i` in-place substitution was applied
+   *    as an in-memory FILE EDIT (write of the `applySedSubstitution` result)
+   *    instead of running the real `sed` binary, accompanied by `filePath`. This
+   *    guarantees the written bytes equal the before → after diff the permission
+   *    prompt previewed — parity with Claude Code's `_simulatedSedEdit` exactness
+   *    guarantee (SedEditPermissionRequest).
    *
    *  Keys the file_edit tool sets on a SUCCESSFUL edit (parity with Claude Code's
    *  FileEditTool `outputSchema`), so a programmatic caller reads them without

@@ -25,6 +25,7 @@ import { classifyBashAccess, describeToolActivity } from './tool-activity-class'
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxDefaultDeny, isSandboxEscapeDisabled } from './tool-gates';
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
+import { applySimulatedSedEdit } from './bash-sed-parser';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -1747,6 +1748,32 @@ export const bashTool: ToolDefinition = {
     const runInBackground = ribParsed.value && !isBackgroundTasksDisabled();
     const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
     if (sleepBlock) return { output: `Error: ${sleepBlock}`, isError: true };
+
+    // [FUNCTIONAL CHANGE] Simulated sed in-place edit (_simulatedSedEdit parity).
+    // A lone `sed -i 's/…/…/' file` is semantically a FILE EDIT: the permission
+    // prompt already renders a before → after diff computed in-memory via
+    // applySedSubstitution (common/src/permission-preview.ts). Running the real
+    // `sed` binary afterwards could write bytes that differ from that previewed
+    // diff (sed-vs-JS-regex divergence). To GUARANTEE the write equals what the
+    // user approved, perform the SAME in-memory substitution and write it directly
+    // — the identical exactness guarantee as Claude Code's SedEditPermissionRequest
+    // `_simulatedSedEdit` (the approved write uses the JS-computed newContent, not a
+    // re-run of sed). Only faithful, single-file, foreground substitutions take this
+    // path (applySimulatedSedEdit returns null otherwise → the real binary runs).
+    // Container mode is excluded so file writes stay inside the container's isolated
+    // mount rather than touching the host directly.
+    if (!runInBackground && context.sandbox?.mode !== 'container') {
+      const simulated = applySimulatedSedEdit(command, context.cwd);
+      if (simulated) {
+        // Real `sed -i` prints nothing on success, so the output is empty; the
+        // metadata flag makes the simulated path observable (introspection) and
+        // mirrors file_edit's `filePath` result key.
+        return {
+          output: '',
+          metadata: { sedSimulatedEdit: true, filePath: simulated.filePath },
+        };
+      }
+    }
 
     // Non-blocking advisories derived from the original command string. Computed
     // before injectFindMaxdepth rewrites `command`, appended to the final output

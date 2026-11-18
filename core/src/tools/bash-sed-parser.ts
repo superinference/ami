@@ -21,6 +21,8 @@
  */
 
 import { randomBytes } from 'crypto';
+import * as fs from 'fs';
+import { isAbsolute, resolve as resolvePath } from 'path';
 import { parseBashAST, resolveShellWord } from './bash-parser';
 import type { CommandNode } from './bash-parser';
 
@@ -49,6 +51,15 @@ export type SedEditInfo = {
   flags: string;
   /** Whether extended regex is in effect (`-E` / `-r` / `--regexp-extended`). */
   extendedRegex: boolean;
+  /**
+   * The in-place backup suffix, when one was supplied (`-i.bak` / `-i .bak` /
+   * BSD `-i ''`). `undefined` means a plain `-i` / `--in-place` with no backup;
+   * an empty string means an explicit empty suffix (BSD "no backup") was given.
+   * A non-empty suffix means `sed` writes `<file><suffix>` with the original
+   * contents, which the in-memory simulator reproduces so the previewed write is
+   * byte-identical to a real `sed -i<suffix>` run.
+   */
+  inPlaceSuffix?: string;
 };
 
 /**
@@ -90,6 +101,9 @@ export function parseSedEditCommand(command: string): SedEditInfo | null {
   let extendedRegex = false;
   let expression: string | null = null;
   let filePath: string | null = null;
+  // `undefined` until an `-i` backup suffix is actually supplied, so a plain
+  // `-i` keeps the five-field SedEditInfo shape (no `inPlaceSuffix` key).
+  let inPlaceSuffix: string | undefined;
 
   let i = 0;
   while (i < args.length) {
@@ -105,6 +119,7 @@ export function parseSedEditCommand(command: string): SedEditInfo | null {
       if (i < args.length) {
         const nextArg = args[i]!;
         if (!nextArg.startsWith('-') && (nextArg === '' || nextArg.startsWith('.'))) {
+          inPlaceSuffix = nextArg; // record the backup suffix (possibly empty)
           i++; // skip the backup suffix
         }
       }
@@ -113,6 +128,7 @@ export function parseSedEditCommand(command: string): SedEditInfo | null {
     if (arg.startsWith('-i')) {
       // Inline suffix form: -i.bak
       hasInPlaceFlag = true;
+      inPlaceSuffix = arg.slice(2);
       i++;
       continue;
     }
@@ -226,7 +242,14 @@ export function parseSedEditCommand(command: string): SedEditInfo | null {
     return null;
   }
 
-  return { filePath, pattern, replacement, flags, extendedRegex };
+  return {
+    filePath,
+    pattern,
+    replacement,
+    flags,
+    extendedRegex,
+    ...(inPlaceSuffix !== undefined ? { inPlaceSuffix } : {}),
+  };
 }
 
 /**
@@ -289,4 +312,155 @@ export function applySedSubstitution(content: string, sedInfo: SedEditInfo): str
   } catch {
     return content;
   }
+}
+
+// Pattern-side backslash escapes that `applySedSubstitution` reproduces with the
+// SAME meaning as `sed` — either because it converts them (BRE `\+ \? \| \( \)`)
+// or because `sed` BRE and JavaScript `RegExp` agree on them (`\\ \/ \. \* \^ \$
+// \[ \]`). Any OTHER backslash escape (`\1`-`\9` backrefs, `\{` intervals, `\<`
+// `\>` `\b` word ops, …) would be written differently by the real `sed` binary,
+// so a command using one is NOT a faithful simulation candidate.
+const FAITHFUL_PATTERN_ESCAPES = new Set([
+  '/', '\\', '+', '?', '|', '(', ')', '.', '*', '^', '$', '[', ']',
+]);
+
+function sedPatternIsFaithful(pattern: string): boolean {
+  // POSIX bracket expressions (`[[:alpha:]]`, `[[.ch.]]`, `[[=a=]]`) are valid in
+  // sed but unsupported by JS RegExp, so they would silently diverge.
+  if (pattern.includes('[[:') || pattern.includes('[[.') || pattern.includes('[[=')) {
+    return false;
+  }
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === '\\') {
+      const next = pattern[i + 1];
+      if (next === undefined || !FAITHFUL_PATTERN_ESCAPES.has(next)) return false;
+      i++; // consume the escaped char
+    }
+  }
+  return true;
+}
+
+function sedReplacementIsFaithful(replacement: string): boolean {
+  // `$` is a literal in a sed replacement but is special in a JS replacement
+  // string (`$&`, `$1`, `$$`), so any `$` means the write could diverge.
+  if (replacement.includes('$')) return false;
+  for (let i = 0; i < replacement.length; i++) {
+    if (replacement[i] === '\\') {
+      const next = replacement[i + 1];
+      // `applySedSubstitution` only reproduces `\/` (escaped delimiter) and `\&`
+      // (literal ampersand). Backreferences (`\1`-`\9`), case conversions
+      // (`\U \L \l \u \E`), `\n`/`\t`, and a literal `\\` are all written
+      // differently by real sed, so they are not faithful candidates.
+      if (next !== '/' && next !== '&') return false;
+      i++; // consume the escaped char
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether {@link applySedSubstitution} reproduces this substitution byte-for-byte
+ * with what the real `sed` binary would write. Used to gate BOTH the permission
+ * preview and the simulated write: only when this is `true` may AMI show a diff
+ * and perform the in-memory write; otherwise it falls back to the raw command
+ * (no misleading diff) and lets the real `sed` run — so the user never approves a
+ * preview that differs from the bytes actually written (the `_simulatedSedEdit`
+ * exactness guarantee from Claude Code's SedEditPermissionRequest).
+ */
+export function canSimulateSedEditFaithfully(sedInfo: SedEditInfo): boolean {
+  return sedPatternIsFaithful(sedInfo.pattern) && sedReplacementIsFaithful(sedInfo.replacement);
+}
+
+/** A resolved sed in-place edit the simulator can reproduce exactly. */
+export interface SedEditSimulation {
+  /** Absolute path of the file the edit targets. */
+  filePath: string;
+  /** The file's current contents (before the edit). */
+  oldContent: string;
+  /** The contents after applying the substitution with {@link applySedSubstitution}. */
+  newContent: string;
+  /** The backup suffix, if the command requested one (`-i.bak` → `.bak`). */
+  inPlaceSuffix?: string;
+}
+
+function defaultReadFileUtf8(absPath: string): string | null {
+  try {
+    return fs.readFileSync(absPath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute the in-memory result of a `sed -i 's/…/…/' file` command WITHOUT running
+ * `sed`, so a permission prompt and the actual write share ONE source of truth for
+ * the resulting bytes. Returns `null` (the caller must fall back to the raw shell
+ * command) when the command is not a single simple substitution, uses a feature
+ * {@link applySedSubstitution} cannot reproduce faithfully, targets an unreadable
+ * file, or changes nothing. The file read is injectable for testing.
+ */
+export function computeSedEdit(
+  command: string,
+  cwd: string,
+  readFile: (absPath: string) => string | null = defaultReadFileUtf8,
+): SedEditSimulation | null {
+  const sedInfo = parseSedEditCommand(command);
+  if (!sedInfo) return null;
+  if (!canSimulateSedEditFaithfully(sedInfo)) return null;
+  const filePath = isAbsolute(sedInfo.filePath) ? sedInfo.filePath : resolvePath(cwd, sedInfo.filePath);
+  const oldContent = readFile(filePath);
+  if (oldContent === null) return null;
+  const newContent = applySedSubstitution(oldContent, sedInfo);
+  if (newContent === oldContent) return null;
+  return {
+    filePath,
+    oldContent,
+    newContent,
+    ...(sedInfo.inPlaceSuffix !== undefined ? { inPlaceSuffix: sedInfo.inPlaceSuffix } : {}),
+  };
+}
+
+/** Pluggable filesystem for {@link applySimulatedSedEdit} (defaults to real `fs`). */
+export interface SedEditIo {
+  readFile?: (absPath: string) => string | null;
+  writeFile?: (absPath: string, content: string) => void;
+}
+
+function defaultWriteFileUtf8(absPath: string, content: string): void {
+  fs.writeFileSync(absPath, content, 'utf8');
+}
+
+/**
+ * Perform a `sed -i` in-place edit by WRITING the {@link applySedSubstitution}
+ * result directly, instead of executing the real `sed` binary — guaranteeing the
+ * bytes written are exactly the ones a preview showed (Claude Code's
+ * `_simulatedSedEdit` exactness guarantee). Returns the simulation on success, or
+ * `null` when the caller must fall back to running the real `sed` command: the
+ * command is not a faithful single substitution, a non-empty backup suffix cannot
+ * be reproduced (contains `*`, which GNU sed expands to the filename), or the
+ * write failed (so the real binary surfaces the canonical error). Never throws.
+ */
+export function applySimulatedSedEdit(
+  command: string,
+  cwd: string,
+  io: SedEditIo = {},
+): SedEditSimulation | null {
+  const sim = computeSedEdit(command, cwd, io.readFile ?? defaultReadFileUtf8);
+  if (!sim) return null;
+  const write = io.writeFile ?? defaultWriteFileUtf8;
+  // A non-empty backup suffix means sed first copies the original to
+  // `<file><suffix>`. GNU sed expands a `*` in the suffix to the filename, which
+  // we do not reproduce — fall back to the real binary for that rare form.
+  const suffix = sim.inPlaceSuffix;
+  const needsBackup = suffix !== undefined && suffix !== '';
+  if (needsBackup && suffix!.includes('*')) return null;
+  try {
+    if (needsBackup) {
+      write(sim.filePath + suffix, sim.oldContent);
+    }
+    write(sim.filePath, sim.newContent);
+  } catch {
+    return null;
+  }
+  return sim;
 }
