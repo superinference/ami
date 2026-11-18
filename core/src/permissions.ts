@@ -1837,6 +1837,54 @@ const DOCKER_SAFE_SUBCOMMANDS = new Set([
   'ps', 'images', 'logs', 'inspect', 'stats', 'top', 'port', 'version', 'info',
 ]);
 
+/**
+ * Typed safe-flag allowlists for the read-only docker subcommands that still take
+ * flags. A subcommand match alone is NOT enough to auto-allow `docker logs` /
+ * `docker inspect`: an unrecognized flag can smuggle behavior (and `--format` /
+ * `-f` meanings differ per subcommand), so each known flag is pinned to its
+ * arity — `'none'` (a boolean switch) or `'string'` (consumes one value). Any
+ * flag NOT in the map falls through to a prompt (conservative). Subcommands absent
+ * here (`ps`, `images`, `stats`, …) keep their existing name-only auto-allow.
+ * Mirrors Claude's `DOCKER_READ_ONLY_COMMANDS` safeFlags
+ * (utils/shell/readOnlyCommandValidation.ts).
+ */
+const DOCKER_SAFE_SUBCOMMAND_FLAGS: Record<string, Record<string, 'none' | 'string'>> = {
+  logs: {
+    '--follow': 'none', '-f': 'none',
+    '--tail': 'string', '-n': 'string',
+    '--timestamps': 'none', '-t': 'none',
+    '--since': 'string', '--until': 'string',
+    '--details': 'none',
+  },
+  inspect: {
+    '--format': 'string', '-f': 'string',
+    '--type': 'string',
+    '--size': 'none', '-s': 'none',
+  },
+};
+
+/**
+ * True when every flag passed to a read-only docker subcommand is in its typed
+ * safe-flag allowlist (positional args — container names/IDs — are always fine).
+ * A `--flag=value` form carries its own value; a `'string'` flag in `--flag value`
+ * form consumes the following token. Returns true for subcommands with no
+ * flag constraints. See {@link DOCKER_SAFE_SUBCOMMAND_FLAGS}.
+ */
+function dockerReadOnlyFlagsSafe(sub: string, args: string[]): boolean {
+  const allow = DOCKER_SAFE_SUBCOMMAND_FLAGS[sub];
+  if (!allow) return true;
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i]!;
+    if (!tok.startsWith('-')) continue; // positional (container/id) — allowed
+    const eq = tok.indexOf('=');
+    const name = eq >= 0 ? tok.slice(0, eq) : tok;
+    const kind = allow[name];
+    if (kind === undefined) return false; // unknown flag → not auto-safe
+    if (kind === 'string' && eq < 0) i++; // consumes the next token as its value
+  }
+  return true;
+}
+
 /** Compound safe prefixes: "command subcommand" pairs that are safe. */
 /**
  * GitHub CLI (`gh`) read-only subcommand groups — the `<group> <subcommand>`
@@ -6508,6 +6556,10 @@ export class PermissionManager {
       const subIdx = dIdx >= 0 ? skipGlobalFlags(dockerTokens, dIdx + 1, BASH_COMMAND_SPECS['docker']) : -1;
       const dockerSub = subIdx >= 0 && subIdx < dockerTokens.length ? dockerTokens[subIdx] : undefined;
       if (dockerSub && DOCKER_SAFE_SUBCOMMANDS.has(dockerSub)) {
+        // A safe subcommand is only auto-allowed when its FLAGS are also known-safe
+        // (`docker logs`/`docker inspect` carry typed flags; an unrecognized flag
+        // must prompt rather than be silently granted).
+        if (!dockerReadOnlyFlagsSafe(dockerSub, dockerTokens.slice(subIdx + 1))) return 'unsafe';
         return 'safe';
       }
       return 'unsafe';
@@ -6666,12 +6718,28 @@ export class PermissionManager {
    * keeps its normalized form.
    */
   private resolveForCheck(filePath: string, cwd: string): string {
+    const expanded = expandPath(filePath, cwd);
+    // Special-file guard BEFORE realpath: lstat the target and bail for FIFOs,
+    // sockets, and char/block devices. fs.realpathSync can block indefinitely on a
+    // FIFO waiting for a writer (an unbounded hang with no timeout), so a special
+    // file is never realpath-resolved — its expanded (NFC) form is returned as-is.
+    // A non-existent path (ENOENT) or unreadable parent falls through to realpathNFC,
+    // which tolerates it (write targets keep their expanded form). Mirrors Claude's
+    // safeResolvePath special-file screen (utils/fsOperations.ts L148-161).
+    try {
+      const st = fs.lstatSync(expanded);
+      if (st.isFIFO() || st.isSocket() || st.isCharacterDevice() || st.isBlockDevice()) {
+        return expanded.normalize('NFC');
+      }
+    } catch {
+      // not-yet-existing / unreadable — realpathNFC handles it below
+    }
     // Canonicalize to the real location and re-apply NFC normalization: on an
     // NFD-storing filesystem fs.realpathSync returns the decomposed on-disk
     // spelling, which would not byte-match an NFC cwd/rule. A not-yet-existing
     // write target keeps its already-NFC expanded form. Shared helper so the
     // single realpath+NFC rule is not re-implemented per call site.
-    return realpathNFC(expandPath(filePath, cwd));
+    return realpathNFC(expanded);
   }
 
   /**
@@ -6737,13 +6805,32 @@ export class PermissionManager {
     // NFC-normalize before case-folding so an NFD-spelled cwd/root compares equal
     // to the NFC-canonicalized `resolved` candidate (resolveForCheck -> realpathNFC);
     // keeps the containment boundary Unicode-canonical on both sides.
-    const strip = (p: string) => normalizeCaseForComparison((p.replace(/[/\\]+$/, '') || p).normalize('NFC'));
+    // macOS /private symlink-equivalence: /private/var→/var, /private/tmp→/tmp.
+    // Lexical (not realpath) so it also folds a NON-EXISTENT write target, whose
+    // real path cannot be resolved. Applied to both sides before case/NFC folding.
+    // Mirrors Claude's pathInWorkingPath private-prefix normalization. On Linux the
+    // prefixes never occur, so this is a no-op.
+    const foldPrivate = (p: string) =>
+      p.replace(/^\/private\/var\//, '/var/').replace(/^\/private\/tmp(\/|$)/, '/tmp$1');
+    const strip = (p: string) =>
+      normalizeCaseForComparison(foldPrivate(p.replace(/[/\\]+$/, '') || p).normalize('NFC'));
     const r = strip(resolved);
-    const ncwd = strip(path.normalize(cwd));
-    if (r === ncwd || r.startsWith(ncwd + path.sep)) return true;
-    for (const root of this.allowedReadRoots.keys()) {
-      const nr = strip(root);
-      if (r === nr || r.startsWith(nr + path.sep)) return true;
+    const contains = (base: string): boolean => r === base || r.startsWith(base + path.sep);
+    // A workspace base (cwd or a granted root) matches both in its NORMALIZED form
+    // and its REALPATH-resolved form, so a launch cwd / root that is itself a
+    // symlink (e.g. process.env.PWD symlinked to the real cwd) still contains the
+    // realpath-canonicalized candidate `resolved`. realpath is wrapped in try/catch
+    // for a not-yet-existing base. Mirrors Claude's symlinked-PWD working-dir
+    // registration (permissionSetup.ts isSymlinkTo). This only ADDS matches — it
+    // never widens past the real directory tree, so it cannot cause a false allow.
+    for (const base of [path.normalize(cwd), ...this.allowedReadRoots.keys()]) {
+      if (contains(strip(base))) return true;
+      try {
+        const real = fs.realpathSync(base);
+        if (real !== base && contains(strip(real))) return true;
+      } catch {
+        // non-existent base — the normalized form above is the only candidate
+      }
     }
     return false;
   }
@@ -7207,8 +7294,23 @@ export class PermissionManager {
     // Canonicalize legacy/cross-framework names (e.g. a `Bash`/`Edit` rule
     // imported from a Claude settings file matches AMI's `bash`/`file_edit`).
     const rt = normalizeToolName(ruleTool);
-    return rt === '*' || rt === toolName
-      || (rt.includes('*') && matchPattern(rt, toolName));
+    if (rt === '*' || rt === toolName) return true;
+    if (rt.includes('*') && matchPattern(rt, toolName)) return true;
+    // MCP server-level rule: a rule naming only the server (`mcp__server`) matches
+    // EVERY tool from that server (`mcp__server__tool1`, `mcp__server__tool2`, …),
+    // exactly like the explicit `mcp__server__*` form (already handled by the glob
+    // branch above). A bare `mcp__server` carries no wildcard, so without this it
+    // would match nothing. Mirrors Claude's toolMatchesRule MCP special-case
+    // (utils/permissions/permissions.ts): rule-info toolName undefined/`*` + same
+    // server ⇒ match.
+    const ruleInfo = mcpInfoFromString(rt);
+    const toolInfo = mcpInfoFromString(toolName);
+    return (
+      ruleInfo !== null &&
+      toolInfo !== null &&
+      (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
+      ruleInfo.serverName === toolInfo.serverName
+    );
   }
 
   /** Coerce a persisted paramPattern into a validated Record<string,string>,
@@ -7773,6 +7875,15 @@ export class PermissionManager {
     for (let i = 0; i < this.rules.length; i++) {
       const allow = this.rules[i]!;
       if (allow.action !== 'allow') continue;
+      // Only a SPECIFIC (content-bearing) allow rule can be "shadowed": e.g.
+      // `bash(ls *)` sitting under a tool-wide `bash` deny/ask is genuinely
+      // unreachable. A TOOL-WIDE allow (no pattern, or `*`) merely CONFLICTS with
+      // a tool-wide deny/ask — it is not reported as shadowed, else every bare
+      // `{tool, action:'allow'}` under a tool-wide deny is a false positive.
+      // Mirrors Claude's shadowedRuleDetection (ruleContent === undefined ⇒ not
+      // shadowed, shadowedRuleDetection.ts L118-122 / L166-170).
+      const allowSpecific = !!allow.pattern && allow.pattern !== '*';
+      if (!allowSpecific) continue;
       // Scan once for the most-severe shadower: a tool-wide deny (order-independent)
       // beats a preceding tool-wide ask.
       let denyShadow: PermissionRule | undefined;

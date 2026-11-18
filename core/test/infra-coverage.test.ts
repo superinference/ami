@@ -1696,8 +1696,8 @@ describe('PermissionManager — checkDenyRules (lines 584-593)', () => {
 describe('PermissionManager — detectShadowedRules (lines 866-879)', () => {
   it('detects a shadowed allow rule', () => {
     const pm = new PermissionManager('ask', [
-      { tool: 'bash', action: 'deny' as const },      // higher priority (index 0)
-      { tool: 'bash', action: 'allow' as const },      // shadowed (index 1)
+      { tool: 'bash', action: 'deny' as const },              // higher priority (index 0)
+      { tool: 'bash', pattern: 'ls *', action: 'allow' as const }, // SPECIFIC allow → shadowed
     ]);
     const shadows = pm.detectShadowedRules();
     assert.ok(shadows.length >= 1);
@@ -1708,10 +1708,20 @@ describe('PermissionManager — detectShadowedRules (lines 866-879)', () => {
   it('detects allow rule shadowed by ask rule with wildcard pattern', () => {
     const pm = new PermissionManager('ask', [
       { tool: 'bash', pattern: '*', action: 'ask' as const },
-      { tool: 'bash', action: 'allow' as const },
+      { tool: 'bash', pattern: 'ls *', action: 'allow' as const }, // SPECIFIC allow → shadowed
     ]);
     const shadows = pm.detectShadowedRules();
     assert.ok(shadows.length >= 1);
+  });
+
+  it('does NOT shadow a tool-wide allow (it only conflicts with a tool-wide deny)', () => {
+    // Parity with Claude's shadowedRuleDetection: only a content-bearing (specific)
+    // allow rule can be "shadowed"; a bare tool-wide allow merely conflicts.
+    const pm = new PermissionManager('ask', [
+      { tool: 'bash', action: 'deny' as const },
+      { tool: 'bash', action: 'allow' as const }, // tool-wide → not reported
+    ]);
+    assert.deepEqual(pm.detectShadowedRules(), []);
   });
 
   it('does not flag non-shadowed rules', () => {
