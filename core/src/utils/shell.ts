@@ -3,6 +3,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { resolveRipgrepConfig, type RipgrepConfig } from '../tools/ripgrep-config';
+import {
+  tmuxIsolationEnabled,
+  commandUsesTmux,
+  prepareBashTmuxOverrides,
+} from './tmux-socket';
 
 /**
  * Mockable seam (ESM-safe). Tests replace these via
@@ -1012,46 +1017,6 @@ export function resolveDefaultShell(): ShellType {
 // ---------------------------------------------------------------------------
 
 /**
- * Env knob (opt-in) that enables AMI's isolated tmux socket for bash commands.
- * When truthy (`1`/`true`/`on`/`yes`), a bash command that references `tmux` is
- * run with `TMUX_TMPDIR` pointed at an AMI-managed socket directory (created
- * on first use), isolating AMI-run tmux servers from the user's default socket.
- * Unset/blank/falsey leaves commands untouched. An opt-in introspection surface
- * per AMI's introspection-on-every-change invariant.
- */
-export const TMUX_ISOLATION_ENV = 'AMI_TMUX_ISOLATION';
-
-/** True when {@link TMUX_ISOLATION_ENV} names an enabled value. */
-function tmuxIsolationEnabled(): boolean {
-  const raw = (process.env[TMUX_ISOLATION_ENV] || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
-}
-
-/** True when a shell command references the `tmux` binary (word-boundary match). */
-export function commandUsesTmux(command: string): boolean {
-  return /\btmux\b/.test(command);
-}
-
-/**
- * Compute the async bash environment overrides for a command that triggers tmux
- * isolation: ensure the AMI-managed tmux socket dir exists (async init) and point
- * `TMUX_TMPDIR` at it. Best-effort — a failed dir setup must never fail the
- * command, so it returns `{}` (and logs via {@link shellHooks.onShellDebug}) on
- * error instead of rejecting.
- */
-async function prepareBashTmuxOverrides(): Promise<Record<string, string>> {
-  const dir = path.join(resolveTmpBase(), 'ami-tmux');
-  try {
-    await shellHooks.mkdirAsync(dir, { recursive: true });
-    shellHooks.onShellDebug(`tmux isolation: TMUX_TMPDIR=${dir}`);
-    return { TMUX_TMPDIR: dir };
-  } catch (err) {
-    shellHooks.onShellDebug(`tmux isolation: socket dir setup failed (${(err as Error).message}); not overriding TMUX_TMPDIR`);
-    return {};
-  }
-}
-
-/**
  * Per-shell environment overrides merged into the spawn env by {@link execCommand}
  * just before launch. Parity with Claude Code's
  * `ShellProvider.getEnvironmentOverrides(command)`.
@@ -1060,6 +1025,8 @@ async function prepareBashTmuxOverrides(): Promise<Record<string, string>> {
  * deterministic same-tick spawn is preserved), and a `Promise` only when a shell
  * genuinely needs async init — currently the bash tmux-socket isolation path
  * ({@link TMUX_ISOLATION_ENV} enabled AND the command {@link commandUsesTmux}).
+ * The tmux-socket state machine (cached availability probe, concurrent-init
+ * dedup, graceful degradation, on-exit teardown) lives in {@link ./tmux-socket}.
  * PowerShell and the non-tmux bash path return an empty record.
  */
 export function getEnvironmentOverrides(
@@ -1067,7 +1034,7 @@ export function getEnvironmentOverrides(
   command: string,
 ): Record<string, string> | Promise<Record<string, string>> {
   if (shellType === 'bash' && tmuxIsolationEnabled() && commandUsesTmux(command)) {
-    return prepareBashTmuxOverrides();
+    return prepareBashTmuxOverrides(resolveTmpBase());
   }
   return {};
 }

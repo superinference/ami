@@ -32,9 +32,13 @@ import {
   execCommand,
   shellHooks,
   getEnvironmentOverrides,
+} from '../src/utils/shell';
+import {
   commandUsesTmux,
   TMUX_ISOLATION_ENV,
-} from '../src/utils/shell';
+  tmuxSocketHooks,
+  __resetTmuxSocketStateForTest,
+} from '../src/utils/tmux-socket';
 
 class FakeProc extends EventEmitter {
   stdout = new PassThrough();
@@ -61,6 +65,12 @@ const ENV_KEYS = [TMUX_ISOLATION_ENV, 'AMI_TMPDIR', 'CLAUDE_CODE_TMPDIR', 'AMI_S
 const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+  // Reset the tmux-socket singleton state and simulate tmux being installed so
+  // the isolation path exercises its wiring on hosts without a real tmux binary.
+  // The on-exit teardown is stubbed so tests don't leak `process.exit` listeners.
+  __resetTmuxSocketStateForTest();
+  mock.method(tmuxSocketHooks, 'probeTmuxAvailable', () => true);
+  mock.method(tmuxSocketHooks, 'registerTeardown', () => {});
 });
 afterEach(() => {
   mock.restoreAll();
@@ -122,10 +132,10 @@ describe('U049 w99 — getEnvironmentOverrides', () => {
   it('accepts 1/true/on/yes as enabled and returns an async TMUX_TMPDIR override', async () => {
     process.env.AMI_TMPDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-tmuxbase-'));
     const calls: Array<{ dir: unknown; opts: unknown }> = [];
-    mock.method(shellHooks, 'mkdirAsync', (async (dir: unknown, opts: unknown) => {
+    mock.method(tmuxSocketHooks, 'mkdirAsync', (async (dir: unknown, opts: unknown) => {
       calls.push({ dir, opts });
       return undefined;
-    }) as typeof shellHooks.mkdirAsync);
+    }) as typeof tmuxSocketHooks.mkdirAsync);
     try {
       for (const good of ['1', 'true', 'on', 'yes', 'TRUE', 'On']) {
         calls.length = 0;
@@ -148,8 +158,8 @@ describe('U049 w99 — getEnvironmentOverrides', () => {
     process.env[TMUX_ISOLATION_ENV] = '1';
     process.env.AMI_SHELL_DEBUG = '1';
     const debug: string[] = [];
-    mock.method(shellHooks, 'onShellDebug', ((m: string) => { debug.push(m); }) as typeof shellHooks.onShellDebug);
-    mock.method(shellHooks, 'mkdirAsync', (async () => { throw new Error('EACCES denied'); }) as typeof shellHooks.mkdirAsync);
+    mock.method(tmuxSocketHooks, 'onDebug', ((m: string) => { debug.push(m); }) as typeof tmuxSocketHooks.onDebug);
+    mock.method(tmuxSocketHooks, 'mkdirAsync', (async () => { throw new Error('EACCES denied'); }) as typeof tmuxSocketHooks.mkdirAsync);
     const res = getEnvironmentOverrides('bash', 'tmux ls');
     assert.equal(isThenable(res), true);
     assert.deepEqual(await res, {});
