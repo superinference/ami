@@ -312,6 +312,8 @@ export { getPlatform, getSystemDirectories, __resetPlatformCacheForTest } from '
 export type { Platform, GetPlatformOptions, SystemDirectories, SystemDirectoriesOptions } from './utils/platform';
 export { treeify } from './utils/treeify';
 export type { TreeNode, TreeValue, TreeifyOptions, TreeColorRole } from './utils/treeify';
+export { parseAnsi, tokenizeAnsi, stripAnsi, get256Color, ANSI_COLORS, DEFAULT_FG, DEFAULT_BG } from './utils/ansi-parse';
+export type { AnsiColor, AnsiSpan, AnsiSpanLine, AnsiToken } from './utils/ansi-parse';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
