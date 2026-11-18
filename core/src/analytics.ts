@@ -11,6 +11,7 @@ import { redactCredentials, redactPaths } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
 import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
 import type { SpanNode } from './profiler';
+import { sleep } from './utils/sleep';
 import {
   isEnvTruthy,
   getPrivacyLevel,
@@ -801,11 +802,17 @@ export const CLOSE_GRACE_MS = 3000;
  * so a best-effort drain cannot block shutdown beyond `ms`. Mirrors Claude's
  * `Promise.race([flush(), timeout(CLOSE_GRACE_MS)])` graceful-close bound. The sleep
  * is injectable for deterministic tests.
+ *
+ * The default grace sleep is the shared {@link sleep} with `{ unref: true }` so the
+ * LOSING arm (the grace timer, when the flush wins the race) never keeps the event
+ * loop alive — parity with Claude's `sleep(500, undefined, { unref: true })` grace
+ * race before exit (bridgeMain.ts). Telemetry drain is strictly best-effort: a
+ * pending grace timer must never delay process shutdown.
  */
 export async function raceWithTimeout(
   promise: Promise<unknown>,
   ms: number,
-  sleepImpl: (ms: number) => Promise<void> = (m) => new Promise(r => setTimeout(r, m)),
+  sleepImpl: (ms: number) => Promise<void> = (m) => sleep(m, undefined, { unref: true }),
 ): Promise<void> {
   await Promise.race([promise.then(() => undefined, () => undefined), sleepImpl(ms)]);
 }
@@ -2265,7 +2272,11 @@ export class AnalyticsTracker {
         }))
       : undefined;
     this._eventTtlMs = resolveInMemoryEventTtlMs(this._env, opts?.inMemoryEventTtlMs);
-    this._sleep = opts?.sleepImpl ?? ((ms) => new Promise(r => setTimeout(r, ms)));
+    // Best-effort telemetry delay: route through the shared sleep with
+    // `{ unref: true }` so a pending inter-batch delay or graceful-close drain
+    // timer never holds the process open at shutdown (parity: Claude's unref'd
+    // grace sleep). Analytics is strictly best-effort — droppable on exit.
+    this._sleep = opts?.sleepImpl ?? ((ms) => sleep(ms, undefined, { unref: true }));
     this._rand = opts?.rand ?? Math.random;
     this._now = opts?.now ?? Date.now;
     this._onDiagnostic = opts?.onDiagnostic;
