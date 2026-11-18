@@ -2936,3 +2936,48 @@ export function planNotificationQueue(
   const kept = existing.filter((n) => n.key !== incoming.key && !invalid.has(n.key));
   return incoming.priority === 'immediate' ? [incoming, ...kept] : [...kept, incoming];
 }
+
+// --- Slash-command lifecycle beacon (parity: utils/commandLifecycle.ts) ---
+
+/**
+ * Lifecycle phase of a single slash-command invocation. Parity: Claude Code's
+ * `commandLifecycle.ts` `CommandLifecycleState` (`'started' | 'completed'`), the
+ * lightweight signal a UI/observer consumes to track in-flight command
+ * invocations (by {@link SlashCommandLifecycleEvent.uuid}) and render affordances
+ * while a command runs.
+ */
+export type SlashCommandLifecycleState = 'started' | 'completed';
+
+/** The canonical analytics-event TYPE AMI records each slash-command lifecycle
+ *  transition under, so observers (the usage view, remote-control, a `/` spinner)
+ *  query ONE event name via `getEventsByType`. Parity: Claude's per-command
+ *  started/completed notification, routed through AMI's analytics surface. */
+export const SLASH_COMMAND_LIFECYCLE_EVENT = 'slash_command_lifecycle';
+
+/**
+ * Structured payload for one slash-command lifecycle transition. `uuid` pairs the
+ * `'started'` and `'completed'` records of a single invocation so an observer can
+ * measure in-flight commands and their duration; `command` is the
+ * display-redacted command line (never the raw argument text). Parity: Claude's
+ * `notifyCommandLifecycle(uuid, state)`.
+ */
+export interface SlashCommandLifecycleEvent {
+  uuid: string;
+  command: string;
+  state: SlashCommandLifecycleState;
+}
+
+/**
+ * Build the structured payload for a slash-command lifecycle transition. Pure —
+ * the single constructor both the `'started'` and `'completed'` emissions use so
+ * the two records of one invocation are shaped identically (only `state` differs)
+ * and can never drift. Returned as a fresh plain object safe to hand to
+ * `analytics.log`.
+ */
+export function buildSlashCommandLifecycleEvent(
+  uuid: string,
+  command: string,
+  state: SlashCommandLifecycleState,
+): SlashCommandLifecycleEvent {
+  return { uuid, command, state };
+}
