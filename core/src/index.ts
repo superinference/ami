@@ -291,6 +291,8 @@ export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } 
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { groupBy } from './utils/group-by';
+export { getPlatform, getSystemDirectories, __resetPlatformCacheForTest } from './utils/platform';
+export type { Platform, GetPlatformOptions, SystemDirectories, SystemDirectoriesOptions } from './utils/platform';
 export { treeify } from './utils/treeify';
 export type { TreeNode, TreeValue, TreeifyOptions, TreeColorRole } from './utils/treeify';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
