@@ -35,6 +35,7 @@ import {
   parseVerificationToolInput,
   VERIFICATION_OUTPUT_TOOL_NAME,
 } from './tools/synthetic-output';
+import { memoizeWithLRU } from './utils/memoize';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -2262,13 +2263,11 @@ const HOOK_EVENT_SUMMARY_DESC: Record<string, { summary: string; description: st
   elicitationResult: { summary: 'After an MCP elicitation reply', description: 'Input: JSON with mcp_server_name. May override action/content or block.' + EXIT_CODE_BLOCKING },
 };
 
-/** Return the declarative metadata (summary, description, matcher field +
- *  enumerated matcher values) for a hook event, or undefined for an unknown event.
- *  `opts` supplies the dynamic matcher-value sets (tool names, agent types, MCP
- *  server names) for events whose valid matcher set is runtime state. */
-export function getHookEventMetadata(event: string, opts: HookEventMetadataOpts = {}): HookEventMetadata | undefined {
-  const base = HOOK_EVENT_SUMMARY_DESC[event];
-  if (!base) return undefined;
+/** Compute (uncached) the declarative metadata for a KNOWN hook event — the
+ *  caller (`getHookEventMetadata`) has already rejected unknown events, so
+ *  `HOOK_EVENT_SUMMARY_DESC[event]` is guaranteed present here. */
+function computeHookEventMetadata(event: string, opts: HookEventMetadataOpts): HookEventMetadata {
+  const base = HOOK_EVENT_SUMMARY_DESC[event]!;
   const matcherField = TOOL_MATCHER_EVENTS.has(event) ? 'toolName' : HOOK_MATCHER_FIELD[event];
   const matcherValues = matcherField !== undefined ? resolveMatcherValues(event, matcherField, opts) : undefined;
   return {
@@ -2277,6 +2276,34 @@ export function getHookEventMetadata(event: string, opts: HookEventMetadataOpts 
     ...(matcherField ? { matcherField } : {}),
     ...(matcherValues ? { matcherValues } : {}),
   };
+}
+
+/** Stable cache key for {@link getHookEventMetadata}: the event plus each dynamic
+ *  matcher-value source joined in SORTED order. Mirrors Claude Code's
+ *  hooksConfigManager resolver `toolNames => toolNames.slice().sort().join(',')`
+ *  (ref L26), extended to the agent/MCP sources AMI also scopes on. A caller that
+ *  passes a freshly-allocated `toolNames` array with the same members every render
+ *  (e.g. the `/hooks` menu) collapses onto ONE cache entry instead of leaking a
+ *  new one per call. */
+function hookEventMetadataCacheKey(event: string, opts: HookEventMetadataOpts): string {
+  const sortedJoin = (xs?: string[]): string => (xs ? [...xs].sort().join(',') : '');
+  return [event, sortedJoin(opts.toolNames), sortedJoin(opts.agentTypes), sortedJoin(opts.mcpServerNames)].join('\u0000');
+}
+
+/** Memoized metadata resolver keyed by the sorted-join cache key — bounded LRU
+ *  (the shared {@link memoizeWithLRU} primitive) so repeated identical tool/agent/
+ *  MCP sets reuse the computed record and the cache can never grow unbounded. */
+const memoizedHookEventMetadata = memoizeWithLRU(computeHookEventMetadata, hookEventMetadataCacheKey);
+
+/** Return the declarative metadata (summary, description, matcher field +
+ *  enumerated matcher values) for a hook event, or undefined for an unknown event.
+ *  `opts` supplies the dynamic matcher-value sets (tool names, agent types, MCP
+ *  server names) for events whose valid matcher set is runtime state. The known-
+ *  event result is memoized (sorted-join cache key) so repeated same-set calls do
+ *  not re-allocate the record. */
+export function getHookEventMetadata(event: string, opts: HookEventMetadataOpts = {}): HookEventMetadata | undefined {
+  if (!HOOK_EVENT_SUMMARY_DESC[event]) return undefined;
+  return memoizedHookEventMetadata(event, opts);
 }
 
 /**
@@ -2880,6 +2907,12 @@ export interface HookEventMatcherGroup {
   count: number;
   /** Distinct settings tiers contributing hooks under this matcher. */
   sources: string[];
+  /** Distinct plugin bundle names that contributed a hook under this matcher
+   *  (Claude Code's per-matcher `pluginHook`/`pluginName` attribution in
+   *  groupHooksByEventAndMatcher). Present only when a plugin owns at least one
+   *  hook in the group, so the `/hooks` view can show WHICH plugin bound a matcher,
+   *  not just that a `plugin` tier is involved. */
+  pluginNames?: string[];
 }
 
 /** Per-active-event introspection record (Claude Code's SelectEventMode row):
@@ -6324,8 +6357,14 @@ export class HookManager extends EventEmitter {
         matcherMap.set(key, arr);
       }
       const sourcesByMatcher: Record<string, string[]> = {};
+      const pluginNamesByMatcher: Record<string, string[]> = {};
       for (const [m, arr] of matcherMap) {
         sourcesByMatcher[m] = Array.from(new Set(arr.map(a => a.source)));
+        // Per-matcher plugin attribution (Claude Code's pluginName per grouped
+        // hook): collect the distinct bundle names so the group can name WHICH
+        // plugin(s) bound this matcher, not just surface a bare `plugin` tier.
+        const names = Array.from(new Set(arr.map(a => a.pluginName).filter((n): n is string => typeof n === 'string' && n.length > 0)));
+        if (names.length) pluginNamesByMatcher[m] = names;
       }
       const matchers: HookEventMatcherGroup[] = sortMatchersByPriority(
         Array.from(matcherMap.keys()),
@@ -6335,6 +6374,7 @@ export class HookManager extends EventEmitter {
         label: formatHookMatcherLabel(m),
         count: matcherMap.get(m)!.length,
         sources: sourcesByMatcher[m],
+        ...(pluginNamesByMatcher[m] ? { pluginNames: pluginNamesByMatcher[m] } : {}),
       }));
       out.push({
         event,
