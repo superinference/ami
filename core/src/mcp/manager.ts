@@ -2567,6 +2567,51 @@ export class McpManager extends EventEmitter {
     this.invalidateToolCache(name);
   }
 
+  /**
+   * Sign out of a single OAuth MCP server WITHOUT forgetting it (parity: Claude's
+   * "Clear Auth" / revokeServerTokens affordance surfaced through `/mcp`). Unlike
+   * {@link removeServer} (which deletes the config entirely), `logout` keeps the
+   * server listed but clears its credentials so the next use re-runs the OAuth
+   * consent flow:
+   *  - best-effort server-side revoke (RFC 7009) via the live client, when connected;
+   *  - purge the PERSISTED token file so a cached refresh token cannot keep minting
+   *    access across restarts;
+   *  - drop the cached needs-auth marker + tool schemas so a later `/mcp auth` /
+   *    reconnect re-probes and re-discovers from scratch.
+   *
+   * Throws for an unknown server name. Returns whether a persisted credential was
+   * actually present (`hadToken`) and whether a server-side revoke was attempted
+   * (`revoked`) so the caller can tailor its message.
+   */
+  async logout(name: string): Promise<{ loggedOut: boolean; hadToken: boolean; revoked: boolean }> {
+    const config = this.configs.get(name) ?? this.pendingServers.get(name)?.config;
+    if (!config) {
+      throw new Error(`Unknown MCP server "${name}" — nothing to log out of`);
+    }
+    const isOauthRemote = !!config.oauth && !!config.url
+      && (config.transport === 'http' || config.transport === 'sse');
+    if (!isOauthRemote) {
+      throw new Error(`MCP server "${name}" is not an OAuth http/sse server — there is no stored login to clear`);
+    }
+    const tokenPath = this.mcpTokenFilePath(name, config);
+    let hadToken = false;
+    try { hadToken = fs.existsSync(tokenPath); } catch { /* unreadable → treat as absent */ }
+
+    // Best-effort server-side revoke via a live client (no-op for a stopped/pending
+    // server, where the local purge below still clears the cached credential).
+    let revoked = false;
+    const client = this.clients.get(name);
+    if (client && typeof client.revokeAuth === 'function') {
+      revoked = true;
+      try { await client.revokeAuth(); } catch { /* best-effort — a failed revoke must not block the local clear */ }
+    }
+
+    try { fs.rmSync(tokenPath, { force: true }); } catch { /* best-effort purge */ }
+    this.clearNeedsAuthCache(name);
+    this.invalidateToolCache(name);
+    return { loggedOut: true, hadToken, revoked };
+  }
+
   async connectServer(name: string): Promise<void> {
     const client = this.clients.get(name);
     if (!client) throw new Error(`MCP server '${name}' not found`);
