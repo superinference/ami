@@ -1206,6 +1206,43 @@ export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>
   return out;
 }
 
+/**
+ * Read-only introspection view of the subprocess-env ISOLATION policy applied to
+ * every child process spawned by the `bash` tool — i.e. what overriding/stripping
+ * AMI injects into spawned shells. Pure (reads the static policy only; no spawn).
+ *
+ * Parity note: Claude Code exposes isolation-state getters (e.g. `tmuxSocket.ts`'s
+ * `getClaudeTmuxEnv()` / `isSocketInitialized()`) so a caller can inspect what env
+ * a child inherits. AMI's isolation is credential-stripping rather than a socket,
+ * so this surfaces THAT policy — the exact secret names scrubbed, the suffix
+ * patterns, the safe-var exclusions, the INPUT_<NAME> duplicate handling, and the
+ * fact that explicit per-session `/env NAME=VALUE` overrides are merged back in —
+ * making "what does AMI change about a spawned bash's environment?" answerable via
+ * `ami --introspect` without reading source (introspection-on-every-change rule).
+ */
+export function describeSubprocessEnvIsolation(): {
+  /** Exact credential-bearing var names stripped from a spawned child's env. */
+  strippedExact: string[];
+  /** Suffix regexes (source form) that also mark a var as sensitive → stripped. */
+  strippedSuffixPatterns: string[];
+  /** Benign vars force-KEPT even if a pattern would otherwise strip them. */
+  safeVarPatterns: string[];
+  /** `INPUT_<NAME>` (GitHub-Actions) duplicates are scrubbed as their base name. */
+  scrubsInputPrefixDuplicates: boolean;
+  /** Explicit `/env NAME=VALUE` overrides are merged into the spawned env. */
+  sessionEnvOverridesApplied: boolean;
+  note: string;
+} {
+  return {
+    strippedExact: [...SENSITIVE_ENV_SET].sort(),
+    strippedSuffixPatterns: SENSITIVE_SUFFIX_PATTERNS.map(p => p.source),
+    safeVarPatterns: [SAFE_PREFIX_RE.source, ...SAFE_PREFIX_PATTERNS.map(p => p.source)],
+    scrubsInputPrefixDuplicates: true,
+    sessionEnvOverridesApplied: true,
+    note: 'the parent AMI process KEEPS these vars (lazy SDK reads); only spawned bash children have them stripped. Explicit /env overrides are then merged in.',
+  };
+}
+
 /** True if `name` resolves to an executable file on any dir of `pathValue`. */
 function isExecutableOnPath(name: string, pathValue: string | undefined): boolean {
   if (!pathValue) return false;

@@ -286,6 +286,18 @@ export {
   removePathFromRepo,
 } from './github-repo-path-mapping';
 export {
+  hardenProcess,
+  describeProcessHardening,
+  processHardeningDisabled,
+  PROCESS_HARDENING_DISABLE_ENV,
+  COREDUMP_FILTER_PATH,
+} from './utils/process-hardening';
+export type {
+  ProcessHardeningStatus,
+  ProcessHardeningResult,
+  ProcessHardeningDeps,
+} from './utils/process-hardening';
+export {
   expandPath,
   isPathSafe,
   toRelativePath,
