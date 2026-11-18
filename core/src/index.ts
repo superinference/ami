@@ -310,7 +310,7 @@ export {
   stripTrailingSep,
   validatePathExpansionSafety,
 } from './utils/path';
-export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary } from './title-generator';
+export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary, generateIssueTitle, createIssueFallbackTitle, normalizeIssueTitle } from './title-generator';
 export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun, ToolUseSummaryInput } from './title-generator';
 export { stripDisplayTags, stripInjectedContextTags } from './utils/display-tags';
 export { WindowsToWSLConverter, checkWSLDistroMatch, manualWindowsToWSL, createWSLConverterFromEnv, WSL_UNC_PATH_RE, execHooks as idePathExecHooks } from './utils/ide-path-conversion';

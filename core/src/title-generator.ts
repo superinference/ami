@@ -3,6 +3,7 @@ import type { ProviderConfig, Message, StreamChunk } from './types';
 import { streamChatCompletion, extractProviderRequestId } from './provider';
 import { contentToText } from './session';
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './utils/display-tags';
+import { startsWithApiErrorPrefix } from './error-classifier';
 
 /**
  * Cap on the characters of conversation text fed to the title model. Parity with
@@ -35,7 +36,7 @@ export const AUX_QUERY_TIMEOUT_MS = 30000;
  *  `tool_use_summary` tags the LLM-written past-tense label describing what a batch
  *  of completed tool calls accomplished (parity: Claude's
  *  `querySource: 'tool_use_summary_generation'`, toolUseSummaryGenerator.ts). */
-export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary' | 'tool_use_summary';
+export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary' | 'tool_use_summary' | 'issue_title';
 
 /** Why a background query yielded no usable model output. Distinguishes an OUTER
  *  failure (stream error / abort / timeout / exception) from a two-tier INNER
@@ -928,4 +929,163 @@ export async function generateToolUseSummaryLabel(
 
   reportAuxResult(onResult, 'tool_use_summary', resolvedModel, messageId, failure, usable);
   return usable;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub-issue title (the AI-generated `[Bug]`/`[Feature Request]`-prefixed title
+// the `/bug` command drafts) — parity with Claude Code's Feedback.tsx
+// `generateTitle()` / `createFallbackTitle()` (components/Feedback.tsx:L447-499).
+// A session title (sentence-case, 3-7 words — above) is NOT a GitHub-issue title
+// (technical, type-prefixed, max 80 chars): this is the distinct issue-report
+// surface. It reuses the SAME aux-query / sanitise infrastructure above (no
+// second side-query path) and adds the deterministic first-line-truncation
+// fallback the reference falls back to on any API error / exception.
+// ---------------------------------------------------------------------------
+
+/**
+ * Max characters of a generated GitHub-issue title. Parity with Claude Code's
+ * "concise, technical issue title (max 80 chars)" generateTitle prompt
+ * (Feedback.tsx:L450) — larger than a session title's {@link TITLE_MAX_LEN}
+ * because an issue title carries a `[Bug]`/`[Feature Request]` prefix plus the
+ * technical problem statement.
+ */
+export const ISSUE_TITLE_MAX_LEN = 80;
+
+/**
+ * Deterministic fallback GitHub-issue title derived from the FIRST LINE of a bug
+ * description — NO model round-trip. VERBATIM behavioural parity with Claude
+ * Code's `createFallbackTitle` (components/Feedback.tsx:L475-499): a short first
+ * line (6-60 chars) is used directly; a longer one is truncated at 60 on a word
+ * boundary (only when the boundary keeps >30 chars) with a trailing `...`; a
+ * result under 10 chars collapses to the literal `Bug Report`. This is the fallback
+ * the model-backed {@link generateIssueTitle} degrades to on any API error,
+ * timeout, or exception, and the default title the `/bug` draft uses when no
+ * provider is configured.
+ */
+export function createIssueFallbackTitle(description: string): string {
+  const firstLine = description.split('\n')[0] || '';
+  // A short, meaningful first line is used verbatim.
+  if (firstLine.length <= 60 && firstLine.length > 5) return firstLine;
+  // Otherwise truncate at 60 chars, preferring a word boundary.
+  let truncated = firstLine.slice(0, 60);
+  if (firstLine.length > 60) {
+    const lastSpace = truncated.lastIndexOf(' ');
+    // Only break on the boundary when it does not cut away too much.
+    if (lastSpace > 30) truncated = truncated.slice(0, lastSpace);
+    truncated += '...';
+  }
+  return truncated.length < 10 ? 'Bug Report' : truncated;
+}
+
+/**
+ * GitHub-issue title-generation system prompt. Parity with Claude Code's
+ * generateTitle system prompt (components/Feedback.tsx:L450): a concise, technical
+ * title (max 80 chars) that MUST start with `[Bug]` or `[Feature Request]`,
+ * extracts the key error, uses developer-appropriate terminology, and emits ONLY
+ * the title (no commentary). The reference's vendor-specific lines are replaced
+ * with AMI's identity (an agentic coding CLI) — functional parity, not a verbatim
+ * vendor copy.
+ */
+export const ISSUE_TITLE_GENERATION_PROMPT =
+  `Generate a concise, technical issue title (max 80 characters) for a public GitHub issue based on this bug report for AMI, an agentic coding CLI.\n` +
+  `The title should:\n` +
+  `- Start with the issue type [Bug] or [Feature Request] as the very first thing in the title\n` +
+  `- Be concise, specific, and descriptive of the actual problem\n` +
+  `- Use technical terminology appropriate for a software issue\n` +
+  `- For error messages, extract the key error (e.g. "Missing Tool Result Block" rather than the full message)\n` +
+  `- Be direct and clear for developers to understand the problem\n` +
+  `- If you cannot determine a clear issue, use "Bug Report: <brief description>"\n\n` +
+  `Return ONLY the title text — no quotes, no markdown, no commentary or explanation.\n\n` +
+  `Examples of good titles:\n` +
+  `[Bug] Auto-compact triggers too soon\n` +
+  `[Bug] API Error: Missing Tool Result Block\n` +
+  `[Feature Request] Add --json output to /usage`;
+
+/**
+ * Normalize raw model output into a USABLE GitHub-issue title, or `''` when the
+ * output carries no real title (empty, an API-error message, or pure noise after
+ * sanitisation) — the caller then substitutes {@link createIssueFallbackTitle}.
+ * Parity with Claude Code's generateTitle acceptance logic (Feedback.tsx:L470-474:
+ * take the text; if it `startsWithApiErrorPrefix` fall back). ADDITIVE HARDENING
+ * (superset over the reference): strips `<think>` reasoning, unwraps wrapping
+ * quotes, flattens markdown/control bytes via the shared {@link sanitizeTitle},
+ * rejects pure-punctuation noise via {@link isUsableTitle}, and caps at
+ * {@link ISSUE_TITLE_MAX_LEN} on a word boundary via {@link truncateTitle} — so a
+ * misbehaving model can never corrupt the issue URL/title chrome.
+ */
+export function normalizeIssueTitle(raw: string): string {
+  const stripped = raw
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/g, '')
+    .trim();
+  if (!stripped || startsWithApiErrorPrefix(stripped)) return '';
+  const candidate = sanitizeTitle(
+    stripped.replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '').trim(),
+  );
+  if (!isUsableTitle(candidate)) return '';
+  return candidate.length > ISSUE_TITLE_MAX_LEN
+    ? truncateTitle(candidate, ISSUE_TITLE_MAX_LEN)
+    : candidate;
+}
+
+/**
+ * Generate a concise, technical, `[Bug]`/`[Feature Request]`-prefixed GitHub-issue
+ * title from a free-form bug description via a deterministic auxiliary model call.
+ * Parity with Claude Code's `generateTitle` (components/Feedback.tsx:L447-473): a
+ * cheap, `temperature:0` Haiku-class call whose output is accepted unless it is an
+ * API-error message, with a GRACEFUL FALLBACK to {@link createIssueFallbackTitle}
+ * on any stream error, timeout, abort, exception, or unusable output.
+ *
+ * Mirrors {@link generateTitle} / {@link generateBranchName}: same aux provider
+ * shape, the shared {@link runAuxQuery} stream/abort/timeout primitive, the same
+ * sanitise pipeline ({@link normalizeIssueTitle}), the prompt-injection
+ * system/user role split, and the uniform {@link AuxQueryResult} introspection
+ * record tagged `source:'issue_title'` — reusing those helpers rather than
+ * re-implementing them (no semantic duplication). ALWAYS returns a non-empty
+ * title (the fallback floor), so a drafted bug report always has a title.
+ */
+export async function generateIssueTitle(
+  description: string,
+  provider: ProviderConfig,
+  model?: string,
+  // Test seam (behaviour-preserving): defaults to the real streamer.
+  _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
+  // External cancellation (same contract as generateTitle/generateBranchName).
+  signal?: AbortSignal,
+  // Introspection sink (same uniform AuxQueryResult, tagged source:'issue_title').
+  onResult?: OnAuxQueryResult,
+): Promise<string> {
+  // Strip system-injected display tags so neither the prompt nor the fallback
+  // reflects machine-injected noise (same hardening as generateTitle).
+  const cleaned = stripDisplayTags(description).trim();
+  // Deterministic floor derived from the (cleaned) description itself.
+  const fallback = createIssueFallbackTitle(cleaned);
+  // Nothing to title → skip the model round-trip entirely (parity: Claude never
+  // generates for an empty report). No query is made, so no result is reported.
+  if (!cleaned) return fallback;
+
+  const resolvedModel = model || provider.model;
+  const titleProvider: ProviderConfig = {
+    ...provider,
+    model: resolvedModel,
+    maxTokens: 50,
+    temperature: 0,
+  };
+  // Prompt-injection isolation: the fixed instruction lives in the SYSTEM message,
+  // the untrusted bug description in a separate USER message (parity: Claude's
+  // asSystemPrompt vs userPrompt split).
+  const messages: Message[] = [
+    { role: 'system', content: ISSUE_TITLE_GENERATION_PROMPT },
+    { role: 'user', content: `Bug report:\n"""\n${cleaned.slice(0, 1000)}\n"""` },
+  ];
+
+  const { raw, failure, messageId } = await runAuxQuery(
+    titleProvider,
+    messages,
+    _streamChatCompletion,
+    signal,
+  );
+  const usable = failure ? '' : normalizeIssueTitle(raw);
+  reportAuxResult(onResult, 'issue_title', resolvedModel, messageId, failure, usable);
+  return usable || fallback;
 }
