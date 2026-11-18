@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { AMI_CLIENT_INFO, AMI_CLIENT_NAME, AMI_VERSION } from '../version';
+import { AMI_CLIENT_INFO, amiUserAgent } from '../version';
 import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
@@ -145,10 +145,14 @@ export function getMcpConnectTimeout(): number {
 /**
  * Self-identifying `User-Agent` for MCP HTTP/SSE transport requests (parity with
  * Claude Code's `getMCPUserAgent`). Lets server operators recognize/allowlist AMI
- * traffic. A caller-supplied `User-Agent` header still overrides this default.
+ * traffic AND see which surface originated the request — the originating
+ * entrypoint and any embedding SDK/client-app are appended via the single
+ * {@link amiUserAgent} builder (`ami/<version> (<entrypoint>, agent-sdk/…,
+ * client-app/…)`) rather than re-spelling the UA here. A caller-supplied
+ * `User-Agent` header still overrides this default.
  */
 export function getMcpUserAgent(): string {
-  return `${AMI_CLIENT_NAME}/${AMI_VERSION}`;
+  return amiUserAgent();
 }
 
 /**

@@ -123,7 +123,16 @@ describe('getMcpUserAgent + HTTP transport User-Agent header', () => {
   }
 
   it('returns a self-identifying ami/<version> UA string', () => {
-    assert.equal(getMcpUserAgent(), `${AMI_CLIENT_NAME}/${AMI_VERSION}`);
+    // getMcpUserAgent is surface-aware (appends the originating entrypoint / SDK
+    // tags from the ambient env — see version.ts amiUserAgent); it always begins
+    // with the single-source ami/<version> leaf regardless of any surface suffix.
+    const ua = getMcpUserAgent();
+    assert.ok(
+      ua === `${AMI_CLIENT_NAME}/${AMI_VERSION}` ||
+        ua.startsWith(`${AMI_CLIENT_NAME}/${AMI_VERSION} (`),
+      `unexpected MCP UA: ${ua}`,
+    );
+    assert.match(ua, /^ami\/\d+\.\d+\.\d+/);
   });
 
   it('sends the default User-Agent on the initialize POST', async () => {

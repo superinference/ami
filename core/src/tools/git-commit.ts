@@ -8,6 +8,7 @@ import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
 import { getSessionFileAttribution, getSessionPromptCount } from './attribution-store';
+import { resolveEntrypoint } from '../version';
 import { agentContributionRatio } from '../session';
 import { MemoryManager } from '../memory';
 import { loadProjectConfig, loadLocalConfig, loadGlobalConfig, loadManagedConfig, mergeConfigs } from '../config';
@@ -92,16 +93,14 @@ export const _gitCommitFs = {
 
 /**
  * Resolve the client-surface identifier that originated this commit, so git
- * hooks / downstream tooling can see which frontend drove it. Parity with Claude
- * Code's `getClientSurface()` (`CLAUDE_CODE_ENTRYPOINT ?? 'cli'`): AMI prefers its
- * own `AMI_ENTRYPOINT`, then honors `CLAUDE_CODE_ENTRYPOINT` for cross-tool
- * compatibility, and defaults to `'cli'`. A blank/whitespace value falls back to
- * the default rather than stamping an empty surface.
+ * hooks / downstream tooling can see which frontend drove it. Reuses the single
+ * entrypoint knob reader ({@link resolveEntrypoint}: `AMI_ENTRYPOINT` then
+ * `CLAUDE_CODE_ENTRYPOINT`, blank-safe) shared with the HTTP/MCP User-Agent, and
+ * defaults to `'cli'` when nothing is set — parity with Claude Code's
+ * `getClientSurface()` (`CLAUDE_CODE_ENTRYPOINT ?? 'cli'`).
  */
 export function resolveClientSurface(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.AMI_ENTRYPOINT ?? env.CLAUDE_CODE_ENTRYPOINT;
-  const trimmed = raw?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : 'cli';
+  return resolveEntrypoint(env) ?? 'cli';
 }
 
 /**
