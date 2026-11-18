@@ -219,18 +219,51 @@ export function generateTaskId(prefix = 'agent'): string {
   return `${prefix}-${crypto.randomBytes(8).toString('hex')}`;
 }
 
+/** Max length of a caller-supplied stable {@link isSafeAgentId} agent_id. */
+export const AGENT_ID_MAX_LENGTH = 64;
+
+/** Charset for a caller-supplied stable agent_id: must START with an alphanumeric
+ *  (no leading separator) then allow letters, digits, `.`, `_`, `-`. */
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Whether a caller-supplied stable `agent_id` is safe to use as a taskId. The taskId
+ * derives an on-disk output path (`<taskId>.output`), the file-cache key, and the
+ * process-manager/registry key, so a model-chosen id must be a single path-safe
+ * segment: it may NOT contain a path separator (`/` or `\`), a `..` traversal, be
+ * empty, or exceed {@link AGENT_ID_MAX_LENGTH}. Mirrors Claude Code's separation of a
+ * stable machine `agentId` from the display `agentName` (utils/teammate.ts:L44-45):
+ * the caller pins a durable addressing id distinct from the human `name`, so a
+ * display rename never changes the resume/output identity. A value failing this is
+ * rejected by the task tool rather than silently sanitized (so the caller learns
+ * their chosen id was unusable instead of addressing a different id than they think).
+ */
+export function isSafeAgentId(id: string): boolean {
+  if (id.length === 0 || id.length > AGENT_ID_MAX_LENGTH) return false;
+  if (id.includes('..')) return false; // no path-traversal segment
+  return AGENT_ID_PATTERN.test(id);
+}
+
 /**
  * The taskId a spawn registers under: on RESUME, reuse the ORIGINAL agent's taskId
  * (carried by {@link resolveResumeTarget}) instead of minting a new one; on a fresh
- * spawn, generate a new id. Mirrors Claude Code's task framework, where a resume
+ * spawn, use a caller-supplied stable {@link isSafeAgentId} `agent_id` when present,
+ * else generate a new random id. Mirrors Claude Code's task framework, where a resume
  * re-registers under the SAME task id — carrying forward the agent's prior state and
  * output stream rather than double-registering a second background entry for what is
- * one continued agent (framework.ts:L74-117). Without this, resuming a named agent in
- * the same process spawned a NEW taskId: a duplicate task_list/processManager entry
- * and a second output file, orphaning the agent's original id.
+ * one continued agent (framework.ts:L74-117) — PLUS Claude's stable caller-assigned
+ * `agentId` distinct from the display name (utils/teammate.ts:L44-45): a caller that
+ * wants a durable, predictable address (to resume/collect the agent later without
+ * first reading back a random id) supplies `agent_id`, and the display `name` can
+ * still diverge from it. An unsafe/absent agent_id falls back to a random id, so this
+ * is purely additive. Without it, resuming a named agent in the same process spawned a
+ * NEW taskId: a duplicate task_list/processManager entry and a second output file,
+ * orphaning the agent's original id.
  */
-export function resolveSpawnTaskId(resume?: ResumeResolution): string {
-  return resume ? resume.resolvedId : generateTaskId();
+export function resolveSpawnTaskId(resume?: ResumeResolution, requestedAgentId?: string): string {
+  if (resume) return resume.resolvedId;
+  if (requestedAgentId && isSafeAgentId(requestedAgentId)) return requestedAgentId;
+  return generateTaskId();
 }
 
 /**
@@ -2266,6 +2299,10 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'boolean',
     description: 'Require this subagent to PLAN before implementing: run it read-only (explore + return an implementation plan; edits/writes/mutating bash are denied) so you can review the plan before any code is written. Overrides the resolved permission mode down to "plan" (a stricter deny-all is kept). Defaults to the AMI_SUBAGENT_PLAN_REQUIRED / CLAUDE_CODE_PLAN_MODE_REQUIRED env knob when omitted.',
   },
+  agent_id: {
+    type: 'string',
+    description: 'Optional STABLE machine id for this agent, distinct from the display "name". When set, the agent runs (and is later resumed/collected) under exactly this id instead of a random one, so you can address it predictably without first reading back a generated id — and the display name may diverge from it (rename the name freely; the agent_id stays the resume/output key). Must be 1-64 chars of letters, digits, ".", "_", or "-" (no path separators or ".."), and unique among running agents. Ignored on resume (the resumed agent keeps its original id).',
+  },
   name: {
     type: 'string',
     description: 'Name for the agent (addressable via send_message). Must be unique.',
@@ -2763,6 +2800,31 @@ export const taskTool: ToolDefinition = {
       : undefined;
     const subagentType = (input.subagent_type as string | undefined) ?? resumeMeta?.agentType;
     const taskDescription = (input.description as string | undefined) ?? resumeMeta?.description;
+    // Caller-supplied STABLE machine id (parity: Claude Code's agentId distinct from
+    // the display agentName, utils/teammate.ts:L44-45). Validated up front: it becomes
+    // the taskId (→ on-disk output path, file-cache key, registry key), so it must be a
+    // single path-safe segment. On resume the resumed agent keeps its original id, so
+    // a freshly-supplied agent_id is only honored for a new spawn.
+    const rawAgentId = (input.agent_id as string | undefined)?.trim();
+    if (rawAgentId !== undefined && rawAgentId !== '' && !isSafeAgentId(rawAgentId)) {
+      return {
+        output: `Error: invalid agent_id "${rawAgentId}". Use 1-${AGENT_ID_MAX_LENGTH} chars of letters, digits, '.', '_', or '-' (no path separators or '..').`,
+        isError: true,
+      };
+    }
+    const requestedAgentId = rawAgentId && rawAgentId !== '' ? rawAgentId : undefined;
+    // Reject a fresh spawn whose agent_id collides with a still-RUNNING agent (that
+    // would clobber the live agent's output file / registry entry). A terminal/unknown
+    // id is free to reuse; resume is exempt (it intentionally continues the same id).
+    if (!resumeResolution && requestedAgentId) {
+      const existingStatus = context.processManager?.getStatus(requestedAgentId);
+      if (existingStatus && !isTerminalTaskStatus(existingStatus)) {
+        return {
+          output: `Error: agent_id "${requestedAgentId}" is already in use by a running agent. Choose a unique agent_id, or use resume to continue it.`,
+          isError: true,
+        };
+      }
+    }
     const effortOverride = input.effort as string | undefined;
     // A fork child may request `permission_mode: 'bubble'` — the sentinel that means
     // "run with the parent's live stance" (parity: Claude's FORK_AGENT 'bubble'). Resolve
@@ -3821,8 +3883,9 @@ export const taskTool: ToolDefinition = {
       if (bgCapError) return { output: `Error: ${bgCapError}`, isError: true };
       context.subagentLimiter?.recordSpawn();
       // Reuse the original taskId on resume (continue the SAME agent) rather than
-      // registering a duplicate background entry/output file — see resolveSpawnTaskId.
-      const taskId = resolveSpawnTaskId(resumeResolution);
+      // registering a duplicate background entry/output file; honor a caller-supplied
+      // stable agent_id for a fresh spawn — see resolveSpawnTaskId.
+      const taskId = resolveSpawnTaskId(resumeResolution, requestedAgentId);
       // Isolate this sub-agent's read-file-state: the sub-engine gets its own
       // clone-on-fork file cache keyed by taskId (released when it finishes).
       subConfig.agentId = taskId;
@@ -3920,8 +3983,9 @@ export const taskTool: ToolDefinition = {
     if (fgCapError) return { output: `Error: ${fgCapError}`, isError: true };
     context.subagentLimiter?.recordSpawn();
     // Reuse the original taskId on resume (continue the SAME agent) rather than
-    // minting a fresh id for what is one continued run — see resolveSpawnTaskId.
-    const taskId = resolveSpawnTaskId(resumeResolution);
+    // minting a fresh id for what is one continued run; honor a caller-supplied stable
+    // agent_id for a fresh spawn — see resolveSpawnTaskId.
+    const taskId = resolveSpawnTaskId(resumeResolution, requestedAgentId);
     // Isolate this sub-agent's read-file-state: the sub-engine gets its own
     // clone-on-fork file cache keyed by taskId (released in the finally below).
     subConfig.agentId = taskId;
