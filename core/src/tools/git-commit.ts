@@ -7,7 +7,7 @@ import { generateTempFilePath } from '../utils/tempfile';
 import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
-import { getSessionFileAttribution, getSessionPromptCount } from './attribution-store';
+import { getSessionFileAttribution, getSessionPromptCount, buildAttributionData, normalizeAttributionPath, type AttributionData } from './attribution-store';
 import { resolveEntrypoint } from '../version';
 import { agentContributionRatio } from '../session';
 import { MemoryManager } from '../memory';
@@ -217,6 +217,11 @@ export interface CommitAttributionNote {
    *  2 memories recalled"), or omitted when no signal was present (all-zero).
    *  Parity: Claude Code's enhanced PR-attribution suffix ({@link formatContributionByline}). */
   byline?: string;
+  /** Versioned, structured authorship payload (per-file agent/human chars,
+   *  surface breakdown, excluded generated files) — the durable schema a
+   *  downstream tool can re-parse. Omitted when nothing was tracked this session.
+   *  Parity: Claude Code's `AttributionData` git-notes JSON. */
+  attributionData?: AttributionData;
   /** ISO timestamp the attribution record was produced. */
   committedAt: string;
 }
@@ -330,6 +335,7 @@ export function buildAttributionNote(
     contributionPercent?: number;
     promptCount?: number;
     memoriesRecalled?: number;
+    attributionData?: AttributionData;
   },
   now: Date = new Date(),
 ): CommitAttributionNote {
@@ -358,6 +364,7 @@ export function buildAttributionNote(
     model: params.model,
   });
   if (byline) note.byline = byline;
+  if (params.attributionData) note.attributionData = params.attributionData;
   return note;
 }
 
@@ -379,7 +386,9 @@ export function collectCommitFileContributions(
   const out: CommitFileContribution[] = [];
   for (const rel of stagedPaths) {
     const abs = path.resolve(cwd, rel);
-    const state = attribution[abs];
+    // Look up by the SAME realpath-normalized repo-relative key the edit/write
+    // tools store under (parity: Claude Code's normalizeFilePath diff-key matching).
+    const state = attribution[normalizeAttributionPath(abs, cwd)];
     if (!state) continue;
     let totalChars = 0;
     try { totalChars = _gitCommitFs.readFileSync(abs, { encoding: 'utf-8' }).length; } catch { totalChars = 0; }
@@ -720,12 +729,26 @@ export const gitCommitTool: ToolDefinition = {
           // rev-parse HEAD always resolves right after a successful commit.
           const sha = (await execCommand('git rev-parse HEAD', execOpts)).stdout.trim();
           const fileContributions = collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths);
+          const clientSurface = resolveClientSurface(env);
+          // Versioned, structured authorship payload (per-file agent/human chars,
+          // surface breakdown, excluded generated files) — attached only when
+          // something was tracked this session. Parity: Claude Code's AttributionData.
+          const attributionData =
+            fileContributions.length > 0
+              ? buildAttributionData({
+                  surface: clientSurface,
+                  sessions: context.sessionId ? [context.sessionId] : [],
+                  stagedFiles: stagedPaths,
+                  contributions: fileContributions,
+                })
+              : undefined;
           const note = buildAttributionNote({
-            surface: resolveClientSurface(env),
+            surface: clientSurface,
             model: resolveCommitModel(env),
             trailerApplied: trailer !== null,
             files: stagedPaths,
             fileContributions,
+            attributionData,
             // Computed contribution-introspection signals (all MEASURED): overall
             // agent-authored percent across the committed tracked files, the
             // session's user-prompt ("N-shotted") count, and the number of memory

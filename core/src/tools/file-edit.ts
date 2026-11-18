@@ -4,9 +4,9 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
 import { fuzzyFindAndReplace, findClosestLines, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countCharsAdded, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { getErrnoCode, getErrnoPath, isENOENT, isFsInaccessible } from '../utils/errno';
-import { recordAgentFileContribution } from './attribution-store';
+import { recordAgentFileContribution, computeAgentCharContribution, normalizeAttributionPath } from './attribution-store';
 import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
 import { extractContextWindow, renderContextWindow, DEFAULT_EDIT_CONTEXT_LINES, readFileCapped } from './read-edit-context';
@@ -628,9 +628,13 @@ export function commitWrite(
   try {
     recordAgentFileContribution(
       context.sessionId,
-      resolved,
+      // Store under a realpath-normalized repo-relative key so it matches the key
+      // git_commit looks up by (parity: Claude Code's normalizeFilePath keying).
+      normalizeAttributionPath(resolved, context.cwd),
       cacheContent,
-      countCharsAdded(normalizeToLf(prevContent), normalizeToLf(cacheContent)),
+      // Char-level authored-chars (common prefix/suffix), which correctly scores
+      // same-length and interior replacements a line diff would miss.
+      computeAgentCharContribution(normalizeToLf(prevContent), normalizeToLf(cacheContent)),
       Date.now(),
     );
   } catch { /* attribution accounting is best-effort */ }

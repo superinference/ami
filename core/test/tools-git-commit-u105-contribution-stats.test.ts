@@ -231,7 +231,8 @@ describe('git_commit writes contribution stats into the attribution note (integr
       const abs = path.join(repo, rel);
       const content = 'export const x = 1;\n';
       fs.writeFileSync(abs, content);
-      recordAgentFileContribution(sessionId, abs, content, content.length, Date.now());
+      // Stored under the realpath-normalized repo-relative key the edit tool uses.
+      recordAgentFileContribution(sessionId, rel, content, content.length, Date.now());
 
       // Two user prompts ("2-shotted").
       recordUserPrompt(sessionId);

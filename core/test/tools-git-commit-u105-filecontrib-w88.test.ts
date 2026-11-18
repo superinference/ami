@@ -4,10 +4,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { countCharsAdded } from '../src/tools/tool-utils';
 import {
   recordAgentFileContribution,
   getSessionFileAttribution,
+  computeAgentCharContribution,
 } from '../src/tools/attribution-store';
 import {
   gitCommitTool,
@@ -60,32 +60,33 @@ async function withEnvAsync(vars: Record<string, string | undefined>, fn: () => 
 }
 
 // ---------------------------------------------------------------------------
-// Unit: countCharsAdded (the authored-character metric)
+// Unit: computeAgentCharContribution (the authored-character metric)
 // ---------------------------------------------------------------------------
 
-describe('U105 — countCharsAdded', () => {
+describe('U105 — computeAgentCharContribution', () => {
   it('counts the full length of a brand-new file (empty old)', () => {
-    assert.equal(countCharsAdded('', 'hello\nworld'), 'hello\nworld'.length);
+    assert.equal(computeAgentCharContribution('', 'hello\nworld'), 'hello\nworld'.length);
   });
 
-  it('counts only the characters of added lines on an edit', () => {
-    // old a,b,c -> new a,X,c : only "X" is added (1 char).
-    assert.equal(countCharsAdded('a\nb\nc', 'a\nX\nc'), 1);
-    // multi-char added line.
-    assert.equal(countCharsAdded('a\nc', 'a\nBBBB\nc'), 4);
+  it('counts the full old length for a full deletion (empty new)', () => {
+    assert.equal(computeAgentCharContribution('abc', ''), 3);
   });
 
-  it('counts zero for no change, pure deletion, or empty new', () => {
-    assert.equal(countCharsAdded('a\nb', 'a\nb'), 0);
-    assert.equal(countCharsAdded('a\nb\nc', 'a'), 0);
-    assert.equal(countCharsAdded('abc', ''), 0);
+  it('isolates the changed region via common prefix/suffix', () => {
+    // old a,b,c -> new a,X,c : only "X" changed (1 char).
+    assert.equal(computeAgentCharContribution('a\nb\nc', 'a\nX\nc'), 1);
+    // inserted "BBBB\n" region (5 chars incl. the separator the insert introduced).
+    assert.equal(computeAgentCharContribution('a\nc', 'a\nBBBB\nc'), 5);
   });
 
-  it('uses the net positive length delta for degenerate (huge) inputs', () => {
-    const big = Array.from({ length: 3000 }, (_, i) => `l${i}`).join('\n');
-    const bigger = big + '\n' + 'x'.repeat(50);
-    // Exceeds MAX_DIFF_CELLS (3000x3001) -> fallback = net positive length delta.
-    assert.equal(countCharsAdded(big, bigger), bigger.length - big.length);
+  it('scores a SAME-LENGTH replacement a naive abs(len) would miss', () => {
+    // "Esc" -> "esc": one char changed, not 0.
+    assert.equal(computeAgentCharContribution('Esc', 'esc'), 1);
+    assert.equal(computeAgentCharContribution('hello world', 'hello there'), 5);
+  });
+
+  it('counts zero for no change', () => {
+    assert.equal(computeAgentCharContribution('a\nb', 'a\nb'), 0);
   });
 });
 
@@ -124,7 +125,9 @@ describe('U105 — collectCommitFileContributions', () => {
   it('maps staged paths to recorded contributions with a 0 ratio when the file is unreadable', () => {
     const sid = 'u105-collect-' + Math.random();
     const cwd = '/nope-' + Math.random();
-    recordAgentFileContribution(sid, path.resolve(cwd, 'f.ts'), 'content', 7, 1);
+    // Stored under the realpath-normalized repo-relative key the edit tool uses;
+    // collect looks up by the same normalization.
+    recordAgentFileContribution(sid, 'f.ts', 'content', 7, 1);
     const out = collectCommitFileContributions(sid, cwd, ['f.ts', 'untracked.ts']);
     assert.equal(out.length, 1);
     assert.equal(out[0].path, 'f.ts');
@@ -214,5 +217,52 @@ describe('U105 — e2e: per-file agent contribution reaches the commit note', ()
       false,
       'a different session must not leak contributions into the note',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E2E: versioned AttributionData payload reaches the commit note
+// ---------------------------------------------------------------------------
+
+describe('U264 — e2e: versioned attributionData reaches the commit note', () => {
+  it('GREEN: the note carries a version:1 payload with surfaceBreakdown + excludedGenerated', async () => {
+    const dir = mkRepo('u264-e2e-');
+    const sid = 'u264-e2e-session';
+    // One authored source file and one generated file (must be excluded).
+    const authored = await fileEditTool.execute(
+      { file_path: 'src/app.ts', new_string: 'export const app = () => 42;\n' },
+      ctx(dir, { sessionId: sid }),
+    );
+    assert.ok(!authored.isError, authored.output);
+    fs.writeFileSync(path.join(dir, 'package-lock.json'), '{"lockfileVersion":3}\n');
+
+    await withEnvAsync(
+      { AMI_COMMIT_ATTRIBUTION_NOTES: '1', CLAUDE_CODE_ENTRYPOINT: undefined },
+      async () => {
+        const res = await gitCommitTool.execute(
+          { message: 'add app', files: ['src/app.ts', 'package-lock.json'] },
+          ctx(dir, { sessionId: sid }),
+        );
+        assert.equal(res.isError, false, res.output);
+      },
+    );
+
+    const sha = git(dir, 'rev-parse', 'HEAD');
+    const note = JSON.parse(git(dir, 'notes', `--ref=${ATTRIBUTION_NOTES_REF}`, 'show', sha));
+    assert.ok(note.attributionData, 'note must carry a versioned attributionData payload');
+    assert.equal(note.attributionData.version, 1);
+    assert.ok(note.attributionData.files['src/app.ts'], 'authored file present in schema');
+    assert.ok(
+      note.attributionData.files['src/app.ts'].agentChars > 0,
+      'authored chars tracked in the schema',
+    );
+    assert.ok(
+      note.attributionData.excludedGenerated.includes('package-lock.json'),
+      'generated staged files are excluded',
+    );
+    assert.deepEqual(note.attributionData.sessions, [sid]);
+    const surfaces = Object.keys(note.attributionData.surfaceBreakdown);
+    assert.equal(surfaces.length, 1, 'one surface tracked');
+    assert.ok(note.attributionData.surfaceBreakdown[surfaces[0]].agentChars > 0);
   });
 });
