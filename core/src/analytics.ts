@@ -700,6 +700,29 @@ export function resolveOtelHeadersDebounceMs(env: NodeJS.ProcessEnv = process.en
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_OTEL_HEADERS_DEBOUNCE_MS;
 }
 
+/** Env vars consulted (precedence order) for the otelHeadersHelper command. */
+export const OTEL_HEADERS_HELPER_ENV_VARS = [
+  'AMI_OTEL_HEADERS_HELPER',
+  'CLAUDE_CODE_OTEL_HEADERS_HELPER',
+] as const;
+
+/**
+ * Resolve the otelHeadersHelper COMMAND from the environment: the AMI-native
+ * `AMI_OTEL_HEADERS_HELPER` first, then the Claude-compatible
+ * `CLAUDE_CODE_OTEL_HEADERS_HELPER` (parity: Claude's `otelHeadersHelper` setting).
+ * Returns `undefined` when neither is set or the value is blank. Sourcing the command
+ * from the operator-controlled environment — rather than a cloned repo's project/local
+ * settings — is the AMI-native equivalent of Claude's trust gate: an env var cannot be
+ * injected by an untrusted workspace, so there is no "execute before trust" exposure.
+ */
+export function resolveOtelHeadersHelperCommand(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  for (const name of OTEL_HEADERS_HELPER_ENV_VARS) {
+    const raw = env[name];
+    if (raw !== undefined && raw.trim() !== '') return raw.trim();
+  }
+  return undefined;
+}
+
 /** Injected dependencies for {@link OtelHeadersHelper} (command runner + clock + env). */
 export interface OtelHeadersHelperDeps {
   /** Run the helper command and return its stdout (throws on non-zero exit / spawn failure). */
@@ -2296,10 +2319,17 @@ export class AnalyticsTracker {
     this._immediate = opts?.telemetryImmediateMode ?? isEnvTruthy(this._env.AMI_OTEL_IMMEDIATE_FLUSH);
     this._metricsSource = opts?.metricsSource;
     this._traceSource = opts?.traceSource;
-    this._headersHelper = opts?.otlpHeadersHelper
-      ? new OtelHeadersHelper(opts.otlpHeadersHelper.command, {
-          exec: opts.otlpHeadersHelper.exec,
-          now: opts.otlpHeadersHelper.now,
+    // otelHeadersHelper: an explicit opt wins; otherwise resolve the command from the
+    // environment (AMI_OTEL_HEADERS_HELPER / CLAUDE_CODE_OTEL_HEADERS_HELPER) so the
+    // knob is reachable in production — the engine builds this tracker with the real
+    // process env, so setting the var activates dynamic OTLP auth-header minting without
+    // any caller having to thread an option through. The opt's exec/now injection is
+    // preserved for tests; env-sourced helpers use the default runner.
+    const helperCommand = opts?.otlpHeadersHelper?.command ?? resolveOtelHeadersHelperCommand(this._env);
+    this._headersHelper = helperCommand
+      ? new OtelHeadersHelper(helperCommand, {
+          exec: opts?.otlpHeadersHelper?.exec,
+          now: opts?.otlpHeadersHelper?.now,
           env: this._env,
         })
       : null;
