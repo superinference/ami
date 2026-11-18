@@ -399,23 +399,30 @@ export type EditMode = 'single' | 'multiple';
  * Build the structured result metadata every SUCCESSFUL file_edit emits (parity:
  * Claude Code's FileEditTool `outputSchema`), carried on {@link ToolResult.metadata}
  * so a programmatic caller reads the edit's shape/magnitude without re-parsing the
- * human `output`. `userModified` is always false in AMI — the permission layer is
- * allow/deny with no in-prompt accept-with-edits diff editor, so the applied bytes
- * always equal the model's proposal — but it is emitted to match Claude's output
- * contract. `gitDiff` is attached only when a per-line diff was computed (omitted on
- * the diff-cost-capped paths).
+ * human `output`. `userModified` reflects {@link ToolContext.userModified} — true
+ * when the user EDITED this tool call's input at the permission prompt (AMI's
+ * approve-with-edited-input / `updatedInput` accept-with-edits flow) before
+ * approving, so the applied bytes diverge from the model's original proposal. This
+ * is AMI's analogue of Claude Code's diff-editor `computeEditsFromContents`
+ * (hooks/useDiffInIDE.ts): where Claude re-derives the FileEdit[] from the user's
+ * hand-modified file content, AMI rewrites the edit INPUT the user approved and
+ * records here that what landed was the human-corrected call, not the proposal.
+ * Threaded via the ONE canonical permission-layer `userModified` signal — no
+ * parallel accept-with-edits path. `gitDiff` is attached only when a per-line diff
+ * was computed (omitted on the diff-cost-capped paths).
  */
 function buildEditMetadata(opts: {
   filePath: string;
   editMode: EditMode;
   replaceAll: boolean;
+  userModified?: boolean;
   gitDiff?: GitDiffSummary;
 }): Record<string, unknown> {
   const meta: Record<string, unknown> = {
     filePath: opts.filePath,
     editMode: opts.editMode,
     replaceAll: opts.replaceAll,
-    userModified: false,
+    userModified: opts.userModified === true,
   };
   if (opts.gitDiff) meta.gitDiff = opts.gitDiff;
   return meta;
@@ -752,6 +759,7 @@ export async function writeEntireFile(
         filePath: resolved,
         editMode: 'single',
         replaceAll: false,
+        userModified: context.userModified,
         gitDiff: buildGitDiff(resolved, 'added', lineCount, 0, createPatch),
       }),
     };
@@ -765,7 +773,7 @@ export async function writeEntireFile(
     return {
       output: diffOmittedSummary(resolved, lineCount),
       structuredPatch: [],
-      metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false }),
+      metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false, userModified: context.userModified }),
     };
   }
 
@@ -784,6 +792,7 @@ export async function writeEntireFile(
       filePath: resolved,
       editMode: 'single',
       replaceAll: false,
+      userModified: context.userModified,
       gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
     }),
   };
@@ -961,7 +970,7 @@ async function applySequentialEdits(
       output: summary.join('\n'),
       isError: false,
       structuredPatch: [],
-      metadata: buildEditMetadata({ filePath: resolved, editMode: 'multiple', replaceAll: false }),
+      metadata: buildEditMetadata({ filePath: resolved, editMode: 'multiple', replaceAll: false, userModified: context.userModified }),
     };
   }
 
@@ -1002,6 +1011,7 @@ async function applySequentialEdits(
       filePath: resolved,
       editMode: 'multiple',
       replaceAll: false,
+      userModified: context.userModified,
       gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
     }),
   };
@@ -1086,7 +1096,7 @@ export const fileEditTool: ToolDefinition = {
       filePath: { type: 'string', description: 'The file path that was edited.' },
       editMode: { type: 'string', description: 'single (one edit / write) or multiple (an edits[] batch).' },
       replaceAll: { type: 'boolean', description: 'Whether every occurrence was replaced.' },
-      userModified: { type: 'boolean', description: 'Whether the applied content diverged from the proposal (always false in AMI).' },
+      userModified: { type: 'boolean', description: 'Whether the applied content diverged from the model\'s proposal because the user edited this call\'s input at the permission prompt (approve-with-edited-input) before approving.' },
       structuredPatch: { type: 'array', description: 'Per-hunk structured diff of the change.' },
       gitDiff: {
         type: 'object',
@@ -1387,7 +1397,7 @@ export const fileEditTool: ToolDefinition = {
           return {
             output: `Successfully replaced ${result.matchCount} occurrences in ${resolved}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
             structuredPatch: [],
-            metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: true }),
+            metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: true, userModified: context.userModified }),
           };
         }
         const diff = buildUnifiedDiff(content, replaced, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
@@ -1399,6 +1409,7 @@ export const fileEditTool: ToolDefinition = {
             filePath: resolved,
             editMode: 'single',
             replaceAll: true,
+            userModified: context.userModified,
             gitDiff: buildGitDiff(resolved, 'modified', raCounts.additions, raCounts.removals, diff),
           }),
         };
@@ -1436,7 +1447,7 @@ export const fileEditTool: ToolDefinition = {
       return {
         output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
         structuredPatch: [],
-        metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false }),
+        metadata: buildEditMetadata({ filePath: resolved, editMode: 'single', replaceAll: false, userModified: context.userModified }),
       };
     }
 
@@ -1460,7 +1471,8 @@ export const fileEditTool: ToolDefinition = {
         filePath: resolved,
         editMode: 'single',
         replaceAll: false,
-        gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
+        userModified: context.userModified,
+      gitDiff: buildGitDiff(resolved, 'modified', additions, removals, diff),
       }),
     };
   },
