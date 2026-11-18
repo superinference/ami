@@ -480,6 +480,40 @@ export function describeProviders(): ProviderDescriptor[] {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Interactive cloud-auth lifecycle status (parity: Claude Code's AwsAuthStatus /
+// AwsAuthStatusManager — components/AwsAuthStatusBox.tsx L4-L36,
+// utils/awsAuthStatusManager.ts). AMI already surfaces the ACTIONABLE half of that
+// manager (the "here is how to re-auth" affordance, common/event-processor.ts
+// `onCloudAuthHint`) but had no way to represent the LIVE half: an auth command
+// (e.g. `aws sso login`) actively running, the lines it streams, and whether it
+// failed. {@link InteractiveAuthStatus} is that missing schema: a provider-agnostic
+// snapshot of an in-flight provider authentication. It is produced by common's cloud
+// auth-refresh flow as the command runs and read back through the `/auth-status`
+// introspection surface. (Distinct from common's `AuthStatus` credential-resolution
+// report, which is the STATIC "do I have a usable key" preflight; this is the LIVE
+// "a login command is running right now" lifecycle.)
+// ---------------------------------------------------------------------------
+
+/**
+ * A snapshot of an in-flight (or just-completed) interactive provider
+ * authentication. Mirrors Claude Code's `AwsAuthStatus` three-field shape, but kept
+ * provider-agnostic so any provider's login flow can report through it.
+ */
+export interface InteractiveAuthStatus {
+  /** True while a login/auth command is actively running. */
+  isAuthenticating: boolean;
+  /** The failure message when the last auth attempt errored; undefined on success/in-progress. */
+  error?: string;
+  /** Lines the auth command streamed (stdout/stderr), oldest first. */
+  output: string[];
+}
+
+/** The neutral initial {@link InteractiveAuthStatus}: not authenticating, no error, no output. */
+export function idleInteractiveAuthStatus(): InteractiveAuthStatus {
+  return { isAuthenticating: false, output: [] };
+}
+
 export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK_PROVIDERS, inferProviderFromBaseUrl, inferProviderFromEnv };
 
 // ---------------------------------------------------------------------------
