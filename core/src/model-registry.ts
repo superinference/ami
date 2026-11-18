@@ -1485,6 +1485,53 @@ export function getAgentModelDisplay(model?: string | null): string {
   return display === '' ? raw : display;
 }
 
+/**
+ * One row of the canonical {@link MODEL_OVERRIDES_AFFORDANCE} descriptor: the
+ * settings key, the map shape, the config scopes that may declare it, whether the
+ * override preserves capability resolution, and a human-readable description.
+ */
+export interface ModelOverridesAffordance {
+  /** The settings.json key users set to declare overrides. */
+  settingsKey: string;
+  /** The value shape the key accepts (canonical model id → provider string). */
+  valueShape: string;
+  /** Config waterfall scopes that may declare the map (last-writer wins). */
+  scopes: readonly string[];
+  /** True: the CANONICAL id still drives every context-window / output-ceiling
+   *  lookup — only the string SENT to the provider is overridden. */
+  capabilityPreserving: boolean;
+  /** One-paragraph human description of the affordance for the manifest. */
+  description: string;
+}
+
+/**
+ * Canonical introspection descriptor for the settings-driven `modelOverrides`
+ * affordance (parity: Claude Code's applyModelOverrides, utils/model/
+ * modelStrings.ts:L57-L76). The resolution/display path for `modelOverrides`
+ * already exists end to end — the `modelOverrides` settings key
+ * ({@link ProviderConfig}), its config-waterfall loader + forward apply
+ * (common/provider-config: loadModelOverrides / applyModelOverride on the send
+ * path), the inverse map ({@link resolveOverriddenModel} / provider.ts'
+ * CANONICAL_ID_TO_KEY), and the `/model` picker's clean-name display. What was
+ * MISSING is the repo-mandated INTROSPECTION surface describing the knob: this
+ * single descriptor is surfaced in `ami --introspect` (modelOverrides) so the
+ * affordance — its key, map shape, scopes, and capability-preserving semantics —
+ * is discoverable, closing the "no /config or introspection surface describing it"
+ * parity gap. The SINGLE human-facing description of the knob (no parallel copy).
+ */
+export const MODEL_OVERRIDES_AFFORDANCE: ModelOverridesAffordance = {
+  settingsKey: 'modelOverrides',
+  valueShape: 'Record<canonicalModelId, providerModelString>',
+  scopes: ['managed', 'project', 'global', 'local'],
+  capabilityPreserving: true,
+  description:
+    'Map a canonical first-party model id to an arbitrary provider-specific model string ' +
+    '(typically a Bedrock inference-profile ARN, or any gateway-specific deployment id). ' +
+    'The canonical id still drives every capability / context-window / output-ceiling ' +
+    'lookup; only the string SENT to the provider is overridden. A model may be pinned by ' +
+    'EITHER its canonical id or the override string and gets identical capability-correct routing.',
+};
+
 export function formatModelList(models: string[], provider: string): string {
   if (models.length === 0) return 'Could not retrieve model list from provider.';
 
