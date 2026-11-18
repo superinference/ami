@@ -307,3 +307,117 @@ export function saveAgentSyncedMeta(
   );
   logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: 'synced', scope });
 }
+
+/**
+ * The three user-facing outcomes of an agent-memory snapshot-update prompt
+ * (parity: Claude Code's `SnapshotUpdateDialog`, which resolves to
+ * `'merge' | 'keep' | 'replace'`, `dialogLaunchers.tsx` L33):
+ *
+ *  - `keep`    → keep the clone's local memory; just record the sync so the
+ *                prompt stops re-appearing (the safe no-op).
+ *  - `replace` → discard local memory and take the committed snapshot wholesale.
+ *  - `merge`   → keep local memory but ask the agent to reconcile it with the
+ *                newer snapshot; a merge PROMPT is produced for the caller to
+ *                inject into the agent's input.
+ */
+export type SnapshotUpdateResolution = 'merge' | 'keep' | 'replace';
+
+/** All valid {@link SnapshotUpdateResolution} values (for validation/iteration). */
+export const SNAPSHOT_UPDATE_RESOLUTIONS: readonly SnapshotUpdateResolution[] = [
+  'merge',
+  'keep',
+  'replace',
+] as const;
+
+/**
+ * Safe default chosen when the update prompt is CANCELLED (parity: Claude Code's
+ * `onCancel={() => done('keep')}`, `dialogLaunchers.tsx` L37). Cancelling never
+ * mutates local memory — it degrades to the no-op `keep`.
+ */
+export const DEFAULT_SNAPSHOT_UPDATE_RESOLUTION: SnapshotUpdateResolution = 'keep';
+
+/**
+ * Normalize an untrusted / cancelled resolution value to a valid
+ * {@link SnapshotUpdateResolution}, degrading anything that is not one of the
+ * three known outcomes (including a cancel `null`/`undefined`) to the safe
+ * {@link DEFAULT_SNAPSHOT_UPDATE_RESOLUTION} (`keep`). Mirrors the cancel
+ * semantics of Claude Code's SnapshotUpdateDialog so an aborted/garbage choice
+ * can never silently replace or lose local agent memory.
+ */
+export function resolveSnapshotUpdateChoice(value: unknown): SnapshotUpdateResolution {
+  return SNAPSHOT_UPDATE_RESOLUTIONS.includes(value as SnapshotUpdateResolution)
+    ? (value as SnapshotUpdateResolution)
+    : DEFAULT_SNAPSHOT_UPDATE_RESOLUTION;
+}
+
+/**
+ * Build the merge prompt injected into the agent's input when the user chooses
+ * `merge` on a snapshot-update prompt (parity: Claude Code's `buildMergePrompt`,
+ * imported in `main.tsx` L2268 and prepended to `inputPrompt`). The prompt tells
+ * the agent to reconcile its newer committed project snapshot with its local
+ * persistent memory rather than silently discarding either side.
+ */
+export function buildSnapshotMergePrompt(agentType: string, scope: AgentMemoryScope): string {
+  return (
+    `Your project has an updated committed memory snapshot for the "${agentType}" agent ` +
+    `(${scope} scope) that is newer than your local persistent memory. ` +
+    `Reconcile them: read both your local agent-memory files and the project snapshot, ` +
+    `then merge the snapshot's new knowledge into your local memory — keeping entries ` +
+    `that are still true, updating stale ones, and adding what the snapshot introduces. ` +
+    `Do not blindly overwrite your local memory; integrate the two.`
+  );
+}
+
+/** Result of {@link applySnapshotUpdateResolution}. */
+export interface SnapshotUpdateOutcome {
+  /** The resolution that was actually applied (after normalization). */
+  resolution: SnapshotUpdateResolution;
+  /** The merge prompt to inject, present only for the `merge` resolution. */
+  mergePrompt?: string;
+}
+
+/**
+ * Apply a user's three-way snapshot-update choice, dispatching to the matching
+ * sync operation (parity: Claude Code's `main.tsx` L2260-2273 handling of the
+ * `SnapshotUpdateDialog` result). The raw `choice` is first normalized through
+ * {@link resolveSnapshotUpdateChoice}, so a cancel (`null`/`undefined`) or any
+ * unexpected value degrades to the safe `keep`:
+ *
+ *  - `replace` → {@link replaceFromSnapshot} (discard local, take the snapshot).
+ *  - `merge`   → mark synced (so we stop re-prompting) and return a merge prompt
+ *                for the caller to inject; local memory is preserved for the
+ *                agent to reconcile.
+ *  - `keep`    → mark synced only; local memory is untouched (the safe no-op).
+ *
+ * Returns which resolution ran and, for `merge`, the prompt to inject.
+ */
+export function applySnapshotUpdateResolution(
+  agentType: string,
+  scope: AgentMemoryScope,
+  snapshotTimestamp: string,
+  choice: unknown,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): SnapshotUpdateOutcome {
+  const resolution = resolveSnapshotUpdateChoice(choice);
+  coreLog(
+    SNAPSHOT_LOG_COMPONENT,
+    `Resolving agent-memory snapshot update for ${agentType} as "${resolution}"`,
+    { scope, resolution, snapshotTimestamp },
+  );
+  logForDiagnosticsNoPII('info', 'agent_memory_snapshot', { action: `resolve-${resolution}`, scope });
+  switch (resolution) {
+    case 'replace':
+      replaceFromSnapshot(agentType, scope, cwd, snapshotTimestamp, env);
+      return { resolution };
+    case 'merge':
+      // Keep local memory; record the sync so we stop re-prompting, and hand the
+      // caller a prompt that tells the agent to reconcile the two.
+      saveAgentSyncedMeta(agentType, scope, cwd, snapshotTimestamp, env);
+      return { resolution, mergePrompt: buildSnapshotMergePrompt(agentType, scope) };
+    case 'keep':
+      // Safe no-op: leave local memory alone, just acknowledge the snapshot.
+      saveAgentSyncedMeta(agentType, scope, cwd, snapshotTimestamp, env);
+      return { resolution };
+  }
+}
