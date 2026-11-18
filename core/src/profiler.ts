@@ -1163,36 +1163,84 @@ export class Profiler {
 }
 
 /**
- * Render-performance tracker: feed it per-frame durations (ms) and read back the
- * average FPS and the "1% low" FPS (frame rate at the slowest 1% of frames — the
- * p99 frame time). Bounded memory via the shared reservoir.
+ * Render-performance tracker: feed it per-frame render DURATIONS (ms) via
+ * {@link record} and read back {@link FpsMetrics} — the wall-clock average FPS and
+ * the "1% low" FPS (frame rate at the slowest 1% of frames, the p99 frame time) —
+ * via {@link getMetrics}.
+ *
+ * Matches Claude Code's `utils/fpsTracker.ts` algorithm EXACTLY (parity):
+ *   - `averageFps` is WALL-CLOCK based — `totalFrames / (elapsedBetweenFirstAndLastRecord / 1000)` —
+ *     i.e. the frame rate ACHIEVED over the recording window, not the inverse of the mean
+ *     frame duration (two frames recorded 1s apart is 2fps regardless of how fast each
+ *     rendered). The clock is sampled on every {@link record}; `now` is injectable for tests.
+ *   - `low1PctFps` is derived from the p99 frame time via a DESCENDING sort and
+ *     `p99Index = max(0, ceil(len * 0.01) - 1)` (nearest-rank on the slowest 1%).
+ *   - Both are rounded to two decimals.
+ *
+ * Three defensive boundary guards (parity with the reference) make {@link getMetrics}
+ * return `undefined` rather than a bogus/NaN/∞ reading:
+ *   1. no frames recorded (empty sample window);
+ *   2. the recording window has non-positive elapsed wall-clock (`<= 0`) — so the
+ *      average never divides by zero or goes negative;
+ *   3. a zero p99 frame time yields `low1PctFps = 0` (never `1000 / 0`).
+ *
+ * AMI superset over the reference: the per-frame sample buffer is BOUNDED
+ * (`maxSamples`, default 1024) for long-session memory safety, while the wall-clock
+ * average uses the true total frame count ({@link _totalFrames}) so bounding the p99
+ * buffer never distorts the achieved-FPS denominator. The reference keeps an unbounded
+ * array; this keeps memory flat without changing the numbers for a normal window.
  */
 export class FpsTracker {
   private _samples: number[] = [];
+  private _totalFrames = 0;
+  private _firstRenderTime: number | undefined;
+  private _lastRenderTime: number | undefined;
   private _max: number;
+  private _now: () => number;
 
-  constructor(maxSamples = 1024) {
-    this._max = Math.max(1, maxSamples);
+  constructor(opts: { maxSamples?: number; now?: () => number } = {}) {
+    this._max = Math.max(1, opts.maxSamples ?? 1024);
+    this._now = opts.now ?? (() => performance.now());
   }
 
   record(frameDurationMs: number): void {
-    if (!(frameDurationMs > 0)) return;
+    const now = this._now();
+    if (this._firstRenderTime === undefined) this._firstRenderTime = now;
+    this._lastRenderTime = now;
+    this._totalFrames++;
     this._samples.push(frameDurationMs);
     if (this._samples.length > this._max) this._samples = this._samples.slice(-this._max);
   }
 
-  getMetrics(): FpsMetrics {
-    if (this._samples.length === 0) return { averageFps: 0, low1PctFps: 0 };
-    const avgFrame = this._samples.reduce((a, b) => a + b, 0) / this._samples.length;
-    const p99Frame = linearPercentile(this._samples, 99);
+  getMetrics(): FpsMetrics | undefined {
+    // Guard 1: no frames / no clock window recorded.
+    if (
+      this._samples.length === 0 ||
+      this._firstRenderTime === undefined ||
+      this._lastRenderTime === undefined
+    ) {
+      return undefined;
+    }
+    const totalTimeMs = this._lastRenderTime - this._firstRenderTime;
+    // Guard 2: non-positive elapsed wall-clock — never divide by zero / go negative.
+    if (totalTimeMs <= 0) return undefined;
+    const averageFps = this._totalFrames / (totalTimeMs / 1000);
+    const sorted = this._samples.slice().sort((a, b) => b - a);
+    const p99Index = Math.max(0, Math.ceil(sorted.length * 0.01) - 1);
+    const p99FrameTimeMs = sorted[p99Index]!;
+    // Guard 3: a zero (or non-positive) p99 frame time yields 0, never 1000/0.
+    const low1PctFps = p99FrameTimeMs > 0 ? 1000 / p99FrameTimeMs : 0;
     return {
-      averageFps: avgFrame > 0 ? 1000 / avgFrame : 0,
-      low1PctFps: p99Frame > 0 ? 1000 / p99Frame : 0,
+      averageFps: Math.round(averageFps * 100) / 100,
+      low1PctFps: Math.round(low1PctFps * 100) / 100,
     };
   }
 
   reset(): void {
     this._samples = [];
+    this._totalFrames = 0;
+    this._firstRenderTime = undefined;
+    this._lastRenderTime = undefined;
   }
 }
 

@@ -177,30 +177,84 @@ describe('Profiler counter/gauge/set metrics', () => {
 });
 
 describe('FpsTracker', () => {
-  it('computes average and 1% low FPS from frame durations', () => {
-    const f = new FpsTracker();
-    // 99 frames at 16ms (≈60fps) + one slow 100ms frame
-    for (let i = 0; i < 99; i++) f.record(16);
-    f.record(100);
+  // A controllable clock so the WALL-CLOCK averageFps is deterministic in tests.
+  function clock(start = 0) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => { t += ms; } };
+  }
+
+  it('computes WALL-CLOCK average FPS and descending-sort 1% low FPS', () => {
+    const c = clock();
+    const f = new FpsTracker({ now: c.now });
+    // 99 frames at 16ms render time + one slow 100ms frame, each 16.667ms apart on the
+    // wall clock (~60fps achieved). averageFps is the achieved rate over the window, NOT
+    // the inverse of the mean render duration.
+    for (let i = 0; i < 99; i++) { c.advance(16.667); f.record(16); }
+    c.advance(16.667); f.record(100);
     const m = f.getMetrics();
-    assert.ok(m.averageFps > 50 && m.averageFps < 62);
-    assert.ok(m.low1PctFps < m.averageFps, '1% low should be below average');
-    assert.ok(m.low1PctFps > 0);
+    assert.ok(m, 'metrics present');
+    // 100 frames over 99 intervals * 16.667ms ≈ 1.65s → ~60.6fps achieved (wall-clock).
+    assert.ok(m!.averageFps > 59 && m!.averageFps < 62, `averageFps=${m!.averageFps}`);
+    // p99 frame time: descending sort [100,16,...], p99Index = ceil(100*0.01)-1 = 0 → 100ms
+    // → low1PctFps = 1000/100 = 10.
+    assert.equal(m!.low1PctFps, 10);
+    assert.ok(m!.low1PctFps < m!.averageFps, '1% low below average');
+    // Rounded to two decimals.
+    assert.equal(m!.averageFps, Math.round(m!.averageFps * 100) / 100);
   });
 
-  it('ignores non-positive durations and handles empty', () => {
-    const f = new FpsTracker();
-    assert.deepEqual(f.getMetrics(), { averageFps: 0, low1PctFps: 0 });
-    f.record(0); f.record(-5);
-    assert.deepEqual(f.getMetrics(), { averageFps: 0, low1PctFps: 0 });
+  it('p99Index uses ceil(len*0.01)-1 (nearest-rank on the slowest 1%)', () => {
+    const c = clock();
+    const f = new FpsTracker({ now: c.now });
+    // 200 frames: the two slowest are 500ms; the rest are 10ms. Descending sort puts the
+    // two 500ms first; p99Index = ceil(200*0.01)-1 = ceil(2)-1 = 1 → sorted[1] = 500ms.
+    for (let i = 0; i < 198; i++) { c.advance(10); f.record(10); }
+    c.advance(10); f.record(500);
+    c.advance(10); f.record(500);
+    const m = f.getMetrics();
+    assert.ok(m);
+    assert.equal(m!.low1PctFps, Math.round((1000 / 500) * 100) / 100); // 2
   });
 
-  it('bounds retained samples and resets', () => {
-    const f = new FpsTracker(10);
-    for (let i = 0; i < 100; i++) f.record(16);
-    assert.ok(f.getMetrics().averageFps > 0);
+  // Guard 1: empty sample window → undefined (not {0,0}).
+  it('returns undefined when no frames were recorded', () => {
+    const f = new FpsTracker({ now: clock().now });
+    assert.equal(f.getMetrics(), undefined);
+  });
+
+  // Guard 2: non-positive elapsed wall-clock → undefined (never divide by zero/negative).
+  it('returns undefined when elapsed wall-clock is non-positive', () => {
+    const c = clock();
+    const f = new FpsTracker({ now: c.now }); // clock never advances
+    f.record(16);
+    f.record(16);
+    // firstRenderTime === lastRenderTime → totalTimeMs === 0 → undefined.
+    assert.equal(f.getMetrics(), undefined);
+  });
+
+  // Guard 3: a zero p99 frame time yields low1PctFps 0, never 1000/0 = Infinity.
+  it('guards against a zero p99 frame time (low1PctFps = 0)', () => {
+    const c = clock();
+    const f = new FpsTracker({ now: c.now });
+    // All-zero frame durations: p99 frame time is 0 → low1PctFps must be 0, not Infinity.
+    for (let i = 0; i < 100; i++) { c.advance(10); f.record(0); }
+    const m = f.getMetrics();
+    assert.ok(m);
+    assert.equal(m!.low1PctFps, 0);
+    assert.ok(Number.isFinite(m!.averageFps) && m!.averageFps > 0);
+  });
+
+  it('bounds retained samples (p99 buffer) but keeps the true frame count and resets', () => {
+    const c = clock();
+    const f = new FpsTracker({ maxSamples: 10, now: c.now });
+    for (let i = 0; i < 100; i++) { c.advance(10); f.record(16); }
+    const m = f.getMetrics();
+    assert.ok(m);
+    // 100 frames over 99*10ms = 990ms ≈ 101fps — the wall-clock average uses the TRUE
+    // 100-frame count, not the bounded 10-sample buffer.
+    assert.ok(m!.averageFps > 95 && m!.averageFps < 105, `averageFps=${m!.averageFps}`);
     f.reset();
-    assert.deepEqual(f.getMetrics(), { averageFps: 0, low1PctFps: 0 });
+    assert.equal(f.getMetrics(), undefined);
   });
 });
 
