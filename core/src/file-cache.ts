@@ -450,6 +450,21 @@ export class FileCache {
   }
 
   /**
+   * Return the content the model LAST READ for `path`, regardless of whether the
+   * file has since changed on disk — unlike {@link get}, which returns null once
+   * the entry is stale. This is the "what you last saw" accessor the stale-file
+   * error path needs: when a formatter/linter rewrote the file out of band, the
+   * cached content is exactly the `before` side of the change snippet shown to the
+   * model (parity: Claude Code's `edited_text_file` attachment, built from the
+   * prior fileState.content). Returns undefined when nothing (or a content-less
+   * mtime/partial stub) is cached.
+   */
+  peekContent(path: string): string | undefined {
+    const cached = this.cache.get(this.norm(path));
+    return cached?.content || undefined;
+  }
+
+  /**
    * List the paths of every file currently tracked in the cache (read into
    * context), in least-recently-used→most-recently-used order. Powers the
    * `/files` command's enumeration of the read-file-state cache. Includes

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
 import { fuzzyFindAndReplace, findClosestLines, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, buildUnifiedDiff, buildStructuredPatch, boundedChangeSnippet, countLinesChanged, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
 import { getErrnoCode, getErrnoPath, isENOENT, isFsInaccessible } from '../utils/errno';
 import { recordAgentFileContribution, computeAgentCharContribution, normalizeAttributionPath } from './attribution-store';
 import type { FileEncoding } from './tool-utils';
@@ -14,6 +14,7 @@ import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigK
 import { filterInvalidPermissionRules } from '../permissions';
 import { coerceBool } from '../utils/coerce';
 import { getFileCache, describeFileChangeMessage } from '../file-cache';
+import type { FileChangeReason } from '../file-cache';
 import { trackFileHistory } from './file-history';
 import { MemoryManager } from '../memory';
 import { getLineNumberStyle, type LineNumberStyle } from './file-read-limits';
@@ -106,6 +107,30 @@ export const readHooks: { readCapped: typeof readFileCapped } = {
 };
 
 /**
+ * Compose the stale-file error message, surfacing a BOUNDED, line-numbered
+ * snippet of WHAT changed on disk since the model last read the file — not merely
+ * THAT it changed. `before` is the content the model last read (from the warm
+ * {@link FileCache} entry); `after` is the current on-disk content already in hand
+ * at the call site. This is AMI's analogue of Claude Code's `edited_text_file`
+ * attachment ({@link boundedChangeSnippet} → getSnippetForTwoFileDiff): a
+ * format-on-save / linter rewrite is shown with its surrounding context so the
+ * model can decide what to re-read, instead of a bare "read it again". Degrades to
+ * the plain {@link describeFileChangeMessage} when no cached content is available
+ * (undefined `before`) or the change produced no surviving snippet (a deletion, or
+ * identical content). The caller sets `isError`/`behavior`.
+ */
+function staleFileChangeOutput(reason: FileChangeReason, verb: string, before: string | undefined, after: string): string {
+  let output = `Error: ${describeFileChangeMessage(reason, verb)}`;
+  const snippet = before !== undefined
+    ? boundedChangeSnippet(normalizeToLf(before), normalizeToLf(after))
+    : '';
+  if (snippet) {
+    output += `\n\nWhat changed on disk (current content around the change, line-numbered):\n${snippet}`;
+  }
+  return output;
+}
+
+/**
  * Final synchronous staleness guard, run IMMEDIATELY before {@link commitWrite}
  * with no `await` between it and the write. The initial freshness check happens
  * earlier, but the pre-write {@link trackFileHistory} backup is asynchronous: its
@@ -120,10 +145,15 @@ export const readHooks: { readCapped: typeof readFileCapped } = {
  */
 function recheckStaleBeforeWrite(resolved: string, verb: string, context: ToolContext): ToolResult | undefined {
   const fileCache = getFileCache(context.cwd, context.agentId);
+  const before = fileCache.peekContent(resolved);
   const change = fileCache.describeChange(resolved);
   if (change.changed) {
     fileCache.delete(resolved);
-    return { output: `Error: ${describeFileChangeMessage(change.reason, verb)}`, isError: true };
+    // Re-read the current on-disk bytes (best-effort) so the error can show the
+    // concurrent modification that landed during the async history-backup await.
+    let after = '';
+    try { after = fs.readFileSync(resolved, 'utf-8'); } catch { /* deleted/unreadable — plain message */ }
+    return { output: staleFileChangeOutput(change.reason, verb, before, after), isError: true };
   }
   return undefined;
 }
@@ -744,10 +774,11 @@ export async function writeEntireFile(
         isError: true,
       };
     }
+    const before = fileCache.peekContent(resolved);
     const change = fileCache.describeChange(resolved);
     if (change.changed) {
       fileCache.delete(resolved);
-      return { output: `Error: ${describeFileChangeMessage(change.reason, 'overwriting')}`, isError: true };
+      return { output: staleFileChangeOutput(change.reason, 'overwriting', before, oldContent), isError: true };
     }
   }
 
@@ -868,10 +899,11 @@ async function applySequentialEdits(
   if (readErr) return readErr;
 
   const fileCache = getFileCache(context.cwd, context.agentId);
+  const freshBefore = fileCache.peekContent(resolved);
   const freshness = fileCache.describeChange(resolved);
   if (freshness.changed) {
     fileCache.delete(resolved);
-    return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true, behavior: 'ask' };
+    return { output: staleFileChangeOutput(freshness.reason, 'editing', freshBefore, rawContent), isError: true, behavior: 'ask' };
   }
 
   const originalEnding = detectLineEnding(rawContent);
@@ -1375,10 +1407,11 @@ export const fileEditTool: ToolDefinition = {
     if (readErr) return readErr;
 
     const fileCache = getFileCache(context.cwd, context.agentId);
+    const freshBefore = fileCache.peekContent(resolved);
     const freshness = fileCache.describeChange(resolved);
     if (freshness.changed) {
       fileCache.delete(resolved);
-      return { output: `Error: ${describeFileChangeMessage(freshness.reason, 'editing')}`, isError: true, behavior: 'ask' };
+      return { output: staleFileChangeOutput(freshness.reason, 'editing', freshBefore, rawContent), isError: true, behavior: 'ask' };
     }
 
     const originalEnding = detectLineEnding(rawContent);

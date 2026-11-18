@@ -1439,6 +1439,22 @@ export function isMarkdownPath(filePath: string): boolean {
 export const DIFF_CONTEXT_LINES = 3;
 
 /**
+ * Context width used for a {@link boundedChangeSnippet} — wider than the normal
+ * diff context so an out-of-band change (a formatter/linter rewrite, a
+ * format-on-save) is surfaced to the model WITH enough surrounding code to
+ * locate it. Parity: Claude Code's getSnippetForTwoFileDiff `context: 8`.
+ */
+export const DIFF_SNIPPET_CONTEXT_LINES = 8;
+
+/**
+ * Byte cap on a {@link boundedChangeSnippet}. A format-on-save of a large file
+ * could otherwise inject the whole file into the turn; 8 KiB preserves the
+ * changed region while bounding the worst case. Parity: Claude Code's
+ * DIFF_SNIPPET_MAX_BYTES (8192).
+ */
+export const DIFF_SNIPPET_MAX_BYTES = 8192;
+
+/**
  * Context width that forces the WHOLE file into a single hunk (mirrors Claude
  * Code's `singleHunk` → `context: 100_000`). Any realistic file has fewer than
  * this many unchanged lines between two edits, so every change folds into one
@@ -1687,6 +1703,34 @@ export function buildStructuredPatch(
   if (oldLines.length * newLines.length > MAX_DIFF_CELLS) return [];
   const ops = lineDiffOps(oldLines, newLines, options.ignoreWhitespace ?? false);
   return groupHunks(ops, options.contextLines ?? DIFF_CONTEXT_LINES);
+}
+
+/**
+ * Build a BOUNDED, line-numbered snippet of the SURVIVING (non-deleted) content
+ * of the change from `before` to `after` — the model-facing view of an
+ * out-of-band file modification (a formatter/linter rewrite, a format-on-save),
+ * so a stale-file error can show WHAT changed instead of only reporting THAT it
+ * changed. Parity: Claude Code's FileEditTool/utils.ts `getSnippetForTwoFileDiff`
+ * (context-8 structuredPatch → keep non-`-` lines → line numbers →
+ * hunks joined by `\n...\n` → 8 KiB byte cap with a `[N lines truncated]` marker).
+ *
+ * Reuses the ONE canonical hunk grouping ({@link buildStructuredPatch}) and the
+ * ONE canonical line-boundary truncation ({@link capDiffBytes}) — no parallel
+ * diff/snippet logic. Returns `''` when there is no change (nothing to surface).
+ */
+export function boundedChangeSnippet(before: string, after: string): string {
+  const hunks = buildStructuredPatch(before, after, { contextLines: DIFF_SNIPPET_CONTEXT_LINES });
+  if (hunks.length === 0) return '';
+  const full = hunks
+    .map(h => h.lines
+      // Keep only surviving lines (context ` ` + additions `+`), dropping the
+      // removed (`-`) lines, then strip the one-char diff prefix and number each
+      // from the hunk's old-side start (matches addLineNumbers(startLine)).
+      .filter(l => !l.startsWith('-'))
+      .map((l, i) => `${h.oldStart + i}: ${l.slice(1)}`)
+      .join('\n'))
+    .join('\n...\n');
+  return capDiffBytes(full, DIFF_SNIPPET_MAX_BYTES);
 }
 
 /**
