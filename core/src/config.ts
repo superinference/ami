@@ -895,6 +895,54 @@ export interface ProjectConfig {
    * Resolved by {@link hasAutoModeOptIn} off the MERGED config; a merge knob.
    */
   autoAllowOptIn?: boolean;
+  /**
+   * Which renderer to use for file diffs: `'auto'` (AMI picks the richest surface the
+   * terminal supports) or `'terminal'` (always the plain in-terminal diff). Parity:
+   * Claude Code's `diffTool` global-config knob (`'terminal' | 'auto'`, default `'auto'`).
+   * A merge knob resolved off the merged config by {@link resolveDiffTool}; default
+   * `'auto'` so an unset config keeps AMI's existing behavior.
+   */
+  diffTool?: 'terminal' | 'auto';
+  /**
+   * Cached list of frequently-modified project files used to seed example-command
+   * suggestions (parity: Claude Code's per-project `exampleFiles`). Populated out-of-band
+   * by a background scan; read (with a staleness check against {@link exampleFilesGeneratedAt})
+   * by {@link getCachedExampleFiles}. A per-project STATE field, not a cross-layer policy knob.
+   */
+  exampleFiles?: string[];
+  /**
+   * Epoch-millis timestamp of when {@link exampleFiles} was last generated (parity:
+   * Claude Code's `exampleFilesGeneratedAt`). {@link getCachedExampleFiles} treats a
+   * cache older than {@link EXAMPLE_FILES_TTL_MS} as stale and returns none so the
+   * caller refreshes. A per-project STATE field.
+   */
+  exampleFilesGeneratedAt?: number;
+  /**
+   * Default shell backing input-box `!` commands: `'bash'` (default on every platform)
+   * or `'powershell'`. Parity: Claude Code's `defaultShell` setting + `resolveDefaultShell()`.
+   * AMI does NOT auto-flip Windows to PowerShell (that would break existing bash-hook
+   * users), so the default is `'bash'` everywhere. Resolved by {@link resolveDefaultShell}
+   * off the merged config; a merge knob (any tier may set it).
+   */
+  defaultShell?: 'bash' | 'powershell';
+  /**
+   * Startup announcement strings shown once at launch (parity: Claude Code's managed
+   * `companyAnnouncements`). Typically set by an enterprise/managed config. On the FIRST
+   * startup the first entry is shown; afterwards one is chosen at random. Resolved by
+   * {@link pickCompanyAnnouncement} off the merged config.
+   */
+  companyAnnouncements?: string[];
+  /**
+   * Policy knob gating whether a `dangerouslyDisableSandbox` tool override is honored.
+   * Parity: Claude Code's `SandboxManager.areUnsandboxedCommandsAllowed()` consulted by
+   * `shouldUseSandbox()` — the sandbox is skipped ONLY when the command opts out AND this
+   * policy permits unsandboxed commands. Lets an operator HARD-DISABLE the override
+   * independent of permission mode: `false` (at any tier, e.g. a managed config) forces
+   * every command through the sandbox even when it requests `dangerouslyDisableSandbox`.
+   * Default (unset) → `true` (override honored), preserving AMI's existing behavior.
+   * Resolved by {@link areUnsandboxedCommandsAllowed} off the merged config.
+   */
+  allowUnsandboxedCommands?: boolean;
 }
 
 /**
@@ -1526,6 +1574,11 @@ const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonl
   ['permissionMode', ['ask', 'auto-allow', 'deny-all']],
   ['cacheTtl', ['5m', '1h']],
   ['autoUpdatesChannel', ['latest', 'stable']],
+  // Diff renderer + input-box shell selectors (see ProjectConfig) resolved off the merged
+  // config by resolveDiffTool / resolveDefaultShell — enum-validated so a bad value is
+  // surfaced instead of silently flowing through, and emitted in the JSON schema.
+  ['diffTool', ['terminal', 'auto']],
+  ['defaultShell', ['bash', 'powershell']],
 ];
 
 /** The expected runtime base-type of each typed ProjectConfig field. */
@@ -1622,6 +1675,13 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // config by isVoiceModeEnabled / hasAutoModeOptIn — declared here so a file-tier value
   // is recognized (no spurious unknown-key warning) + base-type validated + schema-emitted.
   ['voiceEnabled', 'boolean'], ['autoAllowOptIn', 'boolean'],
+  // Example-command cache state + managed startup announcements + sandbox-override policy
+  // (see ProjectConfig) — declared here so a file-tier value is recognized (no spurious
+  // unknown-key warning) + base-type validated + schema-emitted. exampleFiles /
+  // companyAnnouncements are string[]; exampleFilesGeneratedAt is epoch-ms; the
+  // sandbox-override policy is a boolean resolved by areUnsandboxedCommandsAllowed.
+  ['exampleFiles', 'string[]'], ['exampleFilesGeneratedAt', 'number'],
+  ['companyAnnouncements', 'string[]'], ['allowUnsandboxedCommands', 'boolean'],
   // Update-channel knobs (see ProjectConfig) consumed by the self-updater/launcher —
   // declared here so they are recognized + value-validated (autoUpdatesChannel is an
   // enum in PROJECT_CONFIG_ENUMS) + emitted in the JSON schema. Parity: Claude's
@@ -3313,6 +3373,17 @@ export function mergeConfigs(
     if (layer.prStatusFooterEnabled !== undefined) merged.prStatusFooterEnabled = layer.prStatusFooterEnabled;
     if (layer.voiceEnabled !== undefined) merged.voiceEnabled = layer.voiceEnabled;
     if (layer.autoAllowOptIn !== undefined) merged.autoAllowOptIn = layer.autoAllowOptIn;
+    // Diff renderer / input-box shell selectors + example-command cache state + managed
+    // startup announcements + sandbox-override policy: last-layer-wins scalars/arrays read
+    // off the merged config by resolveDiffTool / resolveDefaultShell / getCachedExampleFiles /
+    // pickCompanyAnnouncement / areUnsandboxedCommandsAllowed. Copied here so a file-tier
+    // value is not dropped by the merge before its resolver reads it.
+    if (layer.diffTool !== undefined) merged.diffTool = layer.diffTool;
+    if (layer.defaultShell !== undefined) merged.defaultShell = layer.defaultShell;
+    if (layer.exampleFiles !== undefined) merged.exampleFiles = layer.exampleFiles;
+    if (layer.exampleFilesGeneratedAt !== undefined) merged.exampleFilesGeneratedAt = layer.exampleFilesGeneratedAt;
+    if (layer.companyAnnouncements !== undefined) merged.companyAnnouncements = layer.companyAnnouncements;
+    if (layer.allowUnsandboxedCommands !== undefined) merged.allowUnsandboxedCommands = layer.allowUnsandboxedCommands;
     if (layer.lastReleaseNotesSeen !== undefined) merged.lastReleaseNotesSeen = layer.lastReleaseNotesSeen;
     if (layer.autoUpdatesChannel !== undefined) merged.autoUpdatesChannel = layer.autoUpdatesChannel;
     if (layer.minimumVersion !== undefined) merged.minimumVersion = layer.minimumVersion;
@@ -4224,6 +4295,92 @@ export function hasAutoModeOptIn(
   config: ProjectConfig | null | undefined,
 ): boolean {
   return config?.autoAllowOptIn === true;
+}
+
+/**
+ * Which diff renderer to use, resolved off the already-MERGED {@link ProjectConfig}.
+ * Parity: Claude Code's `diffTool` setting (`'terminal' | 'auto'`, default `'auto'`).
+ * An unset (or non-enum — the enum validator already surfaces a bad value) config
+ * resolves to `'auto'`, preserving AMI's existing richest-surface behavior.
+ */
+export function resolveDiffTool(
+  config: ProjectConfig | null | undefined,
+): 'terminal' | 'auto' {
+  return config?.diffTool === 'terminal' ? 'terminal' : 'auto';
+}
+
+/**
+ * The default shell backing input-box `!` commands, resolved off the already-MERGED
+ * {@link ProjectConfig}. Parity: Claude Code's `resolveDefaultShell()` reading
+ * `settings.defaultShell`. Resolution order: `settings.defaultShell → 'bash'`. AMI does
+ * NOT auto-flip Windows to PowerShell (that would break existing bash-hook users), so the
+ * default is `'bash'` on every platform; only an explicit `'powershell'` selects it.
+ */
+export function resolveDefaultShell(
+  config: ProjectConfig | null | undefined,
+): 'bash' | 'powershell' {
+  return config?.defaultShell === 'powershell' ? 'powershell' : 'bash';
+}
+
+/**
+ * Milliseconds after which a cached {@link ProjectConfig.exampleFiles} list is considered
+ * stale (one week). Parity: Claude Code's `ONE_WEEK_IN_MS` staleness window in
+ * `refreshExampleCommands`.
+ */
+export const EXAMPLE_FILES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The cached frequently-modified example files, resolved off the already-MERGED
+ * {@link ProjectConfig} with a staleness check. Parity: Claude Code's `exampleFiles` +
+ * `exampleFilesGeneratedAt` read in `refreshExampleCommands` — a cache older than
+ * {@link EXAMPLE_FILES_TTL_MS} (relative to `nowMs`, default `Date.now()`) is treated as
+ * expired and returns `[]` so the caller refreshes it; a never-generated cache (no
+ * timestamp) is likewise treated as expired. An empty `[]` is returned (never `undefined`)
+ * so callers can branch on `.length`.
+ */
+export function getCachedExampleFiles(
+  config: ProjectConfig | null | undefined,
+  nowMs: number = Date.now(),
+): string[] {
+  const files = config?.exampleFiles;
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const generatedAt = config?.exampleFilesGeneratedAt ?? 0;
+  if (nowMs - generatedAt > EXAMPLE_FILES_TTL_MS) return [];
+  return files;
+}
+
+/**
+ * Pick the startup announcement to show, resolved off the already-MERGED
+ * {@link ProjectConfig}. Parity: Claude Code's LogoV2 `companyAnnouncements` pick — on
+ * the FIRST startup (`numStartups === 1`) the first entry is shown so the initial
+ * announcement is deterministic; on later startups one is chosen at random. Returns
+ * `undefined` when no announcements are configured. `rand` (default `Math.random`) is
+ * injectable for deterministic tests.
+ */
+export function pickCompanyAnnouncement(
+  config: ProjectConfig | null | undefined,
+  numStartups: number,
+  rand: () => number = Math.random,
+): string | undefined {
+  const announcements = config?.companyAnnouncements;
+  if (!Array.isArray(announcements) || announcements.length === 0) return undefined;
+  if (numStartups === 1) return announcements[0];
+  return announcements[Math.floor(rand() * announcements.length)];
+}
+
+/**
+ * Whether a `dangerouslyDisableSandbox` tool override may be honored, resolved off the
+ * already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * `SandboxManager.areUnsandboxedCommandsAllowed()` consulted by `shouldUseSandbox()`.
+ * Default (unset) → `true`, preserving AMI's existing behavior (the override is honored);
+ * an explicit `false` (e.g. a managed/enterprise config) HARD-DISABLES the override so
+ * every command is sandboxed regardless of permission mode. Only an exact `=== false`
+ * disables it, so a malformed value fails safe (open) the same as unset.
+ */
+export function areUnsandboxedCommandsAllowed(
+  config: ProjectConfig | null | undefined,
+): boolean {
+  return config?.allowUnsandboxedCommands !== false;
 }
 
 /**

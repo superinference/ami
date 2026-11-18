@@ -121,6 +121,13 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       speculationEnabled: true, alwaysThinkingEnabled: true,
       // Opt-in capability knobs (U010/w102): voice input + auto-mode intent signal.
       voiceEnabled: true, autoAllowOptIn: true,
+      // Diff renderer + input-box shell + example-cache state + managed announcements +
+      // sandbox-override policy knobs (U010/w105) — declared/validated/merged/schema-emitted
+      // (resolveDiffTool / resolveDefaultShell / getCachedExampleFiles /
+      // pickCompanyAnnouncement / areUnsandboxedCommandsAllowed).
+      diffTool: 'auto', defaultShell: 'bash',
+      exampleFiles: ['a.ts'], exampleFilesGeneratedAt: 1,
+      companyAnnouncements: ['hi'], allowUnsandboxedCommands: false,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
