@@ -165,6 +165,37 @@ describe('core secure-storage: createLibsecretStorage', () => {
   it('exposes a sane default cache TTL', () => {
     assert.equal(LIBSECRET_CACHE_TTL_MS, 30_000);
   });
+
+  it('invalidate() drops the cache so the next read re-fetches a rotated secret', () => {
+    // Parity: clearLegacyApiKeyPrefetch() — an out-of-band rotation must not be
+    // shadowed by a value cached within the TTL window. A long TTL means only an
+    // explicit invalidate() can force the re-read before it elapses.
+    const values = ['old-secret', 'rotated-secret'];
+    let i = 0;
+    let lookups = 0;
+    const { run } = makeRunner((args) => {
+      if (args[0] === 'lookup') lookups += 1;
+      return { status: 0, stdout: values[Math.min(i++, values.length - 1)] };
+    });
+    const store = createLibsecretStorage(strOpts(run, { cacheTtlMs: 60_000 }));
+    assert.equal(store.read(), 'old-secret');
+    // Within the TTL window the cache shadows the rotated value...
+    assert.equal(store.read(), 'old-secret');
+    assert.equal(lookups, 1);
+    // ...until an explicit invalidate() forces a through-read.
+    store.invalidate();
+    assert.equal(store.read(), 'rotated-secret');
+    assert.equal(lookups, 2);
+  });
+
+  it('invalidate() is idempotent and never throws on an empty cache', () => {
+    const { run } = makeRunner(() => ({ status: 1, stdout: '' }));
+    const store = createLibsecretStorage(strOpts(run));
+    assert.doesNotThrow(() => {
+      store.invalidate();
+      store.invalidate();
+    });
+  });
 });
 
 describe('core secure-storage: isSecretToolAvailable', () => {

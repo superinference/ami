@@ -57,6 +57,20 @@ export interface SecureStorage<T> {
   update(data: T): SecureStorageWriteResult;
   /** Delete the payload; `true` when gone afterwards (absent counts as success). */
   delete(): boolean;
+  /**
+   * Explicitly drop any in-memory read cache so the NEXT {@link read} re-fetches
+   * from the backing store (Claude-parity with `clearLegacyApiKeyPrefetch()`).
+   *
+   * In-process {@link update}/{@link delete} already keep the cache coherent, but a
+   * credential can also be rotated OUT OF BAND — another process re-writes the
+   * keyring entry — while this instance still holds a value cached for up to
+   * {@link LIBSECRET_CACHE_TTL_MS}. That stale cached value would then SHADOW the
+   * fresh secret for the rest of the TTL window (e.g. the old AES key, so a store
+   * re-encrypted under the rotated key no longer decrypts). A caller that detects
+   * such a rotation (e.g. a decrypt failure) invokes `invalidate()` to force a
+   * through-read before giving up. Idempotent and never throws.
+   */
+  invalidate(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +238,11 @@ export function createLibsecretStorage<T>(opts: LibsecretStorageOptions<T>): Sec
       } catch {
         return false;
       }
+    },
+    invalidate(): void {
+      // Reset the TTL cache so the next read() re-spawns `secret-tool lookup`
+      // instead of serving a value that an out-of-band rotation may have staled.
+      cache = { data: null, cachedAt: 0 };
     },
   };
 }
