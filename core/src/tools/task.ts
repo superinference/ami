@@ -14,6 +14,7 @@ import { createBoundedAbortController, raiseAbortListenerCap } from '../utils/ab
 import { isEnvTruthy } from '../analytics';
 import { spillToolText, resolveTaskMaxChars } from './spill-output';
 import { mapChildToSubagentEvent, attachSubagentUsage, resolveEnableSummarization } from './subagent-relay';
+import { BackgroundLiveTurns, resolveLiveTurnRetention } from './background-live-turns';
 import {
   collapseActivityRun,
   createActivityDescriptionResolver,
@@ -1334,6 +1335,24 @@ export function describeActivity(toolName: string, input: Record<string, unknown
 export function buildRecentActivityTrail(activities: readonly string[]): string {
   if (activities.length === 0) return '';
   return ` Recent activity: ${activities.join(', ')}.`;
+}
+
+/**
+ * Render a sub-agent's live-display state (PARITY: Claude's DreamTask phase + turn
+ * buffer) into a clause for a terminated/capped completion notice: the sub-phase
+ * ('starting' = began but never changed files, 'updating' = actively mutating
+ * files) plus a short snippet of the most recent retained assistant turn from the
+ * bounded ring buffer. Returns an empty string when nothing was tracked, so callers
+ * can append unconditionally.
+ */
+export function buildLiveStateTrail(liveTurns: BackgroundLiveTurns): string {
+  const last = liveTurns.lastTurn();
+  let clause = ` [${liveTurns.describe()}]`;
+  if (last && last.text.trim()) {
+    const snippet = last.text.replace(/\s+/g, ' ').trim().slice(0, 80);
+    clause += ` [last turn: "${snippet}"]`;
+  }
+  return clause;
 }
 
 /**
@@ -3756,6 +3775,13 @@ export const taskTool: ToolDefinition = {
     let cacheHitRate: number | undefined;
     const startedAt = Date.now();
     const recentActivities: string[] = [];
+    // Live-display state for this subagent (PARITY: Claude's DreamTask): a bounded
+    // ring buffer of the most recent assistant turns + a 'starting'|'updating'
+    // sub-phase flipped on the first file-mutating tool_use. Surfaced in the
+    // stall/max-turns introspection footer so a terminated/capped agent's live
+    // state (was it idle or actively changing files? what was it last doing?) is
+    // observable instead of opaque.
+    const liveTurns = new BackgroundLiveTurns(resolveLiveTurnRetention());
     // Record each tool call this sub-agent makes so its handoff can be safety-reviewed
     // before control returns to the parent (yolo/auto only — reviewSubagentHandoff).
     const handoffActions: HandoffAction[] = [];
@@ -3865,6 +3891,10 @@ export const taskTool: ToolDefinition = {
           // recent MAX_RECENT_ACTIVITIES so the trail stays compact.
           recentActivities.push(describeActivity(event.toolName, event.input));
           if (recentActivities.length > MAX_RECENT_ACTIVITIES) recentActivities.shift();
+          // Live-display turn accounting (parity: Claude's DreamTask) — tallies this
+          // turn's tool uses and flips the sub-phase to 'updating' on the first
+          // file-mutating tool.
+          liveTurns.recordToolUse(event.toolName);
           // Capture the tool call for the handoff safety review (yolo/auto only).
           const cmd = event.input?.command;
           handoffActions.push({ tool: event.toolName, command: typeof cmd === 'string' ? cmd : undefined });
@@ -3879,6 +3909,12 @@ export const taskTool: ToolDefinition = {
         // and a trailing pure-tool_use turn (empty/null content) falls back to it.
         if (event.type === 'turn_complete' && typeof event.content === 'string' && event.content.trim().length > 0) {
           lastTurnText = event.content;
+        }
+        // Commit each assistant turn into the bounded live-display ring buffer
+        // (parity: Claude's addDreamTurn — tool uses collapsed to a count, the N
+        // most recent turns retained, pure no-op turns skipped).
+        if (event.type === 'turn_complete') {
+          liveTurns.commitTurn(typeof event.content === 'string' ? event.content : '');
         }
         if (event.type === 'done') {
           exitReason = event.exitReason;
@@ -3934,11 +3970,11 @@ export const taskTool: ToolDefinition = {
       if (stalled) {
         // Surface the last few tool actions (parity: Claude's recentActivities) so a
         // stalled agent's final state is observable instead of opaque.
-        deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]${buildRecentActivityTrail(recentActivities)}`;
+        deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]${buildRecentActivityTrail(recentActivities)}${buildLiveStateTrail(liveTurns)}`;
       } else if (exitReason === 'max_turns') {
         // Distinguish a turn-capped partial result from a clean completion so the
         // parent/UI does not mistake a truncated run for a finished one.
-        deliverable += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]`;
+        deliverable += `\n[Subagent stopped — reached max turns limit${agentMaxTurns ? ` (${agentMaxTurns})` : ''}]${buildLiveStateTrail(liveTurns)}`;
       }
     } catch (err) {
       unlinkParentAbort();

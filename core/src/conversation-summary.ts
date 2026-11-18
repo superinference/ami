@@ -1,6 +1,7 @@
 import type { Message, AssistantMessage, ToolMessage } from './types';
 import { estimateMessageTokens, estimateToolCallTokens } from './token-estimator';
 import { computeLineDiff } from './line-diff';
+import { FILE_MUTATING_TOOLS } from './tools/background-live-turns';
 
 /**
  * File-extension → human language label, mirroring Claude Code's insights
@@ -67,8 +68,6 @@ export function countToolUses(messages: Message[]): Map<string, number> {
   }
   return counts;
 }
-
-const FILE_MUTATING_TOOLS = new Set(['file_edit', 'file_write', 'notebook_edit', 'multi_edit']);
 
 export function extractFilesModified(messages: Message[]): Set<string> {
   const files = new Set<string>();
