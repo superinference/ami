@@ -677,6 +677,19 @@ export function formatUserPromptStoppedMessage(stopReason?: string): string {
   return r ? `Operation stopped by hook: ${r}` : 'Operation stopped by hook';
 }
 
+/**
+ * Event-specific wording for a Stop hook's blocking feedback re-injected into the
+ * model's context (Claude Code's `getStopHookMessage`, utils/hooks.ts:L1894-L1896 →
+ * `Stop hook feedback:\n<error>`). When a Stop hook BLOCKS turn-end with a
+ * `blockingError`, the engine frames it with this prefix so the model can attribute
+ * the re-injected feedback to a Stop guard, mirroring the already-framed
+ * UserPromptSubmit phase ({@link formatUserPromptSubmitBlockedMessage}). Pure; the
+ * error body is preserved verbatim (no trimming).
+ */
+export function formatStopHookBlockingMessage(blockingError: string): string {
+  return `Stop hook feedback:\n${blockingError}`;
+}
+
 /** Per-hook timing + error record from a Stop-hook run (Claude Code's hookInfos
  *  in createStopHookSummaryMessage). One entry per Stop hook that actually ran. */
 export interface StopHookInfo {
