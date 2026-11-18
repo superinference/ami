@@ -280,6 +280,36 @@ export function isCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return subsystemEnabled(env[CRON_ENV], CRON_FEATURE, env);
 }
 
+/** AMI-native env var that toggles the richer `task_tracker` tool (default ON). */
+export const TASK_TRACKER_ENV = 'AMI_TASK_TRACKER';
+/** Canonical feature-flag name for the task-tracker gate (`config.features`). */
+export const TASK_TRACKER_FEATURE = 'ENABLE_TASKS';
+/**
+ * Claude Code-compatible dedicated knob (parity: `CLAUDE_CODE_ENABLE_TASKS`, read by
+ * Claude's `isTodoV2Enabled()`). Unlike the generic `CLAUDE_CODE_FEATURE_<NAME>`
+ * alias, Claude spells this one WITHOUT the `FEATURE_` infix, so it needs a dedicated
+ * reader to match the exact env surface SDK/headless users already set.
+ */
+export const CLAUDE_ENABLE_TASKS_ENV = 'CLAUDE_CODE_ENABLE_TASKS';
+
+/**
+ * Gate for the richer `task_tracker` tool. AMI ships BOTH `task_tracker` (rich,
+ * dependency-aware, multi-owner) AND `todo_write` (lightweight checklist) and keeps
+ * both ON by default — a protected superset over Claude Code, which exposes only one
+ * at a time behind `isTodoV2Enabled()`. This adds the MISSING capability: an opt-in/out
+ * knob so an SDK/headless caller can drop the heavier task tooling and rely on
+ * `todo_write` alone, exactly as `CLAUDE_CODE_ENABLE_TASKS` lets a Claude caller toggle
+ * task mode. Resolution (first decisive signal wins): the Claude-compatible
+ * {@link CLAUDE_ENABLE_TASKS_ENV} knob, then AMI's dedicated {@link TASK_TRACKER_ENV},
+ * then the generic `ENABLE_TASKS` feature flag (so `config.features` can gate it).
+ * Default ON — AMI's always-both behavior is preserved when nothing is set.
+ */
+export function isTaskTrackerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const claudeKnob = env[CLAUDE_ENABLE_TASKS_ENV];
+  if (claudeKnob !== undefined && claudeKnob.trim() !== '') return isEnvTruthy(claudeKnob);
+  return subsystemEnabled(env[TASK_TRACKER_ENV], TASK_TRACKER_FEATURE, env);
+}
+
 /**
  * Env var holding a comma-separated blanket DENY list for the advertised tool pool.
  * PARITY (additive): mirrors Claude Code's `filterToolsByDenyRules` (tools.ts) — a

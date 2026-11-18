@@ -1275,6 +1275,42 @@ export function getManagedDropInDir(): string {
 }
 
 /**
+ * Decide whether a managed `config.d/` directory entry is eligible to be read as a
+ * policy fragment. Parity: Claude Code's managed-settings.d enumeration guard, which
+ * defensively skips anything that is not a regular file or a symlink, does not end in
+ * `.json`, or is a dotfile. AMI previously filtered ONLY on the `.json` suffix, so a
+ * hidden sidecar/editor-swap file (`.10-team.json.swp` is excluded by suffix, but a
+ * `.hidden.json` dotfile was NOT) could be read as policy, and a `*.json` NAMED entry
+ * that is actually a directory / FIFO / socket / device slipped past the suffix filter
+ * — a FIFO is the dangerous case: `readFileSync` on it BLOCKS indefinitely waiting for
+ * a writer (a trivial DoS if an attacker can plant one in the drop-in dir).
+ *
+ * Eligibility (all must hold):
+ *   - the name is NOT a dotfile (does not start with `.`);
+ *   - the name ends in `.json`;
+ *   - the on-disk TYPE is a regular file or a symlink (never a dir/FIFO/socket/device).
+ *
+ * `lstatSync` is used so the type decision does not follow a symlink — a symlinked
+ * fragment is still enumerated here but is refused later by {@link assertTrustedManagedFile}
+ * (AMI refuses symlinked managed sources outright), matching AMI's stricter trust stance
+ * while keeping Claude's enumeration shape. When the stat seam cannot report a type (a
+ * minimal test stub without `isFile`), the entry falls back to eligible — the per-file
+ * read + trust check downstream still fails closed on a genuinely bad entry.
+ */
+export function isEligibleManagedDropIn(name: string, dir: string): boolean {
+  if (name.startsWith('.') || !name.endsWith('.json')) return false;
+  let st: fs.Stats;
+  try {
+    st = fsHooks.lstatSync(path.join(dir, name));
+  } catch {
+    // Unreadable/vanished between readdir and lstat — treat as absent.
+    return false;
+  }
+  if (typeof st.isFile !== 'function') return true;
+  return st.isFile() || st.isSymbolicLink();
+}
+
+/**
  * True when a POSIX file mode grants WRITE to OTHER (world — the `0o002` bit). A
  * managed-policy file ANY user on the machine can rewrite is not a trust anchor —
  * the point of managed/enterprise policy is that only an administrator can change
@@ -1454,7 +1490,9 @@ export function loadManagedConfig(): ProjectConfig | null {
   let entries: string[] = [];
   try {
     if (fsHooks.existsSync(dropInDir)) {
-      entries = (fsHooks.readdirSync(dropInDir) as string[]).filter(e => e.endsWith('.json')).sort();
+      entries = (fsHooks.readdirSync(dropInDir) as string[])
+        .filter(name => isEligibleManagedDropIn(name, dropInDir))
+        .sort();
     }
   } catch {
     entries = [];

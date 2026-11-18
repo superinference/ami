@@ -4,6 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { withFileLock, FileLockOptions } from '../utils/file-lock';
 import { log as debugLog } from '../logger';
+import { isTaskTrackerEnabled } from './tool-gates';
 
 /**
  * Lifecycle debug trail (PARITY): Claude Code's task watcher emits a
@@ -694,6 +695,10 @@ const ALLOWED_INPUT_KEYS = new Set([
 
 export const taskTrackerTool: ToolDefinition = {
   name: 'task_tracker',
+  // Gated by the task-tracker enablement knob (default ON) so an SDK/headless caller
+  // can opt the richer task tool out and rely on `todo_write` alone, mirroring Claude
+  // Code's `CLAUDE_CODE_ENABLE_TASKS` task-mode toggle. See {@link isTaskTrackerEnabled}.
+  isEnabled: () => isTaskTrackerEnabled(),
   description:
     'Create and manage tasks to track progress on complex work. This demonstrates thoroughness to the user and helps the user understand the progress of their requests, so keep the list honest and up to date. ' +
     'Actions: "create" (new task), "update" (change status/details), "list" (show all), "get" (single task), "delete" (remove), "claim" (atomically assign and start), "release" (give up a claim: clear owner and revert in_progress back to pending), "next" (find the next available task to work on), "status" (per-owner idle/busy introspection). ' +
