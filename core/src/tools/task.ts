@@ -857,6 +857,44 @@ export function ensureTeammateCoordinationTools(
 }
 
 /**
+ * Agent-coordination + scheduling tools RESERVED for an in-process teammate (a
+ * NAMED sub-agent spawned into a team) — never granted to a plain general/agent-def
+ * sub-agent, including an untrusted one. Mirrors Claude Code's
+ * `IN_PROCESS_TEAMMATE_ALLOWED_TOOLS` (`constants/tools.ts`: TaskCreate/Get/List/
+ * Update, SendMessage, and the AGENT_TRIGGERS-gated cron tools), which Claude
+ * injects selectively via an `isInProcessTeammate()` check instead of handing them
+ * to every async agent. AMI registers these in the one default registry, so without
+ * this gate a solo `mode:"general"` delegation (or any custom agent def) silently
+ * inherited the shared team task list ({@link TEAMMATE_ESSENTIAL_TOOLS}), teammate
+ * messaging, team create/delete, and the whole scheduler — capabilities that only
+ * make sense for a teammate coordinating inside a live team. The `coordinator` mode
+ * keeps `send_message` through its own positive allowlist
+ * ({@link COORDINATOR_MODE_ALLOWED_TOOLS}); a `fork` keeps the parent's exact
+ * cache-identical pool — so {@link filterTeammateOnlyTools} is applied only to the
+ * other spawn paths (see the task tool's execute).
+ */
+export const IN_PROCESS_TEAMMATE_ONLY_TOOLS = new Set([
+  'send_message', 'task_list', 'task_tracker',
+  'team_create', 'team_delete',
+  'cron_create', 'cron_delete', 'cron_list', 'cron_get', 'cron_run',
+  'schedule_wakeup',
+]);
+
+/**
+ * Strip the {@link IN_PROCESS_TEAMMATE_ONLY_TOOLS} from a resolved sub-agent tool
+ * set unless the spawn is an in-process teammate (named + joining a team). A no-op
+ * — returning the original array identity — for a teammate so the common path keeps
+ * its coordination tools untouched. Exported for testing.
+ */
+export function filterTeammateOnlyTools(
+  tools: ToolDefinition[],
+  isInProcessTeammate: boolean,
+): ToolDefinition[] {
+  if (isInProcessTeammate) return tools;
+  return tools.filter(t => !IN_PROCESS_TEAMMATE_ONLY_TOOLS.has(t.name));
+}
+
+/**
  * Build the runtime worker-capability affordance injected into a `coordinator`-mode
  * sub-agent's context (mirrors Claude Code's `getCoordinatorUserContext`). A
  * coordinator cannot touch the filesystem/shell itself — it only delegates — so it
@@ -3112,6 +3150,23 @@ export const taskTool: ToolDefinition = {
     // Universal baseline denylist — applied last so no mode or explicit
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
+
+    // In-process teammate-only tool gating (parity: Claude's
+    // IN_PROCESS_TEAMMATE_ALLOWED_TOOLS injected only via isInProcessTeammate()).
+    // Agent-coordination + scheduling tools ({@link IN_PROCESS_TEAMMATE_ONLY_TOOLS}:
+    // the shared task list, teammate messaging, team create/delete, cron, and
+    // schedule_wakeup) are reserved for a NAMED teammate spawned into a team. A plain
+    // general / agent-def sub-agent — including an untrusted one — must not inherit
+    // them. The `coordinator` mode keeps `send_message` through its own positive
+    // allowlist and a `fork` keeps the parent's exact cache-identical pool, so both
+    // are exempt; every other spawn path is gated. A named teammate whose def later
+    // narrowed its toolset re-gains the essential coordination tools via
+    // {@link ensureTeammateCoordinationTools} below.
+    const isInProcessTeammateSpawn =
+      !!(input.name as string | undefined)?.trim() && !!resolvedTeam;
+    if (mode !== 'coordinator' && mode !== 'fork') {
+      tools = filterTeammateOnlyTools(tools, isInProcessTeammateSpawn);
+    }
 
     // Per-spawn `allowed_tools` inline scope (mirrors Claude's spawn-time
     // permissions/allowedTools): intersect the resolved set with exactly the tools
