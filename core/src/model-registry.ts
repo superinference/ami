@@ -12,7 +12,7 @@ import {
   isFirstPartyProvider,
   toApiProviderClass,
 } from './model-capabilities';
-import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
+import { resolveBedrockModelId, getBedrockInferenceProfiles, getBedrockRegionPrefix } from './bedrock';
 import { redactSecrets } from './tools/tool-utils';
 import { isEssentialTrafficOnly } from './analytics';
 import { log } from './logger';
@@ -326,6 +326,11 @@ export async function listModels(config: ProviderConfig, signal?: AbortSignal): 
 
   // Providers with known static model lists (no API listing endpoint)
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
+    // Bedrock: await the model-string init barrier so the region/profile-correct
+    // strings are resolved before the option list is built/returned, instead of
+    // interim defaults (parity: Claude's ensureModelStringsInitialized before
+    // generating model options). A no-op await for every other static provider.
+    if (toApiProviderClass(provider) === 'bedrock') await ensureModelStringsInitialized(config);
     return staticModelList(provider);
   }
 
@@ -428,6 +433,9 @@ export async function listModelsDiagnostic(
   const provider = detectProvider(config);
 
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
+    // Bedrock: ensure region/profile-correct model strings are resolved before the
+    // option list is built (parity: Claude's ensureModelStringsInitialized).
+    if (toApiProviderClass(provider) === 'bedrock') await ensureModelStringsInitialized(config);
     const models = staticModelList(provider);
     return {
       models,
@@ -1031,9 +1039,13 @@ const DEFAULT_SUBAGENT_MODEL = 'claude-haiku-4-5';
  * region-scoped profile with no parallel per-provider id table. Vertex / Foundry /
  * first-party send the canonical id unchanged (AMI's one-central-remap design).
  */
-function toProviderModelId(canonicalId: string, config: ProviderConfig): string {
+function toProviderModelId(
+  canonicalId: string,
+  config: ProviderConfig,
+  bedrockProfiles?: string[],
+): string {
   if (toApiProviderClass(detectProvider(config)) === 'bedrock') {
-    return resolveBedrockModelId(canonicalId, getBedrockInferenceProfiles());
+    return resolveBedrockModelId(canonicalId, bedrockProfiles ?? getBedrockInferenceProfiles());
   }
   return canonicalId;
 }
@@ -1085,12 +1097,102 @@ export interface ProviderModelString {
  * existing resolution across every logical key, surfaced for selection UIs and
  * `ami --introspect`.
  */
-export function getBuiltinModelStrings(config: ProviderConfig): ProviderModelString[] {
+/**
+ * Build the per-provider model-string rows for `config` from the supplied Bedrock
+ * inference-profile list (used verbatim when the detected provider is Bedrock; the
+ * canonical first-party id passes through unchanged otherwise, via the single
+ * {@link toProviderModelId} remap — no parallel per-provider id table). Factored so
+ * the synchronous {@link getBuiltinModelStrings} view and the async
+ * {@link ensureModelStringsInitialized} barrier produce byte-identical rows from the
+ * SAME mapping — the barrier simply sources the profile list from an awaited (and
+ * cacheable) resolver instead of a point-in-time env read.
+ */
+function buildModelStrings(config: ProviderConfig, bedrockProfiles: string[]): ProviderModelString[] {
   return Object.entries(MODEL_SHORT_KEYS).map(([key, firstParty]) => ({
     key,
     firstParty,
-    wireId: toProviderModelId(firstParty, config),
+    wireId: toProviderModelId(firstParty, config, bedrockProfiles),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Model-string initialization barrier — parity with Claude Code's
+// ensureModelStringsInitialized / getModelStrings pair (utils/model/modelStrings.ts
+// L136-L166). Building a model-option list for a Bedrock account should reflect the
+// region-scoped inference-profile strings rather than interim defaults; Claude awaits
+// its profile fetch before generating options. AMI sources Bedrock profiles through
+// the single canonical resolver (bedrock.ts getBedrockInferenceProfiles) behind an
+// injectable async seam, caches the resolved snapshot ONCE per provider+region+
+// profile signature (sequential-guarded so a concurrent burst shares one resolution),
+// and serves subsequent builds from that snapshot. getBuiltinModelStrings returns the
+// cached snapshot when initialized and otherwise computes the interim default inline
+// (mirrors Claude's getModelStrings falling through to built-in strings while the
+// fetch is pending). The SINGLE model-string init path — no parallel state module.
+// ---------------------------------------------------------------------------
+
+/**
+ * Injectable async source of the account's Bedrock inference-profile ids, awaited by
+ * {@link ensureModelStringsInitialized} before building the Bedrock model-string
+ * snapshot. Defaults to the synchronous env-backed {@link getBedrockInferenceProfiles}
+ * (AMI's one-central-remap design keeps profiles in the environment), wrapped in a
+ * resolved promise so the barrier's await is uniform. A test — or a future live
+ * profile fetch — can replace it to make the Bedrock readiness await observable.
+ */
+export const modelStringsInitHooks: { resolveBedrockProfiles: () => Promise<string[]> } = {
+  resolveBedrockProfiles: async () => getBedrockInferenceProfiles(),
+};
+
+/** Signature keying a cached model-string snapshot: provider + region + profiles. */
+function modelStringsSignature(config: ProviderConfig): string {
+  return [
+    detectProvider(config),
+    getBedrockRegionPrefix() ?? '',
+    getBedrockInferenceProfiles().join(','),
+  ].join(':::');
+}
+
+const modelStringsCache = new Map<string, ProviderModelString[]>();
+const modelStringsInFlight = new Map<string, Promise<ProviderModelString[]>>();
+
+/**
+ * Await-until-ready barrier that resolves the Bedrock inference profiles (via the
+ * {@link modelStringsInitHooks} seam) and caches the resulting per-provider
+ * model-string snapshot before it is used to build a model-option list — so a Bedrock
+ * selection UI shows region/profile-correct strings rather than interim defaults
+ * (parity: Claude Code's ensureModelStringsInitialized). A snapshot already cached for
+ * the current signature returns immediately WITHOUT re-resolving (the idempotent fast
+ * path), and concurrent callers for the same signature share a single in-flight
+ * resolution (sequential-guarded). For a non-Bedrock provider the resolver returns an
+ * empty profile list and the snapshot is the canonical ids unchanged. Returns the
+ * resolved snapshot. Awaited by {@link listModels} / {@link listModelsDiagnostic} on
+ * the Bedrock static-list path.
+ */
+export async function ensureModelStringsInitialized(config: ProviderConfig): Promise<ProviderModelString[]> {
+  const sig = modelStringsSignature(config);
+  const cached = modelStringsCache.get(sig);
+  if (cached) return cached;
+  const existing = modelStringsInFlight.get(sig);
+  if (existing) return existing;
+  const pending = (async () => {
+    const isBedrock = toApiProviderClass(detectProvider(config)) === 'bedrock';
+    // Only the Bedrock path has a profile fetch to await; every other provider
+    // resolves synchronously with an empty profile list (canonical ids unchanged).
+    const profiles = isBedrock ? await modelStringsInitHooks.resolveBedrockProfiles() : [];
+    const strings = buildModelStrings(config, profiles);
+    modelStringsCache.set(sig, strings);
+    return strings;
+  })().finally(() => { modelStringsInFlight.delete(sig); });
+  modelStringsInFlight.set(sig, pending);
+  return pending;
+}
+
+export function getBuiltinModelStrings(config: ProviderConfig): ProviderModelString[] {
+  // Serve the initialized snapshot when the barrier has run for this signature;
+  // otherwise compute the interim default inline from the current env (parity with
+  // Claude's getModelStrings falling through to built-in strings pre-init).
+  const cached = modelStringsCache.get(modelStringsSignature(config));
+  if (cached) return cached;
+  return buildModelStrings(config, getBedrockInferenceProfiles());
 }
 
 /**
