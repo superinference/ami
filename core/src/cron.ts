@@ -3,6 +3,7 @@ import { projectStateDir } from './reference-journal';
 import * as path from 'path';
 import { log as coreLog } from './logger';
 import { parseEnvBool } from './utils/env';
+import { isFsInaccessible } from './utils/errno';
 
 export interface CronJob {
   id: string;
@@ -193,18 +194,13 @@ export function parseCronLock(raw: string): CronLockRecord | null {
   return { sessionId: r.sessionId, pid: r.pid, timestamp: r.timestamp };
 }
 
-/** Errno codes meaning "the file is not there / can't be gotten at" — a missing or
- *  inaccessible persisted-state file is the normal empty state, not a fault worth a
- *  diagnostic. Mirrors Claude's isFsInaccessible set (src/utils/errors.ts). */
-const FS_INACCESSIBLE_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'ELOOP']);
-
 /** True when a caught fs error is an expected "missing / inaccessible" condition
  *  (so the caller can treat it as an empty state silently) vs a genuine, unexpected
- *  read fault (I/O error, EISDIR, …) that deserves a logged diagnostic trail. */
-export function isFsInaccessible(err: unknown): boolean {
-  const code = err && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && FS_INACCESSIBLE_CODES.has(code);
-}
+ *  read fault (I/O error, EISDIR, …) that deserves a logged diagnostic trail.
+ *  Re-exported from the canonical {@link getErrnoCode} module (core/src/utils/errno.ts)
+ *  — the single `ENOENT/EACCES/EPERM/ENOTDIR/ELOOP` classifier — so cron's persisted-state
+ *  readers and every other fs catch block share ONE definition (no parallel errno set). */
+export { isFsInaccessible };
 
 /** Deterministic per-job forward jitter for a recurring fire, proportional to the
  *  ACTUAL gap between its next two fires — so at the defaults an hourly job spreads

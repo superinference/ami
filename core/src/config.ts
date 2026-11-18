@@ -7,6 +7,7 @@ import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type Skil
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { escapeRegExp } from './utils/string';
+import { getErrnoCode } from './utils/errno';
 import { levenshteinDistance } from './tools/path-suggest';
 import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT, featureFlagEnvName } from './tools/tool-gates';
 import { TIER_LOCKED_KEYS } from './settings-guard';
@@ -2818,8 +2819,11 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // surfacing that as an `unreadable` diagnostic stops a real-but-unreadable config
     // from being silently mistaken for "no config" (which would let a lower/empty
     // layer quietly take effect). Parity: Claude's handleFileSystemError — ENOENT is
-    // a debug-level non-event, every other code is a tracked error.
-    const code = err && typeof err === 'object' && 'code' in err ? String((err as NodeJS.ErrnoException).code) : '';
+    // a debug-level non-event, every other code is a tracked error. Classify via the
+    // canonical {@link getErrnoCode} accessor (core/src/utils/errno.ts) — the single
+    // source for the `err.code` cast — rather than an ad-hoc inline cast, so every fs
+    // catch block agrees on how an errno is read.
+    const code = getErrnoCode(err);
     if (code === 'ENOENT' || code === 'ENOTDIR') return { config: null };
     const message = err instanceof Error ? err.message : String(err);
     coreLog('config', `unreadable config at ${configPath}: ${message}`);
