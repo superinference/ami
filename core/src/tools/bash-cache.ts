@@ -18,9 +18,10 @@ const GIT_READ_ONLY = new Set([
 
 // Top-level shell control/compound operators. A command joined by any of these
 // is a sequence of sub-commands: it is read-only ONLY if EVERY sub-command is
-// read-only. Splitting on these (in addition to the pipe) can only make the
-// classifier stricter — never classify an actual write as read-only.
-const COMPOUND_SEPARATORS = /\s*(?:\|\||&&|;|\||&|\n)\s*/;
+// read-only. These are matched ONLY when they appear OUTSIDE quotes (see
+// splitTopLevel) — a quoted `|`/`;`/`&&` (e.g. `echo "a | b"`) is literal data,
+// not a separator. Splitting on real separators can only make the classifier
+// stricter — never classify an actual write as read-only.
 
 // `find` actions that mutate the filesystem or spawn arbitrary commands; their
 // presence disqualifies an otherwise read-only `find` invocation.
@@ -51,6 +52,78 @@ function hasUnbalancedQuotes(s: string): boolean {
     else if (c === '"' && !inSingle) inDouble = !inDouble;
   }
   return inSingle || inDouble;
+}
+
+// Split a command string into its top-level sub-commands on the shell
+// control/compound operators (`||`, `&&`, `;`, `|`, `&`, newline), matching an
+// operator ONLY when it appears OUTSIDE single/double quotes. The old regex
+// `split` was quote-blind: `echo "a | b"` was desynced into two bogus segments
+// (false negative) and, worse, quoting could mask a real operator boundary. This
+// walker respects quotes and backslash escapes so a quoted operator is literal
+// data and a real operator always splits. Returned segments keep their original
+// quotes so the per-segment redirect scan (which is itself quote-aware) still
+// works. Precondition: quotes are balanced (caller gates on hasUnbalancedQuotes).
+function splitTopLevel(s: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && !inSingle) {
+      // Preserve the escape + next char verbatim; neither can be an operator.
+      current += c;
+      if (i + 1 < s.length) current += s[++i];
+      continue;
+    }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; current += c; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; current += c; continue; }
+    if (inSingle || inDouble) { current += c; continue; }
+    // Unquoted: detect a compound operator.
+    if (c === '|' || c === '&' || c === ';' || c === '\n') {
+      segments.push(current);
+      current = '';
+      // Consume a two-char operator (`||`, `&&`) as a single boundary.
+      if ((c === '|' && s[i + 1] === '|') || (c === '&' && s[i + 1] === '&')) i++;
+      continue;
+    }
+    current += c;
+  }
+  segments.push(current);
+  return segments;
+}
+
+// Tokenize ONE segment into whitespace-separated words, respecting (and
+// STRIPPING) single/double quotes and backslash escapes — i.e. the token values
+// the shell would actually pass to the command. The old `seg.trim().split(/\s+/)`
+// kept the quote characters, so a quoted write-flag such as `find . '-delete'`
+// tokenized to `"'-delete'"` and slipped past the dangerous-flag checks, letting
+// an actual delete be cached as read-only. De-quoting closes that boundary.
+// Precondition: quotes are balanced (caller gates on hasUnbalancedQuotes).
+function tokenizeWords(seg: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let hasToken = false;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (c === '\\' && !inSingle) {
+      // Backslash escapes the next char (outside single quotes): keep it literal.
+      if (i + 1 < seg.length) { current += seg[++i]; hasToken = true; }
+      continue;
+    }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; hasToken = true; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; hasToken = true; continue; }
+    if (!inSingle && !inDouble && /\s/.test(c)) {
+      if (hasToken) { tokens.push(current); current = ''; hasToken = false; }
+      continue;
+    }
+    current += c;
+    hasToken = true;
+  }
+  if (hasToken) tokens.push(current);
+  return tokens;
 }
 
 // True if the command contains runtime expansion the shell resolves at execution
@@ -162,15 +235,17 @@ export function isReadOnlyBashCommand(command: string): boolean {
   if (containsRuntimeExpansion(trimmed)) return false;
 
   // Split on the pipe AND every top-level compound separator (;, &&, ||, &,
-  // newline). `ls && rm -rf foo` becomes [`ls`, `rm -rf foo`]; the writing
-  // sub-command disqualifies the whole command.
-  const segments = trimmed.split(COMPOUND_SEPARATORS);
+  // newline), honoring quotes. `ls && rm -rf foo` becomes [`ls`, `rm -rf foo`];
+  // the writing sub-command disqualifies the whole command.
+  const segments = splitTopLevel(trimmed);
   for (const seg of segments) {
     // An output redirection (`>`, `>>`, `2>`, `&>`, `>|`, …) in this sub-command
     // writes a file regardless of which binary runs it — disqualify caching.
     if (hasOutputRedirect(seg)) return false;
 
-    const tokens = seg.trim().split(/\s+/);
+    // Quote-aware, quote-STRIPPING tokenization so a quoted write-flag such as
+    // `find . '-delete'` is seen as `-delete` by the dangerous-flag checks below.
+    const tokens = tokenizeWords(seg);
     const cmd = tokens[0];
     if (!cmd) continue;
 

@@ -191,6 +191,48 @@ describe('isReadOnlyBashCommand — parse-failure fail-safe', () => {
 });
 
 // ---------------------------------------------------------------------------
+// isReadOnlyBashCommand — quote-aware tokenization. A quoted metacharacter must
+// not desync the word/operator tokenizer: a QUOTED separator is literal data
+// (stays one segment), while a QUOTED write-flag is still de-quoted and caught
+// (a write must never be cached as read-only). Closes the parse-desync safety
+// hole where `find . '-delete'` was classified read-only.
+// ---------------------------------------------------------------------------
+describe('isReadOnlyBashCommand — quote-aware tokenization', () => {
+  // SAFETY: a quoted write-flag must still disqualify (de-quoted before matching).
+  const WRITES: Array<[string, string]> = [
+    ["quoted find -delete ('…')", "find . '-delete'"],
+    ['quoted find -delete ("…")', 'find . "-delete"'],
+    ['quoted find -delete after a name filter', "find . -name '*.tmp' '-delete'"],
+    ['quoted sed -i in-place', "sed '-i' s/a/b/ file"],
+    ['quoted sort -o output', "sort '-o' out.txt in.txt"],
+    ['quoted xargs target rm', "ls | xargs 'rm'"],
+  ];
+  // A quoted operator is literal data — the command stays a single read-only cmd.
+  const READS: Array<[string, string]> = [
+    ['quoted pipe is literal', 'echo "a | b"'],
+    ['quoted && is literal', "echo 'a && b'"],
+    ['quoted ; is literal', 'echo "a ; b"'],
+    ['quoted find safe actions stay read-only', "find . -name '*.ts' '-type' f"],
+  ];
+  for (const [label, cmd] of WRITES) {
+    it(`write via quoted flag: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), false, JSON.stringify(cmd));
+    });
+  }
+  for (const [label, cmd] of READS) {
+    it(`quoted operator stays read-only: ${label}`, () => {
+      assert.equal(isReadOnlyBashCommand(cmd), true, JSON.stringify(cmd));
+    });
+  }
+
+  it('a REAL unquoted operator still splits even next to quotes', () => {
+    // The quoted `|` is literal, but the second, unquoted `&&` is a real
+    // boundary joining a write — must disqualify.
+    assert.equal(isReadOnlyBashCommand('echo "a | b" && rm -rf x'), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // BashResultCache — observe real Map state: hit/miss, key = command+cwd,
 // TTL expiry, LRU eviction at maxSize, per-cwd invalidation, clear, size.
 // ---------------------------------------------------------------------------
