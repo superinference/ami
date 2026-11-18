@@ -202,6 +202,15 @@ export class KeychainSecretStore implements McpSecretStore {
     return value === '' ? undefined : value;
   }
 
+  async deleteKeychainSecret(account: string): Promise<boolean> {
+    const invocation = this.deleteCommandFor(account);
+    if (!invocation) return false; // unsupported platform — no backend
+    const { code } = await this.spawn(invocation.command, invocation.args, this.timeoutMs);
+    // exit 0 = a slot was deleted; anything else (not found / tool unavailable) =
+    // nothing to clean up, reported as `false` rather than thrown.
+    return code === 0;
+  }
+
   private commandFor(account: string): { command: string; args: string[] } | null {
     if (this.platform === 'darwin') {
       return { command: 'security', args: ['find-generic-password', '-s', this.service, '-a', account, '-w'] };
@@ -211,11 +220,190 @@ export class KeychainSecretStore implements McpSecretStore {
     }
     return null;
   }
+
+  /** The DELETE invocation for a keychain account. Carries only the account name
+   *  on argv (never a secret value), so it is argv-safe on every platform — unlike
+   *  a keychain *write*, whose value the macOS `security` CLI can only take on
+   *  argv (and so is deliberately not offered here). */
+  private deleteCommandFor(account: string): { command: string; args: string[] } | null {
+    if (this.platform === 'darwin') {
+      return { command: 'security', args: ['delete-generic-password', '-s', this.service, '-a', account] };
+    }
+    if (this.platform === 'linux') {
+      return { command: 'secret-tool', args: ['clear', 'service', this.service, 'account', account] };
+    }
+    return null;
+  }
 }
 
 /** The default store used when a caller does not inject one. */
 export function defaultMcpSecretStore(opts?: KeychainStoreOptions): McpSecretStore {
   return new KeychainSecretStore(opts);
+}
+
+// ---------------------------------------------------------------------------
+// Write side — transactional keychain cleanup.
+//
+// Parity goal (xaaIdpCommand.ts setup/clear, L44-135 / L257-263): persistent MCP
+// credential mutations follow a two-phase ordering so a crash / write failure can
+// never leave a half-configured state:
+//   1. validate EVERY input BEFORE any write (a mid-write exit must not leave the
+//      config pointing at a resource whose secret was already written/removed);
+//   2. mutate the OS keychain only AFTER the settings/config write has succeeded
+//      (so a failed config write never orphans a live config whose secret is gone).
+// AMI's read-only secret-store (above) had no write path, so this discipline had
+// no home. This section adds the delete+ordering primitives; its first consumer is
+// `/mcp remove`, which clears a removed server's keychain secrets only after the
+// `.ami/mcp.json` write succeeds.
+// ---------------------------------------------------------------------------
+
+/**
+ * A {@link McpSecretStore} that can also DELETE a keychain slot — the write-side
+ * capability the transactional cleanup path needs. Only deletion is offered (not
+ * a value write) because a delete carries just the account name on argv, which is
+ * safe everywhere, whereas writing a secret value through the macOS `security` CLI
+ * would leak it into `ps`/argv.
+ */
+export interface WritableMcpSecretStore extends McpSecretStore {
+  /**
+   * Delete the keychain slot for `account`. Resolves `true` when a slot was
+   * actually deleted, `false` when none existed / the platform has no backend /
+   * the tool is unavailable. Does not throw for an ordinary "not found" — a
+   * cleanup miss must never abort the already-committed config write it follows.
+   */
+  deleteKeychainSecret(account: string): Promise<boolean>;
+}
+
+/** Writable default store (keychain-backed) for callers that mutate secrets. */
+export function defaultWritableMcpSecretStore(opts?: KeychainStoreOptions): WritableMcpSecretStore {
+  return new KeychainSecretStore(opts);
+}
+
+/**
+ * Collect the DISTINCT keychain accounts referenced by `${secret:keychain:ACCOUNT}`
+ * tokens anywhere in a server config value — recursively scanning every string
+ * leaf (so `url`, `command`, `args[]`, `headers{}`, `env{}`, and any nested field
+ * are all covered). Order-preserving and de-duplicated. `${secret:env:...}` refs
+ * are ignored (nothing to clean up — they live in the environment, not a store).
+ * Used to learn which keychain slots a server owned so they can be cleaned up when
+ * it is removed.
+ */
+export function collectKeychainAccounts(config: unknown): string[] {
+  const accounts: string[] = [];
+  const seen = new Set<string>();
+  const visit = (node: unknown): void => {
+    if (typeof node === 'string') {
+      for (const ref of parseSecretRefs(node)) {
+        if (ref.backend === 'keychain' && !seen.has(ref.key)) {
+          seen.add(ref.key);
+          accounts.push(ref.key);
+        }
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const n of node) visit(n);
+      return;
+    }
+    if (node !== null && typeof node === 'object') {
+      for (const v of Object.values(node)) visit(v);
+    }
+  };
+  visit(config);
+  return accounts;
+}
+
+/** Outcome of clearing a config's keychain secrets: which accounts had a slot
+ *  deleted (`cleared`) vs. which had nothing to delete / failed (`failed`). */
+export interface KeychainCleanupResult {
+  cleared: string[];
+  failed: string[];
+}
+
+/**
+ * Delete every keychain slot the given server `config` referenced via
+ * `${secret:keychain:ACCOUNT}`. A no-op (the store is never touched) when the
+ * config carries no keychain ref. Never throws. MUST be invoked only AFTER the
+ * config write that removed/rewrote the server has succeeded (parity: the xaa IdP
+ * `clear`/`setup` clear keychain slots only after `updateSettingsForSource`
+ * returns without error) — see {@link runMcpSecretWriteTransaction}, which
+ * enforces that ordering.
+ */
+export async function clearMcpConfigKeychainSecrets(
+  config: unknown,
+  store: WritableMcpSecretStore,
+): Promise<KeychainCleanupResult> {
+  const cleared: string[] = [];
+  const failed: string[] = [];
+  for (const account of collectKeychainAccounts(config)) {
+    if (await store.deleteKeychainSecret(account)) cleared.push(account);
+    else failed.push(account);
+  }
+  return { cleared, failed };
+}
+
+/**
+ * A persistent MCP-credential mutation expressed as its three ordered phases.
+ * {@link runMcpSecretWriteTransaction} runs them in exactly this order and stops
+ * at the first failure, so the keychain is only ever touched after the config
+ * write it depends on has committed.
+ */
+export interface McpSecretWriteTransaction {
+  /** Validate ALL inputs. Return a human-readable error to abort BEFORE anything
+   *  is written, or `null`/`undefined` to proceed. Optional (a caller that has
+   *  already validated may omit it). */
+  validate?: () => string | null | undefined;
+  /** The settings/config write. Throws on failure — a throw aborts the
+   *  transaction and the keychain is left UNTOUCHED. */
+  writeSettings: () => void;
+  /** Clear/rotate keychain secrets. Invoked ONLY after {@link writeSettings}
+   *  returns without throwing. */
+  clearSecrets: () => Promise<KeychainCleanupResult>;
+}
+
+/** Discriminated result of {@link runMcpSecretWriteTransaction}. */
+export interface McpSecretWriteResult {
+  ok: boolean;
+  /** Set when a phase failed (validation error or the settings-write message). */
+  error?: string;
+  /** True only when {@link McpSecretWriteTransaction.writeSettings} committed. */
+  settingsWritten: boolean;
+  cleared: string[];
+  failed: string[];
+}
+
+/**
+ * Run a {@link McpSecretWriteTransaction} with crash-safe ordering:
+ *   1. {@link McpSecretWriteTransaction.validate validate} — on error, return
+ *      WITHOUT writing settings or touching the keychain;
+ *   2. {@link McpSecretWriteTransaction.writeSettings writeSettings} — on throw,
+ *      return with `settingsWritten:false` and the keychain UNTOUCHED (so a failed
+ *      config write never orphans a live config whose secret was already deleted);
+ *   3. {@link McpSecretWriteTransaction.clearSecrets clearSecrets} — only reached
+ *      once settings committed.
+ * This is the single enforcement point for the validate-before-write /
+ * clear-after-write-success discipline.
+ */
+export async function runMcpSecretWriteTransaction(
+  tx: McpSecretWriteTransaction,
+): Promise<McpSecretWriteResult> {
+  const validationError = tx.validate?.() ?? null;
+  if (validationError !== null && validationError !== undefined) {
+    return { ok: false, error: validationError, settingsWritten: false, cleared: [], failed: [] };
+  }
+  try {
+    tx.writeSettings();
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      settingsWritten: false,
+      cleared: [],
+      failed: [],
+    };
+  }
+  const { cleared, failed } = await tx.clearSecrets();
+  return { ok: true, settingsWritten: true, cleared, failed };
 }
 
 /** Result of resolving the keychain refs in a string. `unresolved` carries the
