@@ -510,6 +510,61 @@ describe('loadCommands', () => {
   });
 });
 
+describe('loadCommands plugin-name provenance (CommandDefinition.pluginName)', () => {
+  it('stamps the originating plugin name on every command loaded for a bundle', () => {
+    const dir = path.join(tmpDir, 'pn-cmds');
+    fs.mkdirSync(path.join(dir, 'git'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'deploy.toml'), [
+      'description = "Deploy"',
+      'prompt = "Ship it"',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'git', 'commit.toml'), [
+      'description = "Commit"',
+      'prompt = "Commit it"',
+    ].join('\n'));
+    const cmds = loadCommands(dir, 'acme-tools');
+    assert.equal(cmds.length, 2);
+    for (const c of cmds) {
+      assert.equal(c.pluginName, 'acme-tools', `${c.name} carries its plugin name`);
+    }
+    // Namespaced lookup name still prefixes the plugin; pluginName is the SEPARATE
+    // provenance field (not conflated with the on-disk folder structure).
+    const commit = cmds.find(c => c.name === 'acme-tools:git:commit')!;
+    assert.ok(commit, 'nested command keeps its namespaced name');
+    assert.deepEqual(commit.namespace, ['git']);
+    assert.equal(commit.pluginName, 'acme-tools');
+  });
+
+  it('stamps the plugin name on a command loaded from an extraPaths file', () => {
+    const dir = path.join(tmpDir, 'pn-primary');
+    fs.mkdirSync(dir, { recursive: true });
+    const extraDir = path.join(tmpDir, 'pn-extra');
+    fs.mkdirSync(extraDir, { recursive: true });
+    const extraFile = path.join(extraDir, 'extra.toml');
+    fs.writeFileSync(extraFile, [
+      'description = "Extra"',
+      'prompt = "Extra prompt"',
+    ].join('\n'));
+    const cmds = loadCommands(dir, 'acme-tools', [extraFile]);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.name, 'acme-tools:extra');
+    assert.equal(cmds[0]!.pluginName, 'acme-tools');
+  });
+
+  it('leaves pluginName unset for a bare (non-bundle) loadCommands call', () => {
+    const dir = path.join(tmpDir, 'pn-bare');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'solo.toml'), [
+      'description = "Solo"',
+      'prompt = "Solo prompt"',
+    ].join('\n'));
+    const cmds = loadCommands(dir);
+    assert.equal(cmds.length, 1);
+    assert.equal(cmds[0]!.pluginName, undefined, 'no plugin name without a bundle');
+    assert.ok(!('pluginName' in cmds[0]!), 'pluginName key is omitted, not set to undefined');
+  });
+});
+
 describe('CommandDefinition shape', () => {
   it('has name, description, prompt, and filePath fields', () => {
     const dir = path.join(tmpDir, 'shape-cmds');

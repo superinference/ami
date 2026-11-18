@@ -491,6 +491,16 @@ export interface CommandDefinition {
    */
   source?: CommandSource;
   /**
+   * The NAME of the plugin bundle this command was discovered in (Claude parity:
+   * Command.pluginInfo.pluginManifest.name, consumed by formatDescriptionWithSource
+   * to render `(<pluginName>) <description>` rather than a generic `(plugin)` tag).
+   * Stamped during a bundle walk (when {@link loadCommands} is called with a plugin
+   * name), SEPARATE from the `:`-namespaced lookup {@link name} so a UI can show the
+   * human bundle name without re-parsing the prefix. `undefined` for a bare
+   * (non-bundle) directory load.
+   */
+  pluginName?: string;
+  /**
    * Command behavior discriminator (Claude parity: Command.type). Plugin/user
    * command FILES are always `'prompt'` commands (the body/`prompt` is injected);
    * the field is set so a consumer can branch without re-deriving it.
@@ -1372,8 +1382,13 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
     if (cmd) {
       cmd.namespace = subPath;
       // Provenance defaults to 'plugin' for a bundle walk (a pluginName was given)
-      // unless the file already declared an explicit source.
-      if (pluginName && cmd.source === undefined) cmd.source = 'plugin';
+      // unless the file already declared an explicit source. The human bundle name
+      // is stamped separately (Claude parity: pluginInfo.pluginManifest.name) so a
+      // UI can annotate the command's origin with the actual plugin name.
+      if (pluginName) {
+        cmd.pluginName = pluginName;
+        if (cmd.source === undefined) cmd.source = 'plugin';
+      }
       out.push(cmd);
     }
   }
@@ -1424,7 +1439,10 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
       const cmd = parseCommandFile(extra, name);
       if (cmd) {
         cmd.namespace = [];
-        if (plugin && cmd.source === undefined) cmd.source = 'plugin';
+        if (plugin) {
+          cmd.pluginName = plugin;
+          if (cmd.source === undefined) cmd.source = 'plugin';
+        }
         commands.push(cmd);
       }
     }
