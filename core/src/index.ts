@@ -165,6 +165,8 @@ export {
   ANALYTICS_SOURCE_CRON, buildFileOperationEvent, classifyGitOperation, IncrementalContextTracker,
   createTelemetryDiagLogger, resolveFileFlushIntervalMs,
 } from './analytics';
+export { getWorkload, hasWorkloadBoundary, runWithWorkload, WORKLOAD_CRON } from './workload-context';
+export type { Workload } from './workload-context';
 export type { TelemetryDiagLevel, TelemetryDiagLogger, TelemetryDiagLoggerDeps } from './analytics';
 export type { OtlpProtocol, BetaTracingConfig, EgressAllowlist, OtelHeadersHelperDeps,
   SinkName, ProcessMetrics, ProcessMetricsDeps, DeploymentEnvDeps, LocalOnlyFieldMatcher,

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
-import { AsyncLocalStorage } from 'async_hooks';
+import { getWorkload, hasWorkloadBoundary, runWithWorkload, WORKLOAD_CRON } from './workload-context';
 import { detectWslVersion } from './tools/bash-sandbox';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { redactCredentials, redactPaths } from './credential-guard';
@@ -1509,8 +1509,12 @@ export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<st
 // from an interactive/detached one (Claude's WORKLOAD_CRON).
 // ---------------------------------------------------------------------------
 
-/** Invocation-source tag for a turn fired by the cron scheduler (Claude's WORKLOAD_CRON). */
-export const ANALYTICS_SOURCE_CRON = 'cron';
+/**
+ * Invocation-source tag for a turn fired by the cron scheduler. Aliases the
+ * canonical {@link WORKLOAD_CRON} from `workload-context` so there is ONE source
+ * of truth for the `cron` origin tag across analytics and the ALS primitive.
+ */
+export const ANALYTICS_SOURCE_CRON = WORKLOAD_CRON;
 
 // ---------------------------------------------------------------------------
 // Structured file-operation analytics event (Claude-Code fileOperationAnalytics.ts
@@ -2194,15 +2198,6 @@ export class AnalyticsTracker {
   private _traceSource: (() => readonly SpanNode[]) | undefined;
   /** Count of runtime telemetry reconfigurations applied via {@link reconfigureTelemetry}. */
   private _reconfigureCount = 0;
-  /**
-   * ALS-backed invocation source. Unlike the mutable push/pop {@link _sourceStack},
-   * a source established via {@link runWithSource} survives every `await` boundary in
-   * that async chain and is isolated from sibling/parent chains — so a void-detached
-   * background task (cron, forked slash command, subagent) whose synchronous
-   * continuation runs before it resumes still resolves ITS own source rather than a
-   * clobbered global. Mirrors Claude's workloadContext AsyncLocalStorage.
-   */
-  private _sourceAls = new AsyncLocalStorage<{ source: string | undefined }>();
   /** Re-entrancy guard for persisted-batch recovery (Claude's `isRetrying` parity). */
   private _recovering = false;
 
@@ -2535,16 +2530,16 @@ export class AnalyticsTracker {
    * (cron, forked slash commands, subagents) whose continuation outlives the caller.
    */
   runWithSource<T>(source: string | undefined, fn: () => T): T {
-    return this._sourceAls.run({ source }, fn);
+    return runWithWorkload(source, fn);
   }
 
   currentSource(): string | undefined {
-    // An ALS boundary (survives awaits, isolated per chain) always wins — even when it
-    // was established with an undefined source (so a fresh `runWithSource(undefined, …)`
-    // shadows a leaked ambient stack rather than falling through to it). Only with NO
-    // ALS boundary at all do we consult the synchronous push/pop stack.
-    const fromAls = this._sourceAls.getStore();
-    if (fromAls !== undefined) return fromAls.source;
+    // The shared workload ALS boundary (survives awaits, isolated per chain) always
+    // wins — even when it was established with an undefined workload (so a fresh
+    // `runWithSource(undefined, …)` shadows a leaked ambient stack rather than falling
+    // through to it). Only with NO ALS boundary at all do we consult the synchronous
+    // push/pop stack.
+    if (hasWorkloadBoundary()) return getWorkload();
     return this._sourceStack.length > 0 ? this._sourceStack[this._sourceStack.length - 1] : undefined;
   }
 
@@ -2571,6 +2566,17 @@ export class AnalyticsTracker {
     }
     const sampled = effectiveRate < 1;
     let recordData = sampled ? { ...data, sample_rate: effectiveRate } : data;
+
+    // Workload-origin attribution: when the event is logged inside an ALS workload
+    // boundary (a cron fire, forked slash command, or sub-agent run established via
+    // {@link runWithWorkload}) and the caller hasn't set an explicit `source`, stamp
+    // the current workload so scheduler/detached-origin turns are attributable in the
+    // usage view without every call site threading it. Gated on an ALS boundary only
+    // (never the synchronous push/pop stack), so stack-based event shapes are unchanged.
+    if (!('source' in recordData) && hasWorkloadBoundary()) {
+      const workload = getWorkload();
+      if (workload !== undefined) recordData = { ...recordData, source: workload };
+    }
 
     // Optional per-event process metrics (memory + CPU% delta since the last event).
     if (this._processMetrics) {
