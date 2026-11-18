@@ -6,6 +6,7 @@ import {
   deriveSecurityFlags,
   commandHasArgAbbreviation,
   resolveToCanonical,
+  stripModulePrefix,
   isPowerShellParameter,
 } from './powershell-parser';
 import type {
@@ -1564,6 +1565,46 @@ export function isAcceptEditsPowerShellWrite(command: string): boolean {
   if (detectDangerousPowerShellCommand(trimmed).blocked) return false;
   if (detectUnsafeTypeCast(trimmed).blocked) return false;
   return true;
+}
+
+/**
+ * Canonicalize the FIRST (command-name) token of a shell command / permission
+ * rule pattern to its canonical PowerShell cmdlet name for cross-alias rule
+ * matching, leaving the remainder intact apart from normalizing the name↔args
+ * separator to a single space.
+ *
+ * This is the engine behind cross-alias permission matching on Windows (where
+ * AMI's bash tool runs PowerShell): a deny rule written for `Remove-Item` must
+ * also block `rm` / `del` / `ri`, and a rule for `rm` must block `Remove-Item`,
+ * because they name the same cmdlet. Mirrors Claude's PowerShell
+ * `filterRulesByContentsMatchingInput` canonical substitution.
+ *
+ * `stripModule` encodes the deny-over-match / allow-no-over-match asymmetry:
+ *  - INPUT commands and DENY/ASK rules pass `true` — a module-qualified name
+ *    (`Microsoft.PowerShell.Management\Remove-Item`) is reduced to its bare
+ *    cmdlet so an obfuscating module prefix cannot hide a denied command
+ *    (fail-safe over-match is acceptable for deny/ask).
+ *  - ALLOW rules pass `false` — the module prefix is KEPT so an allow rule
+ *    scoped to `ModuleA\Get-Thing` can NEVER over-match `ModuleB\Get-Thing`
+ *    (allow must never widen; fail-closed).
+ *
+ * The separator is normalized because prefix rule matching appends a literal
+ * space (`prefix + ' '`); without it a tab-separated `rm\t./x` canonicalizes to
+ * `remove-item\t./x` and misses a `Remove-Item` prefix rule while other paths
+ * still match it (a deny-rule bypass). The returned name is lowercase
+ * ({@link resolveToCanonical}); callers must compare case-insensitively.
+ */
+export function canonicalizePowerShellCommandName(
+  input: string,
+  stripModule: boolean,
+): string {
+  const raw = input.replace(/^\s+/, '');
+  const firstToken = raw.split(/\s+/)[0] ?? '';
+  if (firstToken.length === 0) return input;
+  const nameForResolve = stripModule ? stripModulePrefix(firstToken) : firstToken;
+  const canonical = resolveToCanonical(nameForResolve);
+  const rest = raw.slice(firstToken.length).replace(/^\s+/, ' ');
+  return canonical + rest;
 }
 
 // ---------------------------------------------------------------------------

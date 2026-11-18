@@ -6,7 +6,7 @@ import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { addFileGlobRuleToGitignore } from './utils/git';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
-import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS, canonicalizePowerShellCommandName } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
 import { unwrapWrapperChain } from './tools/command-prefix';
@@ -4613,6 +4613,24 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   // denied command.
   const strippedRaw = stripEnvVarPrefix(sub, /* safeEnvOnly */ ruleAction === 'allow');
   if (matchPattern(pattern, strippedRaw)) return true;
+  // PowerShell cross-alias rule matching (Windows only — AMI's bash tool runs
+  // PowerShell on Windows): a rule written for one spelling of a cmdlet also
+  // matches the command's OTHER spellings of the same canonical cmdlet, so a
+  // deny on `Remove-Item` blocks `rm`/`del`/`ri` and a rule on `rm` blocks
+  // `Remove-Item`. Deny/ask strip a module prefix (fail-safe over-match); allow
+  // keeps it (allow must never over-match a differently-scoped cmdlet). The
+  // compare is case-insensitive, mirroring Windows + Claude's PowerShell
+  // filterRulesByContentsMatchingInput. Gated off POSIX so a Linux `rm`/`echo`
+  // is never canonicalized into a PowerShell cmdlet (which would fail OPEN on an
+  // allow rule or wrongly fire a PowerShell-named deny).
+  if (process.platform === 'win32') {
+    const canonCmd = canonicalizePowerShellCommandName(strippedRaw, /* stripModule */ true);
+    const canonPat = canonicalizePowerShellCommandName(pattern, /* stripModule */ ruleAction !== 'allow');
+    if ((canonCmd !== strippedRaw || canonPat !== pattern) &&
+        matchPattern(canonPat, canonCmd, /* caseInsensitive */ true)) {
+      return true;
+    }
+  }
   if (ruleAction === 'allow') return false;
   // Strip env prefix FIRST (handles quoted values like FOO="a b"), THEN collapse
   // obfuscation and drop quote/backtick characters from the remaining command.
