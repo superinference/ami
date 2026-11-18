@@ -319,7 +319,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
   outputSchema: LSP_OUTPUT_SCHEMA,
   isReadOnly: true,
   isConcurrencySafe: true,
-  async execute(input: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+  async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     let client: LspDiagClient;
     try {
       client = _lspDiagHooks.getLSPClient();
@@ -402,7 +402,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
           const summary = formatNewDiagnosticsSummary(fresh);
           // PARITY (additive): verbose=false → summary line only (+ expand hint).
           const body = verbose
-            ? withNote(`${summary}\n${formatDiagnosticsDetail(fresh)}`, volumeLimitNote(removed))
+            ? withNote(`${summary}\n${formatDiagnosticsDetail(fresh, context.cwd)}`, volumeLimitNote(removed))
             : withNote(`${summary} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
           return { output: body, metadata: diagMetadata('diagnostics', fresh) };
         }
@@ -433,7 +433,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         const breakdown = summarizeDiagnosticSeverities(capped);
         const fileSummary = `${totalDiagnostics(capped)} diagnostic issue(s) in ${filePath}${breakdown ? ` (${breakdown})` : ''}`;
         const body = verbose
-          ? withNote(formatDiagnosticsDetail(capped), volumeLimitNote(removed))
+          ? withNote(formatDiagnosticsDetail(capped, context.cwd), volumeLimitNote(removed))
           : withNote(`${fileSummary} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
         return { output: body, metadata: diagMetadata('diagnostics', capped) };
       }
@@ -457,7 +457,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         const breakdown = summarizeDiagnosticSeverities(fresh);
         const breakdownSuffix = breakdown ? ` (${breakdown})` : '';
         const header = `${total} new diagnostic issue(s) across ${fresh.length} file(s)${breakdownSuffix}`;
-        const body = verbose ? `${header}:\n${formatDiagnosticsDetail(fresh)}` : `${header} (set verbose: true for the full per-diagnostic listing)`;
+        const body = verbose ? `${header}:\n${formatDiagnosticsDetail(fresh, context.cwd)}` : `${header} (set verbose: true for the full per-diagnostic listing)`;
         return { output: body, metadata: diagMetadata('diagnostics', fresh) };
       }
 
@@ -489,7 +489,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
       const header = `${total} diagnostic issue(s) across ${all.length} file(s)${breakdownSuffix}`;
       // PARITY (additive): verbose=false → header (counts) only, no per-file detail.
       const body = verbose
-        ? withNote(`${header}:\n${formatDiagnosticsDetail(all)}`, volumeLimitNote(removed))
+        ? withNote(`${header}:\n${formatDiagnosticsDetail(all, context.cwd)}`, volumeLimitNote(removed))
         : withNote(`${header} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
       return { output: body, metadata: diagMetadata('diagnostics', all) };
     } catch (e) {

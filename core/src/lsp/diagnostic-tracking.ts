@@ -249,6 +249,50 @@ export function convertPublishDiagnostics(params: PublishDiagnosticsParams): Dia
   }));
 }
 
+/**
+ * PARITY (additive): Claude Code's virtual read-only filesystem scheme
+ * (`_claude_fs_right:`), used when a diagnostic originates from its in-memory fs
+ * rather than an on-disk `file://` URI (DiagnosticsDisplay.tsx L87). AMI emits
+ * `file://` URIs, but a diagnostic SOURCE can be any editor/tool, so the header
+ * formatter strips this scheme (and labels it) for cross-source parity.
+ */
+export const CLAUDE_VIRTUAL_FS_SCHEME = '_claude_fs_right:';
+
+/**
+ * PARITY (additive): the scheme-label suffix for a diagnostic file header,
+ * mirroring Claude Code's 3-way branch (DiagnosticsDisplay.tsx L87):
+ *   - `file://…`            → `file://`
+ *   - `_claude_fs_right:…`  → `claude_fs_right`
+ *   - any other scheme      → the generic scheme name (`uri.split(':')[0]`)
+ * A bare path (no scheme), a single-letter Windows drive (`C:/…`), or an
+ * empty/undefined URI yields the empty string so no `(…)` suffix is rendered.
+ * The generic branch requires a real RFC-3986 scheme of length ≥ 2 so a drive
+ * letter is never mistaken for a scheme.
+ */
+export function diagnosticSchemeLabel(uri: string | undefined): string {
+  if (!uri) return '';
+  if (uri.startsWith('file://')) return 'file://';
+  if (uri.startsWith(CLAUDE_VIRTUAL_FS_SCHEME)) return 'claude_fs_right';
+  const m = /^([A-Za-z][A-Za-z0-9+.-]+):/.exec(uri);
+  return m ? m[1] : '';
+}
+
+/**
+ * Strip the known/virtual scheme prefixes before path handling: the Claude
+ * virtual-fs scheme ({@link CLAUDE_VIRTUAL_FS_SCHEME}) is removed here, then
+ * {@link uriToPath} handles the `file://` scheme (+ percent-decode + Windows
+ * drive). A generic-scheme URI is left intact (Claude only `.replace`s the two
+ * known schemes). Returns `null` for a missing/empty URI so callers can skip
+ * filesystem work (symbol resolution) for an unknown location.
+ */
+function diagnosticFsPath(uri: string | undefined): string | null {
+  if (!uri) return null;
+  const stripped = uri.startsWith(CLAUDE_VIRTUAL_FS_SCHEME)
+    ? uri.slice(CLAUDE_VIRTUAL_FS_SCHEME.length)
+    : uri;
+  return uriToPath(stripped);
+}
+
 /** Strip a `file://` URI to a filesystem path (percent-decoded, platform-aware). */
 export function uriToPath(uri: string): string {
   let p = uri;
@@ -585,17 +629,42 @@ export function capDiagnosticVolumeReport(files: DiagnosticFile[]): CappedDiagno
  * bad file would abort rendering and the tool's outer catch would drop EVERY
  * file's diagnostics. Mirrors the defensive `<unknown location>` guard used for
  * the other LSP tool outputs (tools/lsp.ts formatUri).
+ *
+ * PARITY (additive): strips the Claude virtual-fs scheme
+ * ({@link CLAUDE_VIRTUAL_FS_SCHEME}) and — when `cwd` is given — rebases the path
+ * relative to it via the shared {@link formatLspDisplayPath} (one canonical
+ * scheme-strip + relative-rebasing implementation; no duplicate path logic),
+ * mirroring Claude's `relative(getCwd(), uri.replace('file://','').replace(
+ * '_claude_fs_right:',''))` header. With no `cwd`, the absolute path is kept
+ * (back-compat).
  */
-export function diagnosticHeaderPath(uri: string | undefined): string {
+export function diagnosticHeaderPath(uri: string | undefined, cwd?: string): string {
   if (!uri) return '<unknown location>';
-  return uriToPath(uri);
+  const stripped = uri.startsWith(CLAUDE_VIRTUAL_FS_SCHEME)
+    ? uri.slice(CLAUDE_VIRTUAL_FS_SCHEME.length)
+    : uri;
+  return formatLspDisplayPath(stripped, cwd);
 }
 
-/** Detailed, severity-annotated rendering of diagnostic files for tool output. */
-export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
+/**
+ * Detailed, severity-annotated rendering of diagnostic files for tool output.
+ *
+ * PARITY (additive): the file header is rendered as `${displayPath} (${scheme}):`
+ * — a scheme label ({@link diagnosticSchemeLabel}) plus, when `cwd` is given, a
+ * cwd-relative path ({@link diagnosticHeaderPath}) — matching Claude Code's
+ * DiagnosticsDisplay header (DiagnosticsDisplay.tsx L87). The DISPLAY path is
+ * decoupled from the absolute filesystem path used for symbol resolution so a
+ * cwd-relative header never breaks {@link getSymbolAtPosition} (which must read
+ * the real file off disk).
+ */
+export function formatDiagnosticsDetail(files: DiagnosticFile[], cwd?: string): string {
   const rendered = files
     .map((file) => {
-      const name = diagnosticHeaderPath(file.uri);
+      const displayPath = diagnosticHeaderPath(file.uri, cwd);
+      const label = diagnosticSchemeLabel(file.uri);
+      const header = label ? `${displayPath} (${label})` : displayPath;
+      // Absolute fs path for symbol resolution, independent of the display path.
+      const fsPath = diagnosticFsPath(file.uri);
       const lines = file.diagnostics
         .map((d) => {
           const sym = diagnosticSeveritySymbol(d.severity);
@@ -607,16 +676,16 @@ export function formatDiagnosticsDetail(files: DiagnosticFile[]): string {
           // the raw location stands, so a missing/huge/unreadable file never breaks
           // rendering. The LSP range is 0-indexed, which getSymbolAtPosition expects.
           const symbol =
-            name === '<unknown location>'
+            fsPath === null
               ? null
-              : getSymbolAtPosition(name, d.range.start.line, d.range.start.character);
+              : getSymbolAtPosition(fsPath, d.range.start.line, d.range.start.character);
           const symLabel = symbol ? ` symbol: ${symbol}` : '';
           const code = d.code ? ` [${d.code}]` : '';
           const src = d.source ? ` (${d.source})` : '';
           return `  ${sym} ${loc}${symLabel} ${d.message}${code}${src}`;
         })
         .join('\n');
-      return `${name}:\n${lines}`;
+      return `${header}:\n${lines}`;
     })
     .join('\n\n');
 
