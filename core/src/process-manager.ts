@@ -970,6 +970,15 @@ interface InternalProcess extends BackgroundProcess {
    *  baseline for this task, so the FIRST report returns zero deltas (nothing to
    *  compare against yet) instead of reporting the whole current count as "new". */
   _progressBaselined?: boolean;
+  /**
+   * Byte offset into the task's output file that was last surfaced to the model by
+   * {@link ProcessManager.reportOutputDelta} (parity with Claude Code's
+   * LocalShellTaskState `lastReportedTotalLines` delta cursor). The next report reads
+   * only the bytes appended past this offset via {@link ProcessManager.getOutputTail},
+   * so a long-running background shell's progress is pushed to the model INCREMENTALLY
+   * — only the NEW output since the last report — rather than re-reading/re-reporting
+   * the whole buffer. Undefined ⇒ nothing reported yet (report from offset 0). */
+  _lastReportedOutputOffset?: number;
   /** Bounded in-memory tail of bytes seen on the child's STDERR stream, so a
    *  consumer can surface stderr DISTINCTLY from the merged output file (parity with
    *  Claude Code keeping stderr separate in the command-output renderer). Capped at
@@ -1059,6 +1068,54 @@ export interface ProgressDelta {
   tokenCountDelta: number;
   /** True on the first report for a task — a baseline was just latched and the deltas are 0. */
   firstReport: boolean;
+}
+
+/**
+ * Max bytes of NEW output surfaced per incremental delta by
+ * {@link ProcessManager.reportOutputDelta}. A delta larger than this is tail-trimmed
+ * to the last {@link OUTPUT_DELTA_MAX_BYTES} bytes (with the dropped prefix counted in
+ * {@link OutputDelta.bytesOmitted}) so a burst of background output can never flood a
+ * single model attachment. Parity with Claude Code bounding the per-report tail.
+ */
+export const OUTPUT_DELTA_MAX_BYTES = 4 * 1024; // 4 KB
+
+/**
+ * One incremental OUTPUT delta for a still-running background shell/monitor task,
+ * returned by {@link ProcessManager.reportOutputDelta} and
+ * {@link ProcessManager.drainRunningOutputDeltas}. Carries only the output appended
+ * since the last report (the "new output since last check" the model needs to follow a
+ * long-running task's progress), mirroring Claude Code's `lastReportedTotalLines`
+ * line-delta surfaced as a periodic progress attachment.
+ */
+export interface OutputDelta {
+  /** The background task this delta belongs to. */
+  taskId: string;
+  /** The task's human-readable description (for the attachment label). */
+  description: string;
+  /** The task KIND (bash | monitor) — agents never produce an output-file delta. */
+  kind: TaskKind;
+  /** The NEW output appended since the last report (tail-trimmed to {@link OUTPUT_DELTA_MAX_BYTES}). */
+  output: string;
+  /** True when the output file shrank/rotated since the last report and `output` is a
+   *  fresh read from the start rather than a strict append (see {@link ProcessManager.getOutputTail}). */
+  reset: boolean;
+  /** Bytes dropped from the FRONT of an over-cap delta (0 when the whole delta fit). */
+  bytesOmitted: number;
+}
+
+/**
+ * FUNCTIONAL (parity): the model-facing attachment note for an incremental background
+ * output delta, mirroring Claude Code's periodic "new output from a still-running
+ * task" progress attachment. Pure + exported so the wording has ONE source
+ * (No-Duplication rule) and is unit-testable in isolation.
+ */
+export function formatBackgroundOutputDeltaNote(delta: OutputDelta): string {
+  const resetNote = delta.reset ? ' [output was truncated/rotated; showing from the start]' : '';
+  const omitted = delta.bytesOmitted > 0 ? ` [earlier ${formatByteCap(delta.bytesOmitted)} of this delta omitted]` : '';
+  return (
+    `[Background task "${delta.taskId}" (${delta.description}) new output${resetNote}${omitted}:\n` +
+    `${delta.output.replace(/\n+$/, '')}]`
+  );
 }
 
 export class ProcessManager extends EventEmitter {
@@ -2229,13 +2286,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   list(): BackgroundProcess[] {
-    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest }) => rest);
+    return Array.from(this.processes.values()).map(({ proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, _lastReportedOutputOffset, ...rest }) => rest);
   }
 
   get(taskId: string): BackgroundProcess | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
-    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, ...rest } = entry;
+    const { proc, outputFd, bytesWritten, _pausedAt, _stallNotified, _lastGrowthAt, _abortSignal, _retryFn, _skipFn, _stderrTail, _maxOutputBytes, _fileMode, _adoptPoll, _onIdleCallbacks, _lastSyncedMessagesLength, _lastReportedOutputOffset, ...rest } = entry;
     return rest;
   }
 
@@ -2953,6 +3010,62 @@ export class ProcessManager extends EventEmitter {
       tokenCountDelta: firstReport ? 0 : Math.max(0, curTok - prevTok),
       firstReport,
     };
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's LocalShellTaskState `lastReportedTotalLines`
+   * delta cursor): return the OUTPUT appended to a background task's output file since
+   * the previous call, advancing the per-task offset cursor so the next call reports
+   * only still-newer bytes. Lets a consumer (the engine turn loop) push a long-running
+   * background shell's progress to the model INCREMENTALLY — just the "new output since
+   * last check" — instead of re-reading/re-reporting the whole buffer or learning
+   * nothing until the task completes.
+   *
+   * Returns `undefined` for an unknown task, a task with no output file, or when there
+   * is NO new output since the last report (so a quiet task injects nothing). An
+   * over-cap burst is tail-trimmed to the last `maxBytes` bytes with the dropped prefix
+   * counted in {@link OutputDelta.bytesOmitted}. The underlying read uses
+   * {@link getOutputTail} (O_NOFOLLOW, positioned read), so a huge log never enters the
+   * heap wholesale and a rotated/truncated file is reported with `reset: true`.
+   */
+  reportOutputDelta(taskId: string, maxBytes: number = OUTPUT_DELTA_MAX_BYTES): OutputDelta | undefined {
+    const entry = this.processes.get(taskId);
+    if (!entry || !entry.outputPath) return undefined;
+    const from = entry._lastReportedOutputOffset ?? 0;
+    const tail = this.getOutputTail(taskId, from);
+    if (!tail) return undefined;
+    // Advance the cursor even when there is nothing new, so the next report keeps
+    // comparing against the latest observed size (and a rotated file re-baselines).
+    entry._lastReportedOutputOffset = tail.offset;
+    if (tail.output === '') return undefined;
+    let output = tail.output;
+    let bytesOmitted = 0;
+    const buf = Buffer.from(output, 'utf-8');
+    if (buf.length > maxBytes) {
+      const sliced = buf.subarray(buf.length - maxBytes);
+      output = sliced.toString('utf-8');
+      bytesOmitted = buf.length - Buffer.byteLength(output, 'utf-8');
+    }
+    return { taskId, description: entry.description, kind: entry.kind, output, reset: tail.reset, bytesOmitted };
+  }
+
+  /**
+   * Collect an incremental {@link OutputDelta} for EVERY still-running background
+   * shell/monitor task that produced new output since the last drain. In-process
+   * agents ({@link InternalProcess._registered}) are excluded — they spool no shell
+   * output; their progress is surfaced via {@link reportProgressDelta} (tokens/tools).
+   * The engine calls this each turn to push running-task progress to the model (parity
+   * with Claude Code's periodic still-running-task output attachments), complementing
+   * {@link drainCompletedTasks} which only surfaces TERMINAL completions.
+   */
+  drainRunningOutputDeltas(maxBytes: number = OUTPUT_DELTA_MAX_BYTES): OutputDelta[] {
+    const deltas: OutputDelta[] = [];
+    for (const entry of this.processes.values()) {
+      if (entry.status !== 'running' || entry._registered || !entry.outputPath) continue;
+      const delta = this.reportOutputDelta(entry.taskId, maxBytes);
+      if (delta) deltas.push(delta);
+    }
+    return deltas;
   }
 
   /** Absolute path of the crash-safe task-registry sidecar (see {@link rescanTasks}). */

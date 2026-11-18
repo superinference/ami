@@ -319,8 +319,8 @@ export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint }
 export type { PythonPackageManager } from './utils/package-manager';
 export { getInstallPlatform, getOsRelease, isDistroFamily, detectMise, detectAsdf, detectHomebrew, detectWinget, detectPacman, detectDeb, detectRpm, detectApk, getPackageManager, upgradeInstructionFor, resetPackageManagerCaches, packageManagerHooks } from './package-manager';
 export type { PackageManager, InstallPlatform, OsRelease } from './package-manager';
-export { ProcessManager, TASK_STATUS, TASK_KINDS, TASK_ATTENTION_STATES, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask } from './process-manager';
-export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta, TaskMessage, ForegroundSync } from './process-manager';
+export { ProcessManager, TASK_STATUS, TASK_KINDS, TASK_ATTENTION_STATES, isTerminalTaskStatus, isActiveTaskStatus, isBackgroundTask, formatBackgroundOutputDeltaNote, OUTPUT_DELTA_MAX_BYTES } from './process-manager';
+export type { BackgroundProcess, TaskKind, TaskStatus, TaskAttentionState, ProgressDelta, OutputDelta, TaskMessage, ForegroundSync } from './process-manager';
 
 export { estimateMessageTokens, estimateConversationTokens, estimateToolCallTokens, estimateBlockTokens, estimateContentTokens, IMAGE_DOCUMENT_TOKEN_ESTIMATE, estimateTextTokens, estimateImageTokens, utf8ByteLength, estimateReadTokensForFileType, sliceToReadTokenBudget } from './token-estimator';
 export { estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
