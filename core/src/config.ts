@@ -3241,6 +3241,22 @@ export const CONFIG_WATCH_RETRY_MS = 1000;
  */
 export const CONFIG_MANAGED_POLL_MS = 60000;
 
+/**
+ * Whether a watcher `error` event is a per-path PERMISSION error (`EACCES` / `EPERM`)
+ * — an unreadable entry in the watched directory (a root-owned drop-in, a sibling file
+ * whose mode was tightened) rather than a fault in the watch handle itself. Such an
+ * error must NOT tear the whole watcher down: the rest of the directory is still
+ * observable, so reacting by closing + re-establishing would churn the watcher (and,
+ * on a persistently-unreadable sibling, loop) while dropping live reload for every
+ * other file. A non-permission error (inotify exhaustion, a genuinely dead handle) is
+ * still treated as fatal and re-established. Parity: Claude Code's changeDetector
+ * chokidar `ignorePermissionErrors: true`.
+ */
+export function isWatcherPermissionError(err: unknown): boolean {
+  const code = getErrnoCode(err);
+  return code === 'EACCES' || code === 'EPERM';
+}
+
 export interface ConfigServiceOptions {
   /**
    * Target env object the project config's `env` block is re-applied to when the
@@ -3395,8 +3411,15 @@ export class ConfigService {
       this.globalWatcher = fsHooks.watch(dir, (_e, filename) => this.onGlobalWatchEvent(filename));
       this.globalWatcher.unref();
       // A watcher error simply drops global hot-reload for this session (the project
-      // tier is unaffected); re-establishment is not attempted to keep this lean.
-      this.globalWatcher.on('error', () => {
+      // tier is unaffected); re-establishment is not attempted to keep this lean. A
+      // per-path permission error is tolerated in place (the handle still covers the
+      // rest of the dir) rather than dropping global hot-reload — parity:
+      // `ignorePermissionErrors`.
+      this.globalWatcher.on('error', (err: unknown) => {
+        if (isWatcherPermissionError(err)) {
+          coreLog('config', 'global config watcher permission error on a path; tolerating', { error: String(err) });
+          return;
+        }
         if (this.globalWatcher) { try { this.globalWatcher.close(); } catch { /* already dead */ } this.globalWatcher = null; }
       });
       coreLog('config', `watching global config ${this.globalConfigPath} for changes`);
@@ -3453,7 +3476,15 @@ export class ConfigService {
     try {
       this.managedWatcher = fsHooks.watch(dir, (_e, filename) => this.onManagedWatchEvent(filename));
       this.managedWatcher.unref();
-      this.managedWatcher.on('error', () => {
+      // A per-path permission error (an unreadable root-owned drop-in alongside a
+      // readable policy file) is tolerated in place rather than dropping managed
+      // hot-reload — parity: `ignorePermissionErrors`. The reconcile poll still covers
+      // anything the kept-open watcher cannot observe.
+      this.managedWatcher.on('error', (err: unknown) => {
+        if (isWatcherPermissionError(err)) {
+          coreLog('config', 'managed config watcher permission error on a path; tolerating', { error: String(err) });
+          return;
+        }
         if (this.managedWatcher) { try { this.managedWatcher.close(); } catch { /* already dead */ } this.managedWatcher = null; }
       });
       coreLog('config', `watching managed config ${this.managedConfigPath} for changes`);
@@ -3537,7 +3568,7 @@ export class ConfigService {
       this.watcher = fsHooks.watch(dir, (_eventType, filename) => this.onWatchEvent(filename));
       // unref so the watcher doesn't prevent process exit in test environments
       this.watcher.unref();
-      this.watcher.on('error', () => this.onWatcherError());
+      this.watcher.on('error', (err: unknown) => this.onWatcherError(err));
       coreLog('config', `watching ${this.configPath} for changes`);
     } catch {
       // watch() can throw (ENOSPC on inotify watchers, a transient FS error) — leave
@@ -3556,8 +3587,17 @@ export class ConfigService {
     this.retryTimer.unref();
   }
 
-  /** A watcher `error` event closes the dead watcher and re-establishes a fresh one. */
-  private onWatcherError(): void {
+  /**
+   * A watcher `error` event closes the dead watcher and re-establishes a fresh one —
+   * EXCEPT a per-path permission error ({@link isWatcherPermissionError}), which is
+   * tolerated in place: the handle is still live for the rest of the directory, so it
+   * is kept open rather than churned/looped. Parity: Claude's `ignorePermissionErrors`.
+   */
+  private onWatcherError(err?: unknown): void {
+    if (isWatcherPermissionError(err)) {
+      coreLog('config', 'config watcher permission error on a path; tolerating (watcher kept open)', { error: String(err) });
+      return;
+    }
     coreLog('config', 'config watcher error; re-establishing watch');
     if (this.watcher) {
       try { this.watcher.close(); } catch { /* already dead */ }
