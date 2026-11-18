@@ -16,6 +16,7 @@ import type {
 } from './powershell-parser';
 // Reuse the canonical filesystem-operation discriminant (no duplicate type).
 import type { FileOperationType } from '../permissions';
+import { escapeRegExp } from '../utils/string';
 
 /**
  * PowerShell Constrained Language Mode (CLM) type-cast security boundary.
@@ -496,9 +497,6 @@ export function isPowerShellNeverSuggest(name: string): boolean {
 type PsDetection = { blocked: boolean; reason?: string };
 const PS_PASS: PsDetection = { blocked: false };
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 const POWERSHELL_EXECUTABLES: ReadonlySet<string> = new Set([
   'pwsh',

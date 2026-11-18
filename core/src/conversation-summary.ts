@@ -1,6 +1,7 @@
 import type { Message, AssistantMessage, ToolMessage } from './types';
 import { estimateMessageTokens, estimateToolCallTokens } from './token-estimator';
 import { computeLineDiff } from './line-diff';
+import { plural } from './utils/string';
 import { FILE_MUTATING_TOOLS } from './tools/background-live-turns';
 import { isHumanTurn } from './message-display';
 
@@ -323,8 +324,8 @@ export function formatDuration(ms: number): string {
  */
 export function formatConversationSummary(meta: ConversationMeta, durationMs: number): string {
   const parts: string[] = [];
-  parts.push(`${meta.humanTurnCount} human turn${meta.humanTurnCount === 1 ? '' : 's'}`);
-  parts.push(`${meta.totalToolCalls} tool call${meta.totalToolCalls === 1 ? '' : 's'}`);
+  parts.push(`${meta.humanTurnCount} ${plural(meta.humanTurnCount, 'human turn')}`);
+  parts.push(`${meta.totalToolCalls} ${plural(meta.totalToolCalls, 'tool call')}`);
 
   const topTools = [...meta.toolUseCounts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -333,7 +334,7 @@ export function formatConversationSummary(meta: ConversationMeta, durationMs: nu
   if (topTools.length > 0) parts.push(`top: ${topTools.join(', ')}`);
 
   if (meta.filesModified.size > 0) {
-    parts.push(`${meta.filesModified.size} file${meta.filesModified.size === 1 ? '' : 's'} modified (+${meta.linesAdded}/-${meta.linesRemoved})`);
+    parts.push(`${meta.filesModified.size} ${plural(meta.filesModified.size, 'file')} modified (+${meta.linesAdded}/-${meta.linesRemoved})`);
   }
 
   parts.push(formatDuration(durationMs));

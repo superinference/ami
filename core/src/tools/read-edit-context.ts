@@ -24,6 +24,7 @@
 
 import { open, type FileHandle } from 'fs/promises';
 import { isENOENT } from '../utils/errno';
+import { plural } from '../utils/string';
 
 /** Default number of context lines to show on each side of the window center. */
 export const DEFAULT_EDIT_CONTEXT_LINES = 3;
@@ -163,13 +164,13 @@ export function extractContextWindow(
 export function renderContextWindow(window: EditContextWindow): string {
   const parts: string[] = [];
   if (window.omittedBefore > 0) {
-    parts.push(`... (${window.omittedBefore} line${window.omittedBefore === 1 ? '' : 's'} above)`);
+    parts.push(`... (${window.omittedBefore} ${plural(window.omittedBefore, 'line')} above)`);
   }
   for (const l of window.lines) {
     parts.push(`${l.lineNumber}: ${l.text}`);
   }
   if (window.omittedAfter > 0) {
-    parts.push(`... (${window.omittedAfter} line${window.omittedAfter === 1 ? '' : 's'} below)`);
+    parts.push(`... (${window.omittedAfter} ${plural(window.omittedAfter, 'line')} below)`);
   }
   return parts.join('\n');
 }

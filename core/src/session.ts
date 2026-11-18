@@ -10,6 +10,7 @@ import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
 import { stripDisplayTags, extractTag } from './utils/display-tags';
+import { escapeRegExp } from './utils/string';
 import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
 import { isWSL } from './utils/env';
@@ -1225,11 +1226,6 @@ export interface TagToggleResult {
   error?: string;
 }
 
-/** Escape a literal string for safe embedding in a RegExp source (used when a
- *  user-supplied title becomes the base of a fork-name collision pattern). */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Decide whether a project-slug directory NAME under the global projects root

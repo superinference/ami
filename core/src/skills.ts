@@ -16,6 +16,7 @@ import type { McpServerConfig } from './mcp/manager';
 import type { ThinkingLevel } from './model-capabilities';
 import { isSafeRelativePath } from './skill-catalog';
 import { estimateTokens } from './utils/tokens';
+import { escapeRegExp } from './utils/string';
 
 /** The classification tokens a command/skill may declare (parity with Claude's
  *  command `kind`). `'workflow'` badges a workflow-backed command in help/typeahead;
@@ -2093,11 +2094,6 @@ export function classifyAgentMcpServerSpecs(raw: RawAgentMcpServers): Classified
 // literal. Single canonical substitution shared by the SkillManager content path.
 // ---------------------------------------------------------------------------
 
-/** Escape a string for literal use inside a RegExp (so an arg name carrying a
- *  regex metacharacter matches literally instead of throwing / mis-matching). */
-function escapeForRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 // ---------------------------------------------------------------------------
 // Path/argument-scoped tool allowlist → permission ALLOW rules — the
@@ -2291,7 +2287,7 @@ export function contentReferencesArgName(content: string, name: string): boolean
   if (typeof content !== 'string' || typeof name !== 'string' || name.length === 0) {
     return false;
   }
-  const esc = escapeForRegExp(name);
+  const esc = escapeRegExp(name);
   return (
     content.includes(`\${${name}}`) ||
     new RegExp(`\\$${esc}(?![\\[\\w])`).test(content)
@@ -2322,7 +2318,7 @@ export function substituteNamedArgPlaceholders(
   argumentNames.forEach((argName, i) => {
     if (skip.has(argName)) return;
     const value = tokens[i] ?? '';
-    const esc = escapeForRegExp(argName);
+    const esc = escapeRegExp(argName);
     // Braced ${name}
     out = out.replace(new RegExp(`\\$\\{${esc}\\}`, 'g'), () => value);
     // Bare $name — not followed by a word char or `[` (so $name[0] / $namexyz stay)

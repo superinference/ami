@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { formatTokenCount } from './token-format';
+import { capitalize } from './utils/string';
 
 export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -1672,7 +1673,7 @@ export function getAvailableContextUpgrade(
   const family = id.includes('opus') ? 'opus' : id.includes('sonnet') ? 'sonnet' : null;
   if (!family) return null;
   const alias = `${family}[1m]`;
-  const name = `${family.charAt(0).toUpperCase()}${family.slice(1)} 1M`;
+  const name = `${capitalize(family)} 1M`;
   const multiplier = typeof currentContextLimit === 'number' && currentContextLimit > 0
     ? Math.max(2, Math.round(ONE_MILLION_CONTEXT / currentContextLimit))
     : 5;

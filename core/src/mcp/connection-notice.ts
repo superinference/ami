@@ -24,6 +24,8 @@
  * (`hooks/notifs/useIDEStatusIndicator`).
  */
 
+import { plural } from '../utils/string';
+
 /** The user-facing classification of an MCP connection change. */
 export type McpConnectionState = 'lost' | 'recovered' | 'failed';
 
@@ -109,7 +111,7 @@ export function createMcpConnectionNoticeBuffer(source: McpConnectionEventSource
 
   source.on('reconnect-failed', (server: string, attempts: number) => {
     lost.add(server);
-    pending.push({ server, state: 'failed', detail: `after ${attempts} attempt${attempts === 1 ? '' : 's'}` });
+    pending.push({ server, state: 'failed', detail: `after ${attempts} ${plural(attempts, 'attempt')}` });
   });
 
   return {

@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import { log as coreLog } from './logger';
+import { escapeRegExp } from './utils/string';
 
 /**
  * OS-NATIVE managed-policy sources (macOS configuration profiles / Windows Group
@@ -112,7 +113,7 @@ export function getMacOSManagedPlistPaths(): Array<{ path: string; label: string
  * direct unit coverage. Parity: Claude's `parseRegQueryStdout`.
  */
 export function parseRegQueryStdout(stdout: string, valueName: string = WINDOWS_REGISTRY_VALUE_NAME): string | null {
-  const escaped = valueName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegExp(valueName);
   const re = new RegExp(`^\\s+${escaped}\\s+REG_(?:EXPAND_)?SZ\\s+(.*)$`, 'i');
   for (const line of stdout.split(/\r?\n/)) {
     const match = line.match(re);

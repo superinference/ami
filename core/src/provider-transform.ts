@@ -2,6 +2,7 @@ import type { Message, ToolDefinition } from './types';
 import { isEnvTruthy } from './analytics';
 import { API_IMAGE_MAX_BASE64_SIZE } from './tools/file-read';
 import { formatFileSize } from './utils/format';
+import { plural } from './utils/string';
 
 /** Anthropic's hard per-request media ceiling (images + documents). The API rejects a
  *  request carrying more than this with a confusing error, so we proactively strip the
@@ -91,7 +92,7 @@ export class ImageSizeError extends Error {
       .map(o => `message ${o.messageIndex} image ${o.imageIndex} (${formatFileSize(o.base64Size)} base64)`)
       .join(', ');
     super(
-      `${oversized.length} image${oversized.length === 1 ? '' : 's'} exceed the API limit of ` +
+      `${oversized.length} ${plural(oversized.length, 'image')} exceed the API limit of ` +
       `${formatFileSize(limit)} base64 each: ${list}. Resize or crop ` +
       `${oversized.length === 1 ? 'it' : 'them'}, or inspect with bash instead of attaching.`,
     );

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { isSafeSegment } from './skill-catalog';
+import { escapeRegExp } from './utils/string';
 import { parseFrontmatter, parseFrontmatterList } from './memory';
 import { validateLspServerConfig, type LspServerConfig } from './lsp/config';
 
@@ -1033,7 +1034,7 @@ function unescapeTomlBasic(value: string, stopAtQuote: boolean): string {
 function parseTomlString(content: string, key: string): string | undefined {
   const lines = content.split('\n');
   const keyRe = new RegExp(
-    '^\\s*' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=\\s*(.*)$',
+    '^\\s*' + escapeRegExp(key) + '\\s*=\\s*(.*)$',
   );
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -1493,13 +1494,13 @@ function applyCommandsMetadata(commands: CommandDefinition[], ctx: PluginCommand
 
 /** Parse a TOML `key = true|false` boolean, or undefined when absent/other. */
 function parseTomlBool(content: string, key: string): boolean | undefined {
-  const m = content.match(new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=\\s*(true|false)\\b`, 'm'));
+  const m = content.match(new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(true|false)\\b`, 'm'));
   return m ? m[1] === 'true' : undefined;
 }
 
 /** Parse a TOML `key = ["a", "b"]` string array, or undefined when absent. */
 function parseTomlStringArray(content: string, key: string): string[] | undefined {
-  const m = content.match(new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=\\s*\\[([^\\]]*)\\]`, 'm'));
+  const m = content.match(new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*\\[([^\\]]*)\\]`, 'm'));
   if (!m) return undefined;
   const inner = m[1]!.trim();
   if (!inner) return [];

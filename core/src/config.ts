@@ -6,6 +6,7 @@ import { filterSettingsEnv, isHostManagedProvider, type EnvTrustTier, type EnvRe
 import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type SkillUsageStat } from './types';
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
+import { escapeRegExp } from './utils/string';
 import { levenshteinDistance } from './tools/path-suggest';
 import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT, featureFlagEnvName } from './tools/tool-gates';
 import { TIER_LOCKED_KEYS } from './settings-guard';
@@ -2088,7 +2089,7 @@ export function rawConfigContainsKey(raw: string, key: string): boolean {
   } catch {
     // Unparseable — fall through to the raw property-name scan below.
   }
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegExp(key);
   return new RegExp(`(^|[{,\\s])"${escaped}"\\s*:`).test(raw);
 }
 

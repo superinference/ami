@@ -8,6 +8,7 @@ import { suggestSimilarPaths } from './path-suggest';
 import { coerceBool, coerceNumber } from '../utils/coerce';
 import { resolveRipgrepConfig } from './ripgrep-config';
 import { toRgIgnoreGlob, toGrepExcludeGlob, matchesReadIgnore } from './read-ignore';
+import { escapeRegExp } from '../utils/string';
 
 /**
  * Optional numeric tool-arg: tolerate a model-quoted number ("5") via the shared
@@ -364,7 +365,7 @@ Usage:
       const ordered = outputMode === 'files_with_matches'
         ? sortFilesWithMatchesByMtime(rgOutcome.output)
         : rgOutcome.output;
-      const cleaned = ordered.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+      const cleaned = ordered.replace(new RegExp(escapeRegExp(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (rgOutcome.outputTruncated && !result.isError) {
         result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
@@ -399,7 +400,7 @@ Usage:
       const ordered = outputMode === 'files_with_matches'
         ? sortFilesWithMatchesByMtime(grepOutcome.output)
         : grepOutcome.output;
-      const cleaned = ordered.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+      const cleaned = ordered.replace(new RegExp(escapeRegExp(resolved) + '/', 'g'), '');
       const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
       if (grepOutcome.outputTruncated && !result.isError) {
         result.output += `\n\n[Warning: search output exceeded ${MAX_SEARCH_OUTPUT_BYTES / 1024 / 1024}MB and was cut short — narrow the pattern or path for complete results.]`;
@@ -919,9 +920,6 @@ export function runSearch(
   });
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Order a `files_with_matches` result (one file path per line) newest-first by
@@ -977,7 +975,7 @@ function partialOnTimeout(
   const lastNl = output.lastIndexOf('\n');
   const complete = lastNl >= 0 ? output.slice(0, lastNl) : '';
   if (!complete.trim()) return null;
-  const cleaned = complete.replace(new RegExp(escapeRegex(resolved) + '/', 'g'), '');
+  const cleaned = complete.replace(new RegExp(escapeRegExp(resolved) + '/', 'g'), '');
   const result = formatResult(cleaned, pattern, headLimit, offset, outputMode);
   if (!result.isError) {
     result.output += `\n\n[Warning: search timed out after ${grepHooks.timeoutMs / 1000}s — partial results shown. Narrow the pattern or path for complete results.]`;

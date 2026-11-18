@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import { inspect } from 'node:util';
+import { capitalize } from './utils/string';
 
 /**
  * Canonical secret-detection catalog. Each rule pairs a stable snake_case type
@@ -156,7 +157,7 @@ export function getCredentialLabel(type: string): string {
   return type
     .split('_')
     .filter(Boolean)
-    .map(part => LABEL_SPECIAL_CASE[part] ?? (part.charAt(0).toUpperCase() + part.slice(1)))
+    .map(part => LABEL_SPECIAL_CASE[part] ?? capitalize(part))
     .join(' ');
 }
 

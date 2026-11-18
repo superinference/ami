@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
+import { plural } from '../utils/string';
 
 const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip', 'shell_id', 'prune_idle']);
 
@@ -249,7 +250,7 @@ export const taskKillTool: ToolDefinition = {
       const prunedTaskIds = pruned.map(p => p.taskId);
       const output = pruned.length === 0
         ? 'No idle agents to prune — every agent is busy or already stopped.'
-        : `Pruned ${pruned.length} idle agent${pruned.length === 1 ? '' : 's'}: ${prunedTaskIds.join(', ')}.`;
+        : `Pruned ${pruned.length} idle ${plural(pruned.length, 'agent')}: ${prunedTaskIds.join(', ')}.`;
       return { output, isError: false, metadata: meta({ reason: 'pruned_idle', prunedTaskIds, prunedCount: pruned.length }) };
     }
 

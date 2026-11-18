@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { resolveConfigDir, journalPathFor } from './reference-journal';
+import { plural } from './utils/string';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
@@ -787,8 +788,7 @@ function stopHookInfoLabel(id: string): string {
 export function formatStopHookSummaryMessage(summary: StopHookSummary): string {
   const slow = summary.totalDurationMs >= HOOK_TIMING_DISPLAY_THRESHOLD_MS;
   if (!summary.hasOutput && !slow) return '';
-  const plural = summary.count === 1 ? '' : 's';
-  const lines: string[] = [`Ran ${summary.count} stop hook${plural} in ${summary.totalDurationMs}ms`];
+  const lines: string[] = [`Ran ${summary.count} ${plural(summary.count, 'stop hook')} in ${summary.totalDurationMs}ms`];
   summary.hookInfos.forEach((info, i) => {
     // Attribute the row to its backing config when known (Claude Code's StopHookInfo
     // command / promptText) so a slow/failing hook is named, not just numbered.

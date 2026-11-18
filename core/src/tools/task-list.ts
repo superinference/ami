@@ -2,6 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { isTerminalTaskStatus, PROGRESS_IDLE_MS } from '../process-manager';
 import type { BackgroundProcess, TaskStatus } from '../process-manager';
 import { truncateActivity } from './text-truncate';
+import { plural } from '../utils/string';
 
 /**
  * PARITY (Claude Code BackgroundTask.tsx `activityLimit`, `truncate(cmd, limit,
@@ -407,7 +408,7 @@ export const taskListTool: ToolDefinition = {
     const dropped = lines.length - kept.length;
     let body = kept.join('\n');
     if (dropped > 0) {
-      body += `\n… ${dropped} more task${dropped === 1 ? '' : 's'} (output truncated)`;
+      body += `\n… ${dropped} more ${plural(dropped, 'task')} (output truncated)`;
     }
     return { output: `${header}\n${summary}\n${typeLine}${body}`, isError: false };
   },
