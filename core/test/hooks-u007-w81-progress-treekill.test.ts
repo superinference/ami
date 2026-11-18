@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import {
   HookManager,
   getHookDisplayText,
+  computeHookId,
   type SessionContext,
   type HookProgressEvent,
 } from '../src/hooks';
@@ -78,9 +79,10 @@ describe('hookProgress / hookResolved events (sync command hook)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
     assert.equal(progress.length, 1, 'one hookProgress');
-    assert.deepEqual(progress[0], { event: 'sessionStart', hookType: 'command', label: 'true' });
+    const id = computeHookId('sessionStart', 'command', 'true', 0);
+    assert.deepEqual(progress[0], { event: 'sessionStart', hookType: 'command', label: 'true', hookId: id, hookName: 'true' });
     assert.equal(resolved.length, 1, 'one hookResolved');
-    assert.deepEqual(resolved[0], { event: 'sessionStart', hookType: 'command', label: 'true', success: true });
+    assert.deepEqual(resolved[0], { event: 'sessionStart', hookType: 'command', label: 'true', success: true, hookId: id, hookName: 'true', outcome: 'success' });
   });
 
   it('reports success:false on hookResolved when the command hook exits non-zero', async () => {

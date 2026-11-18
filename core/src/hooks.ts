@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import { resolveConfigDir, journalPathFor } from './reference-journal';
 import * as path from 'path';
 import * as os from 'os';
@@ -2411,6 +2412,93 @@ export interface HookLifecycleEvent {
   label: string;
   /** Present on `resolved`: whether the hook completed successfully. */
   success?: boolean;
+  /** Stable per-hook identifier (Claude Code's HookStartedEvent/HookResponseEvent
+   *  `hookId`): the SAME value on the start-`progress`, every streaming-`progress`,
+   *  and the terminal `resolved` event for one hook run, so a frontend can correlate
+   *  a hook's lifecycle across emissions. Derived by {@link computeHookId}. */
+  hookId?: string;
+  /** Human-facing hook name (Claude Code's `hookName`): the display label
+   *  (statusMessage when set, else the hook's content). Carried alongside the
+   *  internal {@link HookLifecycleEvent.label} for parity with Claude's event shape. */
+  hookName?: string;
+  /** Present on `resolved`: the 3-way terminal classification (Claude Code's
+   *  HookResponseEvent.outcome) — `success` | `error` | `cancelled`. Finer-grained
+   *  than {@link HookLifecycleEvent.success}; `cancelled` means the run was aborted
+   *  (user interrupt / shutdown) rather than failing on its own. Set via
+   *  {@link classifyHookOutcome}. */
+  outcome?: HookLifecycleOutcome;
+  /** Present on a STREAMING `progress` event (Claude Code's emitHookProgress): the
+   *  hook's incremental captured stdout so far while it is still running. Absent on
+   *  the initial announce-`progress` and on `resolved`. */
+  stdout?: string;
+  /** Present on a STREAMING `progress` event: incremental captured stderr so far. */
+  stderr?: string;
+  /** Present on a STREAMING `progress` event: combined stdout+stderr so far. */
+  output?: string;
+}
+
+/** Terminal 3-way outcome of a hook run (Claude Code's HookResponseEvent.outcome). */
+export const HOOK_LIFECYCLE_OUTCOMES = ['success', 'error', 'cancelled'] as const;
+export type HookLifecycleOutcome = (typeof HOOK_LIFECYCLE_OUTCOMES)[number];
+
+/**
+ * Classify a hook run's terminal outcome (Claude Code's finalizeHook outcome:
+ * `aborted ? 'cancelled' : success ? 'success' : 'error'`). `aborted` takes
+ * precedence — a cancelled (interrupt/shutdown/async-timeout) run is `cancelled`
+ * even if its own work had "succeeded" up to the abort. The single source for the
+ * 3-way classification shared by the sync `hookResolved` lifecycle event and the
+ * async `hookResponse` completion record (no per-site re-derivation). Pure.
+ */
+export function classifyHookOutcome(success: boolean, aborted: boolean): HookLifecycleOutcome {
+  if (aborted) return 'cancelled';
+  return success ? 'success' : 'error';
+}
+
+/**
+ * Stable per-hook identifier for lifecycle-event correlation (Claude Code's
+ * per-hook `hookId`). Deterministic in the firing event, the hook type, the hook's
+ * content, and its index within the event's hook array — so two identical hooks on
+ * the same event still get distinct ids, while the same hook gets the same id on
+ * every one of its lifecycle emissions (start → streaming → resolved). Pure.
+ */
+export function computeHookId(event: string, hookType: HookConfigType, content: string, index: number): string {
+  return createHash('sha256').update(`${event}\0${hookType}\0${index}\0${content}`).digest('hex').slice(0, 12);
+}
+
+/** AMI's live-progress polling cadence (ms) for a running command hook. Claude
+ *  Code's startHookProgressInterval defaults to 1000ms; AMI polls more frequently
+ *  so a short hook still surfaces at least one incremental update. */
+export const HOOK_PROGRESS_INTERVAL_MS = 250;
+
+/**
+ * Poll a running hook's incremental output on a fixed interval and deliver each
+ * CHANGED snapshot to `onProgress` (Claude Code's `startHookProgressInterval`):
+ * gated by {@link shouldEmitHookLifecycle} (a gated-off event never polls and gets
+ * a no-op stop), deduped on the combined `output` so unchanged polls are dropped,
+ * and timer-unref'd so a pending poll never keeps the process alive. Returns a stop
+ * closure that clears the interval. `intervalMs` defaults to
+ * {@link HOOK_PROGRESS_INTERVAL_MS}. Pure of the HookManager so it is unit-testable
+ * in isolation; {@link HookManager.streamHookProgress} wires it to the lifecycle
+ * channel.
+ */
+export function startHookProgressInterval(params: {
+  event: string;
+  allEnabled: boolean;
+  getOutput: () => Promise<{ stdout: string; stderr: string; output: string }>;
+  onProgress: (o: { stdout: string; stderr: string; output: string }) => void;
+  intervalMs?: number;
+}): () => void {
+  if (!shouldEmitHookLifecycle(params.event, params.allEnabled)) return () => {};
+  let lastEmitted = '';
+  const interval = setInterval(() => {
+    void params.getOutput().then(({ stdout, stderr, output }) => {
+      if (output === lastEmitted) return;
+      lastEmitted = output;
+      params.onProgress({ stdout, stderr, output });
+    });
+  }, params.intervalMs ?? HOOK_PROGRESS_INTERVAL_MS);
+  if (typeof interval.unref === 'function') interval.unref();
+  return () => clearInterval(interval);
 }
 
 /** Bounded cap on buffered hook-lifecycle events (Claude Code's MAX_PENDING_EVENTS). */
@@ -2543,6 +2631,14 @@ export interface HookProgressEvent {
   label: string;
   /** Present only on `hookResolved`: whether the hook ran successfully. */
   success?: boolean;
+  /** Stable per-hook id (Claude Code `hookId`) correlating this hook's
+   *  `hookProgress` and `hookResolved` emissions. From {@link computeHookId}. */
+  hookId?: string;
+  /** Human-facing hook name (Claude Code `hookName`) — the display label. */
+  hookName?: string;
+  /** Present only on `hookResolved`: the 3-way terminal classification
+   *  (success | error | cancelled), from {@link classifyHookOutcome}. */
+  outcome?: HookLifecycleOutcome;
 }
 
 /**
@@ -3001,6 +3097,10 @@ async function runCommandHookAsync(
   // hook's stdin, and the request lines are stripped from the captured stdout.
   // Its presence also keeps stdin open for the response round-trip.
   requestPrompt?: PromptRequestHandler,
+  // Live-output sink (Claude Code's getHookDisplayText progress source): updated
+  // with the current accumulated stdout/stderr on every chunk so a caller polling
+  // it (startHookProgressInterval) can stream the hook's output while it runs.
+  liveOutput?: { stdout: string; stderr: string },
 ): Promise<{ exitCode: number; stdout: string; stderr: string; output: string }> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Hook cancelled')); return; }
@@ -3049,10 +3149,12 @@ async function runCommandHookAsync(
       scanner?.feed(chunk);
       const r = boundedHookAppend(stdout, chunk, MAX_HOOK_COMMAND_OUTPUT_BYTES);
       stdout = r.text; if (r.truncated) stdoutTruncated = true;
+      if (liveOutput) liveOutput.stdout = stdout;
     });
     proc.stderr?.on('data', (d: Buffer) => {
       const r = boundedHookAppend(stderr, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES);
       stderr = r.text; if (r.truncated) stderrTruncated = true;
+      if (liveOutput) liveOutput.stderr = stderr;
     });
 
     proc.stdin?.on('error', (err: NodeJS.ErrnoException) => {
@@ -3243,9 +3345,9 @@ export class HookManager extends EventEmitter {
     // channel so progress/resolved events emitted before a subscriber attaches
     // are not lost (Claude Code's hookEvents.ts pending-buffer guarantee).
     this.on('hookProgress', (p: HookProgressEvent) =>
-      this.publishHookLifecycle({ phase: 'progress', event: p.event, hookType: p.hookType, label: p.label }));
+      this.publishHookLifecycle({ phase: 'progress', event: p.event, hookType: p.hookType, label: p.label, hookId: p.hookId, hookName: p.hookName }));
     this.on('hookResolved', (p: HookProgressEvent & { success?: boolean }) =>
-      this.publishHookLifecycle({ phase: 'resolved', event: p.event, hookType: p.hookType, label: p.label, success: p.success }));
+      this.publishHookLifecycle({ phase: 'resolved', event: p.event, hookType: p.hookType, label: p.label, success: p.success, hookId: p.hookId, hookName: p.hookName, outcome: p.outcome }));
   }
 
   /**
@@ -3645,8 +3747,7 @@ export class HookManager extends EventEmitter {
         // means the hook was cancelled (shutdown) or hit its async-timeout budget;
         // otherwise `outcome.success` discriminates success vs error. Parity:
         // Claude Code's finalizeHook/emitHookResponse (AsyncHookRegistry.ts).
-        const resolvedOutcome: 'success' | 'error' | 'cancelled' =
-          ac.signal.aborted ? 'cancelled' : outcome.success ? 'success' : 'error';
+        const resolvedOutcome: HookLifecycleOutcome = classifyHookOutcome(outcome.success, ac.signal.aborted);
         this.emit('hookResponse', {
           event,
           outcome: resolvedOutcome,
@@ -3685,40 +3786,84 @@ export class HookManager extends EventEmitter {
     // getHookDisplayText): announce a command/prompt/http/agent hook is about to
     // run and, when it settles, that it resolved — so a frontend can render a
     // "Running <event> hook…" indicator instead of a silent multi-second hang.
-    const progress = this.hookProgressPayload(config, event);
+    const progress = this.hookProgressPayload(config, event, idx);
     this.emit('hookProgress', progress);
     if (config.async) {
       this.fireAsyncHook(
         config, cwd, eventData, event, signal,
         config.once ? () => this.removeHookOnce(arr, fn, event) : undefined,
         envFileHint,
-        (success) => this.emit('hookResolved', { ...progress, success }),
+        (success) => this.emit('hookResolved', { ...progress, success, outcome: classifyHookOutcome(success, signal?.aborted ?? false) }),
       );
       return '';
     }
     const outcome = { success: true };
+    // Live progress streaming (Claude Code's emitHookProgress driven by
+    // startHookProgressInterval): for a command hook, poll its accumulating
+    // stdout/stderr while it runs and publish each changed snapshot on the
+    // lifecycle channel, so a long hook shows partial output instead of only a
+    // start + end. `live` is mutated in place by runCommandHookAsync.
+    const live = config.type === 'command' ? { stdout: '', stderr: '' } : undefined;
+    const stopStream = live
+      ? this.streamHookProgress(progress, () => Promise.resolve({ stdout: live.stdout, stderr: live.stderr, output: live.stdout + live.stderr }))
+      : undefined;
     try {
-      const result = await this.runHookByType(config, cwd, eventData, signal, outcome, envFileHint);
+      const result = await this.runHookByType(config, cwd, eventData, signal, outcome, envFileHint, live);
       if (config.once && outcome.success) this.removeHookOnce(arr, fn, event);
       return result;
     } finally {
-      this.emit('hookResolved', { ...progress, success: outcome.success });
+      stopStream?.();
+      this.emit('hookResolved', { ...progress, success: outcome.success, outcome: classifyHookOutcome(outcome.success, signal?.aborted ?? false) });
     }
   }
 
   /** Build the {@link HookProgressEvent} payload for a hook about to run: the
-   *  firing event name, the hook type, and the author-facing display label
-   *  (statusMessage when set, else the hook's sanitized content) — the same
-   *  getHookDisplayText the audit view uses, so progress + audit stay in sync. */
+   *  firing event name, the hook type, the author-facing display label
+   *  (statusMessage when set, else the hook's sanitized content — the same
+   *  getHookDisplayText the audit view uses, so progress + audit stay in sync),
+   *  and the stable per-hook id/name ({@link computeHookId}) that correlates this
+   *  hook's progress/streaming/resolved emissions (Claude Code hookId/hookName). */
   private hookProgressPayload(
     config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
     event: string,
+    index: number,
   ): HookProgressEvent {
+    const label = getHookDisplayText({ statusMessage: config.statusMessage, content: describeHookContent(config) });
     return {
       event,
       hookType: config.type,
-      label: getHookDisplayText({ statusMessage: config.statusMessage, content: describeHookContent(config) }),
+      label,
+      hookId: computeHookId(event, config.type, describeHookContent(config), index),
+      hookName: label,
     };
+  }
+
+  /** Wire the pure {@link startHookProgressInterval} to the lifecycle channel:
+   *  poll `getOutput` on {@link HOOK_PROGRESS_INTERVAL_MS} and publish each changed
+   *  snapshot as a streaming `progress` {@link HookLifecycleEvent} carrying the
+   *  hook's id/name + incremental stdout/stderr/output. Honours the all-events gate
+   *  (sessionStart/setup always stream; others only when enabled). Returns a stop
+   *  closure. */
+  private streamHookProgress(
+    progress: HookProgressEvent,
+    getOutput: () => Promise<{ stdout: string; stderr: string; output: string }>,
+  ): () => void {
+    return startHookProgressInterval({
+      event: progress.event,
+      allEnabled: this._allHookEventsEnabled,
+      getOutput,
+      onProgress: ({ stdout, stderr, output }) => this.publishHookLifecycle({
+        phase: 'progress',
+        event: progress.event,
+        hookType: progress.hookType,
+        label: progress.label,
+        hookId: progress.hookId,
+        hookName: progress.hookName,
+        stdout,
+        stderr,
+        output,
+      }),
+    });
   }
 
   /** Await every in-flight async hook to settle (graceful shutdown). */
@@ -5974,6 +6119,10 @@ export class HookManager extends EventEmitter {
     // env-ingestible command hook receives its deterministic CLAUDE_ENV_FILE path
     // (see buildHookEnv). Absent for non-arm callers / non-ingestible events.
     envFileHint?: { event: string; index: number },
+    // Live-output sink for progress streaming: when supplied (sync command-hook
+    // path), runCommandHookAsync writes its accumulating stdout/stderr here on each
+    // chunk so {@link HookManager.streamHookProgress} can poll it mid-run.
+    liveOutput?: { stdout: string; stderr: string },
   ): Promise<string> {
     switch (config.type) {
       case 'command': {
@@ -6024,7 +6173,7 @@ export class HookManager extends EventEmitter {
         const command = substituteUserConfigValues(substitutePluginData(substitutePluginRoot(config.command, pluginRoot), pluginDataDir), pluginOptions);
         const args = config.args?.map(a => substituteUserConfigValues(substitutePluginData(substitutePluginRoot(a, pluginRoot), pluginDataDir), pluginOptions));
         try {
-          const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler);
+          const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler, liveOutput);
           // Capture the raw result on the shared outcome so an async hook's
           // `hook_response` completion record can report the exit code and the
           // SEPARATELY-captured streams (parity: Claude Code's split stdout/stderr +
