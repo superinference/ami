@@ -516,6 +516,8 @@ export { containsCredential, redactCredentials, findCredentials, getCredentialLa
 export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, evaluateSafeMode, SafeModeGuard, BLOCKED_RESOURCES, resourceTier, describeBlocked, RESOURCE_DESCRIPTIONS, RESOURCE_WHY, SAFE_MODE_GUIDANCE } from './safe-mode';
 export type { SafeModeConfig, SafeModeDecision, BlockedResource, ResourceTier, BlockedResourceInfo } from './safe-mode';
+export { SCRATCHPAD_DIR_ENV, resolveScratchpadDir, isScratchpadEnabled, isScratchpadPath, describeScratchpad } from './scratchpad';
+export type { ScratchpadReport } from './scratchpad';
 export { generateNonce, signRequest, createRequestSignature, verifyRequestSignature, NonceTracker, SUPPORTED_SIGNATURE_ALGORITHMS, SIGNATURE_FUTURE_SKEW_MS } from './request-signature';
 export type { RequestSignature, SignatureAlgorithm } from './request-signature';
 export { scanCodeForSecurityPatterns, scanAddedLinesForPatterns, getPatternById, SECURITY_PATTERNS } from './code-security-patterns';

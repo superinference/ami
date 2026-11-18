@@ -18,6 +18,7 @@ import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
+import { isScratchpadPath } from './scratchpad';
 import { analyzeCommandStructure } from './tools/bash-parser';
 import { TESTING_PERMISSION_TOOL_NAME } from './tools/testing-permission';
 import { isCaseInsensitiveFs } from './tools/tool-utils';
@@ -6561,6 +6562,20 @@ export class PermissionManager {
       return 'ask';
     }
 
+    // Scratchpad carve-out (parity: Claude's per-session scratchpad read+write
+    // allowlist, utils/permissions/filesystem.ts L384-424). A file read/write WITHIN
+    // the operator-configured scratchpad dir (SUPERINFERENCE_SCRATCHPAD_DIR) is
+    // auto-allowed without a prompt in EVERY mode — honoring the promise the system
+    // prompt already makes to the model (buildScratchpadSection: "writable without a
+    // permission prompt"), which the permission layer previously did not keep. An
+    // explicit user deny rule still wins (anyDenyMatches below); the credential/system
+    // forbidden guard inside isScratchpadToolCall still denies a mis-pointed dir; and
+    // a scratchpad target is never routed through the bash classifier (file tools only),
+    // so this cannot widen command execution.
+    if (this.isScratchpadToolCall(toolName, input) && !this.anyDenyMatches(toolName, input)) {
+      return 'allow';
+    }
+
     // autoAllowBashIfSandboxed (Claude-parity, OPT-IN): when the policy runs every
     // bash command inside a container, the container — not the prompt — is the
     // safety boundary (the host filesystem is not mounted), so an operator who set
@@ -7622,6 +7637,11 @@ export class PermissionManager {
     // innocuous final file. When the path needed no symlink resolution the hop
     // walk is trivially [resolved] — pass it so the lstat chain is skipped.
     if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return false;
+    // Scratchpad carve-out: a path inside the operator-configured scratchpad dir is
+    // inside the agent's allowed read surface even when it sits outside the launch
+    // workspace (parity: Claude's getScratchpadDir allowlist). Placed AFTER the
+    // forbidden guards so a credential/system path can never be laundered through it.
+    if (isScratchpadPath(resolved)) return true;
     // A shell-expansion / tilde-variant TOCTOU path is never silently auto-allowed
     // (it is kept literal here but rewritten by the shell at run time) — keep this
     // boundary consistent with classifyReadAccess, which gates it to a prompt.
@@ -7649,6 +7669,10 @@ export class PermissionManager {
     // hard deny — a chain cannot launder a credential/system path behind an
     // innocuous final file. A path that needed no symlink resolution skips the walk.
     if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return 'deny';
+    // Scratchpad carve-out: a read inside the operator-configured scratchpad dir is
+    // auto-allowed even outside the launch workspace (parity: Claude's getScratchpadDir
+    // allowlist). AFTER the forbidden guards so a credential/system path still denies.
+    if (isScratchpadPath(resolved)) return 'allow';
     // TOCTOU: a path carrying shell-expansion syntax ($/%/leading '=') or an
     // unsupported tilde variant (~user/~+/~-) is validated as a literal here but
     // rewritten by the shell at execution, so it can never be silently auto-allowed
@@ -7682,6 +7706,10 @@ export class PermissionManager {
     // forbidden guards above. Parity: Claude's pathValidation.ts L1199-L1241.
     if (isUnvalidatableReadGlob(filePath)) return 'prompt';
     if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
+    // Edit-access-implies-read: an out-of-workspace path the user granted EDIT access
+    // to (a `file_edit` allow rule) is readable without a separate read prompt — but
+    // read-specific deny/ask rules already won inside {@link editAccessImpliesRead}.
+    if (this.editAccessImpliesRead(filePath)) return 'allow';
     return 'prompt';
   }
 
@@ -8446,6 +8474,44 @@ export class PermissionManager {
       if (matchRootedFileRulePattern(rule.pattern, form, { caseInsensitive: ci }) === true) return true;
     }
     return false;
+  }
+
+  /**
+   * True when `toolName`+`input` is a FILE tool operating on a path INSIDE the
+   * operator-configured scratchpad dir ({@link isScratchpadPath}) that is not itself
+   * a credential/system forbidden path. Backs the scratchpad read+write carve-out in
+   * {@link check}. Resolves the input path to an absolute, symlink-collapsed form (so
+   * `./scratch/x` / a scratchpad symlink both match) and defends against a mis-pointed
+   * scratchpad dir: a scratchpad that somehow lands on `/etc`/`~/.ssh` still denies via
+   * {@link isForbiddenReadPath}. Returns false for bash/non-file tools and when the
+   * feature is off (env unset), so the carve-out is inert by default.
+   */
+  private isScratchpadToolCall(toolName: string, input: Record<string, unknown>): boolean {
+    if (!FILE_PATH_RULE_TOOLS.has(normalizeToolName(toolName))) return false;
+    const fp = input.file_path ?? input.path;
+    if (typeof fp !== 'string' || !fp) return false;
+    const resolved = this.resolveForCheck(fp, process.cwd());
+    if (!isScratchpadPath(resolved)) return false;
+    return !this.isForbiddenReadPath(resolved);
+  }
+
+  /**
+   * Edit-access-implies-read (parity: Claude's filesystem.ts L1127-1134 "if you can
+   * edit it you can read it"): a path the user granted EDIT access to via a `file_edit`
+   * ALLOW rule is READABLE too, even when it is OUTSIDE the launch workspace — so a
+   * user who added `file_edit(/data/out/**)` does not ALSO need a separate
+   * `file_read(/data/out/**)` rule just to read back what the agent may write. Gated so
+   * an explicit READ restriction always wins first: returns false if any `file_read`
+   * deny OR ask rule matches the path (read-specific rules evaluated BEFORE the implied
+   * allow, L1081-1134), and false if a `file_edit` deny rule matches (no edit access →
+   * no implied read). Only ADDS allows for rule-granted edit paths; a within-workspace
+   * read already returned 'allow' before this is consulted.
+   */
+  private editAccessImpliesRead(filePath: string): boolean {
+    const input = { file_path: filePath };
+    if (this.anyDenyMatches('file_read', input) || this.anyAskMatches('file_read', input)) return false;
+    if (this.anyDenyMatches('file_edit', input)) return false;
+    return this.matchedAllowRule('file_edit', input) !== undefined;
   }
 
   /**
