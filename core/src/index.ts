@@ -700,3 +700,11 @@ export type { JetBrainsIdeType, IdeDirectoryContext } from './ide';
 
 // --- Canonical UUID boundary validator (parity: Claude's validateUuid) ---
 export { validateUuid } from './ids';
+// --- Confusable-safe, profanity-safe human-facing short-id minter ---
+// (parity: Claude's shortRequestId / ID_ALPHABET / ID_AVOID_SUBSTRINGS)
+export {
+  shortRequestId,
+  HUMAN_ID_ALPHABET,
+  HUMAN_ID_LENGTH,
+  ID_AVOID_SUBSTRINGS,
+} from './ids';

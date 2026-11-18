@@ -9,7 +9,13 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { validateUuid } from '../src/ids';
+import {
+  validateUuid,
+  shortRequestId,
+  HUMAN_ID_ALPHABET,
+  HUMAN_ID_LENGTH,
+  ID_AVOID_SUBSTRINGS,
+} from '../src/ids';
 
 describe('validateUuid', () => {
   it('accepts a canonical lower-case UUID and returns it narrowed', () => {
@@ -66,5 +72,73 @@ describe('validateUuid', () => {
     assert.equal(validateUuid('session-20261118-3'), null);
     assert.equal(validateUuid('agent-a3f2c1b4'), null);
     assert.equal(validateUuid('wt-a3f2c1b4'), null);
+  });
+});
+
+describe('shortRequestId (human-facing short id)', () => {
+  it('produces a HUMAN_ID_LENGTH code over the confusable-free alphabet', () => {
+    assert.equal(HUMAN_ID_LENGTH, 5);
+    const code = shortRequestId('toolu_abc123');
+    assert.equal(code.length, HUMAN_ID_LENGTH);
+    for (const ch of code) {
+      assert.ok(HUMAN_ID_ALPHABET.includes(ch), `char ${ch} not in alphabet`);
+    }
+  });
+
+  it('never emits the confusable glyph "l" (looks like 1/I)', () => {
+    assert.equal(HUMAN_ID_ALPHABET.includes('l'), false);
+    assert.equal(HUMAN_ID_ALPHABET.length, 25);
+    for (let i = 0; i < 20000; i++) {
+      assert.equal(shortRequestId(`src-${i}`).includes('l'), false);
+    }
+  });
+
+  it('is letters-only (no digits — phone users never toggle keyboard modes)', () => {
+    for (let i = 0; i < 2000; i++) {
+      assert.match(shortRequestId(`tool-${i}`), /^[a-z]{5}$/);
+    }
+  });
+
+  it('is deterministic — the same source always yields the same code', () => {
+    assert.equal(shortRequestId('toolu_xyz'), shortRequestId('toolu_xyz'));
+    assert.equal(shortRequestId(''), shortRequestId(''));
+  });
+
+  it('never surfaces a blocklisted substring, across a large sample (exercises re-hash)', () => {
+    for (let i = 0; i < 20000; i++) {
+      const code = shortRequestId(`x${i}`);
+      for (const bad of ID_AVOID_SUBSTRINGS) {
+        assert.equal(code.includes(bad), false, `code ${code} contains ${bad} for x${i}`);
+      }
+    }
+  });
+
+  it('re-hashes a source whose first-pass code spells a blocklisted word', () => {
+    // `toolu_447` hashes (unsalted) to `zypee` which contains the blocklisted
+    // substring `pee`; shortRequestId must salt-rehash to a clean code.
+    const code = shortRequestId('toolu_447');
+    assert.equal(code, 'rzbdn');
+    assert.notEqual(code, 'zypee');
+    for (const bad of ID_AVOID_SUBSTRINGS) {
+      assert.equal(code.includes(bad), false);
+    }
+  });
+
+  it('handles the empty string and non-ASCII input without throwing', () => {
+    assert.match(shortRequestId(''), /^[a-z]{5}$/);
+    assert.match(shortRequestId('日本語-🔥'), /^[a-z]{5}$/);
+  });
+
+  it('spreads distinct sources across many distinct codes', () => {
+    const codes = new Set<string>();
+    for (let i = 0; i < 1000; i++) codes.add(shortRequestId(`req-${i}`));
+    // FNV-1a over varied inputs should give near-unique codes at this scale.
+    assert.ok(codes.size > 950, `only ${codes.size} distinct codes`);
+  });
+
+  it('exposes a frozen, non-empty blocklist', () => {
+    assert.ok(Object.isFrozen(ID_AVOID_SUBSTRINGS));
+    assert.ok(ID_AVOID_SUBSTRINGS.length > 0);
+    assert.ok(ID_AVOID_SUBSTRINGS.includes('fuck'));
   });
 });
