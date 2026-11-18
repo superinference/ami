@@ -209,7 +209,7 @@ export type {
 export type { ThinkingConfig, ThinkingLevel, ProviderSubsystem, PermissionSubsystem, SessionSubsystem, OutputFormat, InputFormat, ChatMode, Theme, OutputStyle, StreamChunkType, AutoModeConfig, StreamingToolProgress, PromptSuggestionResolution } from './types';
 export { buildSubsystems, OUTPUT_FORMATS, INPUT_FORMATS, CHAT_MODES, THEMES, OUTPUT_STYLES, INSIGHT_CALLOUT_HEADER, ENGINE_EVENT_TYPES, EXIT_REASONS, STREAM_CHUNK_TYPES, NOTIFICATION_CHANNELS, SERVICE_TIERS, TASK_TERMINAL_STATUS, SESSION_OPERATING_MODES, mergeSkillUsageStat, reconcileSessionMode, MAX_LSP_RECOMMENDATION_IGNORED_COUNT, isLspRecommendationDisabled, shouldEnablePromptSuggestion,
   MIN_SLOW_PROGRESS_REVEAL_SECONDS, shouldRevealSlowProgress, sanitizeToolInputSummary, resolveSentAt,
-  selectModelFacingOutput, selectUserFacingOutput, shouldRenderGroupedToolUse, isSuggestionMessage,
+  selectModelFacingOutput, selectUserFacingOutput, shouldRenderGroupedToolUse, resolveToolOpenWorld, isSuggestionMessage,
   shouldForcePermissionCheck, validateSummarizeMetadata,
   isInferenceConfigImmediate, resolveDiffPreviewWidth, VERBOSE_DIFF_PREVIEW_WIDTH, COMPACT_DIFF_PREVIEW_WIDTH,
   describeSymlinkEdit, shouldShowWorkerBadge, nextTaskBudgetRemaining,

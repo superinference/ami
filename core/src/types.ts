@@ -891,16 +891,24 @@ export interface ToolDefinition {
   isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
   isMcp?: boolean;
-  /** True when the tool's effects reach OUTSIDE the local environment / are
+  /** Whether the tool's effects reach OUTSIDE the local environment / are
    *  non-deterministic (a remote fetch, a web search, a message send, an
-   *  external-API MCP tool). Distinct from {@link isReadOnly}: a tool can be
-   *  read-only yet open-world (a remote fetch mutates nothing locally but still
-   *  depends on live external state). Lets renderers tag a call (an `[open-world]`
-   *  badge) and lets metadata/introspection surface that a result is non-cacheable /
-   *  non-reproducible. Absent / `false` = closed-world (fully local, deterministic).
-   *  Parity: Claude's `Tool.isOpenWorld()` (MCPTool defaults false, overridden
-   *  per-MCP-tool from the server's `annotations.openWorldHint`). */
-  isOpenWorld?: boolean;
+   *  external-API MCP tool) — the uniform SSRF/egress-surface marker. Distinct from
+   *  {@link isReadOnly}: a tool can be read-only yet open-world (a remote fetch
+   *  mutates nothing locally but still depends on live external state). Lets
+   *  renderers tag a call (an `[open-world]` badge) and lets metadata/introspection
+   *  surface that a result is non-cacheable / non-reproducible.
+   *
+   *  Either a plain `boolean` (the whole tool is open-world) OR an INPUT-AWARE
+   *  predicate `(input) => boolean` so a single invocation can declare egress for
+   *  THIS input only (e.g. a tool that reaches the network only for certain
+   *  arguments). Absent / `false` = closed-world (fully local, deterministic).
+   *  Resolve uniformly — never read this field directly — via
+   *  {@link resolveToolOpenWorld}, which handles both forms and a throwing
+   *  predicate. Parity: Claude's `Tool.isOpenWorld?(input)` (the reference consults
+   *  it input-aware as `tool.isOpenWorld?.(input)`; MCPTool defaults false,
+   *  overridden per-MCP-tool from the server's `annotations.openWorldHint`). */
+  isOpenWorld?: boolean | ((input: Record<string, unknown>) => boolean);
   /** Extra capability keywords (3-10 words) weighted by `tool_search`, using terms
    *  NOT already in the name/description (e.g. 'jupyter' for notebook_edit) so a
    *  deferred tool is findable by synonym. Parity: Claude's `Tool.searchHint`. */
@@ -2177,6 +2185,29 @@ export function selectUserFacingOutput(result: Pick<ToolResult, 'output' | 'user
  *  `renderGroupedToolUse` opt-in. */
 export function shouldRenderGroupedToolUse(tool: Pick<ToolDefinition, 'renderGroupedToolUse'>): boolean {
   return tool.renderGroupedToolUse === true;
+}
+
+/** Resolve a tool's open-world (SSRF/egress-surface) status for a SPECIFIC input,
+ *  the single place {@link ToolDefinition.isOpenWorld} is consulted so both forms —
+ *  a plain `boolean` and Claude's input-aware `isOpenWorld?(input)` predicate — are
+ *  handled uniformly. A throwing predicate degrades to `false` (closed-world), never
+ *  propagating, mirroring the reference's safe `tool.isOpenWorld?.(input) || false`
+ *  consult (cli/print.ts, MCPToolDetailView). Absent field ⇒ `false`.
+ *  `input` defaults to `{}` for a tool-level query (the badge/introspection case,
+ *  parity with Claude's `tool.isOpenWorld?.({})`). */
+export function resolveToolOpenWorld(
+  tool: Pick<ToolDefinition, 'isOpenWorld'>,
+  input: Record<string, unknown> = {},
+): boolean {
+  const flag = tool.isOpenWorld;
+  if (typeof flag === 'function') {
+    try {
+      return flag(input) === true;
+    } catch {
+      return false;
+    }
+  }
+  return flag === true;
 }
 
 /** Whether a {@link SystemMessage} is a proactive `'suggestion'` (e.g. a
