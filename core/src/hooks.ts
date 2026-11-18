@@ -1991,6 +1991,19 @@ export function buildAgentHookSystemPrompt(transcriptPath?: string): string {
 }
 
 /**
+ * The exact re-prompt nudge used to enforce structured output when an agent hook
+ * stops without emitting its machine-readable verdict. Mirrors Claude Code's
+ * `registerStructuredOutputEnforcement` Stop-hook message (hookHelpers.ts L80:
+ * `You MUST call the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool to complete this request.
+ * Call this tool now.`). Shared so the wording lives in ONE place and tests can
+ * assert on it verbatim. `toolName` defaults to the verification tool AMI advertises
+ * to hook sub-engines ({@link VERIFICATION_OUTPUT_TOOL_NAME}).
+ */
+export function buildStructuredOutputEnforcementNudge(toolName: string = VERIFICATION_OUTPUT_TOOL_NAME): string {
+  return `You MUST call the ${toolName} tool to complete this request. Call this tool now.`;
+}
+
+/**
  * Substitute the hook input JSON into a prompt/agent hook's prompt template
  * (Claude Code's addArgumentsToPrompt / substituteArguments):
  *   - `$ARGUMENTS`        → the full hook-input JSON string
@@ -2419,6 +2432,15 @@ export interface AgentHookConfig {
    *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
   pluginRoot?: string;
   pluginName?: string;
+  /** Opt-in structured-output enforcement (Claude Code's
+   *  `registerStructuredOutputEnforcement`, hookHelpers.ts L66-L83): when `true`, an
+   *  agent hook run that STOPS without ever calling the {@link VERIFICATION_OUTPUT_TOOL_NAME}
+   *  verification tool is re-prompted ONCE with a precise nudge
+   *  ({@link buildStructuredOutputEnforcementNudge}) telling the model it MUST call
+   *  the tool now, rather than silently falling back to free-text. Off by default so
+   *  existing hooks are unaffected; set it on verification/agent hooks that must emit
+   *  a machine-readable verdict. */
+  enforceStructuredOutput?: boolean;
 }
 
 export interface HookDecisionOutput {
@@ -5323,6 +5345,9 @@ export class HookManager extends EventEmitter {
           const fn: CwdChangedHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'cwdChanged', oldCwd: ctx.oldCwd, newCwd: ctx.newCwd });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.cwdChangedHooks, fn, 'cwdChanged');
+            // Surface any USER-facing systemMessage the hook emitted (Claude Code's
+            // fileChangedWatcher forwards each systemMessage via notifyCallback(msg,false)).
+            for (const msg of extractSystemMessages(result)) this.emitHookNotify('cwdChanged', msg, false);
             const watchPaths = this.registerWatchPaths('cwdChanged', result);
             if (watchPaths.length > 0) return { watchPaths };
             return undefined;
@@ -5336,6 +5361,9 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.filePath)) return;
             const eventData = serializeHookEvent({ event: 'fileChanged', filePath: ctx.filePath, fileEvent: ctx.event });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.fileChangedHooks, fn, 'fileChanged');
+            // Surface any USER-facing systemMessage the hook emitted (Claude Code's
+            // fileChangedWatcher forwards each systemMessage via notifyCallback(msg,false)).
+            for (const msg of extractSystemMessages(result)) this.emitHookNotify('fileChanged', msg, false);
             const watchPaths = this.registerWatchPaths('fileChanged', result);
             if (watchPaths.length > 0) return { watchPaths };
             return undefined;
@@ -5939,31 +5967,51 @@ export class HookManager extends EventEmitter {
   }
 
   /**
+   * Fan an event's OBSERVATIONAL (void-returning, non-decision) hooks out
+   * CONCURRENTLY instead of running them one-after-another. Claude Code dispatches
+   * every matching hook for an event in parallel (`matchingHooks.map(async …)` +
+   * aggregation, utils/hooks.ts L2142) so N independent command/http/prompt hooks on
+   * one event overlap rather than stacking their individual latencies; AMI had been
+   * awaiting each in a serial `for` loop, so a slow notification/idle hook delayed
+   * every sibling behind it. Per-hook timeout/abort already lives INSIDE each hook fn
+   * (runArmHook → runWithTimeout / combineHookAbort), so this only swaps serial→
+   * parallel for events whose hooks have no inter-hook ordering dependency (the
+   * fire-and-forget observational events). Each hook is isolated: one that throws is
+   * caught via {@link onError} and never rejects the batch or cancels its siblings —
+   * identical failure semantics to the old loop, just overlapped.
+   */
+  private async runObservationalHooksConcurrently<C>(
+    hooks: Array<(ctx: C) => Promise<unknown>>,
+    ctx: C,
+    onError: (err: unknown) => void,
+  ): Promise<void> {
+    await Promise.all(
+      hooks.map(async (hook) => {
+        try { await hook(ctx); } catch (err) { onError(err); }
+      }),
+    );
+  }
+
+  /**
    * Fire TeammateIdle hooks when a teammate agent finishes its run and goes idle.
    * Observational (fire-and-forget); mirrors Claude Code's TeammateIdle event with
    * the teammate/team identity payload (teammate_name / team_name).
    */
   async executeTeammateIdle(ctx: TeammateContext): Promise<void> {
     return this.withConcurrencyGate('teammateIdle', async () => {
-      for (const hook of this.teammateIdleHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-      }
+      await this.runObservationalHooksConcurrently(this.teammateIdleHooks, ctx, (err) => coreLog('hooks', 'Hook error', { error: String(err) }));
     });
   }
 
   async executePostToolUseFailure(ctx: PostToolUseContext): Promise<void> {
     return this.withConcurrencyGate('postToolUseFailure', async () => {
-      for (const hook of this.postToolUseFailureHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-      }
+      await this.runObservationalHooksConcurrently(this.postToolUseFailureHooks, ctx, (err) => coreLog('hooks', 'Hook error', { error: String(err) }));
     });
   }
 
   async executeNotification(ctx: NotificationContext): Promise<void> {
     return this.withConcurrencyGate('notification', async () => {
-      for (const hook of this.notificationHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-      }
+      await this.runObservationalHooksConcurrently(this.notificationHooks, ctx, (err) => coreLog('hooks', 'Hook error', { error: String(err) }));
     });
   }
 
@@ -6006,9 +6054,7 @@ export class HookManager extends EventEmitter {
 
   async executeInstructionsLoaded(ctx: InstructionsContext): Promise<void> {
     return this.withConcurrencyGate('instructionsLoaded', async () => {
-      for (const hook of this.instructionsLoadedHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-      }
+      await this.runObservationalHooksConcurrently(this.instructionsLoadedHooks, ctx, (err) => coreLog('hooks', 'Hook error', { error: String(err) }));
     });
   }
 
@@ -6032,9 +6078,7 @@ export class HookManager extends EventEmitter {
 
   async executeWorktreeRemove(ctx: WorktreeContext): Promise<void> {
     return this.withConcurrencyGate('worktreeRemove', async () => {
-      for (const hook of this.worktreeRemoveHooks) {
-        try { await hook(ctx); } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
-      }
+      await this.runObservationalHooksConcurrently(this.worktreeRemoveHooks, ctx, (err) => coreLog('hooks', 'Hook error', { error: String(err) }));
     });
   }
 
@@ -6051,23 +6095,20 @@ export class HookManager extends EventEmitter {
     await clearCwdEnvFiles(this._sessionId);
     invalidateSessionEnvCache();
     return this.withConcurrencyGate('cwdChanged', async () => {
-      for (const hook of this.cwdChangedHooks) {
-        try { await hook(ctx); } catch (err) { this.emitWatcherHookError('CwdChanged hook', err); }
-      }
+      await this.runObservationalHooksConcurrently(this.cwdChangedHooks, ctx, (err) => this.emitWatcherHookError('CwdChanged hook', err));
     });
   }
 
   async executeFileChanged(ctx: FileChangeContext): Promise<void> {
     return this.withConcurrencyGate('fileChanged', async () => {
-      for (const hook of this.fileChangedHooks) {
-        try { await hook(ctx); } catch (err) { this.emitWatcherHookError('FileChanged hook', err); }
-      }
+      await this.runObservationalHooksConcurrently(this.fileChangedHooks, ctx, (err) => this.emitWatcherHookError('FileChanged hook', err));
     });
   }
 
   /**
-   * Surface a failed FileChanged / CwdChanged watcher hook on the same visible
-   * `hookError` channel every other hook failure uses, instead of only
+   * Surface a failed FileChanged / CwdChanged watcher hook on the visible
+   * `hookError` channel every other hook failure uses AND on the human-facing
+   * {@link emitHookNotify} notify channel (isError=true), instead of only
    * `coreLog`-ing it internally. These hooks fire from fire-and-forget fs-watch /
    * cwd-change call sites (no generator to yield from), so a misconfigured watcher
    * hook would otherwise fail silently forever (Claude Code's fileChangedWatcher.ts
@@ -6079,6 +6120,22 @@ export class HookManager extends EventEmitter {
     const error = err instanceof Error ? err.message : String(err);
     coreLog('hooks', 'Hook error', { error });
     this.emit('hookError', { hookType: 'command', hook, error });
+    this.emitHookNotify(hook, error, true);
+  }
+
+  /**
+   * Forward a FileChanged / CwdChanged watcher hook's USER-facing output on a
+   * `hookNotify` channel the session renders, instead of silently dropping it.
+   * Mirrors Claude Code's fileChangedWatcher `setEnvHookNotifier((text, isError) =>
+   * …)`: a hook's `systemMessages` are surfaced with `isError=false` and a failed
+   * hook's error/output with `isError=true` (fileChangedWatcher.ts L90-L105,
+   * L162-L169). Watcher hooks fire from fire-and-forget call sites with no generator
+   * to yield from, so without this channel their stdout and failures are invisible.
+   * Empty messages are dropped so an observe-only hook emits no spurious notice.
+   */
+  private emitHookNotify(event: string, message: string, isError: boolean): void {
+    if (!message) return;
+    this.emit('hookNotify', { event, message, isError });
   }
 
   /**
@@ -6590,6 +6647,10 @@ export class HookManager extends EventEmitter {
     // execPromptHook / execAgentHook live `setResponseLength` affordance. Absent
     // for callers that don't stream progress (background/async firing).
     live?: { stdout: string; stderr: string },
+    // Per-run options threaded from the typed hook config. `enforceStructuredOutput`
+    // re-prompts an agent hook that stopped without a verification-tool verdict
+    // (Claude Code's registerStructuredOutputEnforcement); agent-only.
+    opts?: { enforceStructuredOutput?: boolean },
   ): Promise<{ output: string; error?: string }> {
     if (!this._engineFactory) {
       coreLog('hooks', `${kind} hook skipped: no engine factory available`);
@@ -6690,9 +6751,12 @@ export class HookManager extends EventEmitter {
     // infinite recursion"): mark that an engine-backed hook is running so a sub-engine
     // sharing this HookManager cannot re-enter the UserPromptSubmit pipeline and
     // fork-bomb. {@link executeUserPromptSubmit} short-circuits while the depth is > 0.
-    this._engineHookDepth++;
-    try {
-      for await (const event of engine.submit(fullPrompt)) {
+    // Consume one engine submit stream into the shared accumulators (result /
+    // toolVerdict / exitReason / error). Factored out so the structured-output
+    // enforcement re-prompt can drive a SECOND submit through the identical event
+    // handling without duplicating it.
+    const consume = async (stream: AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown>; exitReason?: string }>): Promise<void> => {
+      for await (const event of stream) {
         if (abort.aborted()) break;
         if (event.type === 'text_delta' && event.text) {
           result += event.text;
@@ -6710,6 +6774,24 @@ export class HookManager extends EventEmitter {
         }
         if (event.type === 'done') exitReason = event.exitReason;
         if (event.type === 'error') { error = event.error || 'hook engine error'; errored = true; break; }
+      }
+    };
+    this._engineHookDepth++;
+    try {
+      await consume(engine.submit(fullPrompt));
+      // Structured-output enforcement (Claude Code's registerStructuredOutputEnforcement,
+      // hookHelpers.ts L66-L83): an agent hook that stopped WITHOUT ever calling the
+      // verification tool produced no machine-readable verdict. When the hook opted in
+      // via `enforceStructuredOutput`, re-prompt it ONCE with a precise nudge naming
+      // the tool, instead of silently falling back to free-text. Only when the first
+      // run completed cleanly (not aborted / errored) — a cancelled/errored run has no
+      // model to nudge. Agent-only (prompt hooks are single-shot by contract).
+      if (
+        kind === 'agent' && opts?.enforceStructuredOutput &&
+        !toolVerdict && !errored && !abort.aborted()
+      ) {
+        coreLog('hooks', `agent hook stopped without a ${VERIFICATION_OUTPUT_TOOL_NAME} verdict — enforcing structured output (one re-prompt)`);
+        await consume(engine.submit(buildStructuredOutputEnforcementNudge()));
       }
     } catch (err) {
       error = String(err);
@@ -6965,7 +7047,7 @@ export class HookManager extends EventEmitter {
   }
 
   private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome, live?: { stdout: string; stderr: string }): Promise<string> {
-    const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal, live);
+    const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal, live, { enforceStructuredOutput: config.enforceStructuredOutput });
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
     // Fail-OPEN: surface a visible error notice when the agent hook errored so it
