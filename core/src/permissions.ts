@@ -728,6 +728,40 @@ export interface AutoModeScreen {
 }
 
 /**
+ * Swarm/agent-coordination tools that the `auto` permission-mode screen treats as
+ * safe-to-run WITHOUT re-screening. These tools do not themselves touch the
+ * filesystem/network in a way the per-call risk model should re-judge: they spawn
+ * subagents ({@link task}), create/delete teammate inboxes (`team_create` /
+ * `team_delete`), route a message to another agent (`send_message`), or launch a
+ * workflow — and every action those delegates take is INDEPENDENTLY permission-checked
+ * when the delegate runs. Re-screening the coordinator here is both redundant and
+ * actively harmful: a `send_message`/`task` payload legitimately carries free-form
+ * task text that can trip the prompt-injection heuristic ({@link detectPromptInjection}),
+ * which would stall autonomous swarm coordination that is in fact safe. Mirrors
+ * Claude Code's `SAFE_YOLO_ALLOWLISTED_TOOLS` (classifierDecision.ts) and its
+ * documented rationale that spawned subagents/teammates carry their own per-call
+ * permission checks. Names are AMI-canonical (post {@link normalizeToolName}), so a
+ * legacy/aliased spelling (`Task` → `task`) is covered too.
+ */
+export const AUTO_MODE_SAFE_TOOLS: ReadonlySet<string> = new Set([
+  'send_message',
+  'task',
+  'team_create',
+  'team_delete',
+  'workflow',
+]);
+
+/**
+ * True when `toolName` is a coordination/orchestration tool the `auto` mode screen
+ * may allow without re-judging ({@link AUTO_MODE_SAFE_TOOLS}). The name is
+ * canonicalized first so a legacy/cross-framework spelling (e.g. Claude's `Task`)
+ * is recognized as AMI's `task`.
+ */
+export function isAutoModeSafeTool(toolName: string): boolean {
+  return AUTO_MODE_SAFE_TOOLS.has(normalizeToolName(toolName));
+}
+
+/**
  * Gather the string-valued fields of a tool input into one blob so a
  * prompt-injection scan can inspect everything the model proposed to execute
  * (the bash `command`, an edit's `content`/`new_string`, a URL, etc.) rather than
@@ -755,6 +789,19 @@ function collectToolInputText(input: unknown): string {
  * block-and-retry fallback, AutoModeOptInDialog.tsx).
  */
 export function screenAutoModeToolCall(toolName: string, input: unknown): AutoModeScreen {
+  // Coordination/orchestration tools skip the screen: they only delegate work to
+  // subagents/teammates/workflows, each of which is INDEPENDENTLY permission-checked
+  // when it runs, so re-judging the coordinator is redundant — and the free-form task
+  // text these calls carry would otherwise trip the injection/risk heuristics and
+  // stall safe autonomous coordination. Parity: Claude's SAFE_YOLO_ALLOWLISTED_TOOLS.
+  if (isAutoModeSafeTool(toolName)) {
+    return {
+      decision: 'allow',
+      riskLevel: 'LOW',
+      injection: false,
+      reason: 'allowed: coordination tool (delegates to self-checking subagents)',
+    };
+  }
   const injection = detectPromptInjection(collectToolInputText(input));
   if (injection.suspicious) {
     return {
