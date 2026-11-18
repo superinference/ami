@@ -384,6 +384,78 @@ export function isOverlyBroadBashAllowRule(rule: PermissionRule): boolean {
 }
 
 /**
+ * Structured description of an active permission rule that is effectively
+ * equivalent to YOLO / bypass-permissions, for a UI/`/doctor` warning. Mirrors
+ * Claude's `DangerousPermissionInfo` (utils/permissions/permissionSetup.ts): a
+ * display string for the rule and a human-readable string for where it came from,
+ * so the warning can say exactly which rule from which source grants full
+ * autonomy. `ruleValue`/`source` are kept for callers that want to remediate
+ * (remove/narrow) the rule, not just display it.
+ */
+export interface DangerousPermissionInfo {
+  /** The parsed rule value (`{toolName, ruleContent?}`) for programmatic removal. */
+  ruleValue: PermissionRuleValue;
+  /** The rule's origin tier (or `'cliArg'` for a `--allow` flag spec). */
+  source: PermissionRuleSource;
+  /** Display form of the rule, e.g. `bash(*)`. */
+  ruleDisplay: string;
+  /** Human-readable origin, e.g. `project settings` or `--allow`. */
+  sourceDisplay: string;
+}
+
+/** True when a PARSED rule value (a `Tool(content)` spec, as from a `--allow`
+ *  flag) is an overly-broad bash allow — the value-level twin of
+ *  {@link isOverlyBroadBashAllowRule}, which takes a loaded {@link PermissionRule}.
+ *  A pattern-less / empty / `*` bash (or all-tools `*`) spec auto-approves every
+ *  bash command. */
+function isOverlyBroadBashAllowRuleValue(value: PermissionRuleValue): boolean {
+  const targetsBash = normalizeToolName(value.toolName) === 'bash' || value.toolName === '*';
+  if (!targetsBash) return false;
+  const c = value.ruleContent;
+  return c === undefined || c === '' || c.trim() === '*';
+}
+
+/**
+ * Scan loaded `allow` rules AND raw CLI `--allow` tool specs for overly-broad bash
+ * grants (the YOLO / bypass-permissions equivalent) and return a structured
+ * {@link DangerousPermissionInfo} per hit, so a UI / `/permissions` surface can
+ * warn the user that a rule silently grants full shell autonomy. Mirrors Claude's
+ * `findOverlyBroadBashPermissions` (utils/permissions/permissionSetup.ts
+ * L376-412): it checks both persisted rules and the ephemeral `--allow` flag list,
+ * tagging the latter with the `cliArg` source and `--allow` display. Uses the
+ * single canonical breadth detector ({@link isOverlyBroadBashAllowRule} /
+ * {@link isOverlyBroadBashAllowRuleValue}) — no second classifier.
+ */
+export function findOverlyBroadBashPermissions(
+  rules: readonly PermissionRule[],
+  cliAllowedTools: readonly string[] = [],
+): DangerousPermissionInfo[] {
+  const found: DangerousPermissionInfo[] = [];
+  for (const rule of rules) {
+    if (isOverlyBroadBashAllowRule(rule)) {
+      found.push({
+        ruleValue: { toolName: rule.tool, ruleContent: rule.pattern },
+        source: rule.source ?? 'session',
+        ruleDisplay: 'bash(*)',
+        sourceDisplay: permissionRuleSourceDisplayString(rule.source),
+      });
+    }
+  }
+  for (const spec of cliAllowedTools) {
+    const parsed = permissionRuleValueFromString(spec);
+    if (isOverlyBroadBashAllowRuleValue(parsed)) {
+      found.push({
+        ruleValue: parsed,
+        source: 'cliArg',
+        ruleDisplay: 'bash(*)',
+        sourceDisplay: '--allow',
+      });
+    }
+  }
+  return found;
+}
+
+/**
  * How a higher-priority rule makes a lower one unreachable:
  *  - `deny` — the allow is COMPLETELY blocked (a tool-wide deny always wins); the
  *    more severe case.
@@ -4286,6 +4358,26 @@ export function normalizeToolName(name: string): string {
   return PERMISSION_TOOL_ALIASES[name] ?? name;
 }
 
+/**
+ * Reverse of {@link normalizeToolName}: given a CANONICAL AMI tool name, return
+ * every legacy / cross-framework alias that maps to it (the keys of
+ * {@link PERMISSION_TOOL_ALIASES} whose value is `canonicalName`), sorted for
+ * stable display. This is the inverse boundary Claude Code exposes as
+ * `getLegacyToolNames` (utils/permissions/permissionRuleParser.ts L35-41): a rule
+ * written against the current name can be expanded to the historical/aliased
+ * spellings, and an introspection / diagnostic surface can tell the user "tool X
+ * also matches legacy names […]" when displaying a permission rule. Matching
+ * already works both ways (both sides go through {@link normalizeToolName}); this
+ * is purely for enumeration/display. Returns `[]` for a tool with no aliases.
+ */
+export function getLegacyToolNames(canonicalName: string): string[] {
+  const result: string[] = [];
+  for (const [alias, canonical] of Object.entries(PERMISSION_TOOL_ALIASES)) {
+    if (canonical === canonicalName && alias !== canonicalName) result.push(alias);
+  }
+  return result.sort();
+}
+
 /** The pattern-syntax class a tool's permission-rule content is written in:
  *  `file` tools take filesystem GLOBS (`*.ts`, `src/**`); `bash` tools take a
  *  command string with free `*` wildcards plus the legacy `command:*` prefix
@@ -5096,9 +5188,16 @@ export function validatePermissionRule(rule: string): {
       }
     }
     // WebFetch: patterns match a domain, not a full URL. Reject a URL-form
-    // pattern and point at the bare-domain form (Claude's WebFetch validator).
+    // pattern and point at the bare-domain form (Claude's WebFetch validator,
+    // toolValidationConfig.ts L55-66). AMI uses BARE-domain syntax
+    // (`web_fetch(example.com)`) — a deliberate divergence from Claude's required
+    // `domain:` prefix — so a domain that merely starts with "http" (e.g.
+    // `httpbin.org`) stays valid; only a `scheme://` at the start OR a stray
+    // `://` ANYWHERE (a malformed URL whose scheme isn't a clean leading token,
+    // e.g. `3http://x` or `foo bar://x`) is rejected. Catching `://` anywhere
+    // closes the gap where the leading-scheme regex missed a mid-string `://`.
     if (parsed.toolName === 'web_fetch') {
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(parsed.ruleContent)) {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(parsed.ruleContent) || parsed.ruleContent.includes('://')) {
         return {
           valid: false, error: 'WebFetch patterns must be a domain, not a URL',
           suggestion: 'Drop the scheme and path — match on the domain only',
@@ -5108,6 +5207,30 @@ export function validatePermissionRule(rule: string): {
     }
   }
   return { valid: true };
+}
+
+/**
+ * Compose the structured result of {@link validatePermissionRule} into a SINGLE
+ * human-readable sentence: `error. suggestion. Examples: ex1, ex2`. This is the
+ * canonical rejection-text formatter so every surface that shows a dropped/invalid
+ * rule (settings loader warnings, the `/permissions` validate command, a config
+ * UI) renders it identically — error, then the suggestion (if any), then the
+ * examples (if any). Mirrors Claude's `PermissionRuleSchema` superRefine message
+ * composition (utils/settings/permissionValidation.ts L244-262), which previously
+ * had no AMI equivalent: AMI composed only `error. suggestion` and silently
+ * dropped the examples. Returns the bare error for a result with no suggestion or
+ * examples; returns an empty string for a `valid` result (nothing to format).
+ */
+export function formatPermissionRuleError(result: {
+  valid: boolean; error?: string; suggestion?: string; examples?: string[];
+}): string {
+  if (result.valid || !result.error) return '';
+  let message = result.error;
+  if (result.suggestion) message += `. ${result.suggestion}`;
+  if (result.examples && result.examples.length > 0) {
+    message += `. Examples: ${result.examples.join(', ')}`;
+  }
+  return message;
 }
 
 /**
@@ -5136,8 +5259,7 @@ export function filterInvalidPermissionRules(
       kept.push(entry);
       continue;
     }
-    const suffix = result.suggestion ? `. ${result.suggestion}` : '';
-    warnings.push(`Invalid permission rule "${entry}" was skipped: ${result.error}${suffix}`);
+    warnings.push(`Invalid permission rule "${entry}" was skipped: ${formatPermissionRuleError(result)}`);
   }
   return { kept, warnings };
 }
@@ -7385,6 +7507,25 @@ export class PermissionManager {
   }
 
   /**
+   * Compose the user-facing circuit-breaker warning when the denial limit has been
+   * hit, or `null` while the breaker is open. When the TOTAL limit is reached it
+   * reports how many actions were blocked this session; otherwise it reports the
+   * consecutive run. Both end with a prompt to review the transcript. This gives
+   * the user an actionable sentence explaining WHY they are suddenly being asked to
+   * review, instead of a bare `shouldAbort` boolean. Mirrors Claude Code's
+   * denial-limit warning composition (utils/permissions/permissions.ts
+   * L999-L1058): the total-limit message takes precedence over the consecutive one.
+   * Pure read of the live counters — does not mutate or reset them.
+   */
+  denialLimitWarning(): string | null {
+    if (!this.shouldAbort()) return null;
+    if (this.totalDenials >= this.MAX_TOTAL) {
+      return `${this.totalDenials} actions were blocked this session. Please review the transcript before continuing.`;
+    }
+    return `${this.consecutiveDenials} consecutive actions were blocked. Please review the transcript before continuing.`;
+  }
+
+  /**
    * Reset the circuit breaker counters.
    */
   resetCircuitBreaker(): void {
@@ -8453,8 +8594,7 @@ export class PermissionManager {
       const canonical = permissionRuleValueToString({ toolName: r.tool, ruleContent: pattern });
       const verdict = validatePermissionRule(canonical);
       if (!verdict.valid) {
-        const suffix = verdict.suggestion ? `. ${verdict.suggestion}` : '';
-        return { warning: `Invalid permission rule "${canonical}" was skipped: ${verdict.error}${suffix}` };
+        return { warning: `Invalid permission rule "${canonical}" was skipped: ${formatPermissionRuleError(verdict)}` };
       }
       // Honor a per-rule `source` tag when the file bundles rules from several
       // origins (a managed/flag file); a bogus tag falls back to the loader tier.
