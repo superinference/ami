@@ -38,6 +38,7 @@ import {
   NODE_EXTRA_CA_CERTS_ENV,
   SYSTEM_CA_NODE_OPTIONS,
 } from './utils/mtls';
+import { getCACertificates } from './ca-certs';
 import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { assertValidStsEnvCredentials, readAwsIniCredentials } from './utils/aws';
 import { isEnvTruthy } from './analytics';
@@ -2455,7 +2456,12 @@ export function buildProxyConnectOptions(
   if (tls?.cert) opts.cert = tls.cert;
   if (tls?.key) opts.key = tls.key;
   if (tls?.passphrase) opts.passphrase = tls.passphrase;
-  const caBundle = assembleCATrustStore(env, tls?.ca);
+  // No client-cert material: resolve the env-only trust store through the memoized
+  // {@link getCACertificates} (identical value to assembleCATrustStore(env, undefined),
+  // but cached + invalidatable at runtime). With material, assemble per-material.
+  const caBundle = tls?.ca !== undefined
+    ? assembleCATrustStore(env, tls.ca)
+    : getCACertificates(env);
   if (caBundle !== undefined) opts.ca = caBundle;
   if (proxyResolvesHosts(env)) opts.lookup = makeProxyLookup();
   return Object.keys(opts).length > 0 ? opts : undefined;
