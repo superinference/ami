@@ -16,6 +16,11 @@ import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-
 import { isReadOnlyBashCommand } from './tools/bash-cache';
 import { isCaseInsensitiveFs } from './tools/tool-utils';
 import { log as logDebug } from './logger';
+import {
+  SpeculativeClassifierCache,
+  DEFAULT_SPECULATIVE_GRACE_MS,
+  type SpeculativeBashClassifier,
+} from './speculative-classifier';
 import type { SandboxPolicy } from './types';
 
 // ---------------------------------------------------------------------------
@@ -4814,6 +4819,12 @@ export class PermissionManager {
    *  would-be auto-approval. Undefined → inert (autonomous behavior unchanged). See
    *  {@link AutoModeSafetyClassifier} and {@link setAutoModeSafetyClassifier}. */
   private autoModeSafetyClassifier?: AutoModeSafetyClassifier;
+  /** Optional speculative bash-classifier cache injected by the engine/common layer.
+   *  Consulted (via {@link primeSpeculativeBashCheck} / {@link resolveSpeculativeBashApproval})
+   *  on the INTERACTIVE ask path only: a high-confidence match that resolves inside the
+   *  grace window turns a would-be prompt into an allow. Undefined → inert (the prompt
+   *  path is unchanged). See {@link SpeculativeClassifierCache}. */
+  private speculativeClassifierCache?: SpeculativeClassifierCache;
   /** Transient carry-slot for the reason attached to the MOST RECENT classifier-driven
    *  allow→ask/deny downgrade in {@link check}, consumed (and cleared) by
    *  {@link deriveDecisionReason} so {@link checkWithReason} can attribute the verdict to
@@ -5055,6 +5066,67 @@ export class PermissionManager {
   /** Whether an autonomous-mode safety classifier is currently installed. */
   hasAutoModeSafetyClassifier(): boolean {
     return this.autoModeSafetyClassifier !== undefined;
+  }
+
+  /**
+   * Register (or clear, with `undefined`) the SPECULATIVE bash-command classifier
+   * ({@link SpeculativeBashClassifier}) — the interactive ASK-path grace-race
+   * optimization. When set, the engine primes a check for a bash command via
+   * {@link primeSpeculativeBashCheck} the moment it needs a decision, then — if the
+   * deterministic check resolves to `ask` — calls {@link resolveSpeculativeBashApproval}
+   * right before prompting: a HIGH-confidence match that settles inside the grace
+   * window auto-approves the command without a prompt. It can only ever turn a
+   * would-be prompt into an allow (never deny, never loosen a hardline/deny, which
+   * resolve before the ask path). Unset leaves the prompt path byte-for-byte
+   * unchanged. Parity: Claude's speculative bash classifier
+   * (`bashPermissions.ts` + the race in `useCanUseTool.tsx`). `ttlMs` bounds how
+   * long a primed-but-unconsumed check stays live.
+   */
+  setSpeculativeBashClassifier(
+    fn: SpeculativeBashClassifier | undefined,
+    options: { ttlMs?: number } = {},
+  ): void {
+    this.speculativeClassifierCache = fn
+      ? new SpeculativeClassifierCache({ classifier: fn, ttlMs: options.ttlMs })
+      : undefined;
+  }
+
+  /** Whether a speculative bash classifier is currently installed. */
+  hasSpeculativeBashClassifier(): boolean {
+    return this.speculativeClassifierCache !== undefined;
+  }
+
+  /**
+   * Prime (start, in the background) a speculative classifier check for a bash
+   * `command` so its verdict may be ready by the time a prompt would be shown.
+   * No-op when no classifier is installed, and idempotent per command (one in-flight
+   * check at a time). Called by the engine as soon as a bash command needs a
+   * decision.
+   */
+  primeSpeculativeBashCheck(command: string): void {
+    this.speculativeClassifierCache?.prime(command);
+  }
+
+  /**
+   * Resolve a primed speculative check for `command`, racing it against `graceMs`.
+   * Returns the matched rule description (auto-approve — the engine skips the prompt
+   * and allows the command) ONLY when a high-confidence match settles inside the
+   * grace window; otherwise `null` (the engine proceeds with the interactive prompt).
+   * No-op (`null`) when no classifier is installed or the command was never primed.
+   * Called by the engine after {@link check} returns `ask` for a bash command.
+   */
+  async resolveSpeculativeBashApproval(
+    command: string,
+    graceMs: number = DEFAULT_SPECULATIVE_GRACE_MS,
+  ): Promise<string | null> {
+    if (!this.speculativeClassifierCache) return null;
+    return this.speculativeClassifierCache.resolveApproval(command, graceMs);
+  }
+
+  /** Drop every cached speculative check (e.g. on session reset). No-op when no
+   *  classifier is installed. */
+  clearSpeculativeBashChecks(): void {
+    this.speculativeClassifierCache?.clear();
   }
 
   /**
