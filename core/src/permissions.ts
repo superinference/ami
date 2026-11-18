@@ -4986,6 +4986,13 @@ export class PermissionManager {
    *  would-be auto-approval. Undefined → inert (autonomous behavior unchanged). See
    *  {@link AutoModeSafetyClassifier} and {@link setAutoModeSafetyClassifier}. */
   private autoModeSafetyClassifier?: AutoModeSafetyClassifier;
+  /** Optional listener notified when the {@link autoModeSafetyClassifier} STARTS
+   *  (`checking:true`) and FINISHES (`checking:false`) evaluating a tool call, so the
+   *  engine can surface an in-flight "safety check in progress" signal while the async
+   *  classifier query runs. Fired ONLY around an actual classifier consult (not on the
+   *  fast-path allow). Parity: Claude's `setClassifierChecking`/`clearClassifierChecking`
+   *  subscribable signal (`classifierApprovals.ts`). Undefined → no signal emitted. */
+  private classifierCheckingListener?: (checking: boolean, toolName: string) => void;
   /** Optional speculative bash-classifier cache injected by the engine/common layer.
    *  Consulted (via {@link primeSpeculativeBashCheck} / {@link resolveSpeculativeBashApproval})
    *  on the INTERACTIVE ask path only: a high-confidence match that resolves inside the
@@ -5282,6 +5289,22 @@ export class PermissionManager {
   }
 
   /**
+   * Register (or clear, with `undefined`) a listener fired when the installed
+   * {@link setAutoModeSafetyClassifier} STARTS and FINISHES evaluating a tool call.
+   * It is invoked with `(true, toolName)` immediately before the async classifier
+   * query and `(false, toolName)` once it settles (success, `undefined`, or error) —
+   * only when a classifier actually runs for the call. The engine wires this to emit a
+   * `classifier_checking` {@link import('./types').EngineEvent} and update the
+   * {@link import('./tool-confirmation').ToolConfirmationService} in-flight set. Parity:
+   * Claude's `setClassifierChecking`/`clearClassifierChecking` subscribable signal.
+   */
+  setClassifierCheckingListener(
+    fn: ((checking: boolean, toolName: string) => void) | undefined,
+  ): void {
+    this.classifierCheckingListener = fn;
+  }
+
+  /**
    * Register (or clear, with `undefined`) the SPECULATIVE bash-command classifier
    * ({@link SpeculativeBashClassifier}) — the interactive ASK-path grace-race
    * optimization. When set, the engine primes a check for a bash command via
@@ -5383,6 +5406,11 @@ export class PermissionManager {
     // (read-only / coordination) — never spend a classifier call on it.
     if (!classifier || isAutoModeSafeTool(toolName)) return 'allow';
     let verdict: AutoModeSafetyVerdict | undefined;
+    // Bracket the async consult with the in-flight CHECKING signal so a frontend can
+    // show "safety check in progress" while the classifier query runs. Fired ONLY here
+    // (an actual consult), never on the fast-path allow above. The `false` transition
+    // runs in `finally` so a thrown/rejected classifier still clears the signal.
+    this.classifierCheckingListener?.(true, toolName);
     try {
       verdict = await classifier({ toolName, input, mode: this.mode, staticDecision: 'allow' });
     } catch {
@@ -5390,6 +5418,8 @@ export class PermissionManager {
       // fall back to the deterministic auto-approval (parity: classifier error →
       // static decision). The static engine already screened for hardlines/denies.
       return 'allow';
+    } finally {
+      this.classifierCheckingListener?.(false, toolName);
     }
     if (!verdict || verdict.decision === 'allow') return 'allow';
     // Downgrade. Carry the reason to deriveDecisionReason so the prompt / denial

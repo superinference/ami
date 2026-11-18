@@ -1287,7 +1287,7 @@ export const ENGINE_EVENT_TYPES = [
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
   'external_import_blocked', 'peer_message', 'background_task_complete',
-  'hook_response', 'max_turns_reached', 'done',
+  'hook_response', 'max_turns_reached', 'classifier_checking', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1625,6 +1625,20 @@ export type EngineEvent =
    *  mapping. Parity: Claude Code's `max_turns_reached` informational attachment
    *  (query.ts) — an expected boundary the UI renders neutrally, distinct from an error. */
   | { type: 'max_turns_reached'; maxTurns: number; turnCount: number }
+  /** The autonomous-mode safety classifier is ACTIVELY evaluating an about-to-be
+   *  auto-approved tool call (`checking:true`), or has just finished (`checking:false`).
+   *  On the autonomous auto-approve path (`auto-allow` / `bypassPermissions` / screened
+   *  `auto` / inherited plan-bypass) a model-backed classifier runs a real async query
+   *  before a tool call is silently allowed (see
+   *  {@link PermissionManager.setAutoModeSafetyClassifier}); until it resolves the user
+   *  has no signal that an approval is not instantaneous/unchecked. This event brackets
+   *  that async check so a frontend can surface an in-flight "safety check in progress"
+   *  indicator and the engine's {@link ToolConfirmationService} can track the checking
+   *  state (parity: Claude Code's `CLASSIFIER_CHECKING` set +
+   *  `setClassifierChecking`/`clearClassifierChecking`/`isClassifierChecking`/
+   *  `subscribeClassifierChecking` in `classifierApprovals.ts`). Emitted only when a
+   *  classifier is installed and actually consulted for this call. */
+  | { type: 'classifier_checking'; toolName: string; checking: boolean }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**

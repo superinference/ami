@@ -427,4 +427,47 @@ export class ToolConfirmationService {
       this.classifierApprovals.delete(oldest);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // In-flight classifier CHECKING state (the pre-decision half of Claude's
+  // classifierApprovals.ts). Distinct from the APPROVAL ledger above (which
+  // records the SETTLED verdict): this tracks tools whose auto-mode safety
+  // classifier is CURRENTLY running an async query, so a frontend can show a
+  // "safety check in progress" indicator while an autonomous approval is being
+  // confirmed. Keyed by tool NAME (the scope the auto-mode classifier context
+  // carries — autonomous checks run sequentially per write-segment, so a name is
+  // a stable key for the in-flight window). Mirrors Claude's `CLASSIFIER_CHECKING`
+  // Set + setClassifierChecking/clearClassifierChecking/isClassifierChecking.
+  // ---------------------------------------------------------------------------
+
+  private classifierChecking: Set<string> = new Set();
+
+  /** Mark that the safety classifier is actively evaluating `toolName`. Returns
+   *  true when this transitioned an idle tool into the checking state (the first
+   *  mark), false when it was already checking. Parity: Claude's
+   *  `setClassifierChecking(toolUseID)`. */
+  setClassifierChecking(toolName: string): boolean {
+    if (this.classifierChecking.has(toolName)) return false;
+    this.classifierChecking.add(toolName);
+    return true;
+  }
+
+  /** Clear the in-flight checking state once the classifier settles. Returns true
+   *  when a checking entry was removed. Parity: Claude's
+   *  `clearClassifierChecking(toolUseID)`. */
+  clearClassifierChecking(toolName: string): boolean {
+    return this.classifierChecking.delete(toolName);
+  }
+
+  /** Whether the safety classifier is currently evaluating `toolName`. Parity:
+   *  Claude's `isClassifierChecking(toolUseID)`. */
+  isClassifierChecking(toolName: string): boolean {
+    return this.classifierChecking.has(toolName);
+  }
+
+  /** Snapshot of every tool with an in-flight classifier check (recency-insertion
+   *  order), for a diagnostic / introspection surface. */
+  getClassifierCheckingTools(): string[] {
+    return [...this.classifierChecking];
+  }
 }
