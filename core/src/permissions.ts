@@ -3022,6 +3022,37 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
 }
 
 /**
+ * Canonical, reusable command-identity predicates for the two command roots the
+ * compound-command guards recognize specially: a directory change (`cd`) and a
+ * `git` invocation. Before this, each guard ({@link isGitReadOnlyCommandSafe},
+ * {@link countDirectoryChanges}, {@link commandHasCdWriteDesync},
+ * {@link commandInvokesGit}) open-coded its own `cmd === 'cd' || cmd === 'pushd'
+ * || …` / `cmd === 'git'` test, and the sets had DRIFTED (one counted `popd` but
+ * not `set-location`; the others the reverse) so the same command was recognized
+ * as a directory change by one guard and not another. These are the single
+ * canonical identity checks every guard now shares, mirroring Claude's injectable
+ * `CommandIdentityCheckers` (isNormalizedCdCommand / isNormalizedGitCommand,
+ * bashCommandHelpers.ts) so directory-change / git recognition is consistent and
+ * independently testable.
+ *
+ * `isNormalizedCdCommand` recognizes every directory-change verb: the POSIX
+ * `cd`/`chdir`/`pushd`/`popd` (lowercase, as a real shell spells them) and the
+ * PowerShell `Set-Location` cmdlet (case-insensitive, as PowerShell resolves it).
+ */
+export function isNormalizedCdCommand(token: string | undefined): boolean {
+  if (!token) return false;
+  return token === 'cd' || token === 'chdir' || token === 'pushd' || token === 'popd'
+    || token.toLowerCase() === 'set-location';
+}
+
+/** `isNormalizedGitCommand` recognizes a bare `git` base token (env-var prefixes
+ *  and `sudo`/`env` wrappers are peeled by {@link extractBaseCommands} before this
+ *  predicate sees the token, so it only needs to match the normalized base word). */
+export function isNormalizedGitCommand(token: string | undefined): boolean {
+  return token === 'git';
+}
+
+/**
  * Whole-command git read-only guard for the bash classifier. Splits a (possibly
  * compound) command into segments, validates every git invocation via
  * isGitInvocationReadOnly, and refuses a compound that changes directory before
@@ -3038,8 +3069,8 @@ export function isGitReadOnlyCommandSafe(command: string): boolean {
     let i = 0;
     while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
     const cmd = tokens[i];
-    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'popd' || cmd === 'chdir') hasCd = true;
-    if (cmd === 'git') {
+    if (isNormalizedCdCommand(cmd)) hasCd = true;
+    if (isNormalizedGitCommand(cmd)) {
       hasGit = true;
       if (!isGitInvocationReadOnly(tokens.slice(i))) return false;
     }
@@ -3135,7 +3166,7 @@ export function isGhReadOnlyCommandSafe(command: string): boolean {
  * disguised-bare-repo boundary check in {@link PermissionManager.check}.
  */
 export function commandInvokesGit(command: string): boolean {
-  return extractBaseCommands(command).some(b => b === 'git' || b.startsWith('git '));
+  return extractBaseCommands(command).some(b => isNormalizedGitCommand(b) || b.startsWith('git '));
 }
 
 /**
@@ -3239,8 +3270,7 @@ export function commandHasCdWriteDesync(command: string): boolean {
     let i = 0;
     while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
     const cmd = tokens[i];
-    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'chdir' ||
-        (cmd && cmd.toLowerCase() === 'set-location')) hasCd = true;
+    if (isNormalizedCdCommand(cmd)) hasCd = true;
     // A file redirect: optional leading fd, `>`/`>>`, then a target that is not
     // an fd-dup (`&1`). Quoted sections are stripped so `echo "a > b"` is ignored.
     const unquoted = stripQuotedSections(seg);
@@ -3267,8 +3297,7 @@ export function countDirectoryChanges(command: string): number {
     let i = 0;
     while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
     const cmd = tokens[i];
-    if (cmd === 'cd' || cmd === 'pushd' || cmd === 'chdir' ||
-        (cmd && cmd.toLowerCase() === 'set-location')) count++;
+    if (isNormalizedCdCommand(cmd)) count++;
   }
   return count;
 }
@@ -3983,6 +4012,16 @@ function wordAlignedCommonPrefix(prefixes: string[]): string {
  * `getCompoundCommandPrefixesStatic` (utils/bash/prefix.ts) + per-subcommand
  * rule derivation (BashPermissionRequest `subcommandResults`).
  */
+/**
+ * Upper bound on how many per-subcommand "allow always" rules a single compound
+ * command's permission prompt may suggest. A wide chain (`a && b && c && … && j`)
+ * otherwise produces a 10+ rule dump the user has to read through; capping keeps
+ * the prompt legible — the user can still allow the rest by re-running or granting
+ * a broader rule. Mirrors Claude's `MAX_SUGGESTED_RULES_FOR_COMPOUND` (default 5,
+ * bashPermissions.ts). Applied in {@link buildPermissionSuggestions}.
+ */
+export const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5;
+
 export function getCompoundCommandPrefixes(
   command: string,
   excludeSubcommand?: (subcommand: string) => boolean,
@@ -4517,6 +4556,9 @@ export function buildPermissionSuggestions(
     const command = typeof input.command === 'string' ? input.command : undefined;
     if (!command) return [];
     const rules: PermissionRuleValue[] = getCompoundCommandPrefixes(command)
+      // Cap the per-subcommand rule dump so a wide compound command does not
+      // produce an unreadable 10+ rule prompt (Claude's MAX_SUGGESTED_RULES_FOR_COMPOUND).
+      .slice(0, MAX_SUGGESTED_RULES_FOR_COMPOUND)
       .map(prefix => ({ toolName: 'bash', ruleContent: `${prefix}*` }));
     return rules.length > 0
       ? [{ type: 'addRules', behavior: 'allow', destination: 'session', rules }]
