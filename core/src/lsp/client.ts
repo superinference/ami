@@ -25,6 +25,7 @@ import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { isBinaryInstalled, firstAvailableBinary } from '../utils/which';
 import { pythonBootstrapHint } from '../utils/package-manager';
 import { retryWithBackoff } from '../mcp/oauth';
+import { classifySubprocessError } from '../error-classifier';
 import { log, logError } from '../logger';
 import { AMI_CLIENT_INFO } from '../version';
 import {
@@ -77,6 +78,15 @@ const EXIT_GRACE_MS = 50;
  * failing to process is surfaced instead of being silently swallowed forever.
  */
 const DIAGNOSTIC_FAILURE_WARN_THRESHOLD = 3;
+
+/**
+ * Bytes of a language server's stderr retained for crash classification. The
+ * failure reason a crashing server prints (missing module, disabled API, …) lands
+ * at the END of its stderr, so only the most recent slice is kept — enough to carry
+ * the signature {@link classifySubprocessError} matches on, bounded so a chatty
+ * server can never grow the buffer without limit.
+ */
+const LSP_STDERR_TAIL_BYTES = 4096;
 
 /**
  * The BCP-47 locale AMI advertises to a language server in the `initialize`
@@ -490,16 +500,32 @@ export class LSPClient implements DiagnosticSource {
         env: { ...sanitizeEnvForSubprocess({ ...process.env }), ...config.env },
       });
 
+      // Bounded tail of the server's own stderr, retained so a CRASH exit can be
+      // classified into an actionable recovery path (missing dependency, disabled
+      // API, …) instead of only "crashed with exit code N". Capped so a chatty
+      // server can't grow it unbounded; only the most recent bytes carry the
+      // failure reason.
+      let recentStderr = '';
+
       // Exit handler: distinguish an intentional stop (gracefulStop removes these
       // listeners first) from a real crash. On a non-zero/non-null exit code we
       // build a `crashed with exit code N` error, log it, and retain it as the
       // server's lastError so the crash reason survives the connection teardown.
+      // When the retained stderr matches a known-recoverable signature, the typed
+      // remediation steps are appended so `/doctor` tells the user HOW to recover
+      // (parity: Claude Code's verifyIt2Setup stderr → remediation classification).
       const onExit = (code: number | null) => {
         this.crashCounts.set(language, (this.crashCounts.get(language) ?? 0) + 1);
         const crashed = code !== 0 && code !== null;
-        const message = crashed
+        let message = crashed
           ? `LSP server "${language}" crashed with exit code ${code}`
           : `LSP server "${language}" exited`;
+        if (crashed) {
+          const classification = classifySubprocessError(recentStderr);
+          if (classification.recoverable) {
+            message += ` — ${classification.remediation.join(' ')}`;
+          }
+        }
         this.recordError(language, message, code);
         this.clearServer(language);
       };
@@ -517,7 +543,11 @@ export class LSPClient implements DiagnosticSource {
       // (`[LSP SERVER <language>] …`) instead of swallowing it — a misbehaving
       // server's error text (missing deps, config errors) becomes diagnosable.
       proc.stderr?.on('data', (data: Buffer) => {
-        const output = data.toString().trim();
+        const chunk = data.toString();
+        // Retain a bounded tail for crash classification (keep the most recent
+        // LSP_STDERR_TAIL_BYTES — the failure reason is always at the end).
+        recentStderr = (recentStderr + chunk).slice(-LSP_STDERR_TAIL_BYTES);
+        const output = chunk.trim();
         if (output) log('lsp', `[LSP SERVER ${language}] ${output}`);
       });
       if (!proc.pid) {

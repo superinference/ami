@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { APICallError, LoadAPIKeyError, NoSuchModelError, InvalidPromptError, NoContentGeneratedError, EmptyResponseBodyError } from 'ai';
 
-import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, isToolPairingError, extractUnknownErrorFormat, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, type ClassifiedError } from '../src/error-classifier';
+import { classifyError, friendlyErrorMessage, findErrorCode, ERROR_CATEGORIES, isToolPairingError, extractUnknownErrorFormat, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, classifySubprocessError, type ClassifiedError, type SubprocessErrorReason } from '../src/error-classifier';
 
 // ---------------------------------------------------------------------------
 // Helper to assert the full shape of a classified error
@@ -1293,5 +1293,81 @@ describe('isPromptTooLongMessage', () => {
     assert.equal(isPromptTooLongMessage('authentication token expired'), false);
     assert.equal(isPromptTooLongMessage('field value is too long'), false);
     assert.equal(isPromptTooLongMessage(undefined as unknown as string), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifySubprocessError — stderr → recoverable reason + remediation steps
+// ---------------------------------------------------------------------------
+describe('classifySubprocessError', () => {
+  function expectReason(stderr: unknown, reason: SubprocessErrorReason) {
+    const r = classifySubprocessError(stderr);
+    assert.equal(r.reason, reason);
+    assert.equal(r.recoverable, true);
+    assert.ok(r.remediation.length > 0, 'a recognized reason must carry remediation steps');
+    r.remediation.forEach((step) => assert.equal(typeof step, 'string'));
+  }
+
+  it('classifies a Python ModuleNotFoundError as missing-dependency', () => {
+    expectReason("ModuleNotFoundError: No module named 'pylsp'", 'missing-dependency');
+    expectReason("Error: Cannot find module 'typescript-language-server'", 'missing-dependency');
+    expectReason('gopls: command not found', 'missing-dependency');
+  });
+
+  it('classifies permission errors as permission-denied', () => {
+    expectReason('/usr/bin/rust-analyzer: Permission denied', 'permission-denied');
+    expectReason('spawn EACCES', 'permission-denied');
+  });
+
+  it('classifies a disabled API/feature as api-not-enabled', () => {
+    expectReason('Python API not enabled in preferences', 'api-not-enabled');
+    expectReason('The requested feature is disabled', 'api-not-enabled');
+  });
+
+  it('classifies connection failures as connection-refused', () => {
+    expectReason('connect ECONNREFUSED 127.0.0.1:9000', 'connection-refused');
+    expectReason('Error: connection refused', 'connection-refused');
+  });
+
+  it('classifies memory exhaustion as out-of-memory', () => {
+    expectReason('FATAL ERROR: Reached heap limit — JavaScript heap out of memory', 'out-of-memory');
+    expectReason('fork: Cannot allocate memory (ENOMEM)', 'out-of-memory');
+  });
+
+  it('returns an unrecognized (not recoverable) result for unknown stderr', () => {
+    const r = classifySubprocessError('segfault at 0xdeadbeef');
+    assert.equal(r.reason, null);
+    assert.equal(r.recoverable, false);
+    assert.deepEqual(r.remediation, []);
+  });
+
+  it('is fail-safe on empty / whitespace / non-string input', () => {
+    for (const input of ['', '   \n\t', undefined, null, 42, {}]) {
+      const r = classifySubprocessError(input as unknown);
+      assert.equal(r.reason, null);
+      assert.equal(r.recoverable, false);
+      assert.deepEqual(r.remediation, []);
+    }
+  });
+
+  it('matches case-insensitively', () => {
+    expectReason('PERMISSION DENIED', 'permission-denied');
+  });
+
+  it('returns a fresh remediation array each call (callers may mutate it)', () => {
+    const a = classifySubprocessError('no module named x');
+    const b = classifySubprocessError('no module named x');
+    assert.notEqual(a.remediation, b.remediation);
+    a.remediation.push('mutated');
+    assert.ok(!b.remediation.includes('mutated'));
+  });
+
+  it('honors signature order — most specific reason wins when several could match', () => {
+    // "command not found" (missing-dependency) + "connection refused" (connection-refused)
+    // both present; the table is checked top-to-bottom so missing-dependency wins.
+    assert.equal(
+      classifySubprocessError('command not found; connection refused').reason,
+      'missing-dependency',
+    );
   });
 });

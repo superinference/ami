@@ -1265,6 +1265,140 @@ export function categorizeLoadFailure(error: unknown): LoadFailureGuidance {
   return { category: 'unknown', guidance: 'Fix the plugin/hook configuration or remove the problematic source from your settings.' };
 }
 
+// ---------------------------------------------------------------------------
+// Subprocess stderr classification — recoverable reason + remediation steps
+// ---------------------------------------------------------------------------
+
+/**
+ * A recognized, RECOVERABLE external-subprocess failure mode, derived from the
+ * raw stderr a non-zero child process wrote. Distinct from {@link ErrorCategory}
+ * (live API responses) and {@link LoadFailureCategory} (a thrown load Error → a
+ * one-line hint): this inspects the stderr TEXT an external tool emitted and names
+ * the specific actionable condition so a caller can both branch on a typed
+ * discriminator AND show the user concrete remediation STEPS.
+ *
+ * Mirrors Claude Code's `verifyIt2Setup` (utils/swarm/backends/it2Setup.ts), which
+ * on a non-zero exit inspects stderr for signatures ('api', 'python',
+ * 'connection refused', 'not enabled') to distinguish ONE recoverable mode (the
+ * Python API being disabled) and returns a typed `needsPythonApiEnabled`
+ * discriminator paired with the `getPythonApiInstructions` remediation step list —
+ * generalized here across the subprocess-launching call sites AMI already has (the
+ * LSP server launch, external tool detection, git/clone paths) so a known
+ * subprocess error becomes an actionable recovery path instead of an opaque
+ * "crashed with exit code N".
+ */
+export type SubprocessErrorReason =
+  | 'missing-dependency'
+  | 'permission-denied'
+  | 'api-not-enabled'
+  | 'connection-refused'
+  | 'out-of-memory';
+
+/** Typed classification of a subprocess failure, returned by {@link classifySubprocessError}. */
+export interface SubprocessErrorClassification {
+  /** The recognized recoverable failure mode, or `null` when no known signature matched. */
+  reason: SubprocessErrorReason | null;
+  /** True iff a known recoverable signature matched (i.e. `reason !== null`). */
+  recoverable: boolean;
+  /**
+   * Ordered, human-readable remediation steps for `reason` (the AMI analogue of
+   * `getPythonApiInstructions`), or an empty array when the stderr matched no
+   * known signature. Never contains secrets — derived only from stderr keywords.
+   */
+  remediation: string[];
+}
+
+/**
+ * Ordered signature table: each known recoverable reason, the lowercased stderr
+ * substrings that identify it, and its remediation step list. Checked top-to-bottom
+ * so the FIRST matching (most specific) reason wins; keep more-specific signatures
+ * above broader ones. Centralizing the table (vs scattering `stderr.includes(...)`
+ * across every subprocess caller) is the whole point — one canonical place that the
+ * LSP launch, tool detection, and git paths all consult.
+ */
+const SUBPROCESS_ERROR_SIGNATURES: ReadonlyArray<{
+  reason: SubprocessErrorReason;
+  signatures: readonly string[];
+  remediation: readonly string[];
+}> = [
+  {
+    reason: 'missing-dependency',
+    signatures: [
+      'modulenotfounderror', 'no module named', 'cannot find module', 'importerror',
+      'command not found', 'is not recognized as an internal', 'executable not found',
+    ],
+    remediation: [
+      'A required dependency is missing.',
+      'Install the missing package/binary the tool reported, then make sure it is on your PATH.',
+      'Re-run once it is installed.',
+    ],
+  },
+  {
+    reason: 'permission-denied',
+    signatures: ['permission denied', 'eacces', 'operation not permitted', 'eperm', 'access is denied'],
+    remediation: [
+      'The tool was denied permission to run or to access a file.',
+      'Check the executable and file permissions (and any sandbox/ACL), then grant the needed access.',
+      'Re-run once permissions are fixed.',
+    ],
+  },
+  {
+    reason: 'api-not-enabled',
+    signatures: ['not enabled', 'is disabled', 'feature is disabled', 'api is not', 'enable the api'],
+    remediation: [
+      'A required API or feature is disabled.',
+      'Enable it in the tool\'s settings/preferences.',
+      'Restart the tool after enabling, then re-run.',
+    ],
+  },
+  {
+    reason: 'connection-refused',
+    signatures: ['connection refused', 'econnrefused', 'could not connect', 'failed to connect', 'econnreset', 'connection reset'],
+    remediation: [
+      'Could not reach the service the tool depends on.',
+      'Make sure it is running and listening, and check the host/port and any firewall/proxy.',
+      'Re-run once it is reachable.',
+    ],
+  },
+  {
+    reason: 'out-of-memory',
+    signatures: ['out of memory', 'enomem', 'heap out of memory', 'cannot allocate memory', 'oom-killer'],
+    remediation: [
+      'The tool ran out of memory.',
+      'Free up memory (close other processes) or raise the tool\'s memory limit.',
+      'Re-run once more memory is available.',
+    ],
+  },
+];
+
+/** A subprocess failure the signature table did not recognize — reusable empty result. */
+const UNRECOGNIZED_SUBPROCESS_ERROR: SubprocessErrorClassification = Object.freeze({
+  reason: null,
+  recoverable: false,
+  remediation: [],
+});
+
+/**
+ * Classify an external subprocess's raw stderr into a typed, recoverable reason
+ * plus concrete remediation steps (or an unrecognized result when nothing matches).
+ * The ONE canonical subprocess-stderr classifier — subprocess-launching call sites
+ * (the LSP server launch, external tool detection, git/clone) feed it the stderr a
+ * non-zero child wrote instead of each re-implementing `stderr.includes(...)`.
+ *
+ * Non-string / empty / whitespace input returns the unrecognized result without a
+ * match (fail-safe: an unreadable stderr is never mis-reported as a known reason).
+ */
+export function classifySubprocessError(stderr: unknown): SubprocessErrorClassification {
+  const text = (typeof stderr === 'string' ? stderr : '').toLowerCase();
+  if (text.trim().length === 0) return UNRECOGNIZED_SUBPROCESS_ERROR;
+  for (const entry of SUBPROCESS_ERROR_SIGNATURES) {
+    if (entry.signatures.some((sig) => text.includes(sig))) {
+      return { reason: entry.reason, recoverable: true, remediation: [...entry.remediation] };
+    }
+  }
+  return UNRECOGNIZED_SUBPROCESS_ERROR;
+}
+
 const FRIENDLY_MESSAGES: Partial<Record<ErrorCategory, string>> = {
   rate_limited: 'Rate limited by the provider — retrying after a delay.',
   plan_limit: 'Plan or billing limit reached — check your account usage and billing settings.',
