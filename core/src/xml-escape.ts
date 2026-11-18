@@ -128,3 +128,41 @@ export function safeXmlKey(key: string, fallback = 'unknown'): string {
   const k = String(key);
   return /^[A-Za-z_][\w.-]*$/.test(k) ? k : fallback;
 }
+
+/**
+ * The ONE canonical charset for an UNTRUSTED XML attribute NAME: a plain
+ * identifier (letter/underscore start, then word chars only). Deliberately
+ * STRICTER than {@link safeXmlKey}'s XML-name charset — it forbids `.`/`-`/`:` —
+ * because attribute names, unlike values, cannot be escaped, so a crafted key
+ * like `x="" injected="y` must be rejected OUTRIGHT rather than neutralized.
+ * This is the single source for that pattern across every tag-wrapping site
+ * (channel metadata, MCP notes, any key/value → attribute rendering).
+ */
+export const SAFE_XML_ATTR_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * [FUNCTIONAL] Predicate form of {@link SAFE_XML_ATTR_NAME}: true when `name` is a
+ * safe untrusted attribute key. Unlike {@link safeXmlKey} (which substitutes a
+ * fallback), this is a filter — callers DROP keys that fail, because an attacker
+ * who controls an attribute name can break out of the tag structure.
+ */
+export function isSafeXmlAttrName(name: string): boolean {
+  return SAFE_XML_ATTR_NAME.test(String(name));
+}
+
+/**
+ * [FUNCTIONAL] Render an UNTRUSTED key/value map into a tag-attribute string —
+ * the reusable primitive any tag-wrapping code uses to interpolate external data
+ * safely. Keys that are not {@link isSafeXmlAttrName safe attribute names} are
+ * dropped (names cannot be escaped), and every value is run through
+ * {@link escapeXmlAttr}. Each surviving pair is emitted as ` key="value"` (with a
+ * leading space) so the result can be concatenated directly after the tag name.
+ * Returns `''` for `undefined`/`null`/empty input.
+ */
+export function renderXmlAttrs(attrs?: Record<string, string> | null): string {
+  if (!attrs) return '';
+  return Object.entries(attrs)
+    .filter(([k]) => isSafeXmlAttrName(k))
+    .map(([k, v]) => ` ${k}="${escapeXmlAttr(v)}"`)
+    .join('');
+}

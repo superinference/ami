@@ -494,6 +494,9 @@ export {
   escapeXmlAttr,
   escapeXmlText,
   safeXmlKey,
+  isSafeXmlAttrName,
+  renderXmlAttrs,
+  SAFE_XML_ATTR_NAME,
   stripInvalidXmlChars,
   unescapeXml,
 } from './xml-escape';

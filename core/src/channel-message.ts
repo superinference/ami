@@ -15,7 +15,12 @@
  */
 
 import type { ChannelMessageMeta } from './types';
-import { escapeXmlAttr, unescapeXml } from './xml-escape';
+import {
+  escapeXmlAttr,
+  renderXmlAttrs,
+  SAFE_XML_ATTR_NAME,
+  unescapeXml,
+} from './xml-escape';
 
 /** The XML tag name of a channel wrapper. Parity: Claude's `CHANNEL_TAG`. */
 export const CHANNEL_TAG = 'channel';
@@ -25,26 +30,25 @@ export const CHANNEL_TAG = 'channel';
  * would break out of the attribute structure. Only accept keys that look like
  * plain identifiers — stricter than the XML spec (which also allows `:`/`.`/`-`),
  * but channel servers only send `chat_id`, `user`, `thread_ts`, `message_id` in
- * practice. Parity: Claude's `SAFE_META_KEY`.
+ * practice. Parity: Claude's `SAFE_META_KEY`. Aliased to the canonical
+ * {@link SAFE_XML_ATTR_NAME} so there is ONE source of the safe-attribute-name
+ * charset shared by every tag-wrapping site (no duplicated regex).
  */
-export const SAFE_CHANNEL_META_KEY = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+export const SAFE_CHANNEL_META_KEY = SAFE_XML_ATTR_NAME;
 
 /**
  * Serialize a channel message. `source` is always written first; every safe meta
- * key is appended as an escaped attribute (unsafe keys are dropped). The body is
- * framed with one newline on each side so the parser can strip exactly that frame.
- * Parity: Claude's `wrapChannelMessage`.
+ * key is appended as an escaped attribute (unsafe keys are dropped) via the shared
+ * {@link renderXmlAttrs} primitive. The body is framed with one newline on each
+ * side so the parser can strip exactly that frame. Parity: Claude's
+ * `wrapChannelMessage`.
  */
 export function wrapChannelMessage(
   source: string,
   content: string,
   meta?: Record<string, string>,
 ): string {
-  const attrs = Object.entries(meta ?? {})
-    .filter(([k]) => SAFE_CHANNEL_META_KEY.test(k))
-    .map(([k, v]) => ` ${k}="${escapeXmlAttr(v)}"`)
-    .join('');
-  return `<${CHANNEL_TAG} source="${escapeXmlAttr(source)}"${attrs}>\n${content}\n</${CHANNEL_TAG}>`;
+  return `<${CHANNEL_TAG} source="${escapeXmlAttr(source)}"${renderXmlAttrs(meta)}>\n${content}\n</${CHANNEL_TAG}>`;
 }
 
 // `source` is always first (the producer writes it first); the trailing group
