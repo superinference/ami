@@ -373,6 +373,55 @@ export interface ProjectConfig {
    */
   noticeSeenCounts?: Record<string, number>;
   /**
+   * Durable rollup of the PREVIOUS session's aggregated metric counters, persisted to the
+   * PROJECT config on process exit (parity: Claude Code's StatsProvider `process.on('exit')`
+   * flush of `store.getAll()` into `lastSessionMetrics` via `saveCurrentProjectConfig`). It
+   * is a plain `name -> count` snapshot carried forward so the next launch can read the prior
+   * session's rollup without re-aggregating the analytics log. Written via
+   * {@link saveLastSessionMetrics} (which no-ops on an empty snapshot, matching Claude's
+   * `Object.keys(metrics).length > 0` guard) and read via {@link readLastSessionMetrics};
+   * internal, non-user-facing state (project config only, like {@link skillUsage}).
+   */
+  lastSessionMetrics?: Record<string, number>;
+  /**
+   * How many times the per-project onboarding affordance has been surfaced, used for
+   * hint-fatigue capping (parity: Claude Code's `projectOnboardingSeenCount`). Once it
+   * reaches {@link PROJECT_ONBOARDING_SEEN_CAP} the nudge stops showing. Incremented via
+   * {@link incrementProjectOnboardingSeenCount} and consulted by
+   * {@link shouldShowProjectOnboarding}; internal per-project state (project config only).
+   */
+  projectOnboardingSeenCount?: number;
+  /**
+   * True once the user has completed the per-project onboarding (parity: Claude Code's
+   * `hasCompletedProjectOnboarding`). A set flag permanently suppresses the onboarding
+   * nudge regardless of the seen-count. Set via {@link maybeMarkProjectOnboardingComplete}
+   * and consulted by {@link shouldShowProjectOnboarding}; internal per-project state.
+   */
+  hasCompletedProjectOnboarding?: boolean;
+  /**
+   * Preferred terminal-emulator name for deep-link launches (parity: Claude Code's GLOBAL
+   * `deepLinkTerminal`). It is the only preference that survives into a headless
+   * LaunchServices / browser-link context where `TERM_PROGRAM` is unset, so it is persisted
+   * to the GLOBAL config via {@link saveDeepLinkTerminal} and read via
+   * {@link resolveDeepLinkTerminal}; a user preference (global config only).
+   */
+  deepLinkTerminal?: string;
+  /**
+   * Override (ms) for the slow-operation deferral delay used by interactivity-aware
+   * background scheduling (default {@link BACKGROUND_SLOW_OP_DELAY_MS}); parity: Claude
+   * Code's `DELAY_VERY_SLOW_OPERATIONS_THAT_HAPPEN_EVERY_SESSION`. Read via
+   * {@link resolveBackgroundSlowOpDelayMs}; a cross-layer tunable knob.
+   */
+  backgroundSlowOpDelayMs?: number;
+  /**
+   * Override (ms) for the "user recently interacted" recency window that defers heavy
+   * background work so it never competes with an actively typing user (default
+   * {@link BACKGROUND_INTERACTION_RECENCY_MS}); parity: Claude Code's 1-minute
+   * `getLastInteractionTime() > Date.now() - 1000*60` guard. Read via
+   * {@link resolveBackgroundInteractionRecencyMs}; a cross-layer tunable knob.
+   */
+  backgroundInteractionRecencyMs?: number;
+  /**
    * Persistent registry of known LOCAL clone paths for a GitHub repository, keyed by
    * the lowercased `owner/repo` (parity: Claude Code's global-config `githubRepoPaths`).
    * Each value is a most-recently-used list of absolute, symlink-resolved, NFC-normalized
@@ -1275,12 +1324,29 @@ export function resetConfigCache(): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Absolute path to a project's config file (`<cwd>/.ami/config.json`). Single source of
+ * truth so the project-scoped reader ({@link loadProjectConfig}) and writer
+ * ({@link saveProjectConfig}) target the same file.
+ */
+export function getProjectConfigPath(cwd: string): string {
+  return path.join(cwd, '.ami', 'config.json');
+}
+
+/**
+ * Absolute path to a project's LOCAL config file (`<cwd>/.ami/config.local.json`) — the
+ * per-user, typically-gitignored override tier. Single source of truth shared by
+ * {@link loadLocalConfig} and {@link saveLocalConfig}.
+ */
+export function getLocalConfigPath(cwd: string): string {
+  return path.join(cwd, '.ami', 'config.local.json');
+}
+
+/**
  * Load a project-level config from `<cwd>/.ami/config.json`.
  * Returns `null` when the file does not exist.
  */
 export function loadProjectConfig(cwd: string): ProjectConfig | null {
-  const configPath = path.join(cwd, '.ami', 'config.json');
-  return loadTierConfigCached(configPath);
+  return loadTierConfigCached(getProjectConfigPath(cwd));
 }
 
 /**
@@ -1288,7 +1354,7 @@ export function loadProjectConfig(cwd: string): ProjectConfig | null {
  * This file is typically gitignored for user-specific overrides.
  */
 export function loadLocalConfig(cwd: string): ProjectConfig | null {
-  return loadTierConfigCached(path.join(cwd, '.ami', 'config.local.json'));
+  return loadTierConfigCached(getLocalConfigPath(cwd));
 }
 
 /**
@@ -1968,6 +2034,17 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['skillUsage', 'object'],
   ['preferencesShown', 'object'], ['noticeSeenCounts', 'object'],
   ['githubRepoPaths', 'object'],
+  // Durable per-session/per-project STATE + preference knobs (see ProjectConfig) —
+  // declared here so a file-tier value is recognized (no spurious unknown-key warning),
+  // base-type validated, and emitted in the JSON schema. `lastSessionMetrics` is an
+  // object of counters (its nested values are value-validated bespoke, like
+  // noticeSeenCounts); the onboarding fatigue fields + deepLinkTerminal + background
+  // deferral knobs are scalars. Parity: Claude's lastSessionMetrics / projectOnboarding* /
+  // deepLinkTerminal / DELAY_VERY_SLOW_OPERATIONS defaults.
+  ['lastSessionMetrics', 'object'],
+  ['projectOnboardingSeenCount', 'number'], ['hasCompletedProjectOnboarding', 'boolean'],
+  ['deepLinkTerminal', 'string'],
+  ['backgroundSlowOpDelayMs', 'number'], ['backgroundInteractionRecencyMs', 'number'],
   // Engine-behavior knobs (see ProjectConfig) — merged by {@link mergeConfigs} and
   // read by the engine factory; declared here so they are recognized + value-validated.
   ['architectEnabled', 'boolean'], ['architectModel', 'string'],
@@ -2530,6 +2607,18 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     for (const [name, v] of Object.entries(counts)) {
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
         issues.push({ field: `noticeSeenCounts.${name}`, message: `must be a non-negative number (got ${JSON.stringify(v)})`, value: v, tip: getConfigValidationTip(`noticeSeenCounts.${name}`, { kind: 'type', type: 'number' }) });
+      }
+    }
+  }
+  // `lastSessionMetrics` is a `name -> counter` rollup (parity: Claude's StatsProvider
+  // flush). Step 1 only guards that the outer value is an object; each nested counter must
+  // be a finite non-negative number, mirroring the `noticeSeenCounts` nested check, so a
+  // corrupt counter is reported rather than silently carried forward.
+  if (config.lastSessionMetrics !== undefined && !typeInvalid.has('lastSessionMetrics')) {
+    const metrics = config.lastSessionMetrics as Record<string, unknown>;
+    for (const [name, v] of Object.entries(metrics)) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+        issues.push({ field: `lastSessionMetrics.${name}`, message: `must be a non-negative number (got ${JSON.stringify(v)})`, value: v, tip: getConfigValidationTip(`lastSessionMetrics.${name}`, { kind: 'type', type: 'number' }) });
       }
     }
   }
@@ -3822,6 +3911,16 @@ export function mergeConfigs(
     if (layer.lastReleaseNotesSeen !== undefined) merged.lastReleaseNotesSeen = layer.lastReleaseNotesSeen;
     if (layer.autoUpdatesChannel !== undefined) merged.autoUpdatesChannel = layer.autoUpdatesChannel;
     if (layer.minimumVersion !== undefined) merged.minimumVersion = layer.minimumVersion;
+    // Preference / background-deferral tunable knobs: last-layer-wins scalars (parity with
+    // the other scalar settings above). The deepLinkTerminal preference and the two
+    // background slow-op deferral windows are read off the merged config by their
+    // resolvers; declared + copied here so a file-tier value is not silently dropped.
+    // (The durable per-project STATE fields — lastSessionMetrics + the onboarding fatigue
+    // counters — are read directly from the project config file by their helpers, like
+    // noticeSeenCounts/preferencesShown, so they are intentionally NOT merged here.)
+    if (layer.deepLinkTerminal !== undefined) merged.deepLinkTerminal = layer.deepLinkTerminal;
+    if (layer.backgroundSlowOpDelayMs !== undefined) merged.backgroundSlowOpDelayMs = layer.backgroundSlowOpDelayMs;
+    if (layer.backgroundInteractionRecencyMs !== undefined) merged.backgroundInteractionRecencyMs = layer.backgroundInteractionRecencyMs;
     // Admin-policy / engine knobs (round 3): the policy maps deep-merge across layers
     // (a higher layer ADDS denies/entries, never silently drops a lower layer's), the
     // marketplace policy lists ACCUMULATE (deny/allow-wins union), and the remaining
@@ -5927,6 +6026,382 @@ export function recordNoticeSeen(name: string, maxCount: number): boolean {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Project-scoped guarded writers (the project/local analogs of saveGlobalConfig)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lock-safe functional read-modify-write of a PROJECT config file
+ * (`<cwd>/.ami/config.json`) — the project-scoped analog of {@link saveGlobalConfig},
+ * reusing the one canonical {@link updateConfigFile} path (atomic temp+rename, fresh
+ * re-read under a cross-process lock, same-reference no-op). Parity: Claude Code's
+ * `saveCurrentProjectConfig(updater)` used for durable per-project state
+ * (`lastSessionMetrics`, the onboarding fatigue counters).
+ */
+export function saveProjectConfig(
+  cwd: string,
+  updater: (current: ProjectConfig) => ProjectConfig,
+  lockOptions: FileLockSyncOptions = {},
+): UpdateConfigResult {
+  return updateConfigFile(getProjectConfigPath(cwd), updater, lockOptions);
+}
+
+/** The .gitignore rule auto-registered for the per-user local config file. */
+export const LOCAL_CONFIG_GITIGNORE_RULE = '.ami/config.local.json';
+
+/**
+ * Ensure the per-user LOCAL config file (`.ami/config.local.json`) is listed in the
+ * project's `.gitignore`, so a user-specific override is never accidentally committed
+ * (parity: Claude Code's `addFileGlobRuleToGitignore` fired when it writes
+ * `settings.local.json`). Idempotent: the rule is matched as a whole line (ignoring
+ * surrounding whitespace and an optional leading slash) so it is never appended twice.
+ * Best-effort — any read/write failure is swallowed (a missing gitignore write must
+ * never block the config write). Returns `true` iff the rule was newly appended.
+ */
+export function ensureLocalConfigGitignored(cwd: string): boolean {
+  const gitignorePath = path.join(cwd, '.gitignore');
+  const rule = LOCAL_CONFIG_GITIGNORE_RULE;
+  try {
+    let existing = '';
+    try {
+      existing = fsHooks.readFileSync(gitignorePath, 'utf-8') as string;
+    } catch {
+      existing = ''; // absent .gitignore → create it with just the rule
+    }
+    const alreadyListed = existing
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .some(l => l === rule || l === '/' + rule);
+    if (alreadyListed) return false;
+    const needsLeadingNl = existing.length > 0 && !existing.endsWith('\n');
+    fsHooks.writeFileSync(gitignorePath, `${existing}${needsLeadingNl ? '\n' : ''}${rule}\n`, 'utf-8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lock-safe functional read-modify-write of the per-user LOCAL config file
+ * (`<cwd>/.ami/config.local.json`) via {@link updateConfigFile}; on a successful write it
+ * fire-and-forgets {@link ensureLocalConfigGitignored} so the local override is auto-added
+ * to `.gitignore` (parity: Claude Code auto-gitignoring `settings.local.json` on write).
+ */
+export function saveLocalConfig(
+  cwd: string,
+  updater: (current: ProjectConfig) => ProjectConfig,
+  lockOptions: FileLockSyncOptions = {},
+): UpdateConfigResult {
+  const result = updateConfigFile(getLocalConfigPath(cwd), updater, lockOptions);
+  if (result.written) ensureLocalConfigGitignored(cwd);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Durable last-session metrics rollup (parity: Claude's StatsProvider exit flush)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the previous session's persisted metric rollup ({@link ProjectConfig.lastSessionMetrics})
+ * from the PROJECT config, or `{}` when none exists / the path is unavailable. Corrupt
+ * entries (non-finite / negative) are dropped so a bad counter never flows downstream.
+ * Best-effort: any read failure yields `{}`.
+ */
+export function readLastSessionMetrics(cwd: string): Record<string, number> {
+  try {
+    const m = loadProjectConfig(cwd)?.lastSessionMetrics;
+    if (!m || typeof m !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(m)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Persist an aggregated metric snapshot as {@link ProjectConfig.lastSessionMetrics} in the
+ * PROJECT config via the lock-safe {@link saveProjectConfig}, carrying the session's rollup
+ * forward for the next launch. Parity: Claude Code's StatsProvider `process.on('exit')`
+ * flush — which writes ONLY a NON-EMPTY snapshot (`Object.keys(metrics).length > 0`), so an
+ * empty map is a no-op here too. Returns `true` iff the snapshot was newly persisted;
+ * `false` on an empty/invalid map or a best-effort write failure.
+ */
+export function saveLastSessionMetrics(cwd: string, metrics: Record<string, number>): boolean {
+  if (!metrics || typeof metrics !== 'object') return false;
+  const entries = Object.entries(metrics).filter(
+    ([, v]) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+  );
+  if (entries.length === 0) return false; // parity: skip the empty-snapshot flush
+  try {
+    const snapshot: Record<string, number> = Object.fromEntries(entries);
+    const result = saveProjectConfig(cwd, current => ({ ...current, lastSessionMetrics: snapshot }));
+    return result.written;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-project onboarding hint-fatigue control (parity: projectOnboardingState.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The seen-count cap after which the per-project onboarding nudge stops showing
+ * (parity: Claude Code's `projectOnboardingSeenCount >= 4` guard).
+ */
+export const PROJECT_ONBOARDING_SEEN_CAP = 4;
+
+/**
+ * The persisted per-project onboarding seen-count ({@link ProjectConfig.projectOnboardingSeenCount}).
+ * A missing / non-numeric / negative value normalizes to `0`. Best-effort.
+ */
+export function getProjectOnboardingSeenCount(cwd: string): number {
+  try {
+    const n = loadProjectConfig(cwd)?.projectOnboardingSeenCount;
+    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Whether the per-project onboarding affordance should still be shown — i.e. it has NOT
+ * been completed, its seen-count is below {@link PROJECT_ONBOARDING_SEEN_CAP}, and this is
+ * not a demo environment (parity: Claude Code's `shouldShowProjectOnboarding`). Best-effort:
+ * a read failure is treated as "do not nag".
+ */
+export function shouldShowProjectOnboarding(cwd: string): boolean {
+  if (process.env.IS_DEMO) return false;
+  try {
+    const cfg = loadProjectConfig(cwd);
+    if (cfg?.hasCompletedProjectOnboarding === true) return false;
+    const raw = cfg?.projectOnboardingSeenCount;
+    const seen = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+    return seen < PROJECT_ONBOARDING_SEEN_CAP;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Increment the persisted per-project onboarding seen-count via the lock-safe
+ * {@link saveProjectConfig}, capped at {@link PROJECT_ONBOARDING_SEEN_CAP} so it never grows
+ * unbounded (parity: Claude Code's `incrementProjectOnboardingSeenCount`). The increment is
+ * computed from the FRESH on-disk value inside the updater; at the cap the updater returns
+ * the same reference (no write). Returns `true` iff the count was advanced.
+ */
+export function incrementProjectOnboardingSeenCount(cwd: string): boolean {
+  try {
+    const result = saveProjectConfig(cwd, current => {
+      const raw = current.projectOnboardingSeenCount;
+      const cur = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+      if (cur >= PROJECT_ONBOARDING_SEEN_CAP) return current; // capped — no write
+      return { ...current, projectOnboardingSeenCount: cur + 1 };
+    });
+    return result.written;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mark the per-project onboarding complete (sets {@link ProjectConfig.hasCompletedProjectOnboarding})
+ * via the lock-safe {@link saveProjectConfig}, permanently suppressing the nudge (parity:
+ * Claude Code's `maybeMarkProjectOnboardingComplete`). Concurrency-safe: when the flag is
+ * already set the updater returns the same reference (no write). Returns `true` iff newly set.
+ */
+export function maybeMarkProjectOnboardingComplete(cwd: string): boolean {
+  try {
+    const result = saveProjectConfig(cwd, current =>
+      current.hasCompletedProjectOnboarding === true
+        ? current
+        : { ...current, hasCompletedProjectOnboarding: true },
+    );
+    return result.written;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// deepLinkTerminal preference (parity: terminalLauncher.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The persisted preferred terminal-emulator name ({@link ProjectConfig.deepLinkTerminal}) —
+ * read from the passed-in config when given (e.g. the merged config), else the GLOBAL config
+ * (parity: Claude Code's `getGlobalConfig().deepLinkTerminal`). A non-string / blank value
+ * normalizes to `undefined`. Best-effort.
+ */
+export function resolveDeepLinkTerminal(config?: ProjectConfig | null): string | undefined {
+  try {
+    const v = (config ?? loadGlobalConfig())?.deepLinkTerminal;
+    return typeof v === 'string' && v.trim() ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Persist the preferred terminal-emulator name as {@link ProjectConfig.deepLinkTerminal} in
+ * the GLOBAL config via the lock-safe {@link saveGlobalConfig} (parity: Claude Code storing
+ * `deepLinkTerminal` so the preference survives into a headless LaunchServices context).
+ * Concurrency-safe: an unchanged value is a no-op. Returns `true` iff newly persisted.
+ */
+export function saveDeepLinkTerminal(name: string): boolean {
+  if (!name || !name.trim()) return false;
+  try {
+    const result = saveGlobalConfig(current =>
+      current.deepLinkTerminal === name ? current : { ...current, deepLinkTerminal: name },
+    );
+    return result?.written ?? false;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Interaction-recency deferral for background work (parity: backgroundHousekeeping.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default delay (ms) before an interactivity-aware slow background operation first runs /
+ * is re-checked (parity: Claude Code's `DELAY_VERY_SLOW_OPERATIONS_THAT_HAPPEN_EVERY_SESSION`
+ * = 10 min). Overridable per-config via {@link ProjectConfig.backgroundSlowOpDelayMs}.
+ */
+export const BACKGROUND_SLOW_OP_DELAY_MS = 10 * 60 * 1000;
+
+/**
+ * Default "user recently interacted" recency window (ms): while the last interaction is
+ * within this window, heavy background work is deferred so it never competes with an
+ * actively typing user (parity: Claude Code's 1-minute
+ * `getLastInteractionTime() > Date.now() - 1000*60` guard). Overridable per-config via
+ * {@link ProjectConfig.backgroundInteractionRecencyMs}.
+ */
+export const BACKGROUND_INTERACTION_RECENCY_MS = 60 * 1000;
+
+/**
+ * Resolve the effective slow-op deferral delay (ms): the config override when it is a
+ * finite non-negative number, else {@link BACKGROUND_SLOW_OP_DELAY_MS}.
+ */
+export function resolveBackgroundSlowOpDelayMs(config?: ProjectConfig | null): number {
+  const v = config?.backgroundSlowOpDelayMs;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : BACKGROUND_SLOW_OP_DELAY_MS;
+}
+
+/**
+ * Resolve the effective interaction-recency window (ms): the config override when it is a
+ * finite non-negative number, else {@link BACKGROUND_INTERACTION_RECENCY_MS}.
+ */
+export function resolveBackgroundInteractionRecencyMs(config?: ProjectConfig | null): number {
+  const v = config?.backgroundInteractionRecencyMs;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : BACKGROUND_INTERACTION_RECENCY_MS;
+}
+
+/**
+ * Whether a slow background operation should be DEFERRED because the user interacted
+ * recently — i.e. the session is interactive AND the last interaction is within the
+ * recency window (parity: Claude Code's
+ * `getIsInteractive() && getLastInteractionTime() > Date.now() - 1000*60` guard that
+ * reschedules slow ops so they never compete with an actively typing user). A
+ * non-interactive session, or an absent/invalid last-interaction timestamp, never defers.
+ */
+export function shouldDeferBackgroundWork(opts: {
+  lastInteractionMs: number | null | undefined;
+  interactive?: boolean;
+  now?: number;
+  recencyMs?: number;
+}): boolean {
+  if (opts.interactive === false) return false;
+  const last = opts.lastInteractionMs;
+  if (typeof last !== 'number' || !Number.isFinite(last)) return false;
+  const now = typeof opts.now === 'number' ? opts.now : Date.now();
+  const recencyMs =
+    typeof opts.recencyMs === 'number' && Number.isFinite(opts.recencyMs) && opts.recencyMs >= 0
+      ? opts.recencyMs
+      : BACKGROUND_INTERACTION_RECENCY_MS;
+  return last > now - recencyMs;
+}
+
+// ---------------------------------------------------------------------------
+// Session-startup config snapshot (parity: teammateModeSnapshot.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The config frozen once at session startup. A running session reads session-stable knobs
+ * from this snapshot so a mid-session config edit cannot change the running session's
+ * behavior (parity: Claude Code's `captureTeammateModeSnapshot` / `getTeammateModeFromSnapshot`).
+ * It is DELIBERATELY not invalidated by {@link resetConfigCache} — freezing is the point.
+ */
+let sessionConfigSnapshot: ProjectConfig | null = null;
+
+/**
+ * Freeze the session-stable config snapshot ONCE at startup from the (already
+ * waterfall-merged, CLI-override-applied) config. A second call is a no-op that preserves
+ * the first frozen value, so later runtime config edits never mutate the running session's
+ * view (parity: Claude Code capturing the snapshot once). Use {@link repointConfigSnapshot}
+ * to deliberately re-point it. Returns a defensive clone of the frozen snapshot.
+ */
+export function captureConfigSnapshot(config: ProjectConfig): ProjectConfig {
+  if (sessionConfigSnapshot === null) {
+    sessionConfigSnapshot = structuredClone(config);
+  }
+  return structuredClone(sessionConfigSnapshot);
+}
+
+/** Whether a session-startup config snapshot has been captured. */
+export function hasConfigSnapshot(): boolean {
+  return sessionConfigSnapshot !== null;
+}
+
+/**
+ * The frozen session-startup config snapshot (a defensive clone), or `null` when none has
+ * been captured yet.
+ */
+export function getConfigSnapshot(): ProjectConfig | null {
+  return sessionConfigSnapshot === null ? null : structuredClone(sessionConfigSnapshot);
+}
+
+/**
+ * Deliberately REPLACE the frozen snapshot with a new config — the entry point for a UI
+ * setting change that must take effect mid-session. The new value is passed in directly
+ * (not re-read) to avoid a read-after-write race (parity: Claude Code's
+ * `clearCliTeammateModeOverride(newMode)` passing the new value directly). Returns a clone.
+ */
+export function repointConfigSnapshot(config: ProjectConfig): ProjectConfig {
+  sessionConfigSnapshot = structuredClone(config);
+  return structuredClone(sessionConfigSnapshot);
+}
+
+/** Drop the frozen snapshot (test isolation / explicit session teardown). */
+export function clearConfigSnapshot(): void {
+  sessionConfigSnapshot = null;
+}
+
+/**
+ * Read a session-stable knob from the frozen snapshot. When no snapshot has been captured
+ * yet, a defensive LAZY-CAPTURE branch logs an initialization-order warning and captures
+ * from `liveConfig` before reading (parity: Claude Code's lazy-capture fallback that logs
+ * an init bug then re-captures); with no `liveConfig` to fall back to it returns `undefined`.
+ */
+export function getSnapshotConfigValue<K extends keyof ProjectConfig>(
+  key: K,
+  liveConfig?: ProjectConfig | null,
+): ProjectConfig[K] | undefined {
+  if (sessionConfigSnapshot === null) {
+    if (!liveConfig) return undefined;
+    coreLog('config', 'config snapshot read before capture — lazily capturing (startup-order bug)');
+    captureConfigSnapshot(liveConfig);
+  }
+  const snap = sessionConfigSnapshot;
+  if (snap === null) return undefined;
+  const v = snap[key];
+  return v === undefined ? undefined : structuredClone(v);
 }
 
 export function cleanupStaleConfigTmp(filePath: string): boolean {

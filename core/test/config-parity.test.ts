@@ -130,6 +130,12 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       exampleFiles: ['a.ts'], exampleFilesGeneratedAt: 1,
       companyAnnouncements: ['hi'], allowUnsandboxedCommands: false,
       copyFullResponse: false,
+      // Durable session/project STATE + preference knobs (U010/w114) —
+      // declared/validated/merged/schema-emitted (readLastSessionMetrics /
+      // shouldShowProjectOnboarding / resolveDeepLinkTerminal / shouldDeferBackgroundWork).
+      lastSessionMetrics: { turns: 1 }, projectOnboardingSeenCount: 0,
+      hasCompletedProjectOnboarding: false, deepLinkTerminal: 'iTerm',
+      backgroundSlowOpDelayMs: 600000, backgroundInteractionRecencyMs: 60000,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
