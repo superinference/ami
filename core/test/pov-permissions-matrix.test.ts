@@ -215,8 +215,10 @@ test('holdsOver: at equal rank, an attributed held verdict beats an unattributed
   assert.equal(holdsOver({ decision: 'ask', rule: 'a' }, { decision: 'ask', source: 'b' }), false);
 });
 
-test('mostRestrictiveVerdict: empty -> allow; picks the strongest', () => {
-  assert.deepEqual(mostRestrictiveVerdict([]), { decision: 'allow' });
+test('mostRestrictiveVerdict: empty -> passthrough (abstain); picks the strongest', () => {
+  // An empty verdict chain is an ABSTAIN: no rule had an opinion. `passthrough` is the
+  // lattice identity element (check() treats it identically to allow/undefined). (U-perm1 w123)
+  assert.deepEqual(mostRestrictiveVerdict([]), { decision: 'passthrough' });
   assert.equal(mostRestrictiveVerdict([{ decision: 'allow' }, { decision: 'deny' }]).decision, 'deny');
   assert.equal(mostRestrictiveVerdict([{ decision: 'allow' }, { decision: 'ask' }]).decision, 'ask');
   assert.equal(mostRestrictiveVerdict([{ decision: 'allow' }]).decision, 'allow');
