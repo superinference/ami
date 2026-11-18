@@ -1,4 +1,4 @@
-export { McpClient, MCP_ELICITATION_ACTIONS, MCP_LOG_LEVELS, MCP_MAX_PAGES } from './client';
+export { McpClient, MCP_ELICITATION_ACTIONS, MCP_LOG_LEVELS, MCP_MAX_PAGES, MCP_CHANNEL_CAPABILITY, MCP_CHANNEL_PERMISSION_CAPABILITY } from './client';
 export type {
   McpToolSchema, McpResource, McpResourceTemplate, McpPrompt, McpClientState,
   McpElicitationRequest, McpElicitationResult, McpElicitationAction, McpElicitationMode,

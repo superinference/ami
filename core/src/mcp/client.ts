@@ -109,6 +109,19 @@ export function getMaxMcpOutputChars(): number {
  */
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
+/**
+ * Experimental MCP capability names a server declares under
+ * `capabilities.experimental` to OPT IN to relaying permission prompts over a
+ * message channel (Claude-parity `claude/channel` + `claude/channel/permission`,
+ * channelPermissions.ts:L177-194). BOTH must be present before a server may be
+ * treated as a permission-relay surface — a relay-only channel never becomes a
+ * permission surface by accident. Inspected via
+ * {@link McpClient.hasExperimentalCapability} /
+ * {@link McpClient.supportsChannelPermissionRelay}.
+ */
+export const MCP_CHANNEL_CAPABILITY = 'claude/channel';
+export const MCP_CHANNEL_PERMISSION_CAPABILITY = 'claude/channel/permission';
+
 const MIN_MCP_BUFFER = 1024;            // 1 KB
 const MAX_MCP_BUFFER = 100 * 1024 * 1024; // 100 MB
 
@@ -1702,6 +1715,38 @@ export class McpClient extends EventEmitter {
 
   hasCapability(name: string): boolean {
     return name in this._serverCapabilities;
+  }
+
+  /**
+   * Whether the connected server declared a given EXPERIMENTAL capability under
+   * `capabilities.experimental` (MCP spec's extension namespace). Unlike
+   * {@link hasCapability} (top-level standard capabilities), this inspects the
+   * nested `experimental` object a server uses to opt into non-standard
+   * extensions such as `claude/channel` (Claude-parity). Presence is keyed on a
+   * declared value — a key mapped to `undefined` is treated as absent, mirroring
+   * Claude's `experimental?.[name] !== undefined` check
+   * (channelPermissions.ts:L191-192).
+   */
+  hasExperimentalCapability(name: string): boolean {
+    const experimental = this._serverCapabilities.experimental;
+    if (!experimental || typeof experimental !== 'object') return false;
+    return (experimental as Record<string, unknown>)[name] !== undefined;
+  }
+
+  /**
+   * Whether this server has OPTED IN to relaying permission prompts over a
+   * message channel. Requires BOTH experimental capabilities to be declared —
+   * {@link MCP_CHANNEL_CAPABILITY} AND {@link MCP_CHANNEL_PERMISSION_CAPABILITY}
+   * — so a relay-only channel never becomes a permission surface by accident
+   * (Claude-parity `filterPermissionRelayClients`, channelPermissions.ts:L177-194).
+   * A server that declares neither, or only one, is NOT a permission-relay
+   * surface. Surfaced via {@link McpServerStatus.channelPermissionRelay}.
+   */
+  supportsChannelPermissionRelay(): boolean {
+    return (
+      this.hasExperimentalCapability(MCP_CHANNEL_CAPABILITY) &&
+      this.hasExperimentalCapability(MCP_CHANNEL_PERMISSION_CAPABILITY)
+    );
   }
 
   getRoots(): Array<{ uri: string; name?: string }> {

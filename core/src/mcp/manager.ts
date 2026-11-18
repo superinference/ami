@@ -632,6 +632,15 @@ export interface McpServerStatus {
    * {@link McpManager.addServerSourceAgent}.
    */
   sourceAgents?: string[];
+  /**
+   * True when the connected server OPTED IN to relaying permission prompts over a
+   * message channel by declaring BOTH experimental capabilities `claude/channel`
+   * and `claude/channel/permission` (Claude-parity `filterPermissionRelayClients`,
+   * channelPermissions.ts:L177-194). Lets a `/mcp` diagnostics view flag a server
+   * as a permission-relay surface. `false` for a server that declares neither or
+   * only one; derived from {@link McpClient.supportsChannelPermissionRelay}.
+   */
+  channelPermissionRelay?: boolean;
   error?: string;
 }
 
@@ -2776,6 +2785,7 @@ export class McpManager extends EventEmitter {
       promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
+      channelPermissionRelay: client.supportsChannelPermissionRelay(),
       ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),

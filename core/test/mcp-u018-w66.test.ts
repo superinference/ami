@@ -39,6 +39,7 @@ class FakeClient extends EventEmitter {
   async reconnect(): Promise<void> {}
   async revokeAuth(): Promise<void> {}
   disconnect(): void {}
+  supportsChannelPermissionRelay(): boolean { return false; }
 }
 
 const dirs: string[] = [];

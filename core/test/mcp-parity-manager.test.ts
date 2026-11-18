@@ -46,6 +46,7 @@ class FakeClient extends EventEmitter {
   async reconnect(): Promise<void> { this.reconnectCalls++; }
   disconnect(): void {}
   setHeaders(): void {}
+  supportsChannelPermissionRelay(): boolean { return false; }
 }
 
 // --------------------------------------------------------------------------

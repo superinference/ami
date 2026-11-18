@@ -60,6 +60,7 @@ class FakeClient extends EventEmitter {
   async reconnect() {}
   async revokeAuth() {}
   disconnect() {}
+  supportsChannelPermissionRelay() { return false; }
 }
 
 function writeConfig(dir: string, servers: Record<string, unknown>): string {

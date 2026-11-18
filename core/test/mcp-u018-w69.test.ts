@@ -51,6 +51,7 @@ class FakeClient extends EventEmitter {
   disconnect(): void { this.state = 'stopped'; }
   setHeaders(): void {}
   async revokeAuth(): Promise<void> {}
+  supportsChannelPermissionRelay(): boolean { return false; }
 }
 
 // ===========================================================================

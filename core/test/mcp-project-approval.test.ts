@@ -54,6 +54,7 @@ class FakeClient extends EventEmitter {
   async ping() {}
   async reconnect() {}
   disconnect() {}
+  supportsChannelPermissionRelay() { return false; }
 }
 
 function writeConfig(dir: string, servers: Record<string, unknown>): string {
