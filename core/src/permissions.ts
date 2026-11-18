@@ -6303,12 +6303,23 @@ export class PermissionManager {
      * (tools/BashTool/bashCommandHelpers.ts L84-156).
      */
     subcommandResults?: Record<string, 'allow' | 'deny' | 'ask'>;
+    /**
+     * The EXACT path that tripped the gate, when the ask/deny was triggered by a
+     * specific filesystem target (an out-of-workspace path, or a file-tool's
+     * `file_path`/`path`). Lets a prompt/denial name the offending path ("… for
+     * /etc/hosts") instead of only the whole tool call. Mirrors Claude's
+     * `PermissionAskDecision.blockedPath` / `PermissionResult.blockedPath`
+     * (types/permissions.ts L196-266). Omitted when no single path is at fault
+     * (e.g. a mode-wide prompt, a bash-rule deny) and always omitted on `allow`.
+     */
+    blockedPath?: string;
   }> {
     const decision = await this.check(toolName, input);
     if (decision === 'allow') return { decision };
     const reason = this.deriveDecisionReason(toolName, input, decision);
     const suggestions = buildPermissionSuggestions(toolName, input);
     const subcommandResults = await this.evaluateCompoundSubcommands(toolName, input);
+    const blockedPath = this.deriveBlockedPath(toolName, input, reason);
     return {
       decision,
       reason,
@@ -6316,7 +6327,47 @@ export class PermissionManager {
       ...(suggestions.length > 0 ? { suggestions } : {}),
       ...(decision === 'deny' && reason.type === 'hardline' ? { interrupt: true } : {}),
       ...(subcommandResults ? { subcommandResults } : {}),
+      ...(blockedPath ? { blockedPath } : {}),
     };
+  }
+
+  /**
+   * The specific filesystem path a non-allow verdict is about, or `undefined`
+   * when the verdict is not path-specific. Prefers the structured `workingDir`
+   * reason's offending path; otherwise falls back to a file tool's own
+   * `file_path`/`path` input. Pure read — never mutates. Parity with Claude's
+   * `blockedPath`, surfaced so a prompt/denial can name the exact path.
+   */
+  private deriveBlockedPath(
+    toolName: string,
+    input: Record<string, unknown>,
+    reason: PermissionDecisionReason,
+  ): string | undefined {
+    if (reason.type === 'workingDir') return reason.path;
+    const filePath = input.file_path ?? input.path;
+    return typeof filePath === 'string' && filePath.length > 0 ? filePath : undefined;
+  }
+
+  /**
+   * Structured, machine-readable reason WHY a tool call was AUTO-ALLOWED — the
+   * introspection counterpart to {@link deriveDecisionReason} (which only explains
+   * ask/deny). Call AFTER {@link check}/{@link checkWithReason} returned `allow`.
+   * Attribution mirrors {@link check}'s own precedence — the only two ways AMI ever
+   * auto-approves a call:
+   *  1. a standing `allow` RULE matched → `{ type:'rule', action:'allow', ruleValue }`
+   *     (reuses {@link matchedAllowRule}, the single rule-provenance source);
+   *  2. otherwise the active permission MODE granted it (bypassPermissions / auto-allow /
+   *     acceptEdits / plan read-only) → `{ type:'mode', mode }` — parity with Claude's
+   *     auto-allow `decisionReason: { type:'mode', mode:'acceptEdits' }` (PowerShellTool
+   *     modeValidation.ts L396-403). (The default `ask` mode never auto-allows a rule-less
+   *     call, so there is no third, classifier-only arm to attribute.)
+   * So an audit/introspection layer can record the BASIS of an auto-approval
+   * (explicit rule vs permission mode), which a bare `'allow'` loses.
+   */
+  explainAllow(toolName: string, input: Record<string, unknown>): PermissionDecisionReason {
+    const ruleLabel = this.matchedAllowRule(toolName, input);
+    if (ruleLabel) return { type: 'rule', action: 'allow', ruleValue: ruleLabel };
+    return { type: 'mode', mode: this.mode };
   }
 
   /**
