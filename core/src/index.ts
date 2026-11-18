@@ -276,6 +276,8 @@ export {
 export { generateTitle, sanitizeTitle, truncateTitle, deriveTitle, isUsableTitle, generateBranchName, sanitizeBranchSlug, runAuxQuery, buildAuxResult, createAuxiliaryQuery, generateToolUseSummaryLabel, buildToolUseSummaryPrompt, truncateJsonForSummary } from './title-generator';
 export type { AuxQueryResult, AuxQuerySuccess, AuxQueryError, AuxQuerySource, AuxQueryErrorReason, OnAuxQueryResult, AuxQueryOutcome, AuxQueryFailure, AuxiliaryQueryConfig, AuxiliaryQueryRun, ToolUseSummaryInput } from './title-generator';
 export { stripDisplayTags, stripInjectedContextTags } from './utils/display-tags';
+export { WindowsToWSLConverter, checkWSLDistroMatch, manualWindowsToWSL, createWSLConverterFromEnv, WSL_UNC_PATH_RE, execHooks as idePathExecHooks } from './utils/ide-path-conversion';
+export type { IDEPathConverter } from './utils/ide-path-conversion';
 export { detectPythonPackageManager, pythonInstallCommand, pythonBootstrapHint } from './utils/package-manager';
 export type { PythonPackageManager } from './utils/package-manager';
 export { getInstallPlatform, getOsRelease, isDistroFamily, detectMise, detectAsdf, detectHomebrew, detectWinget, detectPacman, detectDeb, detectRpm, detectApk, getPackageManager, upgradeInstructionFor, resetPackageManagerCaches, packageManagerHooks } from './package-manager';
