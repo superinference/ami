@@ -1,5 +1,6 @@
 import { win32 as win32Path, posix as posixPath } from 'node:path';
 import { parseBashAST, extractCommands, extractDeclaredAssignments, CommandNode, PARSE_ABORTED, ParseBudget, getOutputRedirections, withoutOutputRedirections, getPipeSegments, hasActualOperatorNodes, analyzeCommandStructure } from './bash-parser';
+import { buildWrapperValueFlagPattern } from './bash-command-specs';
 import { normalizeCommand, deobfuscateEnvExpansion } from './command-normalize';
 import { detectUnsafeTypeCast, detectDangerousPowerShellCommand } from './powershell-security';
 import { redactCredentials } from '../credential-guard';
@@ -151,15 +152,28 @@ export const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbu
  * SINGLE SOURCE OF TRUTH for this operand knowledge — shared by
  * {@link stripSafeWrappers} (command extraction / classification) and
  * {@link analyzeWrapperSegment} (fail-closed flag audit) so the two cannot drift.
+ * Each entry is DERIVED from the declarative command-spec registry
+ * ({@link ./bash-command-specs!COMMAND_SPECS} via
+ * {@link ./bash-command-specs!buildWrapperValueFlagPattern}) so the flag arity
+ * is modelled once, declaratively, rather than hand-copied as a regex here.
  * Mirrors Claude Code's per-wrapper command-spec option model
  * (utils/bash/specs/{timeout,stdbuf,nice}.ts isCommand + value-option skipping).
  */
 export const WRAPPER_VALUE_FLAGS: Record<string, RegExp> = {
-  timeout: /^(-k|--kill-after|-s|--signal)$/,
-  stdbuf: /^(-i|--input|-o|--output|-e|--error)$/,
-  nice: /^(-n|--adjustment)$/,
-  env: /^(-u|--unset)$/,
+  timeout: buildWrapperValueFlagPattern('timeout')!,
+  stdbuf: buildWrapperValueFlagPattern('stdbuf')!,
+  nice: buildWrapperValueFlagPattern('nice')!,
+  env: buildWrapperValueFlagPattern('env')!,
 };
+
+/**
+ * Value-taking option flags of the SLURM `srun` launcher (`-n`/`--ntasks`,
+ * `-N`/`--nodes` each consume a following count), derived from the same
+ * declarative spec registry. Shared by {@link stripSafeWrappers} here and by the
+ * `extractBaseCommands` wrapper-unwrapping in `../permissions` so the `srun`
+ * option arity lives in exactly one place. Mirrors Claude Code's srun spec.
+ */
+export const SRUN_VALUE_FLAGS: RegExp = buildWrapperValueFlagPattern('srun')!;
 
 function stripSafeWrappers(command: string): string {
   let remaining = command.trim();
@@ -222,7 +236,7 @@ function stripSafeWrappers(command: string): string {
       while (i < tokens.length && tokens[i].startsWith('-')) {
         const flag = tokens[i];
         i++;
-        if (/^(-n|--ntasks|-N|--nodes)$/.test(flag) && i < tokens.length && /^\d/.test(tokens[i])) i++;
+        if (SRUN_VALUE_FLAGS.test(flag) && i < tokens.length && /^\d/.test(tokens[i])) i++;
       }
       if (i < tokens.length) {
         remaining = tokens.slice(i).join(' ');

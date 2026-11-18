@@ -5,7 +5,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { addFileGlobRuleToGitignore } from './utils/git';
-import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
+import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
@@ -2612,7 +2612,7 @@ function extractBaseCommands(command: string, depth = 0): string[] {
         // only drops the `-flag` token itself, so without this the count operand
         // would be mis-read as the wrapped command. Mirrors Claude's srun spec
         // option model so `srun -n 4 rm -rf /` reaches the inner `rm`.
-        if (wrapper === 'srun' && /^(-n|--ntasks|-N|--nodes)$/.test(flag)
+        if (wrapper === 'srun' && SRUN_VALUE_FLAGS.test(flag)
             && i < tokens.length && /^\d/.test(tokens[i]!)) {
           i++;
         }
