@@ -126,3 +126,78 @@ export function saveManagedApproval(
   if (dangerous.hasHooks) snapshot.hooks = dangerous.hooks;
   atomicWriteFileSync(managedApprovalPath(env), JSON.stringify(snapshot, null, 2) + '\n');
 }
+
+// ---------------------------------------------------------------------------
+// Accept / exit approval knob (parity: Claude Code's ManagedSettingsSecurityDialog
+// — a two-option Select {accept, exit} wired to onAccept/onReject, so a dangerous
+// managed config is APPLIED only on explicit per-set approval and otherwise exits).
+//
+// AMI's interactive/detached launch is non-blocking, so the choice is surfaced as
+// an operator knob (the `AMI_MANAGED_SETTINGS_APPROVAL` env var) rather than an
+// interactive dialog, preserving AMI's non-blocking-advisory differentiator while
+// adding the accept-or-exit capability AMI lacked. `applyManagedApproval` mirrors
+// the dialog's `onChange`: `exit` → onReject (abort, nothing persisted); `accept`
+// → onAccept (persist the approved snapshot and continue).
+// ---------------------------------------------------------------------------
+
+/** The explicit approval choices for a dangerous managed config. Parity with the
+ * dialog's two-option Select ({value:'accept'}, {value:'exit'}). */
+export const MANAGED_APPROVAL_CHOICES = ['accept', 'exit'] as const;
+export type ManagedApprovalChoice = (typeof MANAGED_APPROVAL_CHOICES)[number];
+
+/** The labeled option list for the accept|exit knob — the exact choices the
+ * dialog presents (wording adapted to AMI). */
+export const MANAGED_APPROVAL_OPTIONS: ReadonlyArray<{
+  value: ManagedApprovalChoice;
+  label: string;
+}> = [
+  { value: 'accept', label: 'Yes, I trust these settings' },
+  { value: 'exit', label: 'No, exit' },
+];
+
+/** Env var carrying the operator's non-interactive approval choice (accept|exit)
+ * for dangerous managed settings. */
+export const MANAGED_APPROVAL_ENV = 'AMI_MANAGED_SETTINGS_APPROVAL';
+
+/**
+ * Parse a raw approval string into a {@link ManagedApprovalChoice}, or null when
+ * unset/unrecognized — meaning "no explicit choice" (mirrors the dialog's onCancel
+ * being distinct from a deliberate accept). Case-insensitive and whitespace-trimmed.
+ */
+export function parseManagedApprovalChoice(
+  raw: string | null | undefined,
+): ManagedApprovalChoice | null {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim().toLowerCase();
+  return (MANAGED_APPROVAL_CHOICES as readonly string[]).includes(v)
+    ? (v as ManagedApprovalChoice)
+    : null;
+}
+
+/** Outcome of resolving the accept|exit approval knob. */
+export interface ManagedApprovalResult {
+  /** `accepted` persisted the snapshot and continues; `rejected` aborts. */
+  action: 'accepted' | 'rejected';
+  /** True when the operator chose exit — the launcher must abort rather than apply. */
+  shouldExit: boolean;
+}
+
+/**
+ * Apply an explicit approval choice to the dangerous incoming managed config.
+ * Mirrors the dialog's `onChange`:
+ *   - `exit`   → onReject: abort the launch, persist nothing (so a later run still
+ *                needs approval).
+ *   - `accept` → onAccept: persist the approved dangerous-subset snapshot and
+ *                continue (a subsequent {@link reviewManagedSettings} is `unchanged`).
+ */
+export function applyManagedApproval(
+  choice: ManagedApprovalChoice,
+  next: DangerousSettingsInput | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ManagedApprovalResult {
+  if (choice === 'exit') {
+    return { action: 'rejected', shouldExit: true };
+  }
+  saveManagedApproval(next, env);
+  return { action: 'accepted', shouldExit: false };
+}
