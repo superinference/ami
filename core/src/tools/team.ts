@@ -678,6 +678,44 @@ function teamFilePath(dir: string): string {
   return path.join(dir, 'team.json');
 }
 
+/**
+ * Absolute path of the workspace teams root (`<cwd>/.ami/teams`). The single place
+ * the `.ami/teams` segment is spelled, so every team-path helper derives from it
+ * (parity: Claude Code's `getTeamsDir()` in swarm/teamHelpers.ts).
+ */
+export function getTeamsRoot(cwd: string): string {
+  return path.join(cwd, '.ami', 'teams');
+}
+
+/**
+ * THE canonical name→directory mapping for a team: sanitize the (possibly
+ * untrusted) name and join it under {@link getTeamsRoot}. This is the single way a
+ * team name becomes a path, so the {@link sanitizeTeamName} guard is enforced on
+ * EVERY access — the write path (team_create) AND, crucially, the read/resume path
+ * (a name rehydrated from a persisted transcript or team file). Returns null when
+ * the name normalizes to empty / is over length (parity: Claude Code's
+ * `getTeamDir(teamName) = join(getTeamsDir(), sanitizeName(teamName))`, whose
+ * `readTeamFile`/`getTeamFilePath` apply sanitizeName on every read). Routing all
+ * read/resume/reconnect code through here is defense-in-depth: a traversal name
+ * read back from state (e.g. `"../../../etc/evil"`) can never be joined verbatim.
+ */
+export function getTeamDir(cwd: string, name: string): string | null {
+  const safe = sanitizeTeamName(name);
+  if (!safe) return null;
+  return path.join(getTeamsRoot(cwd), safe);
+}
+
+/**
+ * Absolute path of a team's on-disk `team.json`, derived through the canonical
+ * {@link getTeamDir} (so the read boundary re-sanitizes the name). Returns null for
+ * a name that does not normalize to a safe slug (parity: Claude Code's
+ * `getTeamFilePath(teamName)`).
+ */
+export function getTeamFilePath(cwd: string, name: string): string | null {
+  const dir = getTeamDir(cwd, name);
+  return dir ? teamFilePath(dir) : null;
+}
+
 /** Persist the current team file under a cross-process lock. */
 function persistTeam(): void {
   if (!currentTeam || !currentTeamDir) return;
@@ -785,7 +823,15 @@ export function findTeamMemberByName(team: TeamFile, name: string): TeamMember |
  * by the resumed-session reconnection path so team state survives a restart.
  */
 export function loadTeamFromDisk(cwd: string, name: string): { team: TeamFile; dir: string } | null {
-  const dir = path.join(cwd, '.ami', 'teams', name);
+  // Re-sanitize at the READ boundary (parity: Claude's readTeamFile/getTeamFilePath
+  // apply sanitizeName on every access). `name` may be an untrusted value rehydrated
+  // from a persisted transcript/team file via loadTeamFromSession, so route it
+  // through the canonical getTeamFilePath rather than joining it verbatim. A name
+  // that cannot normalize to a safe slug degrades to "no team here" instead of
+  // escaping the teams root.
+  const file = getTeamFilePath(cwd, name);
+  if (!file) return null;
+  const dir = path.dirname(file);
   const team = readTeamFile(dir);
   if (!team) return null;
   return { team, dir };
@@ -885,7 +931,14 @@ export function cleanupSessionTeams(cwd: string): string[] {
   teamDebug(`cleanupSessionTeams: removing ${names.length} orphan team dir(s): ${names.join(', ')}`);
   const removed: string[] = [];
   for (const name of names) {
-    const dir = path.join(cwd, '.ami', 'teams', name);
+    // Route through the canonical getTeamDir so a tracked name is re-sanitized
+    // before it is turned into a path to remove — a corrupt entry can never cause
+    // an rmSync outside the teams root. A name that cannot normalize is skipped.
+    const dir = getTeamDir(cwd, name);
+    if (!dir) {
+      teamDebug(`cleanupSessionTeams: skipping un-sanitizable team name "${name}"`);
+      continue;
+    }
     // Tear down per-member worktrees before the dir (parity ordering).
     const tf = readTeamFile(dir);
     if (tf) {
@@ -1049,7 +1102,11 @@ export const TEAM_SCRATCHPAD_SUBDIR = 'memory';
  */
 export function getTeamScratchpadDir(cwd: string, team: TeamFile | null = currentTeam): string | null {
   if (!team) return null;
-  return path.join(cwd, '.ami', 'teams', team.name, TEAM_SCRATCHPAD_SUBDIR);
+  // team.name may come from a disk-loaded file; route through the canonical
+  // getTeamDir so the scratchpad path is re-sanitized at this read boundary too.
+  const dir = getTeamDir(cwd, team.name);
+  if (!dir) return null;
+  return path.join(dir, TEAM_SCRATCHPAD_SUBDIR);
 }
 
 /**
@@ -1200,7 +1257,7 @@ export const teamCreateTool: ToolDefinition = {
     // On-disk collision detection with a unique-name fallback: if a directory for
     // this name already exists (e.g. an orphan from a prior session), pick the
     // next free "name-N" so we never clobber another team's state.
-    const teamsRoot = path.join(context.cwd, '.ami', 'teams');
+    const teamsRoot = getTeamsRoot(context.cwd);
 
     // Resumed-session reconnection: if a team directory for this exact name already
     // exists AND its persisted team file belongs to THIS session (same
@@ -1374,7 +1431,7 @@ export const teamDeleteTool: ToolDefinition = {
       }
     }
 
-    const teamDir = currentTeamDir || path.join(context.cwd, '.ami', 'teams', name);
+    const teamDir = currentTeamDir || path.join(getTeamsRoot(context.cwd), name);
     // Surface cleanup failures instead of silently reporting success.
     try {
       fs.rmSync(teamDir, { recursive: true, force: true });
