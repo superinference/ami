@@ -328,6 +328,7 @@ export {
   isPathSafe,
   toRelativePath,
   isPathWithin,
+  pathsOverlap,
   abbreviateHome,
   displayPath,
   shortestDisplayPath,

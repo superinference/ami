@@ -278,6 +278,35 @@ export function isPathWithin(childPath: string, parentPath: string, cwd: string 
 }
 
 /**
+ * Symmetric path-overlap check: returns true when `a` and `b` refer to the same
+ * path, or when EITHER one is nested inside the other — i.e. they share a common
+ * subtree. Unlike {@link isPathWithin} (a one-directional "child inside parent"
+ * test), this is direction-agnostic: `pathsOverlap('/a/b', '/a')` and
+ * `pathsOverlap('/a', '/a/b')` are both true. A filesystem root (`/`, `C:\`) is
+ * treated as overlapping every path on its volume, since the root contains
+ * everything (covered naturally by the containment check — the root is an
+ * ancestor of all absolute paths).
+ *
+ * Both inputs are expanded (`~`, relative, trailing-separator and NFC handled by
+ * {@link expandPath}) and the comparison is boundary-safe and case-folded on
+ * case-insensitive filesystems via the shared {@link isDescendant} primitive, so
+ * `/a/bc` does NOT overlap `/a/b` (no shared subtree) while `/a/b/c` does.
+ *
+ * Mirrors Claude Code's `pathsOverlap` (utils/plugins/orphanedPluginFilter.ts)
+ * — the prefix/equality/root/win32-case overlap test — but reuses AMI's canonical
+ * containment helper (which also folds case on macOS) instead of a second
+ * normalize/prefix implementation.
+ *
+ * [FUNCTIONAL CHANGE] New exported helper — symmetric, root- and case-aware path
+ * overlap primitive.
+ */
+export function pathsOverlap(a: string, b: string, cwd: string = process.cwd()): boolean {
+  const ra = expandPath(a, cwd);
+  const rb = expandPath(b, cwd);
+  return isDescendant(ra, rb) || isDescendant(rb, ra);
+}
+
+/**
  * Abbreviates an absolute path that lives under the user's home directory to
  * tilde form for display: `/home/user/x` -> `~/x`, and the home directory
  * itself -> `~`. Paths outside home are returned unchanged. A trailing
