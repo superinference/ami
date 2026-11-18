@@ -5754,6 +5754,16 @@ export class PermissionManager {
    *  regardless of which mutation path (setMode / exitPlanMode / deserialize)
    *  triggered it. Parity: Claude's single `notifyPermissionModeChanged` choke point. */
   private _modeChangeListener?: PermissionModeChangeListener;
+  /** Multi-subscriber set notified whenever a DECISION-AFFECTING change lands —
+   *  a rule add/remove, a mode transition, or a read-root grant/revoke. Lets a
+   *  still-open permission request re-evaluate itself instead of forcing the user
+   *  to answer stale UI after an allow rule (or a hook's `updatedPermissions`) was
+   *  applied elsewhere while the prompt was on screen. Parity: Claude's
+   *  `recheckPermission()` (ToolUseConfirm re-runs the decision on a concurrent
+   *  rules change). A Set (not the single {@link _modeChangeListener}) because
+   *  several tool-call prompts can be open at once. Empty by default, so a mutation
+   *  that happens with no prompt open (e.g. a bulk startup rule load) pays nothing. */
+  private _permissionStateChangeListeners: Set<() => void> = new Set();
   private rules: PermissionRule[] = [];
   /**
    * Dangerous code-exec `allow` rules that were REMOVED because they came from an
@@ -5935,8 +5945,15 @@ export class PermissionManager {
       // SAME source are silent), mirroring Claude's "Adding N director(y/ies)" trace.
       // A provenance change (e.g. session → projectSettings) is a meaningful upgrade
       // worth tracing because it flips the dir from in-memory to persisted.
-      if (prior === undefined) this.traceMutation(`Adding read directory: ${norm}`);
-      else if (prior !== source) this.traceMutation(`Re-scoping read directory ${norm}: ${prior} → ${source}`);
+      if (prior === undefined) {
+        this.traceMutation(`Adding read directory: ${norm}`);
+        // A newly-granted read root can flip an out-of-workspace read prompt to allow —
+        // notify any pending recheck. A silent idempotent re-grant does not.
+        this.notifyPermissionStateChanged();
+      } else if (prior !== source) {
+        this.traceMutation(`Re-scoping read directory ${norm}: ${prior} → ${source}`);
+        this.notifyPermissionStateChanged();
+      }
     } catch { /* non-fatal: a bad path just isn't granted */ }
   }
 
@@ -5962,7 +5979,11 @@ export class PermissionManager {
       //  from the persisted `additionalDirectories` on the next saveRules too.)
       // Trace only an actual boundary shrink, mirroring Claude's "Removing N
       // director(y/ies)" trace.
-      if (removed) this.traceMutation(`Removing read directory: ${norm}`);
+      if (removed) {
+        this.traceMutation(`Removing read directory: ${norm}`);
+        // A revoked read root can flip an open read prompt to deny — notify any recheck.
+        this.notifyPermissionStateChanged();
+      }
       return removed;
     } catch {
       return false;
@@ -7792,6 +7813,38 @@ export class PermissionManager {
   }
 
   /**
+   * Subscribe to decision-affecting permission-state changes — a rule add/remove,
+   * a mode transition, or a read-root grant/revoke — so a consumer can RE-EVALUATE
+   * a decision that is already in flight. Returns an unsubscribe function.
+   *
+   * This is the core primitive behind Claude Code's `recheckPermission()`: when the
+   * rules change concurrently with an open permission prompt (the user adds an allow
+   * rule elsewhere, a hook applies `updatedPermissions`, a `/permissions` edit lands),
+   * the still-open request re-runs {@link check} and can resolve ITSELF — allow or
+   * deny — rather than forcing the user to answer now-stale UI. Multi-subscriber by
+   * design (several tool-call prompts can be open simultaneously); each caller gets
+   * its own unsubscribe and must call it when its prompt settles.
+   */
+  onPermissionStateChanged(listener: () => void): () => void {
+    this._permissionStateChangeListeners.add(listener);
+    return () => { this._permissionStateChangeListeners.delete(listener); };
+  }
+
+  /**
+   * Fire every {@link onPermissionStateChanged} subscriber. A no-op when none are
+   * registered, so the hot mutation paths (bulk startup rule loads, per-call session
+   * grants) allocate and iterate nothing unless a prompt is actually waiting on a
+   * recheck. Each listener is invoked defensively — a throwing subscriber must never
+   * abort the mutation that triggered it (mirrors {@link applyMode}'s guarded notify).
+   */
+  private notifyPermissionStateChanged(): void {
+    if (this._permissionStateChangeListeners.size === 0) return;
+    for (const listener of [...this._permissionStateChangeListeners]) {
+      try { listener(); } catch { /* a listener fault must never break a mutation */ }
+    }
+  }
+
+  /**
    * The ONE place that mutates {@link mode}. Every mutation path (constructor,
    * {@link setMode}, {@link exitPlanMode}'s fallback, {@link deserialize}) routes
    * through here so a change can never bypass the {@link _modeChangeListener}
@@ -7832,6 +7885,10 @@ export class PermissionManager {
         /* a listener failure must never break a privilege transition */
       }
     }
+    // A mode transition changes what is auto-allowed/denied — let any pending recheck
+    // re-evaluate an open prompt (e.g. a Shift+Tab into acceptEdits resolves a waiting
+    // edit prompt). Parity: recheckPermission re-runs on mode change too.
+    this.notifyPermissionStateChanged();
     return true;
   }
 
@@ -7971,6 +8028,9 @@ export class PermissionManager {
     if (this.rules.some(r => this.ruleDedupKey(r) === key)) return;
     this.rules.unshift(rule);
     this.traceMutation(`Adding ${rule.action} rule: ${describeRule(rule)}`);
+    // A new rule can flip an open prompt's decision (e.g. an allow rule the user just
+    // added elsewhere) — let any pending recheck re-evaluate. Parity: recheckPermission.
+    this.notifyPermissionStateChanged();
   }
 
   /**
@@ -8440,7 +8500,11 @@ export class PermissionManager {
     const removed = before - this.rules.length;
     // Trace only when a rule was actually dropped, mirroring Claude's "Removing N
     // rule(s)" trace.
-    if (removed > 0) this.traceMutation(`Removing ${removed} rule(s)`);
+    if (removed > 0) {
+      this.traceMutation(`Removing ${removed} rule(s)`);
+      // A removed rule can flip an open prompt's decision — notify any pending recheck.
+      this.notifyPermissionStateChanged();
+    }
     return removed;
   }
 
