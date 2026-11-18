@@ -9,7 +9,7 @@ import { getErrnoCode, getErrnoPath, isENOENT, isFsInaccessible } from '../utils
 import { recordAgentFileContribution } from './attribution-store';
 import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
-import { extractContextWindow, renderContextWindow, DEFAULT_EDIT_CONTEXT_LINES } from './read-edit-context';
+import { extractContextWindow, renderContextWindow, DEFAULT_EDIT_CONTEXT_LINES, readFileCapped } from './read-edit-context';
 import { findUnknownConfigKeys, validateProjectConfigValues, suggestKnownConfigKey, getManagedConfigPath, KNOWN_CONFIG_KEYS } from '../config';
 import { filterInvalidPermissionRules } from '../permissions';
 import { coerceBool } from '../utils/coerce';
@@ -92,6 +92,17 @@ function diffOmittedSummary(resolved: string, lineCount: number): string {
  */
 export const fileHistoryHooks: { track: typeof trackFileHistory } = {
   track: trackFileHistory,
+};
+
+/**
+ * Indirection seam for the memory-bounded existing-file read, matching the
+ * {@link fileHistoryHooks} pattern. Production calls the real {@link readFileCapped};
+ * tests swap `readCapped` to deterministically return a `truncated` result,
+ * exercising the overwrite path's grew-past-the-cap (TOCTOU) branch without
+ * creating a multi-GB file. Behavior is unchanged in production.
+ */
+export const readHooks: { readCapped: typeof readFileCapped } = {
+  readCapped: readFileCapped,
 };
 
 /**
@@ -652,14 +663,28 @@ export async function writeEntireFile(
   let fileExists = false;
   let readErrResult: ToolResult | null = null;
   try {
-    const rawBuf = await fs.promises.readFile(resolved);
-    if (isNonUtfEncoding(rawBuf)) {
+    // Memory-bounded read: materialize the existing file in chunks under a hard
+    // byte cap instead of one unbounded fs.readFile. checkEditSizeLimit stat-guards
+    // ABOVE, but a file can grow past that stat before this read (a TOCTOU window,
+    // or a pseudo/growing file); the capped read closes it by reporting `truncated`
+    // and never slurping the whole over-cap file into one allocation (parity:
+    // Claude Code's readCapped diff-read fallback).
+    const capped = await readHooks.readCapped(resolved, MAX_EDIT_FILE_SIZE);
+    if (capped === null) {
+      // ENOENT — brand-new file, nothing to lose; fileExists stays false.
+    } else if (capped.truncated) {
+      readErrResult = {
+        output: `Error: File exceeds the 1 GiB edit limit (it grew past the size check while being read). Large files cannot be edited.`,
+        isError: true,
+        behavior: 'ask',
+      };
+    } else if (isNonUtfEncoding(capped.buffer)) {
       readErrResult = {
         output: `Error: "${resolved}" appears to use a non-UTF encoding (Shift-JIS, GBK, Windows-1252, or similar). Editing it as UTF-8 would silently corrupt the file. Use a dedicated encoding-aware editor instead.`,
         isError: true,
       };
     } else {
-      oldContent = decodeBuffer(rawBuf).text;
+      oldContent = decodeBuffer(capped.buffer).text;
       fileExists = true;
     }
   } catch (err) {
