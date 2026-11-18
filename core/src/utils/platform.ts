@@ -24,10 +24,12 @@
  * the debug-on-unknown path is unit-testable without touching disk.
  */
 
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { isWSL } from './env';
+import { findOnPath } from './which';
 import { log } from '../logger';
 
 /**
@@ -94,10 +96,102 @@ export function getPlatform(opts?: GetPlatformOptions): Platform {
   return result;
 }
 
+// Memoized musl/npm-source probes for the zero-options production path (libc and
+// the resolved npm location are fixed for a process, so re-stat'ing /lib or
+// re-scanning PATH every call is wasteful — CC memoizes both for the same reason).
+let cachedMusl: boolean | undefined;
+let cachedNpmFromWindows: boolean | undefined;
+
 /** Reset the memoized platform + one-shot unknown-log guards (test-only seam). */
 export function __resetPlatformCacheForTest(): void {
   cachedPlatform = undefined;
+  cachedMusl = undefined;
+  cachedNpmFromWindows = undefined;
   loggedUnknown.clear();
+}
+
+/** Options for {@link isMuslEnvironment} — every input is injectable for tests. */
+export interface MuslOptions {
+  /** Raw `process.platform`-style id; defaults to `process.platform`. */
+  platform?: string;
+  /** `process.arch`-style id; defaults to `process.arch`. */
+  arch?: string;
+  /** Existence probe for the musl loader path; defaults to a `statSync` check. */
+  fileExists?: (p: string) => boolean;
+}
+
+/** Default musl-loader existence probe: the file is stat-able (error-safe → false). */
+function defaultMuslProbe(p: string): boolean {
+  try { statSync(p); return true; } catch { return false; }
+}
+
+/**
+ * True when the host's C library is musl (Alpine and other musl distros) rather
+ * than glibc. Non-Linux always returns `false`. Detection stats the
+ * architecture-specific musl loader (`/lib/libc.musl-<arch>.so.1`, with
+ * `x64→x86_64` / `arm64→aarch64` normalization), error-safe so an unreadable
+ * `/lib` degrades to `false` (glibc). The zero-options path is memoized (libc is
+ * fixed for a process); pass options to classify an explicit host or inject the
+ * stat seam in tests. Parity with Claude Code's `isMuslEnvironment`
+ * (`utils/envDynamic.ts`) runtime fallback — AMI is unbundled node, so it always
+ * uses the runtime stat (CC's compile-time IS_LIBC_MUSL/GLIBC flags don't apply).
+ */
+export function isMuslEnvironment(opts?: MuslOptions): boolean {
+  if (!opts && cachedMusl !== undefined) return cachedMusl;
+
+  const platform = opts?.platform ?? process.platform;
+  let result: boolean;
+  if (platform !== 'linux') {
+    result = false;
+  } else {
+    const arch = opts?.arch ?? process.arch;
+    const muslArch = arch === 'x64' ? 'x86_64' : arch === 'arm64' ? 'aarch64' : arch;
+    result = (opts?.fileExists ?? defaultMuslProbe)(`/lib/libc.musl-${muslArch}.so.1`);
+  }
+
+  if (!opts) cachedMusl = result;
+  return result;
+}
+
+/** Options for {@link isNpmFromWindowsPath} — every input is injectable for tests. */
+export interface NpmWindowsPathOptions {
+  /** Environment for the WSL probe + PATH scan; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** WSL detector seam; defaults to the canonical {@link isWSL}. */
+  isWsl?: (env?: NodeJS.ProcessEnv) => boolean;
+  /** npm resolver seam; defaults to the no-spawn {@link findOnPath}. */
+  resolve?: (command: string, env: NodeJS.ProcessEnv) => string | null;
+}
+
+/**
+ * True when — and only when — running inside WSL AND the resolved `npm`
+ * executable lives on the mounted Windows filesystem (`/mnt/c/…`). Running the
+ * Windows npm from inside WSL is a common cause of very slow installs and broken
+ * native modules (it crosses the 9p filesystem boundary and targets the wrong
+ * platform's binaries), so this flags it for a diagnostic. Off-WSL it is always
+ * `false` — the question is meaningless on a native host. The zero-options path is
+ * memoized (the resolved npm location is fixed for a process); pass options to
+ * inject the WSL/resolver seams in tests. Parity with Claude Code's
+ * `isNpmFromWindowsPath` (`utils/env.ts`).
+ */
+export function isNpmFromWindowsPath(opts?: NpmWindowsPathOptions): boolean {
+  if (!opts && cachedNpmFromWindows !== undefined) return cachedNpmFromWindows;
+
+  let result: boolean;
+  try {
+    const env = opts?.env ?? process.env;
+    if (!(opts?.isWsl ?? isWSL)(env)) {
+      result = false;
+    } else {
+      const cmd = (opts?.resolve ?? findOnPath)('npm', env);
+      result = cmd !== null && cmd.startsWith('/mnt/c/');
+    }
+  } catch {
+    result = false;
+  }
+
+  if (!opts) cachedNpmFromWindows = result;
+  return result;
 }
 
 /** Cross-platform user directories (parity with CC's `SystemDirectories`). */

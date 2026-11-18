@@ -10,18 +10,36 @@
  * in `utils/coerce`; this module does NOT duplicate them.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 
 /**
- * True when running under Windows Subsystem for Linux — detected via the
- * WSL-specific env vars (`WSL_DISTRO_NAME`/`WSL_INTEROP`) or the `microsoft`/`wsl`
- * marker in the kernel release string. The single canonical WSL detector shared by
- * every consumer (ripgrep timeout tuning, cross-OS lock-reclaim guards) so the
- * check can never drift between call sites (§0b.6 — no duplicated platform probe).
+ * The binfmt_misc interop handler WSL registers so Windows `.exe`s can run from
+ * inside the distro — the single most reliable on-disk WSL marker (present on
+ * every WSL1/WSL2 distro, absent on native Linux), independent of whether the
+ * interop env vars happen to be exported in the current shell. Parity with Claude
+ * Code's `isWslEnvironment` (`utils/env.ts`), which keys solely off this file.
  */
-export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
+const WSL_INTEROP_MARKER = '/proc/sys/fs/binfmt_misc/WSLInterop';
+
+/**
+ * True when running under Windows Subsystem for Linux — detected via the
+ * WSL-specific env vars (`WSL_DISTRO_NAME`/`WSL_INTEROP`), the presence of the
+ * WSL interop binfmt marker ({@link WSL_INTEROP_MARKER}, the reliable file-system
+ * signal Claude Code's `isWslEnvironment` uses — catches a WSL shell that did not
+ * export the interop env vars), or the `microsoft`/`wsl` marker in the kernel
+ * release string. The single canonical WSL detector shared by every consumer
+ * (ripgrep timeout tuning, cross-OS lock-reclaim guards, the Windows-npm PATH
+ * diagnostic) so the check can never drift between call sites (§0b.6 — no
+ * duplicated platform probe). The on-disk probe is injectable so the file-signal
+ * branch is unit-testable without a real WSL host.
+ */
+export function isWSL(
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (p: string) => boolean = existsSync,
+): boolean {
   if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
+  try { if (fileExists(WSL_INTEROP_MARKER)) return true; } catch { /* probe failed → fall through */ }
   try { return /microsoft|wsl/i.test(os.release()); } catch { return false; }
 }
 

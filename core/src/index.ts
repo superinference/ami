@@ -326,8 +326,8 @@ export type { ToolStats, ContextHint, OverallToolStats, ToolAnalyticsSnapshot } 
 export { ToolAnalytics } from './tool-analytics';
 export { Reservoir, percentile as reservoirPercentile, normalizeReservoirSize, DEFAULT_RESERVOIR_SIZE } from './utils/reservoir';
 export { groupBy } from './utils/group-by';
-export { getPlatform, getSystemDirectories, __resetPlatformCacheForTest } from './utils/platform';
-export type { Platform, GetPlatformOptions, SystemDirectories, SystemDirectoriesOptions } from './utils/platform';
+export { getPlatform, getSystemDirectories, isMuslEnvironment, isNpmFromWindowsPath, __resetPlatformCacheForTest } from './utils/platform';
+export type { Platform, GetPlatformOptions, SystemDirectories, SystemDirectoriesOptions, MuslOptions, NpmWindowsPathOptions } from './utils/platform';
 export { treeify } from './utils/treeify';
 export type { TreeNode, TreeValue, TreeifyOptions, TreeColorRole } from './utils/treeify';
 export { parseAnsi, tokenizeAnsi, stripAnsi, get256Color, ANSI_COLORS, DEFAULT_FG, DEFAULT_BG } from './utils/ansi-parse';
