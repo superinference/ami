@@ -163,6 +163,38 @@ export function isPermissivePermissionMode(mode: PermissionMode | undefined): bo
 }
 
 /**
+ * How a given permission {@link PermissionMode} disposes of a tool path that
+ * resolves OUTSIDE the workspace (launch cwd + user-granted roots) but is not a
+ * forbidden credential/system path:
+ *   - `'grant'`    — silently allow + register the containing dir for the session.
+ *                    Only the blanket auto-approval modes (`auto-allow`/YOLO and
+ *                    `bypassPermissions`) do this: the operator opted into waving
+ *                    everything through.
+ *   - `'deny'`     — hard-refuse (no mutation/escape permitted): `deny-all` and
+ *                    `plan`.
+ *   - `'classify'` — subject the path to normal consent: prompt the user when an
+ *                    interactive channel exists, else fail-closed deny. `ask`, the
+ *                    screened-autonomy `auto` mode, AND `acceptEdits`.
+ *
+ * The `acceptEdits` placement is the parity-critical case. `acceptEdits`
+ * auto-accepts edits WITHIN the cwd (via the edit-tool fast-path in {@link
+ * PermissionManager.check}), but an edit/read whose path lands OUTSIDE the cwd is
+ * CLASSIFIED, not blanket-granted — mirroring Claude Code's acceptEdits scoping
+ * ("allowed in CWD, classified outside CWD"; classifierDecision.ts safe-set doc +
+ * modeValidation CWD fast-path). This is the SINGLE source of truth for the
+ * out-of-workspace disposition so the executor's path-boundary guard can never
+ * drift from the mode semantics. (In-workspace paths never reach this function —
+ * they classify as 'allow' before the boundary check.)
+ */
+export type OutOfWorkspacePathDisposition = 'grant' | 'deny' | 'classify';
+export function outOfWorkspacePathDisposition(mode: PermissionMode | undefined): OutOfWorkspacePathDisposition {
+  if (mode === 'auto-allow' || mode === 'bypassPermissions') return 'grant';
+  if (mode === 'deny-all' || mode === 'plan') return 'deny';
+  // 'ask' / 'auto' / 'acceptEdits' (and any unset mode) → require consent.
+  return 'classify';
+}
+
+/**
  * The reduced permission-mode vocabulary exposed to EXTERNAL / SDK consumers. A
  * superset consumer should not have to understand AMI's richer internal set
  * (`auto-allow`, `deny-all`); those collapse onto an external equivalent via
