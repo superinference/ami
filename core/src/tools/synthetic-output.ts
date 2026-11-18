@@ -245,6 +245,84 @@ export function createSyntheticOutputTool(jsonSchema: Record<string, unknown>): 
   return result;
 }
 
+/** Name of the dedicated verification-verdict variant (see {@link createVerificationOutputTool}). */
+export const VERIFICATION_OUTPUT_TOOL_NAME = 'verification_output';
+
+/**
+ * Instructional prompt wording for the verification-result tool. A verification
+ * (stop/plan) hook must return a single pass/fail verdict with exactly one call,
+ * so the tool is framed to force that — mirroring Claude Code's
+ * `createStructuredOutputTool().prompt()` ("Use this tool to return your
+ * verification result. You MUST call this tool exactly once at the end of your
+ * response."). Kept as one exported constant so the hook path and the tool share
+ * identical wording.
+ */
+export const VERIFICATION_OUTPUT_PROMPT =
+  'Use this tool to return your verification result. You MUST call this tool exactly once at the end of your response.';
+
+/**
+ * Canonical `{ ok, reason }` verification schema (the single source of the verdict
+ * contract shared by the verification tool and the AI-hook verdict parser): `ok`
+ * is a required boolean, `reason` an optional string explaining a failure, and no
+ * other properties are allowed. Mirrors Claude Code's `hookResponseSchema` /
+ * `createStructuredOutputTool` `inputJSONSchema` ({ ok, reason, required:['ok'],
+ * additionalProperties:false }).
+ */
+export const VERIFICATION_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean', description: 'Whether the condition was met' },
+    reason: { type: 'string', description: 'Reason, if the condition was not met' },
+  },
+  required: ['ok'],
+  additionalProperties: false,
+};
+
+/**
+ * Build the reusable verification-result tool: a schema-bound {@link
+ * syntheticOutputTool} variant whose input contract is {@link
+ * VERIFICATION_OUTPUT_SCHEMA} and whose description is the verification-specific
+ * {@link VERIFICATION_OUTPUT_PROMPT}. Reused by agent/prompt (AI-driven) hooks and
+ * background verification so a verification agent advertises a clearly-worded tool
+ * that forces a one-call structured `{ ok, reason }` verdict instead of free prose.
+ *
+ * It delegates to {@link createSyntheticOutputTool} (reusing its validate-then-
+ * serialize `execute`, size cap and identity cache — no duplicated logic) and only
+ * overrides the model-facing `name`/`description`/`searchHint`. Mirrors Claude
+ * Code's `createStructuredOutputTool`, which clones `SyntheticOutputTool` and
+ * overrides its `prompt()` with the verification wording plus the `{ ok, reason }`
+ * schema.
+ */
+export function createVerificationOutputTool(): ToolDefinition {
+  const created = createSyntheticOutputTool(VERIFICATION_OUTPUT_SCHEMA);
+  // VERIFICATION_OUTPUT_SCHEMA is a hand-authored, well-formed constant, so the
+  // shape validator never rejects it; the error arm is unreachable in practice but
+  // kept honest (no non-null assertion masking a future malformed edit).
+  if ('error' in created) {
+    throw new Error(`verification output schema is invalid: ${created.error}`);
+  }
+  return {
+    ...created.tool,
+    name: VERIFICATION_OUTPUT_TOOL_NAME,
+    description: VERIFICATION_OUTPUT_PROMPT,
+    searchHint: 'return a structured pass/fail verification verdict',
+  };
+}
+
+/**
+ * Extract a `{ ok, reason }` verdict from a verification tool call's input (the
+ * `tool_use_start` `input` of {@link createVerificationOutputTool}). Returns the
+ * verdict when `ok` is a boolean, else `undefined` (caller falls back to text
+ * parsing). Shared so the hook loop reads a structured tool verdict identically to
+ * how free-text `{ok,reason}` output is parsed.
+ */
+export function parseVerificationToolInput(input: unknown): { ok: boolean; reason?: string } | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.ok !== 'boolean') return undefined;
+  return { ok: obj.ok, reason: typeof obj.reason === 'string' ? obj.reason : undefined };
+}
+
 export const syntheticOutputTool: ToolDefinition = {
   name: 'structured_output',
   description:

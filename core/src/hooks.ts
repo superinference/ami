@@ -29,6 +29,11 @@ import { escapeHarnessMarkerTags } from './tools/bash-security';
 import { getSmallFastModel } from './model-capabilities';
 import { isEnvTruthy } from './privacy-level';
 import { killTree } from './utils/shell';
+import {
+  createVerificationOutputTool,
+  parseVerificationToolInput,
+  VERIFICATION_OUTPUT_TOOL_NAME,
+} from './tools/synthetic-output';
 
 // ---------------------------------------------------------------------------
 // Hook output sanitization — strip system-reminder tags to prevent injection
@@ -2764,7 +2769,7 @@ export function parseFrontmatterHooks(value: unknown): HookConfigEntry[] {
   return normalizeMapKeyedHooks(value);
 }
 
-export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string }>; shutdown?(): void };
+export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown> }>; shutdown?(): void };
 
 // ---------------------------------------------------------------------------
 // Hook-driven prompt-elicitation protocol (Claude Code parity:
@@ -6065,6 +6070,12 @@ export class HookManager extends EventEmitter {
     const engine = this._engineFactory({
       provider: providerConfig,
       cwd: this._cwd,
+      // Advertise the reusable verification-result tool so an AI-driven hook can
+      // return a one-call structured {ok, reason} verdict instead of free prose
+      // (parity: Claude Code's createStructuredOutputTool, used by agent/prompt
+      // hooks and background verification). The {ok,reason} text contract below
+      // stays as the fallback, so a hook that answers in prose still parses.
+      tools: [createVerificationOutputTool()],
       ...agentExtras,
       // Run under the session's permission context (not blanket auto-allow unless
       // that is the session's mode), so a hook agent cannot exceed the user's grant.
@@ -6097,6 +6108,10 @@ export class HookManager extends EventEmitter {
     // hook evaluates, so `--debug` / AMI_DEBUG_TO_STDERR reveals what it saw.
     coreLog('hooks', `${kind} hook processing prompt: ${body}`);
     let result = '';
+    // Structured verdict captured from a verification-tool call (parity: Claude
+    // Code's createStructuredOutputTool one-call verdict), preferred over the
+    // free-text {ok,reason} contract when the hook used the tool.
+    let toolVerdict: { ok: boolean; reason?: string } | undefined;
     let error: string | undefined;
     // Distinguish a cancelled/timed-out/errored run from a genuine completion: a
     // run that did not finish produced NO trustworthy verdict, so its partial
@@ -6108,6 +6123,12 @@ export class HookManager extends EventEmitter {
       for await (const event of engine.submit(fullPrompt)) {
         if (abort.aborted()) break;
         if (event.type === 'text_delta' && event.text) result += event.text;
+        // A verification-tool call carries the verdict directly in its input — the
+        // last such call wins (a hook calls it exactly once per its instruction).
+        if (event.type === 'tool_use_start' && event.toolName === VERIFICATION_OUTPUT_TOOL_NAME) {
+          const v = parseVerificationToolInput(event.input);
+          if (v) toolVerdict = v;
+        }
         if (event.type === 'error') { error = event.error || 'hook engine error'; errored = true; break; }
       }
     } catch (err) {
@@ -6130,8 +6151,10 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', `${kind} hook did not complete (${why}) — discarding partial output`);
       return { output: '', error: error ?? why };
     }
-    // Structured verification result → block (ok:false) or allow (ok:true).
-    const verification = parseHookVerification(result);
+    // Structured verification result → block (ok:false) or allow (ok:true). A
+    // one-call verdict from the verification tool is authoritative; otherwise fall
+    // back to parsing a free-text {ok,reason} object from the model's reply.
+    const verification = toolVerdict ?? parseHookVerification(result);
     if (verification) {
       // Claude Code wording parity: "<Prompt|Agent> hook condition was not met: …"
       const label = kind === 'agent' ? 'Agent' : 'Prompt';

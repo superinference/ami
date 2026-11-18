@@ -37,6 +37,24 @@ function mkEngine(text: string, capture?: (cfg: any) => void) {
   };
 }
 
+/**
+ * Engine stub that emits a `verification_output` tool call carrying `{ok, reason}`
+ * plus a separate (possibly non-conforming) text reply, so a test can prove the
+ * structured tool verdict is what drives the decision.
+ */
+function mkVerdictToolEngine(verdict: Record<string, unknown>, text = '', capture?: (cfg: any) => void) {
+  return (cfg: any) => {
+    capture?.(cfg);
+    return {
+      async *submit(_p: string) {
+        yield { type: 'tool_use_start', toolName: 'verification_output', toolCallId: 't1', input: verdict };
+        if (text) yield { type: 'text_delta', text };
+      },
+      shutdown() {},
+    };
+  };
+}
+
 describe('parseHookVerification', () => {
   it('parses {ok:false, reason}', () => {
     assert.deepEqual(parseHookVerification('{"ok":false,"reason":"nope"}'), { ok: false, reason: 'nope' });
@@ -102,6 +120,78 @@ describe('AI-driven hook verification contract', () => {
     const decision = await hm.executePreToolUse(preCtx);
     assert.equal(decision.action, 'allow');
     assert.equal(decision.additionalContext, 'extra context');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('reusable verification-result tool (createStructuredOutputTool parity)', () => {
+  it('advertises the verification_output tool to the hook sub-engine', async () => {
+    const dir = tmpCwdWithPromptHook();
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(dir);
+    let cfg: any = null;
+    hm.setEngineFactory(mkEngine('{"ok":true}', (c) => { cfg = c; }));
+    await hm.executePreToolUse(preCtx);
+    const toolNames = (cfg.tools ?? []).map((t: any) => t.name);
+    assert.ok(toolNames.includes('verification_output'), 'sub-engine is given the verification tool');
+    const vtool = (cfg.tools ?? []).find((t: any) => t.name === 'verification_output');
+    assert.match(vtool.description, /exactly once at the end of your response/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // RED-GREEN: with the tool-verdict capture the {ok:false} TOOL CALL blocks even
+  // though the text reply is NOT a parseable {ok,reason} verdict. Reverting the
+  // capture (toolVerdict) makes it fall back to parseHookVerification(''), yield no
+  // verdict, and ALLOW — so this discriminates the fix from the old behavior.
+  it('blocks when the verification TOOL returns {ok:false} with a non-JSON text reply', async () => {
+    const dir = tmpCwdWithPromptHook();
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(dir);
+    hm.setEngineFactory(mkVerdictToolEngine({ ok: false, reason: 'tool said unsafe' }, 'all done'));
+    const decision = await hm.executePreToolUse(preCtx);
+    assert.equal(decision.action, 'deny');
+    assert.match(decision.action === 'deny' ? decision.reason : '', /tool said unsafe/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('allows when the verification TOOL returns {ok:true} with a non-JSON text reply', async () => {
+    const dir = tmpCwdWithPromptHook();
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(dir);
+    hm.setEngineFactory(mkVerdictToolEngine({ ok: true }, 'looks good'));
+    const decision = await hm.executePreToolUse(preCtx);
+    assert.equal(decision.action, 'allow');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The structured tool verdict is authoritative over a CONFLICTING text reply.
+  it('prefers the TOOL verdict over a conflicting free-text {ok,reason}', async () => {
+    const dir = tmpCwdWithPromptHook();
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(dir);
+    // Tool says BLOCK, text says OK — the tool wins.
+    hm.setEngineFactory(mkVerdictToolEngine({ ok: false, reason: 'tool overrides' }, '{"ok":true}'));
+    const decision = await hm.executePreToolUse(preCtx);
+    assert.equal(decision.action, 'deny');
+    assert.match(decision.action === 'deny' ? decision.reason : '', /tool overrides/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // A malformed tool input (ok not boolean) is ignored → the text {ok,reason}
+  // contract still applies (graceful superset, never a crash).
+  it('ignores a malformed tool verdict and falls back to the text contract', async () => {
+    const dir = tmpCwdWithPromptHook();
+    const hm = new HookManager();
+    hm.setWorkspaceTrusted(true);
+    hm.loadFromFile(dir);
+    hm.setEngineFactory(mkVerdictToolEngine({ ok: 'nope' }, '{"ok":false,"reason":"text wins"}'));
+    const decision = await hm.executePreToolUse(preCtx);
+    assert.equal(decision.action, 'deny');
+    assert.match(decision.action === 'deny' ? decision.reason : '', /text wins/);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

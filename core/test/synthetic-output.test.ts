@@ -4,6 +4,11 @@ import * as assert from 'node:assert/strict';
 import {
   syntheticOutputTool,
   createSyntheticOutputTool,
+  createVerificationOutputTool,
+  parseVerificationToolInput,
+  VERIFICATION_OUTPUT_TOOL_NAME,
+  VERIFICATION_OUTPUT_PROMPT,
+  VERIFICATION_OUTPUT_SCHEMA,
   validateAgainstSchema,
   MAX_RESULT_SIZE_CHARS,
   ndjsonSafeStringify,
@@ -282,5 +287,82 @@ describe('syntheticOutputTool', () => {
       );
       assert.deepEqual(validateAgainstSchema(null, { type: ['string', 'null'] }), []);
     });
+  });
+});
+
+describe('createVerificationOutputTool (reusable {ok,reason} verdict tool)', () => {
+  it('exposes the verification name, instructional prompt wording and search hint', () => {
+    const tool = createVerificationOutputTool();
+    assert.equal(tool.name, VERIFICATION_OUTPUT_TOOL_NAME);
+    assert.equal(tool.name, 'verification_output');
+    assert.equal(tool.description, VERIFICATION_OUTPUT_PROMPT);
+    // The gap's required wording (parity with Claude's createStructuredOutputTool.prompt()).
+    assert.ok(tool.description.includes('return your verification result'));
+    assert.ok(tool.description.includes('exactly once at the end of your response'));
+    assert.ok(tool.isReadOnly);
+    assert.ok((tool.searchHint ?? '').includes('verification'));
+  });
+
+  it('advertises the canonical {ok,reason} schema (ok required, no extra props)', () => {
+    const tool = createVerificationOutputTool();
+    assert.deepEqual(tool.inputSchema, VERIFICATION_OUTPUT_SCHEMA);
+    const s = tool.inputSchema as Record<string, unknown>;
+    assert.deepEqual(s.required, ['ok']);
+    assert.equal(s.additionalProperties, false);
+    const props = s.properties as Record<string, { type: string; description?: string }>;
+    assert.equal(props.ok.type, 'boolean');
+    assert.ok(props.ok.description);
+    assert.equal(props.reason.type, 'string');
+    assert.ok(props.reason.description);
+  });
+
+  it('validates a conforming verdict and serializes it', async () => {
+    const tool = createVerificationOutputTool();
+    const ok = await tool.execute({ ok: true }, {} as ToolContext);
+    assert.ok(!ok.isError);
+    assert.deepEqual(JSON.parse(ok.output), { ok: true });
+
+    const fail = await tool.execute({ ok: false, reason: 'tests failed' }, {} as ToolContext);
+    assert.ok(!fail.isError);
+    assert.deepEqual(JSON.parse(fail.output), { ok: false, reason: 'tests failed' });
+  });
+
+  it('rejects a non-conforming verdict (missing ok / extra field / wrong type)', async () => {
+    const tool = createVerificationOutputTool();
+    const missing = await tool.execute({ reason: 'x' }, {} as ToolContext);
+    assert.ok(missing.isError);
+    assert.match(missing.output, /does not match required schema/);
+
+    const extra = await tool.execute({ ok: true, surprise: 1 }, {} as ToolContext);
+    assert.ok(extra.isError);
+
+    const wrongType = await tool.execute({ ok: 'yes' }, {} as ToolContext);
+    assert.ok(wrongType.isError);
+  });
+
+  it('reuses syntheticOutputTool machinery (not a parallel re-implementation)', () => {
+    // Shares the generic tool's identity-cached schema-bound execute + size cap.
+    const tool = createVerificationOutputTool();
+    assert.equal(tool.maxResultSizeChars, syntheticOutputTool.maxResultSizeChars);
+    // A fresh factory call yields an equivalent tool (stable canonical schema).
+    assert.deepEqual(createVerificationOutputTool().inputSchema, tool.inputSchema);
+  });
+});
+
+describe('parseVerificationToolInput', () => {
+  it('extracts {ok} and {ok,reason} from a tool-call input object', () => {
+    assert.deepEqual(parseVerificationToolInput({ ok: true }), { ok: true, reason: undefined });
+    assert.deepEqual(parseVerificationToolInput({ ok: false, reason: 'nope' }), { ok: false, reason: 'nope' });
+    // Non-string reason is dropped.
+    assert.deepEqual(parseVerificationToolInput({ ok: true, reason: 5 }), { ok: true, reason: undefined });
+  });
+
+  it('returns undefined for non-objects and missing/invalid ok', () => {
+    assert.equal(parseVerificationToolInput(undefined), undefined);
+    assert.equal(parseVerificationToolInput(null), undefined);
+    assert.equal(parseVerificationToolInput('ok'), undefined);
+    assert.equal(parseVerificationToolInput([{ ok: true }]), undefined);
+    assert.equal(parseVerificationToolInput({ reason: 'x' }), undefined);
+    assert.equal(parseVerificationToolInput({ ok: 'true' }), undefined);
   });
 });
