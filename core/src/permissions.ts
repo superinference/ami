@@ -5,7 +5,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
-import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, ACCEPT_EDITS_PS_WRITE_CMDLETS } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { unwrapWrapperChain } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
@@ -1896,6 +1896,8 @@ export interface DefaultPermissionPatterns {
   destructiveSqlPatterns: string[];
   /** Bash base-commands `acceptEdits` mode auto-approves without a prompt. */
   acceptEditsAutoAllowedCommands: string[];
+  /** PowerShell write cmdlets `acceptEdits` mode auto-approves without a prompt. */
+  acceptEditsAutoAllowedPowerShellCmdlets: string[];
 }
 
 /**
@@ -1915,6 +1917,7 @@ export function getDefaultPermissionPatterns(): DefaultPermissionPatterns {
     destructiveCommands: [...DESTRUCTIVE_COMMANDS].sort(),
     destructiveSqlPatterns: DESTRUCTIVE_SQL_PATTERNS.map(p => p.source),
     acceptEditsAutoAllowedCommands: [...getAutoAllowedCommands('acceptEdits')],
+    acceptEditsAutoAllowedPowerShellCmdlets: [...getAutoAllowedPowerShellCmdlets('acceptEdits')],
   };
 }
 
@@ -2770,6 +2773,21 @@ export function isAcceptEditsFilesystemMutation(command: string): boolean {
  */
 export function getAutoAllowedCommands(mode: PermissionMode): readonly string[] {
   return mode === 'acceptEdits' ? [...ACCEPT_EDITS_FS_COMMANDS].sort() : [];
+}
+
+/**
+ * Introspection accessor: the PowerShell edit-adjacent write CMDLETS a given
+ * permission {@link PermissionMode} auto-approves without a prompt, SORTED for
+ * stable display — the PowerShell counterpart of {@link getAutoAllowedCommands}
+ * (which lists only bash base-commands). Only `acceptEdits` auto-allows a fixed
+ * set (the SAME canonical {@link ACCEPT_EDITS_PS_WRITE_CMDLETS} the runtime
+ * {@link isAcceptEditsPowerShellWrite} gate uses — no duplicate table); every
+ * other mode returns an empty list. Surfaced through
+ * {@link getDefaultPermissionPatterns} (→ `/permissions defaults`) so a user can
+ * see the PowerShell cmdlets acceptEdits waves through, alongside the bash set.
+ */
+export function getAutoAllowedPowerShellCmdlets(mode: PermissionMode): readonly string[] {
+  return mode === 'acceptEdits' ? [...ACCEPT_EDITS_PS_WRITE_CMDLETS].sort() : [];
 }
 
 /**
@@ -5340,11 +5358,15 @@ export class PermissionManager {
         const classification = this.classifyBashCommand(input.command);
         if (classification === 'safe') return 'allow';
         // acceptEdits also auto-allows benign edit-adjacent filesystem mutations
-        // (mkdir/touch/mv/cp/sed) — Claude's ACCEPT_EDITS_ALLOWED_COMMANDS — but
-        // only when the command is not destructive (rm/rmdir stay gated) and does
-        // not touch a credential or system path (those keep their explicit prompt).
+        // (mkdir/touch/mv/cp/sed) — Claude's ACCEPT_EDITS_ALLOWED_COMMANDS — and
+        // their PowerShell counterpart (Set-Content/Add-Content/Clear-Content and
+        // aliases — Claude's ACCEPT_EDITS_ALLOWED_CMDLETS, minus remove-item which
+        // AMI keeps gated) — but only when the command is not destructive
+        // (rm/rmdir/Remove-Item stay gated) and does not touch a credential or
+        // system path (those keep their explicit prompt).
         if (classification !== 'destructive' &&
-            isAcceptEditsFilesystemMutation(input.command) &&
+            (isAcceptEditsFilesystemMutation(input.command) ||
+             isAcceptEditsPowerShellWrite(input.command)) &&
             !commandTargetsCredentialPath(input.command) &&
             !commandTargetsSystemDir(input.command)) {
           return 'allow';

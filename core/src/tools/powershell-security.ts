@@ -354,6 +354,75 @@ export const ENV_WRITE_CMDLETS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * PowerShell edit-adjacent write cmdlets that `acceptEdits` mode auto-allows —
+ * the PowerShell counterpart of the bash {@link ACCEPT_EDITS_FS_COMMANDS} set
+ * (parity with Claude Code's PowerShellTool/modeValidation
+ * `ACCEPT_EDITS_ALLOWED_CMDLETS`).
+ *
+ * AMI DELIBERATELY excludes Claude's `remove-item` AND `clear-content`: the
+ * destructive-command safety invariant keeps every deletion / content-wipe gated
+ * behind an explicit prompt even in acceptEdits (an intentional superset
+ * divergence — never regress a destructive guard), exactly as the bash set
+ * excludes `rm`/`rmdir`. `set-content` (the write-a-file primitive, analogous to
+ * the `file_write` tool acceptEdits already auto-allows) and `add-content`
+ * (append) ARE edit-adjacent and allowed. The Tier-3 cmdlets
+ * `new-item`/`copy-item`/`move-item` (and aliases) are likewise NOT here — they
+ * fall through to `ask`, matching Claude's Tier-3 behavior.
+ *
+ * Keyed by CANONICAL cmdlet name — resolve a raw token with
+ * {@link resolveToCanonical} before looking it up.
+ */
+export const ACCEPT_EDITS_PS_WRITE_CMDLETS: ReadonlySet<string> = new Set([
+  'set-content',
+  'add-content',
+]);
+
+/**
+ * True when EVERY statement/pipeline segment of `command` invokes a canonical
+ * PowerShell edit-adjacent write cmdlet from {@link ACCEPT_EDITS_PS_WRITE_CMDLETS}
+ * (aliases resolved via {@link resolveToCanonical}, e.g. `ac`→add-content).
+ * `acceptEdits` mode uses it to auto-allow a PowerShell
+ * edit the same way it auto-allows bash `mkdir`/`touch`/`mv`/`cp`/`sed`, WITHOUT
+ * broadening to deletes or Tier-3 cmdlets.
+ *
+ * FAILS CLOSED: any command substitution (`$(...)`, `${...}`), backtick, or
+ * call/background operator (`&`, and therefore `&&`), or a segment whose leading
+ * token is not an allowed write cmdlet, returns false — the caller then keeps its
+ * explicit prompt. The ambiguous `sc` alias resolves to `sc` (NOT set-content) in
+ * AMI — Windows `sc.exe` service control — so it is excluded and stays gated.
+ */
+export function isAcceptEditsPowerShellWrite(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return false;
+  }
+  // Reject substitution / call-operator / background smuggling outright.
+  if (/[`&]/.test(trimmed) || /\$[({]/.test(trimmed)) {
+    return false;
+  }
+  // Split into top-level statement/pipeline segments.
+  const segments = trimmed
+    .split(/[;|\n\r]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) {
+    return false;
+  }
+  for (const seg of segments) {
+    // Leading token, dropping an optional module qualifier
+    // (`Microsoft.PowerShell.Management\Set-Content`).
+    const rawToken = seg.split(/\s+/)[0] ?? '';
+    const sep = Math.max(rawToken.lastIndexOf('\\'), rawToken.lastIndexOf('/'));
+    const token = sep >= 0 ? rawToken.slice(sep + 1) : rawToken;
+    const canonical = resolveToCanonical(token.toLowerCase());
+    if (!ACCEPT_EDITS_PS_WRITE_CMDLETS.has(canonical)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Network cmdlets. A wildcard allow-rule for these (`invoke-webrequest*`)
  * enables arbitrary download/exfil without a prompt — there is no legitimate
  * narrow prefix. They are NOT unconditionally blocked (a bare web request is
