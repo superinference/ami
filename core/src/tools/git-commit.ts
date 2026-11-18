@@ -7,7 +7,7 @@ import { generateTempFilePath } from '../utils/tempfile';
 import { detectGitTransientState, classifyRepoRemote, getStagedDiffSize, isFileStagedForDeletion } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
-import { getSessionFileAttribution, getSessionPromptCount, buildAttributionData, normalizeAttributionPath, type AttributionData } from './attribution-store';
+import { getSessionFileAttribution, computeCommitEffort, advanceEffortBaselines, setStartingHeadSha, buildAttributionData, normalizeAttributionPath, type AttributionData } from './attribution-store';
 import { resolveEntrypoint } from '../version';
 import { agentContributionRatio } from '../session';
 import { MemoryManager } from '../memory';
@@ -708,6 +708,15 @@ export const gitCommitTool: ToolDefinition = {
     const fileContributions = notesEnabled
       ? collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths)
       : [];
+    // Capture the session's starting HEAD (idempotent — only the first commit of a
+    // session sets it) so later tooling can detect commits made OUTSIDE this
+    // session by comparing against it (parity: Claude Code's startingHeadSha). Best
+    // effort and gated on the opt-in note so a plain commit pays no extra git call;
+    // a repo with no commits yet yields an empty SHA and is a no-op.
+    if (notesEnabled) {
+      const preHead = (await execCommand('git rev-parse HEAD', execOpts)).stdout.trim();
+      setStartingHeadSha(context.sessionId, preHead);
+    }
 
     // Build the final commit message with trailer (config/env-aware attribution).
     const trailer = resolveCommitAttribution(context.cwd);
@@ -785,7 +794,10 @@ export const gitCommitTool: ToolDefinition = {
             // files recalled this session. buildAttributionNote renders these into
             // a `byline` and omits any zero signal.
             contributionPercent: aggregateAgentContributionPercent(fileContributions),
-            promptCount: getSessionPromptCount(context.sessionId),
+            // PER-COMMIT steer count (prompts since the previous commit), not a
+            // cumulative session total — parity with Claude Code's per-commit
+            // "N-shotted" via the promptCountAtLastCommit baseline.
+            promptCount: computeCommitEffort(context.sessionId).steers,
             memoriesRecalled: countMemoriesRecalled(context.cwd, context.filesRead),
             // MEASURED staged change volume (incl. human/untracked-staged edits the
             // per-file agent store misses), captured pre-commit via the
@@ -795,6 +807,14 @@ export const gitCommitTool: ToolDefinition = {
           await writeCommitAttributionNote(sha, note, execOpts);
         } catch { /* best-effort introspection — never fail the commit */ }
       }
+
+      // A commit landed: snapshot the running effort counters into their per-commit
+      // baselines so the NEXT commit's steer/permission/escape figures measure only
+      // the effort AFTER this commit (parity: Claude Code advancing the effort
+      // baselines on commit). Done AFTER the note read above (which consumes the
+      // current deltas) and unconditionally so the baselines stay correct even if
+      // attribution notes are toggled between commits.
+      advanceEffortBaselines(context.sessionId);
 
       const parts: string[] = [];
       // Normalized affordance line the frontend can render cleanly ("Committed

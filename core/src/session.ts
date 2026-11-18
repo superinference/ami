@@ -704,6 +704,13 @@ export interface Session {
      *  before cost persistence existed → resume keeps the fresh ($0) tracker. Parity:
      *  Claude's lastCost/lastModelUsage restored via restoreCostStateForSession. */
     costState?: string;
+    /** Serialized {@link AttributionSnapshot} (full-state dump: per-file agent
+     *  contributions + effort counters) at save time, so `--resume` of the SAME
+     *  session restores the attribution store instead of losing the running
+     *  per-file/char and "N-shotted" accounting on restart. A restore reads ONLY
+     *  this most-recent snapshot (never sums deltas). Parity: Claude's
+     *  stateToSnapshotMessage persisted + restoreAttributionStateFromSnapshots. */
+    attributionSnapshot?: string;
   };
 }
 
@@ -3220,15 +3227,37 @@ export function recordFileContribution(
   contributedChars: number,
   mtime: number,
 ): Record<string, FileAttributionState> {
-  const prev = states[filePath];
+  const next = { ...states };
+  applyFileContribution(next, filePath, content, contributedChars, mtime);
+  return next;
+}
+
+/**
+ * MUTATING in-place variant of {@link recordFileContribution}: accumulate the
+ * agent's `contributedChars` for `filePath` directly INTO `target` (the file's
+ * {@link FileAttributionState} is replaced, the surrounding object is mutated).
+ * This is the single canonical accumulation step — {@link recordFileContribution}
+ * wraps it with one copy, and a BULK tracker ({@link
+ * import('./tools/attribution-store').recordBulkAgentFileContributions}) copies
+ * the map ONCE then calls this per file, avoiding the O(n²) blow-up of copying
+ * per file across a diff that touches hundreds of thousands of paths. Parity:
+ * Claude Code's `trackBulkFileChanges` single-Map-copy mutation (commitAttribution
+ * L489-L542). A non-positive `contributedChars` still refreshes hash/mtime without
+ * inflating the running count.
+ */
+export function applyFileContribution(
+  target: Record<string, FileAttributionState>,
+  filePath: string,
+  content: string,
+  contributedChars: number,
+  mtime: number,
+): void {
+  const prev = target[filePath];
   const added = contributedChars > 0 ? contributedChars : 0;
-  return {
-    ...states,
-    [filePath]: {
-      contentHash: sha256Hex(content),
-      agentContribution: (prev?.agentContribution ?? 0) + added,
-      mtime,
-    },
+  target[filePath] = {
+    contentHash: sha256Hex(content),
+    agentContribution: (prev?.agentContribution ?? 0) + added,
+    mtime,
   };
 }
 
