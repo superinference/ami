@@ -129,6 +129,20 @@ export function isDefaultMode(mode: PermissionMode | undefined): boolean {
 }
 
 /**
+ * The permission modes that RELAX the default prompt-on-everything gate: edits are
+ * auto-accepted (`acceptEdits`), or approval is blanket (`auto-allow`, the YOLO
+ * alias, and `bypassPermissions`). Centralizes the "is this a more-permissive
+ * mode?" predicate so the transition-time rule-cleanup in {@link PermissionManager}
+ * and any UI that warns on escalation share ONE definition. The screened-autonomy
+ * `auto` mode is NOT included: it still risk-screens every call, so it is not a
+ * blanket relaxation. Mirrors Claude's set of modes that trigger
+ * `transitionPermissionMode` cleanup (getNextPermissionMode.ts).
+ */
+export function isPermissivePermissionMode(mode: PermissionMode | undefined): boolean {
+  return mode === 'acceptEdits' || mode === 'auto-allow' || mode === 'bypassPermissions';
+}
+
+/**
  * The reduced permission-mode vocabulary exposed to EXTERNAL / SDK consumers. A
  * superset consumer should not have to understand AMI's richer internal set
  * (`auto-allow`, `deny-all`); those collapse onto an external equivalent via
@@ -4392,6 +4406,49 @@ export function createPermissionRetryMessage(commands: string[]): string {
 }
 
 /**
+ * Does a would-be PERSISTENT bash `allow` pattern contain a shell-DYNAMIC construct
+ * that must never be baked into a reusable rule? Returns the offending token kind, or
+ * `null` when the pattern is a safe static prefix/glob.
+ *
+ * Rationale (parity: Claude's `staticPrefix.ts` sanitization, L55-140): a persisted
+ * allow rule is matched against FUTURE commands, so a dynamic token makes the rule
+ * match MORE — or different — commands than the user actually saw and approved:
+ *  - a command/arithmetic substitution (`$(...)`, backtick, `${...}`) or a variable
+ *    expansion (`$VAR`, `$@`, …) means the real executed command is computed at run
+ *    time, so "allow `deploy $(cat target)`" would silently authorize anything the
+ *    substitution expands to;
+ *  - a backslash path fragment (`C:\…`, `foo\bar`) is an escape/quoting hazard that
+ *    the glob matcher does not interpret the way a shell would, so the rule can
+ *    over-match.
+ * Glob metacharacters (`*`, `?`, `[`) are intentionally TOLERATED — they are the
+ * legitimate way an allow pattern scopes arguments (`git *`). Pure + side-effect
+ * free. The enforcement point is {@link PermissionManager.addRule}, which refuses to
+ * persist such a rule instead of silently granting an over-broad one.
+ */
+export function dynamicAllowPatternToken(pattern: string | undefined): 'substitution' | 'variable' | 'backslash' | null {
+  if (!pattern) return null;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!;
+    // A backslash is an escape/quoting hazard in a persisted glob (Claude rejects
+    // backslash path fragments). A trailing lone backslash counts too.
+    if (c === '\\') return 'backslash';
+    // Backtick command substitution.
+    if (c === '`') return 'substitution';
+    if (c === '$') {
+      const next = pattern[i + 1];
+      // `$(` command / `$((` arithmetic substitution.
+      if (next === '(') return 'substitution';
+      // `${...}` parameter expansion, or a `$NAME` / special-parameter expansion
+      // ($@ $* $# $? $! $$ $- $0-$9). A bare `$` at end-of-string or before a
+      // non-expansion char (e.g. a literal `price$`) is not dynamic.
+      if (next === '{') return 'variable';
+      if (next && /[A-Za-z_@*#?!$0-9-]/.test(next)) return 'variable';
+    }
+  }
+  return null;
+}
+
+/**
  * Validate a user-supplied permission-rule string, returning an actionable
  * diagnostic. Catches empty rules, mismatched / empty parentheses, empty tool
  * names, and bash/file pattern mistakes (`:*` placement, `:*` in file patterns).
@@ -4828,8 +4885,16 @@ export class PermissionManager {
    *  approved out-of-workspace read prompt. The launch cwd is always allowed (passed
    *  per-call to the path checks); everything else outside it is confined unless listed
    *  here. This is what makes "point the agent at /some/other/image.png" work while a
-   *  silent `cat ../../other-project/secret` stays blocked. */
-  private allowedReadRoots: Set<string> = new Set();
+   *  silent `cat ../../other-project/secret` stays blocked.
+   *
+   *  Source-tracked (parity: Claude's `additionalWorkingDirectories` Map keyed by
+   *  path with a `{path, source}` value): the value records WHICH tier granted the
+   *  root so (a) a grant can be attributed/removed by provenance and (b) only the
+   *  PERSISTABLE tiers (not ephemeral `session`/`cliArg`) are written back to
+   *  `permissions.additionalDirectories` by {@link saveRules}. An in-session
+   *  `/add-dir` grant (`session`) therefore stays in-memory, while a committed
+   *  project `additionalDirectories` entry is reloaded on the next launch. */
+  private allowedReadRoots: Map<string, PermissionRuleSource> = new Map();
 
   /** Active bash isolation policy (threaded from the engine's EngineConfig.sandbox).
    *  Consulted ONLY to honor {@link SandboxPolicy.autoAllowBashIfSandboxed}: when the
@@ -4909,17 +4974,28 @@ export class PermissionManager {
    * launch cwd. Sources: `/add-dir`, `--context-file`/`--image` launch flags, and
    * user-approved out-of-workspace read prompts. Stored resolved + normalized so the
    * containment check is a simple prefix match. Idempotent; ignores empty input.
+   *
+   * `source` records the granting tier (parity: Claude's per-directory `{path,
+   * source}`). It defaults to the ephemeral `session` tier so legacy callers
+   * (`/add-dir`, `--context-file`, approved prompts) grant an in-memory root that is
+   * NOT persisted. Pass a persistable tier (`projectSettings`/`userSettings`/
+   * `localSettings`) to make the grant survive across sessions via
+   * {@link saveRules} → `permissions.additionalDirectories`. A re-grant with a
+   * persistable source UPGRADES an existing session root so it becomes persisted.
    */
-  registerAllowedRoot(p: string): void {
+  registerAllowedRoot(p: string, source: PermissionRuleSource = 'session'): void {
     if (!p || typeof p !== 'string') return;
     try {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
       const norm = path.normalize(abs);
-      const before = this.allowedReadRoots.size;
-      this.allowedReadRoots.add(norm);
-      // Only trace a real widening of the read boundary (idempotent re-grants are
-      // silent), mirroring Claude's "Adding N director(y/ies)" trace.
-      if (this.allowedReadRoots.size > before) this.traceMutation(`Adding read directory: ${norm}`);
+      const prior = this.allowedReadRoots.get(norm);
+      this.allowedReadRoots.set(norm, source);
+      // Only trace a real widening of the read boundary (idempotent re-grants of the
+      // SAME source are silent), mirroring Claude's "Adding N director(y/ies)" trace.
+      // A provenance change (e.g. session → projectSettings) is a meaningful upgrade
+      // worth tracing because it flips the dir from in-memory to persisted.
+      if (prior === undefined) this.traceMutation(`Adding read directory: ${norm}`);
+      else if (prior !== source) this.traceMutation(`Re-scoping read directory ${norm}: ${prior} → ${source}`);
     } catch { /* non-fatal: a bad path just isn't granted */ }
   }
 
@@ -4936,6 +5012,8 @@ export class PermissionManager {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
       const norm = path.normalize(abs);
       const removed = this.allowedReadRoots.delete(norm);
+      // (parity: Claude's removeDirectories set-filter — a removed dir is dropped
+      //  from the persisted `additionalDirectories` on the next saveRules too.)
       // Trace only an actual boundary shrink, mirroring Claude's "Removing N
       // director(y/ies)" trace.
       if (removed) this.traceMutation(`Removing read directory: ${norm}`);
@@ -4947,7 +5025,34 @@ export class PermissionManager {
 
   /** The user-granted read roots (absolute, normalized). For inspection/tests. */
   getAllowedReadRoots(): string[] {
-    return [...this.allowedReadRoots];
+    return [...this.allowedReadRoots.keys()];
+  }
+
+  /**
+   * The user-granted read roots WITH their granting tier (parity: Claude's
+   * source-tracked `additionalWorkingDirectories` Map value `{path, source}`). Lets
+   * a diagnostic / `/permissions` view attribute each extra directory to its origin
+   * (a committed project setting vs an in-session `/add-dir`) and lets a caller
+   * selectively remove or re-persist by provenance. Order-stable (insertion order).
+   */
+  getAllowedReadRootEntries(): { path: string; source: PermissionRuleSource }[] {
+    return [...this.allowedReadRoots].map(([p, source]) => ({ path: p, source }));
+  }
+
+  /**
+   * The subset of granted read roots that are SAFE TO PERSIST to
+   * `permissions.additionalDirectories` — everything except the ephemeral
+   * `session` and `cliArg` tiers, which are deliberately in-memory only (a
+   * per-launch `/add-dir`/`--context-file` grant must not silently leak into a
+   * committed settings file). De-duped (a `Map` key is already unique) and
+   * order-stable. Mirrors Claude's `persistPermissionUpdate` dedupe-on-add.
+   */
+  private persistableReadRoots(): string[] {
+    const out: string[] = [];
+    for (const [p, source] of this.allowedReadRoots) {
+      if (source !== 'session' && source !== 'cliArg') out.push(p);
+    }
+    return out;
   }
 
   /**
@@ -5001,7 +5106,7 @@ export class PermissionManager {
    */
   getEffectiveSandboxPolicy(base: SandboxPolicy | undefined): SandboxPolicy | undefined {
     if (!base) return base;
-    const roots = [...this.allowedReadRoots];
+    const roots = [...this.allowedReadRoots.keys()];
     const { allow: fetchAllow, deny: fetchDeny } = this.extractWebFetchSandboxDomains();
     if (roots.length === 0 && fetchAllow.length === 0 && fetchDeny.length === 0) return base;
     let out: SandboxPolicy = base;
@@ -6259,7 +6364,7 @@ export class PermissionManager {
     const r = strip(resolved);
     const ncwd = strip(path.normalize(cwd));
     if (r === ncwd || r.startsWith(ncwd + path.sep)) return true;
-    for (const root of this.allowedReadRoots) {
+    for (const root of this.allowedReadRoots.keys()) {
       const nr = strip(root);
       if (r === nr || r.startsWith(nr + path.sep)) return true;
     }
@@ -6500,6 +6605,19 @@ export class PermissionManager {
     const previousMode = this.mode;
     if (previousMode === next) return false;
     this.mode = next;
+    // Transition-time context cleanup (parity: Claude's `transitionPermissionMode`,
+    // getNextPermissionMode.ts L84-100): entering a MORE permissive mode strips any
+    // dangerous code-execution `allow` rule so a broad interpreter grant obtained in
+    // one mode (e.g. an `acceptEdits` session grant of `Bash(python:*)`) does not
+    // silently compound once the user escalates to a blanket-approve mode. Load-time
+    // untrusted-source stripping already guards committed rules; this closes the
+    // runtime path where an in-session dangerous grant persists across an escalation.
+    // Only runs on a genuine escalation INTO a permissive mode (not when leaving one,
+    // and not on the `init` seed), so a steady-state mode keeps its rules untouched.
+    if (reason !== 'init' &&
+        isPermissivePermissionMode(next) && !isPermissivePermissionMode(previousMode)) {
+      this.stripDangerousRulesOnEscalation(next);
+    }
     if (this._modeChangeListener) {
       const change: PermissionModeChange = {
         previousMode,
@@ -6610,6 +6728,20 @@ export class PermissionManager {
     if (this._managedRulesOnly && !isManagedPermissionSource(rule.source)) {
       this.traceMutation(`Refused ${rule.action} rule (managed-rules-only lockdown): ${describeRule(rule)}`);
       return;
+    }
+    // Reject a bash ALLOW rule whose pattern bakes in a shell-DYNAMIC construct
+    // ($(...), backtick, ${...}, $VAR, or a backslash path fragment): such a token
+    // makes a persisted allow match MORE/different commands than the user saw, so it
+    // must never become a reusable grant (parity: Claude's staticPrefix sanitization
+    // of dynamic args before emitting a persistent prefix rule). Deny/ask rules are
+    // unaffected — a dynamic token there only widens what is BLOCKED/PROMPTED, which
+    // is not a privilege-escalation hazard.
+    if (rule.action === 'allow' && normalizeToolName(rule.tool) === 'bash') {
+      const dyn = dynamicAllowPatternToken(rule.pattern);
+      if (dyn) {
+        this.traceMutation(`Refused bash allow rule with a dynamic ${dyn} token (would over-match): ${describeRule(rule)}`);
+        return;
+      }
     }
     // Dedup: skip a rule already present under a normalized identity (so a legacy/
     // alias tool name — e.g. `Bash` — is recognized as the same rule as `bash`),
@@ -6747,6 +6879,35 @@ export class PermissionManager {
       this.strippedDangerousRules.push(...stripped);
       for (const r of stripped) {
         this.traceMutation(`Stripped dangerous code-execution allow rule from an untrusted source: ${describeRule(r)}`);
+      }
+    }
+    return stripped;
+  }
+
+  /**
+   * Transition-time cleanup invoked by {@link applyMode} on escalation INTO a
+   * permissive mode: drop every dangerous code-execution `allow` rule (regardless of
+   * source tier) so a broad interpreter grant cannot compound with a blanket-approve
+   * mode. Unlike {@link stripDangerousRulesFromUntrustedSources} (load-time, shared
+   * untrusted tiers only), this fires at runtime on the actual escalation and also
+   * covers an in-session grant. Stripped rules are recorded in
+   * {@link strippedDangerousRules} for introspection and each is traced. Returns the
+   * rules removed. Parity: Claude's `transitionPermissionMode` dangerous-permission
+   * cleanup (getNextPermissionMode.ts L84-100).
+   */
+  private stripDangerousRulesOnEscalation(enteringMode: PermissionMode): PermissionRule[] {
+    const stripped: PermissionRule[] = [];
+    this.rules = this.rules.filter(r => {
+      if (this.isDangerousCodeExecAllow(r)) {
+        stripped.push(r);
+        return false;
+      }
+      return true;
+    });
+    if (stripped.length > 0) {
+      this.strippedDangerousRules.push(...stripped);
+      for (const r of stripped) {
+        this.traceMutation(`Stripped dangerous code-execution allow rule on escalation to '${enteringMode}': ${describeRule(r)}`);
       }
     }
     return stripped;
@@ -7241,7 +7402,23 @@ export class PermissionManager {
       // loader doesn't model. Mirrors Claude's `...settingsData` spread-on-write.
       if (data && typeof data === 'object' && !Array.isArray(data)) {
         for (const k of Object.keys(data)) {
-          if (k !== 'mode' && k !== 'rules') this._extraPersistedKeys[k] = (data as Record<string, unknown>)[k];
+          if (k !== 'mode' && k !== 'rules' && k !== 'additionalDirectories') {
+            this._extraPersistedKeys[k] = (data as Record<string, unknown>)[k];
+          }
+        }
+      }
+
+      // Load persisted additional read directories (parity: Claude's
+      // `permissions.additionalDirectories`) as real read-root grants tagged with
+      // the project tier, so a committed `.ami/permissions.json` that lists extra
+      // directories actually grants the agent read access to them on launch (and
+      // round-trips back through saveRules). Non-string / empty entries are skipped;
+      // registerAllowedRoot resolves + de-dupes. Previously this key was merely
+      // round-tripped as an opaque extra key and never honored.
+      if (Array.isArray((data as Record<string, unknown>).additionalDirectories)) {
+        for (const dir of (data as Record<string, unknown>).additionalDirectories as unknown[]) {
+          if (typeof dir === 'string' && dir !== '') this.registerAllowedRoot(dir, 'projectSettings');
+          else warnings.push('An invalid permissions.additionalDirectories entry was ignored');
         }
       }
 
@@ -7432,7 +7609,14 @@ export class PermissionManager {
       const filePath = path.join(cwd, '.ami', 'permissions.json');
       // Spread preserved unknown keys FIRST so the canonical mode/rules always win,
       // while a user's (or a future version's) extra keys survive the round-trip.
-      const data = { ...this._extraPersistedKeys, mode: this.mode, rules: this.rules };
+      // Persist the source-tracked additional read directories (parity: Claude's
+      // `permissions.additionalDirectories`): only the PERSISTABLE tiers are written
+      // — an ephemeral `session`/`cliArg` grant (`/add-dir`, `--context-file`) stays
+      // in-memory and is dropped on exit, exactly as before. De-duped + order-stable.
+      const additionalDirectories = this.persistableReadRoots();
+      const data: Record<string, unknown> = { ...this._extraPersistedKeys, mode: this.mode, rules: this.rules };
+      if (additionalDirectories.length > 0) data.additionalDirectories = additionalDirectories;
+      else delete data.additionalDirectories;
       // Crash-safe, owner-only persist (temp + fsync + atomic rename, mode 0o600):
       // a half-written permissions.json would be silently dropped by loadRules'
       // catch, wiping every "don't ask again" rule, and the file is not left

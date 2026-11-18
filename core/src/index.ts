@@ -110,6 +110,7 @@ export {
   validatePermissionRule, validatePermissionUpdate, filterInvalidPermissionRules, permissionRuleValueFromString,
   permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,
   resolveFileOperationType, resolveConfigFolderScope,
+  isPermissivePermissionMode, dynamicAllowPatternToken,
 } from './permissions';
 export type { PermissionRuleValue, FileOperationType, ConfigFolderScope } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
