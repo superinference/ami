@@ -140,7 +140,7 @@ const ZSH_DANGEROUS_COMMANDS = new Set([
 
 const ZSH_PRECOMMAND_MODIFIERS = new Set(['command', 'builtin', 'noglob', 'nocorrect']);
 
-const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbuf', 'env', 'srun']);
+export const SAFE_WRAPPERS = new Set(['timeout', 'time', 'nice', 'nohup', 'stdbuf', 'env', 'srun']);
 
 /**
  * Spaced-operand (value-taking) flags per safe wrapper. A flag listed here, when

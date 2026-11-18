@@ -7,6 +7,7 @@ import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
+import { unwrapWrapperChain } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
@@ -3486,6 +3487,17 @@ export function suggestAllowPrefix(command: string): string | null {
   // execution through the same interpreter. Mirrors Claude's isHelpCommand
   // bypass of prefix extraction (utils/bash/commands.ts).
   if (isHelpCommand(cleaned)) return cleaned.trim();
+  // Wrapper-aware derivation: for a wrapped command (`nice -n5 git log`,
+  // `sudo apt-get install foo`, `timeout 5 npm test`) the wrapper root is itself a
+  // BARE_SHELL_PREFIX (`sudo`/`env`/`nice`/…) so the normal path below would refuse
+  // to suggest anything. Instead derive the INNER command's prefix and re-compose
+  // it with the (bounded, fail-closed) wrapper chain so the grant stays narrowly
+  // scoped to the wrapped form. Mirrors Claude's handleWrapper composed prefix.
+  const wrapped = unwrapWrapperChain(cleaned);
+  if (wrapped) {
+    const innerPrefix = suggestAllowPrefix(wrapped.inner);
+    return innerPrefix ? [...wrapped.wrappers, innerPrefix].join(' ') : null;
+  }
   const two = getSimpleCommandPrefix(cleaned);
   // Guard the two-word path too: `start-process notepad*` would match
   // `start-process notepad.exe & evil`, so a dangerous PowerShell spawner as
