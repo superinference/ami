@@ -969,6 +969,41 @@ export function pickClientAuthMethod(supported: string[] | undefined, hasSecret:
 }
 
 /**
+ * Environment variable supplying a confidential-client secret for MCP OAuth
+ * (parity with Claude Code's `readClientSecret()` env precedence — auth.ts
+ * `readClientSecret`). A secret provided here is read at connect time and NEVER
+ * written into the plaintext server config, so it does not land in argv/`ps`,
+ * shell history, or `.ami/mcp.json`.
+ */
+export const MCP_CLIENT_SECRET_ENV = 'MCP_CLIENT_SECRET';
+
+/**
+ * Resolve the effective confidential-client secret for an MCP OAuth session.
+ *
+ * Precedence (Claude-parity `readClientSecret`): an explicitly-configured secret
+ * wins (it may itself be a `${secret:…}`/`${VAR}` reference the caller already
+ * resolved); otherwise fall back to the {@link MCP_CLIENT_SECRET_ENV} environment
+ * variable so a secret can be supplied via the environment instead of being
+ * inlined into the plaintext server config. A blank / whitespace-only value at
+ * either source is treated as absent (public client — no secret). Returns
+ * `undefined` when neither source provides one.
+ *
+ * Unlike Claude's helper this never prompts on a TTY: connect-time resolution is
+ * non-interactive by design (the interactive masked prompt belongs to the
+ * add-server command layer). The env fallback is the parity-relevant,
+ * platform-free part and is the single source used by {@link McpOAuthSession}.
+ */
+export function resolveClientSecret(
+  configured: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (typeof configured === 'string' && configured.trim() !== '') return configured;
+  const envSecret = env[MCP_CLIENT_SECRET_ENV];
+  if (typeof envSecret === 'string' && envSecret.trim() !== '') return envSecret;
+  return undefined;
+}
+
+/**
  * RFC 7009 token revocation. Revokes a single token (access or refresh) at the
  * authorization server's `revocation_endpoint`. Client authentication follows
  * `authMethod`: `client_secret_basic` sends an `Authorization: Basic` header,
@@ -1720,7 +1755,10 @@ export class McpOAuthSession implements McpOAuthProvider {
     );
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
-    this.effectiveClientSecret = opts.clientSecret;
+    // Confidential-client secret: configured value wins, else the MCP_CLIENT_SECRET
+    // env var (Claude-parity readClientSecret precedence) so the secret need not be
+    // inlined into the plaintext server config.
+    this.effectiveClientSecret = resolveClientSecret(opts.clientSecret, opts.env);
     // clientId-change invalidation (parity with Claude's xaaIdpCommand): if a static
     // clientId is configured and differs from the one the persisted tokens were minted
     // under, the stored grant is for the OLD client registration — it would fail with
@@ -1966,7 +2004,8 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (scope === 'tokens' || scope === 'all') { this.store.clear(); this.refreshScheduler?.cancel(); }
     if (scope === 'client' || scope === 'all') {
       this.effectiveClientId = this.opts.clientId;
-      this.effectiveClientSecret = this.opts.clientSecret;
+      // Re-resolve against config + MCP_CLIENT_SECRET on reset, mirroring the constructor.
+      this.effectiveClientSecret = resolveClientSecret(this.opts.clientSecret, this.opts.env);
     }
     if (scope === 'discovery' || scope === 'all') {
       this.authMeta = null;
