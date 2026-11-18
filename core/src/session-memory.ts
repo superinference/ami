@@ -56,6 +56,22 @@ export interface SessionMemoryConfig {
   /** Extraction watchdog timeout (ms). */
   extractionTimeoutMs: number;
   /**
+   * Max time (ms) a consumer (e.g. pre-compaction / shutdown coordination) will
+   * block in {@link SessionMemoryExtractor.waitForSessionMemoryExtraction} waiting
+   * for an in-flight extraction before giving up and proceeding. Parity: Claude's
+   * `EXTRACTION_WAIT_TIMEOUT_MS` (default 15000)
+   * (SessionMemory/sessionMemoryUtils.ts:L12,L99-102).
+   */
+  extractionWaitTimeoutMs: number;
+  /**
+   * Age (ms) past which an in-progress extraction is treated as STALE and no longer
+   * waited on, so a crashed/abandoned pass whose completion mark never fired cannot
+   * wedge a waiting consumer indefinitely. Parity: Claude's
+   * `EXTRACTION_STALE_THRESHOLD_MS` (default 60000)
+   * (SessionMemory/sessionMemoryUtils.ts:L13,L92-96).
+   */
+  extractionStaleThresholdMs: number;
+  /**
    * Jaccard token-similarity threshold (0..1) above which two facts are treated
    * as near-duplicates and collapsed in {@link SessionMemoryExtractor.mergeFacts}.
    */
@@ -112,6 +128,8 @@ export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
   maxTokens: 500,
   confidenceFloor: 0.7,
   extractionTimeoutMs: 30_000,
+  extractionWaitTimeoutMs: 15_000,
+  extractionStaleThresholdMs: 60_000,
   dedupSimilarityThreshold: 0.85,
   recencyProtectedCount: 20,
   minInitContextTokens: 10_000,
@@ -126,6 +144,12 @@ export const MAX_MEMORY_ENTRY_CHARS = DEFAULT_SESSION_MEMORY_CONFIG.maxEntryChar
 /** Aggregate token budget for the whole persisted session-memory document (parity:
  *  Claude's `MAX_TOTAL_SESSION_MEMORY_TOKENS`). See {@link SessionMemoryConfig.maxTotalTokens}. */
 export const MAX_SESSION_MEMORY_TOTAL_TOKENS = DEFAULT_SESSION_MEMORY_CONFIG.maxTotalTokens;
+/** Max time a consumer blocks waiting for an in-flight extraction (parity:
+ *  Claude's `EXTRACTION_WAIT_TIMEOUT_MS`). See {@link SessionMemoryConfig.extractionWaitTimeoutMs}. */
+export const EXTRACTION_WAIT_TIMEOUT_MS = DEFAULT_SESSION_MEMORY_CONFIG.extractionWaitTimeoutMs;
+/** Age past which an in-progress extraction is treated as stale and not waited on
+ *  (parity: Claude's `EXTRACTION_STALE_THRESHOLD_MS`). See {@link SessionMemoryConfig.extractionStaleThresholdMs}. */
+export const EXTRACTION_STALE_THRESHOLD_MS = DEFAULT_SESSION_MEMORY_CONFIG.extractionStaleThresholdMs;
 
 /** The incremental window of messages to run a memory-extraction pass over, plus
  *  the cursor the caller should persist AFTER a successful extraction (parity:
@@ -363,6 +387,23 @@ export class SessionMemoryExtractor {
    *  (`<_configDir>/session-memory/config/prompt.md`). `undefined` → the resolved
    *  AMI config home (`~/.ami`). Tests point it at a temp dir. */
   _configDir?: string;
+  /** Test seam: the sleep used by {@link waitForSessionMemoryExtraction}'s poll
+   *  loop. Defaults to a real timer; tests override it to resolve instantly (and to
+   *  advance a fake clock) so the wait/stale/timeout branches run without real time. */
+  _sleep: (ms: number) => Promise<void> = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  /** Poll interval (ms) of the extraction wait loop (parity: Claude polls every 1s). */
+  _waitPollMs = 1000;
+
+  /**
+   * Wall-clock timestamp (ms, from {@link _now}) at which the CURRENT extraction
+   * pass started, or `undefined` when no pass is in flight. Set by
+   * {@link markExtractionStarted} (called at the top of {@link extractFacts}) and
+   * cleared by {@link markExtractionCompleted} (its `finally`), so
+   * {@link isExtractionInProgress} / {@link waitForSessionMemoryExtraction} always
+   * reflect reality. Parity: Claude's module-level `extractionStartedAt`
+   * (SessionMemory/sessionMemoryUtils.ts:L46,L74-82).
+   */
+  private _extractionStartedAt?: number;
 
   /**
    * Whether session memory has crossed its initialization threshold at least once.
@@ -456,6 +497,59 @@ export class SessionMemoryExtractor {
   }
 
   /**
+   * Mark that a fact-extraction pass has started. Records the current timestamp so a
+   * concurrent consumer (e.g. an interrupt-driven shutdown, or pre-compaction) can
+   * coordinate with the in-flight pass via {@link waitForSessionMemoryExtraction}.
+   * Called at the top of {@link extractFacts}; idempotent-safe to call directly.
+   * Parity: Claude's `markExtractionStarted` (SessionMemory/sessionMemoryUtils.ts:L74-76).
+   */
+  markExtractionStarted(): void {
+    this._extractionStartedAt = this._now().getTime();
+  }
+
+  /**
+   * Mark the in-flight extraction pass as finished (clears the start timestamp), so
+   * {@link waitForSessionMemoryExtraction} stops blocking. Called from
+   * {@link extractFacts}'s `finally`. Parity: Claude's `markExtractionCompleted`
+   * (SessionMemory/sessionMemoryUtils.ts:L81-83).
+   */
+  markExtractionCompleted(): void {
+    this._extractionStartedAt = undefined;
+  }
+
+  /** Whether a fact-extraction pass is currently in flight (introspection seam for
+   *  consumers/tests). Parity: the `extractionStartedAt` truthiness check Claude's
+   *  wait helper performs (SessionMemory/sessionMemoryUtils.ts:L89). */
+  isExtractionInProgress(): boolean {
+    return this._extractionStartedAt !== undefined;
+  }
+
+  /**
+   * Block until any in-flight extraction completes, so a consumer (compaction /
+   * shutdown) does not race a pass that is still writing session memory. Returns
+   * IMMEDIATELY when no pass is in flight. Two bail-out guards keep it from ever
+   * hanging a caller:
+   *  - **stale** — if the in-progress pass is older than
+   *    `config.extractionStaleThresholdMs`, it is assumed crashed/abandoned (its
+   *    completion mark never fired) and the wait returns without blocking further.
+   *  - **timeout** — after `config.extractionWaitTimeoutMs` of waiting, the wait
+   *    returns and the caller proceeds anyway.
+   * Parity: Claude's `waitForSessionMemoryExtraction`
+   * (SessionMemory/sessionMemoryUtils.ts:L88-106).
+   */
+  async waitForSessionMemoryExtraction(): Promise<void> {
+    const startTime = this._now().getTime();
+    while (this._extractionStartedAt !== undefined) {
+      const extractionAge = this._now().getTime() - this._extractionStartedAt;
+      // Stale extraction — do not wait on an abandoned pass.
+      if (extractionAge > this.config.extractionStaleThresholdMs) return;
+      // Overall wait budget exhausted — proceed anyway.
+      if (this._now().getTime() - startTime > this.config.extractionWaitTimeoutMs) return;
+      await this._sleep(this._waitPollMs);
+    }
+  }
+
+  /**
    * Extract structured facts from tool results and recent messages.
    * Uses the compaction model if provided, otherwise the primary provider model.
    * Only includes the last `config.contextWindowMessages` messages as context.
@@ -475,6 +569,9 @@ export class SessionMemoryExtractor {
     signal?: AbortSignal,
     existingFacts?: SessionFact[],
   ): Promise<SessionFact[]> {
+    // Record the in-flight start so a concurrent consumer (shutdown/compaction) can
+    // coordinate via waitForSessionMemoryExtraction instead of racing this pass.
+    this.markExtractionStarted();
     // Only use the last N messages
     const contextMessages = recentMessages.slice(-this.config.contextWindowMessages);
 
@@ -566,6 +663,9 @@ export class SessionMemoryExtractor {
     } finally {
       clearTimeout(timeout);
       if (signal) signal.removeEventListener('abort', onExternalAbort);
+      // Clear the in-flight mark on EVERY exit (success, error-chunk early return,
+      // thrown/aborted) so waitForSessionMemoryExtraction never blocks past the pass.
+      this.markExtractionCompleted();
     }
     return facts;
   }
