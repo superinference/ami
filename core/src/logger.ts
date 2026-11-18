@@ -394,7 +394,7 @@ export function __resetLoggerForTest(): void {
   inMemoryErrors = [];
   pendingWrites = [];
   runtimeDebugEnabled = false;
-  lastApiRequest = null;
+  apiRequestRing.length = 0;
   debugFilterCache.clear();
   for (const writer of diagnosticsWriters.values()) writer.dispose();
   diagnosticsWriters.clear();
@@ -662,6 +662,9 @@ export function logApiCall(
   thinkingEnabled: boolean,
 ): void {
   log('api', `call model=${model} messages=${messageCount} tools=${toolCount} thinking=${thinkingEnabled}`);
+  // Feed the bounded recent-request diagnostic ring so a bug report / `/doctor` can
+  // attach the last few calls that preceded a failure (not just the latest).
+  captureApiRequest({ model, messageCount, toolCount, thinkingEnabled });
 }
 
 export function logApiResponse(
@@ -903,27 +906,56 @@ export function summarizeValue(v: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Last-API-request capture (for bug reports / diagnostics).
+// Recent-API-request capture (for bug reports / diagnostics).
 // ---------------------------------------------------------------------------
-let lastApiRequest: { timestamp: string; params: Record<string, unknown> } | null = null;
+
+/** One captured request: an ISO timestamp plus the credential-redacted params. */
+export interface CapturedApiRequest {
+  timestamp: string;
+  params: Record<string, unknown>;
+}
+
+/** How many of the most recent API requests the diagnostic ring keeps (parity:
+ *  Claude Code's `MAX_CACHED_REQUESTS = 5` dumpPrompts ring). */
+export const MAX_CACHED_API_REQUESTS = 5;
+
+/** Bounded FIFO ring of the most recent {@link MAX_CACHED_API_REQUESTS} requests
+ *  (oldest first). A later bug report / `/doctor` can attach the exact recent calls
+ *  that preceded a failure — not just the single last one. */
+const apiRequestRing: CapturedApiRequest[] = [];
 
 /**
- * Record the most recent API request parameters so a later bug report or
- * `/doctor` can include "what was the last call that failed". String values are
- * credential-redacted on capture so an API key in a header never lingers in
- * memory. Only the latest is kept. Mirrors Claude Code's captureAPIRequest.
+ * Record an API request's parameters onto the bounded diagnostic ring so a later
+ * bug report or `/doctor` can include "the last few calls that led to the failure"
+ * (parity: Claude Code's `addApiRequestToCache`, which keeps the last
+ * {@link MAX_CACHED_API_REQUESTS}). String values are credential-redacted on
+ * capture so an API key in a header never lingers in memory. Pushing past the cap
+ * drops the oldest entry.
  */
 export function captureApiRequest(params: Record<string, unknown>): void {
   const redacted: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(params)) {
     redacted[k] = typeof val === 'string' ? redactCredentials(val) : val;
   }
-  lastApiRequest = { timestamp: new Date().toISOString(), params: redacted };
+  apiRequestRing.push({ timestamp: new Date().toISOString(), params: redacted });
+  if (apiRequestRing.length > MAX_CACHED_API_REQUESTS) apiRequestRing.shift();
 }
 
-/** Return a copy of the last captured API request, or null if none. */
-export function getLastApiRequest(): { timestamp: string; params: Record<string, unknown> } | null {
-  return lastApiRequest ? { timestamp: lastApiRequest.timestamp, params: { ...lastApiRequest.params } } : null;
+/** Return a copy of the MOST RECENT captured API request, or null if none. */
+export function getLastApiRequest(): CapturedApiRequest | null {
+  const last = apiRequestRing[apiRequestRing.length - 1];
+  return last ? { timestamp: last.timestamp, params: { ...last.params } } : null;
+}
+
+/** Return a copy of every captured request (oldest first, at most
+ *  {@link MAX_CACHED_API_REQUESTS}). Parity: `getLastApiRequests()`. */
+export function getLastApiRequests(): CapturedApiRequest[] {
+  return apiRequestRing.map((r) => ({ timestamp: r.timestamp, params: { ...r.params } }));
+}
+
+/** Clear the recent-request ring (parity: `clearApiRequestCache()`). */
+export function clearApiRequestCache(): void {
+  apiRequestRing.length = 0;
 }
 
 // ---------------------------------------------------------------------------

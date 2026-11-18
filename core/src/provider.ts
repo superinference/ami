@@ -1804,6 +1804,44 @@ export function computeAnthropicBetas(
   return [...new Set(betas)];
 }
 
+/** One `anthropic-beta` token AMI may send, with the condition under which it is
+ *  activated. The introspectable complement to {@link computeAnthropicBetas} (which
+ *  needs a concrete model + per-request config). */
+export interface AnthropicBetaDescriptor {
+  /** The literal `anthropic-beta` token value. */
+  token: string;
+  /** Human-readable activation condition (model/config/env gate). */
+  condition: string;
+}
+
+/**
+ * A static, deterministic catalog of every `anthropic-beta` token AMI's provider
+ * layer can attach to an outgoing Anthropic request, each paired with its
+ * activation condition, PLUS the operator escape-hatch tokens currently forced on
+ * via `ANTHROPIC_BETAS`. This is the introspection/diagnostic surface the request
+ * path lacked (parity: Claude's `getSdkBetas()` session-metadata field): a consumer
+ * can discover WHICH betas are in effect / available without decoding a live
+ * request. Unlike {@link computeAnthropicBetas} it needs no model or API key, so it
+ * is safe to emit from `ami --introspect`. Reads `ANTHROPIC_BETAS` live through the
+ * single {@link getExtraAnthropicBetas} resolver (No-Duplication).
+ */
+export function describeAnthropicBetas(): {
+  catalog: AnthropicBetaDescriptor[];
+  operatorBetas: string[];
+} {
+  return {
+    catalog: [
+      { token: EXTENDED_CACHE_TTL_BETA, condition: '1h prompt-cache TTL (config.cacheTtl === "1h"), native Anthropic path only' },
+      { token: ONE_MILLION_CONTEXT_BETA, condition: 'the active model serves a 1M-token context window (supportsOneMillionContextBeta) and 1M context is not disabled' },
+      { token: PROMPT_CACHING_SCOPE_BETA, condition: 'cross-session prompt-cache scope opt-in (AMI_PROMPT_CACHE_SCOPE)' },
+      { token: INTERLEAVED_THINKING_BETA, condition: 'the active model supports interleaved thinking and it is not opted out; stripped by the experimental-betas kill switch' },
+      { token: TOKEN_EFFICIENT_TOOLS_BETA, condition: 'token-efficient tools opt-in; stripped by the experimental-betas kill switch' },
+      { token: STRUCTURED_OUTPUTS_BETA, condition: 'the active model supports structured outputs and it is opted in; stripped by the experimental-betas kill switch' },
+    ],
+    operatorBetas: getExtraAnthropicBetas(),
+  };
+}
+
 /**
  * Per-(model, settings) cache of the request-INDEPENDENT beta set — the part of
  * {@link computeAnthropicBetas} that does NOT vary per request (everything except

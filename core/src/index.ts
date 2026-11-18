@@ -1,8 +1,8 @@
 export { SessionManager, MAX_SESSION_READ_BYTES, isSessionPersistenceDisabled, isResumeAllProjectsEnabled, detectTurnInterruption, buildConversationChain, selectNewestLeaf, getSessionMessages, appendResumeSentinel, NO_RESPONSE_REQUESTED, getSessionDisplayTitle, getSessionLockInfo, getAllLockInfo, cleanupStaleLocks, SESSION_KINDS, envSessionKind, isBgSession, checkSessionLock, isSessionLockHeldLocally, loadMessagesFromTranscriptPath, readTranscriptForLoad, TRANSCRIPT_READ_CHUNK_SIZE, collectContentReplacements, forkContentReplacements, parsePrIdentifier, filterSessionsByPr, checkCrossProjectResume, deriveFirstPrompt, parseSessionIdentifier, matchWorktreeForProjectDir, resolveAgentModelOverride, toListEntryAgent, AGENT_MODEL_INHERIT, sha256Hex, recordFileContribution, agentContributionRatio, writeResumePointer, readResumePointer, clearResumePointer, RESUME_POINTER_FILE, RESUME_POINTER_TTL_MS, isSessionCleanupEnabled, isHousekeepingDue, maybeRunDailyHousekeeping, HOUSEKEEPING_PERIOD_MS, HOUSEKEEPING_MARKER_FILE, HOUSEKEEPING_LOCK_SUBDIR, LITE_READ_BUF_SIZE, INITIAL_ENRICH_COUNT, SKIP_PRECOMPACT_THRESHOLD, unescapeJsonString, extractJsonStringField, extractLastJsonStringField } from './session';
 export type { SessionKind, PrFilter, CrossProjectResumeResult, ParsedSessionIdentifier } from './session';
 export type { Session, SessionAgentIdentity, SessionListEntry, SessionMetaLite, TurnInterruption, GetSessionMessagesOptions, TranscriptLoadResult, LockInfo, SessionLockCheck, FileAttributionState, AttributionSnapshot, ResumePointer, ContentReplacementRecord, ContentReplacementEntry } from './session';
-export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders } from './provider';
-export type { ProviderDescriptor } from './provider';
+export { streamChatCompletion, streamChatCompletionWithRetry, inferProviderFromApiKey, resolveContextWindow, buildRepairToolCall, describeProviders, describeAnthropicBetas } from './provider';
+export type { ProviderDescriptor, AnthropicBetaDescriptor } from './provider';
 export { createDefaultTools } from './tools';
 export { skillTool, filterToolsForSkill, resolveSkillTarget, SKILL_MAX_RESULT_CHARS } from './tools/skill';
 export type { SkillResolution } from './tools/skill';
@@ -170,8 +170,8 @@ export { ProviderCoordinator, UNKNOWN_IDENTIFIER, AUTO_DETECTED_PROVIDER_DISPLAY
 export type { CoordinatorState, ModelRecovery, CredentialBackpressure } from './provider-coordinator';
 export { ProviderHealthTracker } from './provider-health';
 export type { ProviderHealthStats } from './provider-health';
-export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites } from './logger';
-export type { LogTailResult } from './logger';
+export { log as coreLog, logToolCall, logApiCall, logApiResponse, logError as coreLogError, getInMemoryErrors, readLogTail, summarizeValue, extractServerMessage, httpErrorContext, captureApiRequest, getLastApiRequest, getLastApiRequests, clearApiRequestCache, MAX_CACHED_API_REQUESTS, recordDiagnostic, shouldSurfaceToTelemetry, withDiagnosticsTiming, debugBody, debugTruncate, logForDiagnosticsNoPII, flushDiagnosticsWriters, getErrorsPath, dateToFilename, isDebugMode, enableDebugLogging, flushPendingLogWrites } from './logger';
+export type { LogTailResult, CapturedApiRequest } from './logger';
 export { createBufferedWriter } from './buffered-writer';
 export type { BufferedWriter, BufferedWriterOptions, WriteFn } from './buffered-writer';
 export type { FileEntry, SymbolEntry, ImportEdge, BuildIndexResult } from './workspace-indexer';
