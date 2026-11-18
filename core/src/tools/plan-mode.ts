@@ -186,6 +186,80 @@ export function allocatePlanFile(planDir: string, opts: { sessionId?: string } =
   return path.join(planDir, `plan-${generateShortWordSlug()}-${Date.now().toString(36)}.md`);
 }
 
+/**
+ * Sanitize an agent id for safe use inside a plan filename: keep only
+ * filename-safe characters so a crafted id can never inject a path separator or
+ * traversal (`../`) into the plan file path.
+ */
+function sanitizeAgentId(agentId: string): string {
+  return agentId.replace(/[^A-Za-z0-9_-]/g, '-');
+}
+
+/**
+ * Per-agent plan-file suffix (Claude parity: `getPlanFilePath(agentId?)` in
+ * utils/plans.ts L113-129, which names a subagent's plan `{slug}-agent-{agentId}.md`
+ * so concurrent agents don't clobber each other's plan files).
+ *
+ * Returns `''` for the main conversation (no `agentId`) so its plan file keeps the
+ * bare `{slug}.md` name, and `-agent-<sanitized-id>` for a subagent so each agent
+ * derives a DISTINCT plan file path. The id is sanitized against path-injection via
+ * a crafted agent id.
+ */
+export function planFileAgentSuffix(agentId?: string | null): string {
+  if (!agentId) return '';
+  return `-agent-${sanitizeAgentId(agentId)}`;
+}
+
+/**
+ * Stateful plan-rejection tracker (Claude parity: `ExitPlanModeScanner`'s
+ * `rejectCount` / `rejectedIds` / iterate-until-approved state machine —
+ * utils/ultraplan/ccrSession.ts L80-181).
+ *
+ * AMI's plan-mode exit is a human consent gate that can DECLINE an exit, keeping the
+ * model sandboxed in plan mode. Claude additionally tracks how many plans were
+ * rejected and skips an already-rejected plan so the agent keeps iterating until one
+ * is approved. This tracker ports that state to AMI's single-exit consent model: it
+ * records each rejected plan keyed by its normalized content so the engine can
+ *  (a) report how many times the plan has been rejected (`rejectCount`), and
+ *  (b) detect a plan resubmitted UNCHANGED after a rejection ({@link wasRejected})
+ *      and force a substantive re-plan instead of a decline/resubmit loop.
+ * Reset ({@link reset}) when a new plan session begins (enter / `/plan`).
+ */
+export class PlanRejectionTracker {
+  private readonly rejected = new Set<string>();
+  private _rejectCount = 0;
+
+  /** How many times a plan has been rejected in the current plan session. */
+  get rejectCount(): number {
+    return this._rejectCount;
+  }
+
+  /** Normalize plan content to a stable rejection key (trimmed; `''` when empty). */
+  private key(plan: string | null | undefined): string {
+    return (plan ?? '').trim();
+  }
+
+  /** Whether this exact plan content was already rejected in this session. */
+  wasRejected(plan: string | null | undefined): boolean {
+    return this.rejected.has(this.key(plan));
+  }
+
+  /**
+   * Record a rejected plan. Increments the rejection count on every decline and
+   * remembers the plan's content so a later identical resubmission is detectable.
+   */
+  recordRejection(plan: string | null | undefined): void {
+    this.rejected.add(this.key(plan));
+    this._rejectCount++;
+  }
+
+  /** Forget all rejections (a new plan session / approved plan / `/clear`). */
+  reset(): void {
+    this.rejected.clear();
+    this._rejectCount = 0;
+  }
+}
+
 export const planModeTool: ToolDefinition = {
   name: 'plan_mode',
   description:
