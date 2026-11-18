@@ -1483,6 +1483,41 @@ function incrementSpawnCount(context: { _agentSpawnCount?: { value: number } }):
   context._agentSpawnCount.value++;
 }
 
+/** Context shape {@link reserveAgentSlot} needs — the union of the cap inputs and
+ *  the mutable spawn counter. */
+export type AgentCapContext = Parameters<typeof checkAgentCaps>[0];
+
+/**
+ * ATOMICALLY reserve one agent-spawn slot: re-check the session/concurrency caps
+ * ({@link checkAgentCaps}) and, only if they pass, consume the slot by incrementing
+ * the spawn counter ({@link incrementSpawnCount}) — in ONE synchronous step with no
+ * `await` between the check and the increment.
+ *
+ * This closes a check-then-act (TOCTOU) race the bare `checkAgentCaps` at the top of
+ * the task handler cannot: that early check runs BEFORE the handler's awaits (the
+ * pre-tool-use hook and the required-MCP-server readiness gate), while the actual
+ * `incrementSpawnCount` used to run much later at the spawn commit. Two `task` calls
+ * issued in parallel (one turn's parallel tool_calls) therefore BOTH observed the cap
+ * as not-yet-reached, both proceeded past the awaits, and both incremented — spawning
+ * `cap + N` agents and overshooting the session limit. Performing the authoritative
+ * check-and-reserve as one indivisible synchronous operation at the commit point makes
+ * the shared spawn-bookkeeping mutation serialized: the first concurrent spawn to reach
+ * it consumes the last slot, and the next sees the already-incremented count and is
+ * rejected. This is AMI's in-process analog of Claude Code's serialized teammate-spawn
+ * critical section (the pane-backend `acquirePaneCreationLock` / `TmuxBackend`
+ * `paneCreationLock` try/finally mutex) — AMI spawns sub-engines in-process rather than
+ * into terminal panes, so the shared state to protect is the spawn counter, not a pane
+ * split target. Reuses {@link checkAgentCaps} + {@link incrementSpawnCount} (no second
+ * cap implementation). Returns `null` on success (slot consumed), or the cap error
+ * string (nothing consumed).
+ */
+export function reserveAgentSlot(context: AgentCapContext): string | null {
+  const error = checkAgentCaps(context);
+  if (error) return error;
+  incrementSpawnCount(context);
+  return null;
+}
+
 export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): boolean {
   return currentDepth < maxDepth;
 }
@@ -3590,7 +3625,12 @@ export const taskTool: ToolDefinition = {
     }
 
     if (runInBackground) {
-      incrementSpawnCount(context);
+      // ATOMIC cap re-check + slot reservation at the spawn commit (no await between
+      // the check and the increment) — closes the TOCTOU race where two parallel task
+      // calls both pass the early checkAgentCaps (before the hook/MCP-gate awaits) and
+      // both spawn, overshooting the cap. See reserveAgentSlot.
+      const bgCapError = reserveAgentSlot(context);
+      if (bgCapError) return { output: `Error: ${bgCapError}`, isError: true };
       context.subagentLimiter?.recordSpawn();
       // Reuse the original taskId on resume (continue the SAME agent) rather than
       // registering a duplicate background entry/output file — see resolveSpawnTaskId.
@@ -3668,7 +3708,11 @@ export const taskTool: ToolDefinition = {
       return { output: `Background agent started: ${taskId}\nOutput file: ${outputPath} (its streamed transcript is appended here live).\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. To check progress mid-flight WITHOUT blocking, call task_output({ task_id: "${taskId}" }) (no wait) or tail the output file. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
     }
 
-    incrementSpawnCount(context);
+    // ATOMIC cap re-check + slot reservation at the foreground spawn commit (see the
+    // background path above and reserveAgentSlot): closes the parallel-spawn TOCTOU
+    // overshoot before any sub-engine is created.
+    const fgCapError = reserveAgentSlot(context);
+    if (fgCapError) return { output: `Error: ${fgCapError}`, isError: true };
     context.subagentLimiter?.recordSpawn();
     // Reuse the original taskId on resume (continue the SAME agent) rather than
     // minting a fresh id for what is one continued run — see resolveSpawnTaskId.
