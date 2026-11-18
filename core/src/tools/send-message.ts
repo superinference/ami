@@ -892,6 +892,28 @@ function responseCorrelation(requestId: string, target: string): SendMessageCorr
   return { routing: true, request_id: requestId, target };
 }
 
+/**
+ * Decide whether a send_message result's human confirmation should be ABSORBED
+ * from the transcript (rendered as nothing) rather than echoed as a dim line. The
+ * exact mirror of Claude Code's renderToolResultMessage two null-render branches
+ * (tools/SendMessageTool/UI.tsx L21-26), keyed on the SAME {@link SendMessageCorrelation}
+ * shape AMI stamps onto a control-send's `metadata`:
+ *  - a truthy `routing` field → a fire-and-forward / hub-routed RESPONSE send
+ *    (shutdown/plan/permission/sandbox response) a consumer correlates and suppresses;
+ *  - both `request_id` AND `target` present → an async REQUEST/response correlation
+ *    shape (a forwarded request awaiting a correlated reply).
+ * A plain DM or broadcast carries neither (only `status`/`deliveryWarning`), so it
+ * still falls through to be displayed — matching Claude, where only a bare
+ * `result.message` is rendered. Purely a UI-noise decision; the model still receives
+ * the tool_result in context. Returns false for absent/foreign metadata.
+ */
+export function shouldSuppressSendMessageTranscript(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  if (metadata.routing) return true;
+  if (metadata.request_id !== undefined && metadata.target !== undefined) return true;
+  return false;
+}
+
 // --- Recipient address schemes ---------------------------------------------
 // A `to` value is normally a bare teammate name, but it may be a scheme-qualified
 // cross-session address: `uds:<socket-path>` for a local peer process, or

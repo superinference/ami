@@ -1433,7 +1433,14 @@ export type EngineEvent =
        *  "· N lines" counter. Parity: Claude's shell-progress `totalLines`. Omitted
        *  when the tool does not count lines. */
       totalLines?: number }
-  | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean }
+  | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean;
+      /** The frontend should ABSORB this result from the transcript (render nothing)
+       *  rather than echoing a confirmation row, while the model still receives the
+       *  `output` in context. Set only for a routed / async-request `send_message`
+       *  control send (see {@link shouldSuppressSendMessageTranscript}) — the parity
+       *  of Claude Code's SendMessageTool renderToolResultMessage null-render branches
+       *  (tools/SendMessageTool/UI.tsx). Absent/false → render normally. */
+      suppressTranscript?: boolean }
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }
