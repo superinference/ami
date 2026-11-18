@@ -243,6 +243,35 @@ export function parseEnvBool(envVar: string | undefined, fallback = false): bool
 }
 
 /**
+ * The Claude-parity "explicit opt-out" falsy vocabulary for {@link isEnvDefinedFalsy}
+ * — a strict subset of {@link parseEnvBool}'s falsy tokens. An empty string is
+ * deliberately NOT in this set: a variable set to `""` reads as *unset*, not as an
+ * explicit disable, so a default-ON knob stays on. Mirrors `envUtils.isEnvDefinedFalsy`.
+ */
+const ENV_DEFINED_FALSY = new Set(['0', 'false', 'no', 'off']);
+
+/**
+ * Three-state env-flag check: `true` ONLY when a variable is *explicitly set to a
+ * falsy word* (`0`/`false`/`no`/`off`, case- and whitespace-insensitive), and
+ * `false` for everything else — including unset (`undefined`), an empty string,
+ * and arbitrary non-falsy text. This is the distinction a plain truthy check
+ * cannot express: it lets a caller tell "the user turned this OFF" apart from "the
+ * user did not set it", so a default-ON capability only flips off on an explicit
+ * opt-out. A `boolean` is accepted for parity with the reference signature
+ * (already-coerced config values): `false` → defined-falsy.
+ *
+ * Canonical home for the helper every layer shares (the MCP IDE auto-connect
+ * override, the CLI update-check / syntax-highlight / personality opt-outs) — a
+ * single definition instead of a per-site re-derivation (§0b.6). Mirrors Claude
+ * Code's `envUtils.isEnvDefinedFalsy`, the hard-opt-out companion to a truthy check.
+ */
+export function isEnvDefinedFalsy(value: string | boolean | undefined): boolean {
+  if (value === undefined) return false;
+  if (typeof value === 'boolean') return !value;
+  return ENV_DEFINED_FALSY.has(value.trim().toLowerCase());
+}
+
+/**
  * Resolve the first *set and non-empty* value among a list of candidate env var
  * names — the classic env waterfall (e.g. `AMI_TOKEN` → `API_TOKEN` → `TOKEN`).
  *

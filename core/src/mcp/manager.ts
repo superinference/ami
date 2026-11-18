@@ -35,6 +35,7 @@ import * as path from 'path';
 import { log as coreLog } from '../logger';
 import { validateBoundedIntEnvVar } from '../config';
 import { isEnvTruthy } from '../privacy-level';
+import { isEnvDefinedFalsy } from '../utils/env';
 import { resolveRuntime, buildContainerArgs, isImageAvailable, pullImage, type ContainerConfig } from './container';
 import { logMcpError as logMcpServerError, logMcpDebug as logMcpServerDebug, getMcpServerLogPath, type McpLogSinkOptions } from './log-sink';
 
@@ -3854,16 +3855,13 @@ export function isSupportedIdeTerminal(env: NodeJS.ProcessEnv = process.env): bo
 }
 
 /**
- * True when `v` is an EXPLICIT falsy env value (`0`/`false`/`no`/`off`,
- * case-insensitive). An unset/empty value is NOT "defined falsy" — it simply
- * leaves the decision to the rest of the waterfall (Claude-parity
- * `isEnvDefinedFalsy`, the hard opt-out companion to {@link isEnvTruthy}).
+ * Re-exported from the canonical env-utils home ({@link isEnvDefinedFalsy}) so the
+ * IDE auto-connect waterfall and every other opt-out site share ONE definition
+ * (§0b.6 — no per-site re-derivation). The hard-opt-out companion to
+ * {@link isEnvTruthy}: `true` ONLY for an EXPLICIT falsy env value
+ * (`0`/`false`/`no`/`off`), never for unset/empty.
  */
-export function isEnvDefinedFalsy(v: string | undefined): boolean {
-  if (v === undefined) return false;
-  const s = v.trim().toLowerCase();
-  return s === '0' || s === 'false' || s === 'no' || s === 'off';
-}
+export { isEnvDefinedFalsy };
 
 /** Inputs to the IDE auto-connect waterfall ({@link shouldAutoConnectIde}). */
 export interface IdeAutoConnectOptions {
