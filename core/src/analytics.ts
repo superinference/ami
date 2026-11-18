@@ -7,7 +7,7 @@ import { createRequire } from 'module';
 import { AsyncLocalStorage } from 'async_hooks';
 import { detectWslVersion } from './tools/bash-sandbox';
 import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
-import { redactCredentials } from './credential-guard';
+import { redactCredentials, redactPaths } from './credential-guard';
 import { ndjsonSafeStringify } from './reference-journal';
 import { createBufferedWriter, type BufferedWriter } from './buffered-writer';
 import type { SpanNode } from './profiler';
@@ -287,7 +287,14 @@ export function hashFileContent(content: string): string | undefined {
 }
 
 function redactString(s: string): string {
-  const redacted = redactCredentials(s);
+  // Scrub secrets AND local file paths before a free-text string (e.g. an inline
+  // error message) is persisted to the analytics JSONL: analytics already hashes
+  // KNOWN path fields (hashFilePath), but an absolute path embedded in an opaque
+  // string value would otherwise leak the local username/machine layout off the
+  // machine. Mirrors the credential scrub already applied here. (URLs are left
+  // intact — an endpoint/host is legitimate telemetry; the loggable-error path
+  // uses toLoggableError for URL scrubbing.)
+  const redacted = redactPaths(redactCredentials(s));
   if (redacted.length <= MAX_ANALYTICS_STRING_LEN) return redacted;
   return redacted.slice(0, MAX_ANALYTICS_STRING_LEN) + `…[+${redacted.length - MAX_ANALYTICS_STRING_LEN}]`;
 }

@@ -431,7 +431,7 @@ export { MAX_WORKTREES, validateWorktreeGitFile, findStaleWorktrees } from './wo
 export { isSensitiveEnvVar, canAccessEnv, EnvAccessGuard, ENV_ACCESS_TIERS, ENV_OPERATIONS } from './env-access-guard';
 export type { EnvAccessTier, EnvOperation, EnvAccessEvent } from './env-access-guard';
 export { SENSITIVE_ENV_VARS } from './env-access-guard';
-export { containsCredential, redactCredentials, findCredentials, getCredentialLabel, CredentialGuard, REDACT_PLACEHOLDER } from './credential-guard';
+export { containsCredential, redactCredentials, findCredentials, getCredentialLabel, CredentialGuard, REDACT_PLACEHOLDER, redactPaths, errorMessage, toLoggableError } from './credential-guard';
 export type { CredentialMatch } from './credential-guard';
 export { isBlockedInSafeMode, isPartiallyBlocked, shouldEnableSafeMode, evaluateSafeMode, SafeModeGuard, BLOCKED_RESOURCES, resourceTier, describeBlocked, RESOURCE_DESCRIPTIONS, RESOURCE_WHY, SAFE_MODE_GUIDANCE } from './safe-mode';
 export type { SafeModeConfig, SafeModeDecision, BlockedResource, ResourceTier, BlockedResourceInfo } from './safe-mode';

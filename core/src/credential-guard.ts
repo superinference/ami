@@ -495,7 +495,24 @@ export interface RedactPathsOptions {
   cwd?: string;
   /** Home directory to normalize to `[HOME]` (default `os.homedir()`). */
   home?: string;
+  /**
+   * Also replace network URLs (`http(s)://`, `ws(s)://`, `ftp://`) with the
+   * stable `[URL]` placeholder. Off by default (so ordinary path normalization
+   * leaves URLs intact); opt in for loggable/telemetry sinks where a URL can
+   * embed an internal hostname, a query-string secret, or a shareable-artifact
+   * leak (see {@link toLoggableError}). `file://` URLs are left to the cwd/home
+   * substitution above so a local file path still collapses to `[CWD]`/`[HOME]`.
+   */
+  urls?: boolean;
 }
+
+// Network URL matcher for the opt-in `urls` redaction mode. Scheme-anchored to
+// the network schemes (http/https/ws/wss/ftp) so local `file://` paths are left
+// to the cwd/home substitution. The body is a single bounded negated class
+// (star-height 1, no nested quantifier → no catastrophic backtracking) that stops
+// at whitespace or a closing delimiter, so a trailing `)`/quote/`.` sentence
+// punctuation is preserved around the `[URL]` placeholder.
+const NETWORK_URL_RE = /\b(?:https?|wss?|ftp):\/\/[^\s<>"'`)\]}]{0,4096}[^\s<>"'`)\]}.,;:!?]/gi;
 
 /**
  * Replace the user's home directory and current working directory with the
@@ -503,7 +520,8 @@ export interface RedactPathsOptions {
  * artifacts (session exports, bug reports, diagnostics) don't leak the local
  * username or machine layout. The cwd is substituted first so a cwd nested under
  * home collapses to `[CWD]` rather than `[HOME]/…`. Root (`/`) is never used as a
- * needle, which would otherwise rewrite every path separator.
+ * needle, which would otherwise rewrite every path separator. With
+ * `options.urls`, network URLs are additionally collapsed to `[URL]`.
  */
 export function redactPaths(text: string, options: RedactPathsOptions = {}): string {
   if (!text) return text;
@@ -512,5 +530,38 @@ export function redactPaths(text: string, options: RedactPathsOptions = {}): str
   let result = text;
   if (cwd && cwd !== '/') result = result.split(cwd).join('[CWD]');
   if (home && home !== '/') result = result.split(home).join('[HOME]');
+  if (options.urls) {
+    NETWORK_URL_RE.lastIndex = 0;
+    result = result.replace(NETWORK_URL_RE, '[URL]');
+  }
   return result;
+}
+
+/**
+ * Normalize an unknown caught value into its message string — the single
+ * canonical replacement for the `e instanceof Error ? e.message : String(e)`
+ * pattern that was duplicated across catch sites. Use when you only need the
+ * human-readable message (logging/display) and do NOT need scrubbing; for text
+ * that will be persisted/shared, use {@link toLoggableError} instead.
+ */
+export function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Turn an unknown caught value into a message string that is SAFE TO PERSIST or
+ * share: the message is scrubbed of credentials/secrets ({@link redactCredentials})
+ * AND of local file paths + network URLs ({@link redactPaths} with `urls`), so an
+ * error that surfaces an absolute fs path, an internal URL, or an embedded token
+ * cannot leak the local username/machine-layout or a secret into session memory,
+ * the analytics JSONL, or a debug/diagnostics log. This is the error-boundary
+ * analogue of the after-the-fact text scrubbing already applied to tool output —
+ * a single shared helper so every catch site that logs an error scrubs it the
+ * same way instead of stringifying the raw message inline.
+ */
+export function toLoggableError(
+  e: unknown,
+  options: RedactOptions & RedactPathsOptions = {},
+): string {
+  return redactPaths(redactCredentials(errorMessage(e), options), { urls: true, ...options });
 }

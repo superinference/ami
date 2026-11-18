@@ -17,6 +17,7 @@ import {
 } from '../lsp/diagnostic-tracking';
 import { isLspEnabled } from './tool-gates';
 import { logError } from '../logger';
+import { toLoggableError } from '../credential-guard';
 import * as path from 'path';
 
 /**
@@ -498,7 +499,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
       // logger (bounded, no untrusted diagnostic text) so it is distinguishable from
       // "LSP not available" in diagnostics/bug reports. Keep the same user-facing
       // fallback so model behaviour is unchanged.
-      logError('lsp-diagnostics', e instanceof Error ? e.message : String(e));
+      logError('lsp-diagnostics', toLoggableError(e));
       return { output: 'LSP not available. Run the project linter/compiler manually.' };
     }
   },
@@ -595,7 +596,7 @@ export const lspReferencesTool: ToolDefinition = {
       // PARITY (additive): error observability — a real indexer failure is logged
       // (bounded message, no untrusted content) so it is distinguishable from the
       // benign empty-result case, matching Claude's LSPTool catch(e) → logError.
-      logError('find_references', e instanceof Error ? e.message : String(e));
+      logError('find_references', toLoggableError(e));
       return { output: `Error searching for "${symbol}". Use grep as fallback.`, isError: true };
     }
   },
