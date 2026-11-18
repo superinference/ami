@@ -31,6 +31,7 @@ import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness, BUBBLE_PERMISSION_MODE } from '../skills';
 import { withFrontmatterHookPluginRoot } from '../hooks';
+import type { SubagentContext } from '../hooks';
 import { buildAgentMemoryPrompt, isAutoMemoryEnabled, MemoryManager } from '../memory';
 import { log } from '../logger';
 
@@ -2318,6 +2319,51 @@ export function agentResultPath(outputPath: string): string {
   return outputPath.replace(/\.output$/, '.result');
 }
 
+/**
+ * Build the {@link SubagentContext} payload fired on the SubagentStart / SubagentStop
+ * lifecycle hooks for a spawned sub-agent. Shared by the FOREGROUND and BACKGROUND
+ * spawn paths so both emit an identical attribution/lineage payload — including the
+ * discriminated-union `agentContextKind` (a named spawn joined to a team is a
+ * `'teammate'`, every other spawn a plain `'subagent'`; parity: Claude Code's
+ * subagent-vs-teammate agent-context discriminator). Before this was factored out the
+ * background path fired NO lifecycle hook at all, so a SubagentStart/Stop hook never
+ * saw async/background agents and their `agentContextKind` was invisible to hook
+ * consumers — only foreground spawns emitted it.
+ */
+export function buildSubagentHookCtx(p: {
+  context: ToolContext;
+  taskId: string;
+  subSessionId?: string;
+  prompt: string;
+  /** The EFFECTIVE run mode (fork/explore may reassign it to 'general'); surfaced as
+   *  the ctx `mode` field. */
+  mode: string;
+  /** The RAW requested mode used ONLY for the privacy-safe analytics label, so the
+   *  analytics bucket mirrors what the caller asked for (parity with the foreground
+   *  path, which collapsed the raw `mode`, not the reassigned effective one). */
+  rawMode: string;
+  resumed: boolean;
+  isBuiltIn: boolean;
+  subagentType: string | undefined;
+  chainId: string;
+  depth: number;
+  isTeammate: boolean;
+}): SubagentContext {
+  return {
+    parentSessionId: p.context.sessionId || p.taskId,
+    subagentSessionId: p.subSessionId || p.taskId,
+    prompt: p.prompt,
+    mode: p.mode,
+    invocationKind: p.resumed ? 'resume' : 'spawn',
+    isBuiltIn: p.isBuiltIn,
+    analyticsAgentType: collapseAgentTypeForAnalytics(p.subagentType || p.rawMode, p.isBuiltIn),
+    invokingRequestId: p.context.agentId || p.context.sessionId || p.taskId,
+    chainId: p.chainId,
+    depth: p.depth,
+    agentContextKind: p.isTeammate ? 'teammate' : 'subagent',
+  };
+}
+
 /** Parameters for {@link runBackgroundAgentDrain}. */
 interface BackgroundDrainParams {
   context: ToolContext;
@@ -2357,6 +2403,13 @@ interface BackgroundDrainParams {
   initialTokens?: number;
   /** Start timestamp carried over so the duration stat spans the whole run. */
   startedAt?: number;
+  /** The SubagentStart/Stop lifecycle payload for this background agent. When
+   *  present the drain fires `executeSubagentStop(subagentHookCtx)` once the stream
+   *  terminates (success, error, or stall) so a background agent's lifecycle is as
+   *  observable to hooks as a foreground one (parity: Claude Code fires the subagent
+   *  lifecycle hooks for async agents too). The matching SubagentStart is fired by
+   *  the spawn site before the drain begins. */
+  subagentHookCtx?: SubagentContext;
 }
 
 /**
@@ -2555,6 +2608,13 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   // status so an abnormal exit (killed/failed) pushes a teammate_terminated notice
   // to the lead instead of an idle/available one.
   markTeammateIdle(context, taskId, terminalStatus);
+  // Background agent's lifecycle is over — fire SubagentStop so a lifecycle hook sees
+  // the SAME start/stop pair it gets for a foreground subagent (parity: Claude Code
+  // fires the subagent lifecycle hooks for async agents too). The matching
+  // SubagentStart was fired by the spawn site before this drain began.
+  if (p.subagentHookCtx && context._hookManager) {
+    context._hookManager.executeSubagentStop(p.subagentHookCtx).catch(() => {});
+  }
   if (context.processManager) {
     const exitCode = terminalStatus === 'completed' ? 0 : 1;
     // Record the FINAL-result stats distinct from the live progress counters
@@ -3828,9 +3888,26 @@ export const taskTool: ToolDefinition = {
         const msg = err instanceof Error ? err.message : String(err);
         return { output: `Error: failed to start background agent ${taskId}: ${msg}`, isError: true };
       }
+      // Fire the SubagentStart lifecycle hook for this background agent with the SAME
+      // attribution/lineage + discriminated `agentContextKind` payload a foreground
+      // spawn emits (parity: Claude Code fires the subagent lifecycle hooks for async
+      // agents too). Before this, a background spawn fired NO lifecycle hook, so a
+      // SubagentStart/Stop hook never observed async agents. SubagentStop is fired by
+      // the drain when the stream terminates (success/error/stall).
+      const bgChainId = generateTaskId('chain');
+      const bgSubagentHookCtx = buildSubagentHookCtx({
+        context, taskId, subSessionId: subConfig.sessionId, prompt,
+        mode: effectiveMode, rawMode: mode, resumed: !!resumeSessionId,
+        isBuiltIn: subagentIsBuiltIn, subagentType, chainId: bgChainId,
+        depth: childDepth._agentDepth, isTeammate: !!(agentName && resolvedTeam),
+      });
+      if (context._hookManager) {
+        context._hookManager.executeSubagentStart(bgSubagentHookCtx).catch(() => {});
+      }
       runBackgroundAgentDrain({
         context, subEngine, effectivePrompt, taskId, outputPath, label,
         effectiveCwd, isolation, subAbort, unlinkParentAbort, tools,
+        subagentHookCtx: bgSubagentHookCtx,
       }).catch(() => {});
 
       return { output: `Background agent started: ${taskId}\nOutput file: ${outputPath} (its streamed transcript is appended here live).\nTo collect its result, call task_output({ task_id: "${taskId}", wait: true }) — this blocks until it finishes and returns in one call. To check progress mid-flight WITHOUT blocking, call task_output({ task_id: "${taskId}" }) (no wait) or tail the output file. Do NOT poll in a loop. When spawning several agents, issue all the task_output(wait) calls in a single turn so they run concurrently.\nDo not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.` };
@@ -3883,30 +3960,16 @@ export const taskTool: ToolDefinition = {
     // ._agentDepth is already the CHILD's depth (one below the parent), so it is the
     // parent.depth+1 value directly.
     const chainId = generateTaskId('chain');
-    const subagentHookCtx = {
-      parentSessionId: context.sessionId || taskId,
-      subagentSessionId: subConfig.sessionId || taskId,
-      prompt,
-      mode: effectiveMode,
-      invocationKind: (resumeSessionId ? 'resume' : 'spawn') as 'resume' | 'spawn',
-      // Whether this is a built-in identity vs a user-defined custom agent, plus a
-      // privacy-safe analytics label (user-defined names are collapsed). Parity:
-      // Claude's agentContext isBuiltIn + 'user-defined' telemetry collapse.
-      isBuiltIn: subagentIsBuiltIn,
-      analyticsAgentType: collapseAgentTypeForAnalytics(subagentType || mode, subagentIsBuiltIn),
-      // The INVOKING agent's identity (the immediate parent subagent when nested, else
-      // the invoking session) — the boundary marker that roots this invocation's edge in
-      // the attribution tree (parity: Claude's invokingRequestId). session_id already
-      // bundles the whole tree; this names the immediate invoker.
-      invokingRequestId: context.agentId || context.sessionId || taskId,
-      // Per-invocation lineage: a fresh chain id and this child's depth (parent.depth+1).
-      chainId,
-      depth: childDepth._agentDepth,
-      // Discriminated-union agent-context kind (parity: Claude's subagent-vs-teammate
-      // discriminator, agentContext.ts:L124-131): a named spawn joined to a team is a
-      // teammate; every other spawn is a plain subagent.
-      agentContextKind: (agentName && resolvedTeam ? 'teammate' : 'subagent') as 'teammate' | 'subagent',
-    };
+    // Built from the shared {@link buildSubagentHookCtx} so the FOREGROUND and
+    // BACKGROUND spawn paths emit an identical lifecycle payload (attribution,
+    // lineage, and the discriminated `agentContextKind`). effectiveMode is the ctx
+    // `mode`; the raw `mode` drives the privacy-safe analytics label.
+    const subagentHookCtx = buildSubagentHookCtx({
+      context, taskId, subSessionId: subConfig.sessionId, prompt,
+      mode: effectiveMode, rawMode: mode, resumed: !!resumeSessionId,
+      isBuiltIn: subagentIsBuiltIn, subagentType, chainId,
+      depth: childDepth._agentDepth, isTeammate: !!(agentName && resolvedTeam),
+    });
 
     if (context._hookManager) {
       context._hookManager.executeSubagentStart(subagentHookCtx).catch(() => {});
@@ -4128,6 +4191,10 @@ export const taskTool: ToolDefinition = {
           context, subEngine, iterator, firstPending: pendingNext, taskId, outputPath, label,
           effectiveCwd, isolation, subAbort, unlinkParentAbort, tools,
           initialOutput: resultText, initialToolUseCount: toolUseCount, initialTokens: totalTokens, startedAt,
+          // The foreground already fired SubagentStart; on promotion the foreground
+          // SubagentStop is skipped (the agent lives on in the background), so the drain
+          // fires it when the background run finally terminates — one start/stop pair.
+          subagentHookCtx,
         }).catch(() => {});
         context._emitChild?.({
           type: 'subagent_result', nodeId: taskId, depth: relayDepth,
