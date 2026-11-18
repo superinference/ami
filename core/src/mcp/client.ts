@@ -215,6 +215,32 @@ export function getMcpWsKeepaliveIntervalMs(): number {
 }
 
 /**
+ * Default interval (ms) between application-level keep-alive DATA frames on a
+ * Streamable-HTTP MCP transport (parity with Claude Code's WebSocketTransport
+ * DEFAULT_KEEPALIVE_INTERVAL, 5min). A long-idle HTTP/SSE connection behind an
+ * idle-timeout intermediary (e.g. Cloudflare's 5-min window) is silently RST —
+ * and, unlike TCP keepalives or SSE comment frames the proxy may ignore, a real
+ * MCP `ping` REQUEST (a data frame over the POST leg) resets the proxy's idle
+ * timer. AMI previously only RECOVERED from such a drop reactively (the GET-stream
+ * liveness watchdog + {@link scheduleHttpStreamReconnect}); this keeps the path
+ * warm PROACTIVELY so the drop never happens. Activity-gated: a tick is a no-op
+ * when real traffic already flowed within the interval.
+ */
+export const DEFAULT_MCP_HTTP_KEEPALIVE_INTERVAL_MS = 300000;
+
+/**
+ * Resolve the Streamable-HTTP keep-alive interval. `MCP_HTTP_KEEPALIVE_INTERVAL_MS`
+ * (positive integer) tunes how often the keep-alive data frame fires; absent/invalid
+ * falls back to {@link DEFAULT_MCP_HTTP_KEEPALIVE_INTERVAL_MS}. Set it BELOW the
+ * intermediary's idle timeout (a "sub-idle-timeout interval"). A tuning knob, no
+ * trust boundary crossed (allow-listed in env-protection).
+ */
+export function getMcpHttpKeepaliveIntervalMs(): number {
+  const n = parseInt(process.env.MCP_HTTP_KEEPALIVE_INTERVAL_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MCP_HTTP_KEEPALIVE_INTERVAL_MS;
+}
+
+/**
  * Env gate that SUPPRESSES the WebSocket keep-alive ping when set truthy (parity
  * with Claude Code's `isEnvTruthy(CLAUDE_CODE_REMOTE)` skipping keepalive frames
  * because an outer session-activity heartbeat already covers idle-timeout). When a
@@ -931,6 +957,17 @@ export class McpClient extends EventEmitter {
   private httpStreamLastSequenceNum = 0;
   /** Recently-seen SSE sequence numbers, for duplicate-frame detection across a resume/replay. */
   private httpStreamSeenSequenceNums = new Set<number>();
+  /**
+   * Wall-clock (ms) of the last DATA frame on the Streamable-HTTP transport — an
+   * inbound SSE chunk OR an outbound POST ({@link sendHttpRequest}). Drives the
+   * activity-gated keepalive: a frame within the interval makes the next keepalive
+   * tick a no-op. Excludes control bookkeeping (it is set only by real data).
+   */
+  private httpStreamLastDataActivity = 0;
+  /** Proactive keepalive timer: fires an MCP `ping` data frame when the HTTP transport has been idle a full interval, defeating proxy idle-timeout RSTs. */
+  private httpKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** Keepalive interval (ms) for the Streamable-HTTP transport (see {@link getMcpHttpKeepaliveIntervalMs}). */
+  private readonly httpKeepaliveInterval: number;
 
   /** Injected by the manager/engine: resolve a server elicitation request. */
   onElicitation?: (request: McpElicitationRequest) => Promise<McpElicitationResult>;
@@ -954,6 +991,15 @@ export class McpClient extends EventEmitter {
     oauth?: McpOAuthProvider;
     /** Override the GET-stream liveness/idle timeout (ms). Defaults to {@link HTTP_STREAM_LIVENESS_TIMEOUT_MS} (45s). */
     httpStreamLivenessTimeout?: number;
+    /**
+     * Override the Streamable-HTTP keep-alive interval (ms) — how often an idle
+     * HTTP transport sends an application-level `ping` DATA frame to keep an
+     * intermediary proxy's idle timer from RSTing the connection. Defaults to
+     * {@link getMcpHttpKeepaliveIntervalMs} (`MCP_HTTP_KEEPALIVE_INTERVAL_MS` or 5min).
+     * Set below the proxy's idle window. Suppressed entirely when the host runs its
+     * own heartbeat (`AMI_REMOTE`, see {@link isMcpWsKeepaliveSuppressed}).
+     */
+    httpStreamKeepaliveInterval?: number;
     /**
      * Wall-clock budget (ms) for the client-level {@link reconnect} loop before it
      * gives up, measured from the first attempt. Applied ALONGSIDE the attempt cap
@@ -988,6 +1034,7 @@ export class McpClient extends EventEmitter {
     this.rootPaths = options.rootPaths ?? [];
     this.oauth = options.oauth;
     this.httpStreamLivenessTimeout = options.httpStreamLivenessTimeout ?? HTTP_STREAM_LIVENESS_TIMEOUT_MS;
+    this.httpKeepaliveInterval = options.httpStreamKeepaliveInterval ?? getMcpHttpKeepaliveIntervalMs();
     this.reconnectGiveUpMs = options.reconnectGiveUpMs ?? HTTP_STREAM_RECONNECT_GIVE_UP_MS;
     this.autoReconnectEnabled = options.autoReconnect ?? true;
     this.webSocketFactory = options.webSocketFactory;
@@ -1263,6 +1310,46 @@ export class McpClient extends EventEmitter {
     }
   }
 
+  /**
+   * Start the proactive Streamable-HTTP keep-alive. On each tick, if the transport
+   * has been idle for a full {@link httpKeepaliveInterval} (no inbound SSE chunk and
+   * no outbound POST in that window), send an MCP `ping` REQUEST — a real DATA frame
+   * over the POST leg — to reset an intermediary proxy's idle timer (ping/pong and
+   * SSE comment frames a proxy may ignore; a request body it cannot). This keeps a
+   * long-idle connection warm PROACTIVELY instead of only recovering after the proxy
+   * RSTs it ({@link scheduleHttpStreamReconnect}). Activity-gated so real traffic
+   * makes a tick a no-op. Suppressed when an outer host heartbeat already covers
+   * idle-timeout ({@link isMcpWsKeepaliveSuppressed} / `AMI_REMOTE`). The interval is
+   * unref'd so it never keeps the event loop alive. Parity with Claude Code's
+   * WebSocketTransport startKeepaliveInterval() keep_alive data frame.
+   */
+  private startHttpKeepalive(): void {
+    this.stopHttpKeepalive();
+    if (isMcpWsKeepaliveSuppressed()) return;
+    const interval = this.httpKeepaliveInterval;
+    const timer = setInterval(() => {
+      if (this._state !== 'ready' || this.transport !== 'http' || this.httpStreamClosed) return;
+      const idleMs = Date.now() - this.httpStreamLastDataActivity;
+      // Real traffic within the interval already kept the path warm — skip.
+      if (idleMs < interval) return;
+      this.emit('http-stream-keepalive', idleMs);
+      this.ping().catch(() => {
+        // A failed keep-alive ping means the POST leg is down; the GET-stream
+        // liveness watchdog + reconnect path recover it, so nothing to do here.
+      });
+    }, interval);
+    timer.unref?.();
+    this.httpKeepaliveTimer = timer;
+  }
+
+  /** Stop the Streamable-HTTP keep-alive timer (idempotent). */
+  private stopHttpKeepalive(): void {
+    if (this.httpKeepaliveTimer) {
+      clearInterval(this.httpKeepaliveTimer);
+      this.httpKeepaliveTimer = null;
+    }
+  }
+
   /** Route one inbound WebSocket frame (a complete JSON-RPC message or batch). */
   private handleWsMessage(data: unknown): void {
     const text = typeof data === 'string' ? data : String(data);
@@ -1445,6 +1532,12 @@ export class McpClient extends EventEmitter {
     this.httpStreamClosed = false;
     this.httpStreamReconnectAttempts = 0;
     this.openHttpStream().catch(() => { /* POST path remains fully usable */ });
+
+    // Proactively keep the (possibly proxied) connection warm: an application-level
+    // `ping` data frame on a sub-idle-timeout interval defeats idle-timeout RSTs
+    // the GET-stream liveness watchdog would otherwise only recover from reactively.
+    this.httpStreamLastDataActivity = Date.now();
+    this.startHttpKeepalive();
   }
 
   private async sendWithRetry<T>(method: string, params: Record<string, unknown>, maxAttempts: number = 3): Promise<T> {
@@ -2100,6 +2193,9 @@ export class McpClient extends EventEmitter {
         reject(err);
       });
       req.on('timeout', () => { req.destroy(); reject(new Error(this.formatTimeoutMessage(method, params, timeoutMs ?? this.requestTimeout))); });
+      // Outbound POST is a data frame over the client→server leg — record it so the
+      // proactive keepalive stays idle while real requests are already flowing.
+      this.httpStreamLastDataActivity = Date.now();
       req.write(body);
       req.end();
     });
@@ -2164,6 +2260,9 @@ export class McpClient extends EventEmitter {
       res.on('data', (chunk: string) => {
         // Any byte (including a `:keepalive` comment) proves the socket is alive.
         this.resetHttpStreamLiveness();
+        // Inbound traffic also warms the proxy path, so gate the proactive
+        // keepalive off the most recent data frame in EITHER direction.
+        this.httpStreamLastDataActivity = Date.now();
         this.httpStreamBuffer += chunk;
         this.processHttpStreamBuffer();
       });
@@ -2291,6 +2390,7 @@ export class McpClient extends EventEmitter {
   /** Tear down the GET stream and stop any reconnect (called from disconnect). */
   private closeHttpStream(): void {
     this.httpStreamClosed = true;
+    this.stopHttpKeepalive();
     this.clearHttpStreamLiveness();
     const req = this.httpStreamReq;
     this.httpStreamReq = null;
