@@ -26,6 +26,16 @@ export interface ModInfo {
 
 export interface ManagedModsPolicy {
   allowManagedModsOnly: boolean;
+  /**
+   * The managed per-mod enablement map. BOOLEAN-AUTHORITATIVE (Claude parity:
+   * managedPlugins.ts:L16-L20): a boolean value is the ONLY enablement signal —
+   * `true` locks the mod enabled/vouches for it under {@link allowManagedModsOnly},
+   * `false` force-disables it unconditionally ({@link isModBlockedByPolicy}). The
+   * legacy `string[]` form (a version list or owner/repo allow-array) is accepted as a
+   * valid config SHAPE but is NOT an enablement signal — it neither vouches for a mod
+   * ({@link isModAllowed}) nor locks a name ({@link getManagedPluginNames}); such an
+   * entry is treated as "not mentioned".
+   */
   enabledPlugins?: Record<string, boolean | string[]>;
   prependPlugins?: string[];
   appendPlugins?: string[];
@@ -162,10 +172,16 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
     return { allowed: true };
   }
 
-  // User-tier mod — check if org explicitly enabled it
+  // User-tier mod — check if org explicitly enabled it. The managed `enabledPlugins`
+  // policy is BOOLEAN-AUTHORITATIVE (Claude parity: managedPlugins.ts:L16-L20 —
+  // `if (typeof value !== 'boolean' …) continue`): ONLY a boolean `true` entry vouches
+  // for a user-tier mod. The ambiguous legacy `string[]` form (a version list or
+  // owner/repo allow-array) is NOT an enablement signal here — an array entry falls
+  // through to the deny path below rather than silently vouching for a mod whose
+  // marketplace qualification it never actually asserts. A `false` entry was already
+  // force-denied first by {@link isModBlockedByPolicy}.
   if (policy.enabledPlugins) {
-    const entry = policy.enabledPlugins[mod.id];
-    if (entry === true || (Array.isArray(entry) && entry.length > 0)) {
+    if (policy.enabledPlugins[mod.id] === true) {
       // Only local/inline copies — OR a mod from an org-allowlisted remote marketplace
       // ({@link ManagedModsPolicy.allowedMarketplaces}) — are vouched for. The typed
       // `source` discriminant (set at discovery time) is authoritative and non-spoofable

@@ -54,13 +54,16 @@ describe('isModAllowed', () => {
     assert.equal(result.allowed, true);
   });
 
-  it('allows user with enabledPlugins entry (version list)', () => {
+  it('denies user with a legacy version-list entry (arrays are not a vouch — Claude parity)', () => {
+    // Boolean-authoritative enablement: the legacy `string[]` form is NOT an
+    // enablement signal, so an array entry no longer silently vouches for a
+    // user-tier mod under allow-only. See managed-mods-u112-w108-boolean-vouch.test.ts.
     const policy: ManagedModsPolicy = {
       allowManagedModsOnly: true,
       enabledPlugins: { 'my-mod@local': ['1.0.0', '2.0.0'] },
     };
     const result = isModAllowed(userMod, policy);
-    assert.equal(result.allowed, true);
+    assert.equal(result.allowed, false);
   });
 
   it('denies user from remote marketplace even with enabledPlugins', () => {
