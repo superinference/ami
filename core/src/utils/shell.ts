@@ -34,6 +34,13 @@ export const shellHooks = {
     process.stderr.write(`[slow-exec] ${Math.round(info.durationMs)}ms (threshold ${info.thresholdMs}ms): ${info.command.slice(0, 200)}\n`);
   }),
   mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  /**
+   * Async directory creation, used by the per-shell async {@link getEnvironmentOverrides}
+   * seam (e.g. preparing the isolated tmux socket dir before a bash command runs).
+   * Separate from the synchronous {@link mkdirSync} so the async env-prep path is
+   * genuinely async (and independently mockable in tests).
+   */
+  mkdirAsync: fs.promises.mkdir as typeof fs.promises.mkdir,
   readFileSync: fs.readFileSync as typeof fs.readFileSync,
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   openSync: fs.openSync as typeof fs.openSync,
@@ -53,6 +60,20 @@ export const shellHooks = {
       process.stderr.write(`[shell-debug] ${message}\n`);
     }
   }),
+  /**
+   * Per-shell async environment-override seam (parity with Claude Code's
+   * `ShellProvider.getEnvironmentOverrides(command)`, shellProvider.ts:L28-32).
+   * Computes extra env vars for the resolved shell family just before spawn and
+   * MAY perform async initialization (the reference cites tmux socket setup for
+   * bash). {@link execCommand} merges the result on top of the caller's `env`.
+   * Replaceable in tests / by a custom provider via
+   * `mock.method(shellHooks, 'getEnvironmentOverrides', …)`. Defaults to
+   * {@link getEnvironmentOverrides} (sync `{}` fast path; async only when a shell
+   * needs init). Returns a plain record for the common case so the executor's
+   * same-tick spawn is preserved, and a Promise only when init is required.
+   */
+  getEnvironmentOverrides: ((shellType: ShellType, command: string): Record<string, string> | Promise<Record<string, string>> =>
+    getEnvironmentOverrides(shellType, command)),
 };
 
 /** Payload handed to {@link shellHooks.onSlowCommand} when a command runs slow. */
@@ -968,6 +989,89 @@ export function resolveDefaultShell(): ShellType {
   return (SHELL_TYPES as readonly string[]).includes(raw) ? (raw as ShellType) : DEFAULT_SHELL_TYPE;
 }
 
+// ---------------------------------------------------------------------------
+// Per-shell async environment overrides (getEnvironmentOverrides)
+//
+// Parity with Claude Code's `ShellProvider.getEnvironmentOverrides(command)`
+// (shellProvider.ts:L28-32): an async hook that computes extra env vars for the
+// resolved shell family just before spawn and MAY perform async initialization.
+// The reference cites tmux socket setup for bash — deferring the cost until a
+// command actually uses tmux, then pointing tmux at an isolated socket so AMI-run
+// tmux servers do not collide with the user's default socket.
+//
+// AMI adaptation:
+//  - The seam is OPT-IN (env knob {@link TMUX_ISOLATION_ENV}) so default behavior
+//    is unchanged; a command that doesn't use tmux (or has isolation off) gets an
+//    empty override and the executor's deterministic same-tick spawn is preserved.
+//  - Isolation is achieved via `TMUX_TMPDIR` (the dir tmux uses for its default
+//    server socket), NOT by overriding `TMUX` — so tmux still auto-starts/connects
+//    its server on demand instead of mistaking the value for a nested session.
+//  - /env session vars are applied at the bash-tool env-build layer
+//    (buildSubprocessEnv → options.env), NOT here, so there is no double-apply —
+//    this seam only adds the orthogonal per-shell async init the reference does.
+// ---------------------------------------------------------------------------
+
+/**
+ * Env knob (opt-in) that enables AMI's isolated tmux socket for bash commands.
+ * When truthy (`1`/`true`/`on`/`yes`), a bash command that references `tmux` is
+ * run with `TMUX_TMPDIR` pointed at an AMI-managed socket directory (created
+ * on first use), isolating AMI-run tmux servers from the user's default socket.
+ * Unset/blank/falsey leaves commands untouched. An opt-in introspection surface
+ * per AMI's introspection-on-every-change invariant.
+ */
+export const TMUX_ISOLATION_ENV = 'AMI_TMUX_ISOLATION';
+
+/** True when {@link TMUX_ISOLATION_ENV} names an enabled value. */
+function tmuxIsolationEnabled(): boolean {
+  const raw = (process.env[TMUX_ISOLATION_ENV] || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
+/** True when a shell command references the `tmux` binary (word-boundary match). */
+export function commandUsesTmux(command: string): boolean {
+  return /\btmux\b/.test(command);
+}
+
+/**
+ * Compute the async bash environment overrides for a command that triggers tmux
+ * isolation: ensure the AMI-managed tmux socket dir exists (async init) and point
+ * `TMUX_TMPDIR` at it. Best-effort — a failed dir setup must never fail the
+ * command, so it returns `{}` (and logs via {@link shellHooks.onShellDebug}) on
+ * error instead of rejecting.
+ */
+async function prepareBashTmuxOverrides(): Promise<Record<string, string>> {
+  const dir = path.join(resolveTmpBase(), 'ami-tmux');
+  try {
+    await shellHooks.mkdirAsync(dir, { recursive: true });
+    shellHooks.onShellDebug(`tmux isolation: TMUX_TMPDIR=${dir}`);
+    return { TMUX_TMPDIR: dir };
+  } catch (err) {
+    shellHooks.onShellDebug(`tmux isolation: socket dir setup failed (${(err as Error).message}); not overriding TMUX_TMPDIR`);
+    return {};
+  }
+}
+
+/**
+ * Per-shell environment overrides merged into the spawn env by {@link execCommand}
+ * just before launch. Parity with Claude Code's
+ * `ShellProvider.getEnvironmentOverrides(command)`.
+ *
+ * Returns a plain record synchronously for the common case (so the executor's
+ * deterministic same-tick spawn is preserved), and a `Promise` only when a shell
+ * genuinely needs async init — currently the bash tmux-socket isolation path
+ * ({@link TMUX_ISOLATION_ENV} enabled AND the command {@link commandUsesTmux}).
+ * PowerShell and the non-tmux bash path return an empty record.
+ */
+export function getEnvironmentOverrides(
+  shellType: ShellType,
+  command: string,
+): Record<string, string> | Promise<Record<string, string>> {
+  if (shellType === 'bash' && tmuxIsolationEnabled() && commandUsesTmux(command)) {
+    return prepareBashTmuxOverrides();
+  }
+  return {};
+}
+
 /**
  * The hardened, non-interactive PowerShell invocation flags + command. Shared so
  * the flag set lives in exactly one place (parity with Claude Code's
@@ -1396,7 +1500,18 @@ export function execCommand(
   const startedAt = Date.now();
   const reportSlowExec = (): void => reportSlowExecIfSlow(command, startedAt);
 
-  return new Promise<ExecCommandResult>((resolve) => {
+  // Pick the shell family up-front (an explicit per-call `shellType` wins, else
+  // the operator default) so the per-shell env-override seam can run before spawn.
+  const effectiveShellType: ShellType = shellType ?? resolveDefaultShell();
+
+  // The spawn executor, parameterized by the resolved per-shell env overrides
+  // (merged on top of the caller's `env`). Kept as an inner factory so the
+  // override seam can run either synchronously (common fast path — the executor
+  // then runs same-tick and spawns immediately) or asynchronously (only when a
+  // shell needs init, e.g. bash tmux-socket isolation) without otherwise changing
+  // the executor's behavior.
+  const run = (envOverrides: Record<string, string>): Promise<ExecCommandResult> =>
+    new Promise<ExecCommandResult>((resolve) => {
     // If already aborted, short-circuit
     if (abortSignal?.aborted) {
       resolve({ stdout: '', stderr: 'Aborted', exitCode: null, signal: null });
@@ -1476,10 +1591,10 @@ export function execCommand(
     }
 
     // --- Shell resolution ---
-    // Pick the shell family: an explicit per-call `shellType` wins, otherwise the
-    // operator default (`AMI_DEFAULT_SHELL` → `'bash'`). PowerShell is opt-in and
-    // never auto-selected (parity with Claude's resolveDefaultShell).
-    const effectiveShellType: ShellType = shellType ?? resolveDefaultShell();
+    // The shell family (`effectiveShellType`) was resolved up-front (an explicit
+    // per-call `shellType` wins, otherwise the operator default
+    // `AMI_DEFAULT_SHELL` → `'bash'`). PowerShell is opt-in and never
+    // auto-selected (parity with Claude's resolveDefaultShell).
     const explicitShellPath = (shellPath || '').trim();
 
     let shell: string;
@@ -1584,6 +1699,15 @@ export function execCommand(
       shellArgs = [...loginArgs, '-c', trackedCommand];
     }
 
+    // Merge the per-shell env overrides on top of the caller's `env` (or the
+    // inherited process env when none was passed). Overrides win so an async
+    // per-shell preparation (e.g. tmux `TMUX_TMPDIR` isolation) takes effect;
+    // with no overrides the spawn env is unchanged (the common fast path passes
+    // `env` verbatim or inherits, exactly as before).
+    const hasOverrides = Object.keys(envOverrides).length > 0;
+    const baseEnv = env ?? (hasOverrides ? process.env : undefined);
+    const finalEnv = baseEnv ? { ...baseEnv, ...envOverrides } : undefined;
+
     const proc = shellHooks.spawn(shell, shellArgs, {
       // Pipe stdin when the caller supplies input; otherwise honor the explicit
       // `stdin` mode (default 'ignore' so interactive prompts are still
@@ -1595,7 +1719,7 @@ export function execCommand(
       // Windows. Ignored (no-op) on POSIX platforms, so it is safe to set
       // unconditionally.
       windowsHide: true,
-      ...(env ? { env } : {}),
+      ...(finalEnv ? { env: finalEnv } : {}),
     });
 
     // Feed the caller-provided payload to the child's stdin, then close it.
@@ -1841,7 +1965,18 @@ export function execCommand(
       // re-run it in the background.
       finish(SPAWN_FAILURE_EXIT_CODE);
     });
-  });
+    });
+
+  // Resolve the per-shell env overrides, then launch. The seam returns a plain
+  // record for the common case (launch SYNCHRONOUSLY, same-tick spawn preserved)
+  // and a Promise only when a shell needs async init (then launch once it
+  // settles). An async-prep failure is best-effort: fall back to no overrides so
+  // the command still runs.
+  const overridesResult = shellHooks.getEnvironmentOverrides(effectiveShellType, command);
+  if (typeof (overridesResult as Promise<Record<string, string>>).then === 'function') {
+    return (overridesResult as Promise<Record<string, string>>).then(run, () => run({}));
+  }
+  return run(overridesResult as Record<string, string>);
 }
 
 /**
