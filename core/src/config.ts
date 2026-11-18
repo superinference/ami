@@ -1846,6 +1846,48 @@ export type ConfigTipKind =
   | { kind: 'enum'; allowed: readonly string[] }
   | { kind: 'range' };
 
+/** Render an enum's allowed values exactly like the generic enum tip, so a
+ *  field-specific override can keep the `Valid values: ….` prefix other callers
+ *  (and tests) rely on and then append its semantic explanation. */
+function enumValuesPrefix(allowed: readonly string[]): string {
+  return `Valid values: ${allowed.map(v => `"${v}"`).join(', ')}.`;
+}
+
+/**
+ * Named-field, semantics-aware validation tips (parity: Claude Code's field-matched
+ * `getValidationTip`). Unlike the generic per-kind tips — which describe the expected
+ * SHAPE ("must be a number", "Valid values: …") — these describe what the value MEANS,
+ * so a user who typed a valid-shaped-but-wrong value understands the fix. Returns
+ * `undefined` for any field without a specific override, so the generic fallback still
+ * applies everywhere else (purely additive). Enum overrides reuse {@link enumValuesPrefix}
+ * so the `Valid values: ….` prefix is preserved verbatim.
+ */
+function fieldSpecificConfigTip(field: string, ctx: ConfigTipKind): string | undefined {
+  switch (field) {
+    case 'permissionMode':
+      // AMI's three permission modes (ProjectConfig.permissionMode). Explain the
+      // security posture of each so a bad value is corrected toward intent, not guessed.
+      return ctx.kind === 'enum'
+        ? `${enumValuesPrefix(ctx.allowed)} "ask" prompts before each tool action (default), "auto-allow" auto-approves every action, "deny-all" blocks any action that needs approval.`
+        : undefined;
+    case 'defaultShell':
+      // Routes the TUI input-box `!command` shortcut (resolveDefaultShell).
+      return ctx.kind === 'enum'
+        ? `${enumValuesPrefix(ctx.allowed)} Selects the shell that input-box "!" commands run in: "bash" (default) or "powershell" on Windows hosts.`
+        : undefined;
+    case 'diffTool':
+      // Selects the file-edit diff renderer (resolveDiffTool).
+      return ctx.kind === 'enum'
+        ? `${enumValuesPrefix(ctx.allowed)} Selects the diff renderer for file edits: "terminal" forces inline terminal diffs, "auto" picks the best available.`
+        : undefined;
+    case 'cleanupPeriodDays':
+      // Session-transcript retention window (SessionManager.cleanupOldSessions).
+      return 'Retention window in whole days for persisted session transcripts. Use a positive integer to keep that many days; 0 (or omit) disables cleanup — nothing is deleted.';
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Map a per-field validation failure to a short, actionable fix suggestion
  * (parity: Claude Code's `getValidationTip`). Returns `undefined` when no specific
@@ -1858,6 +1900,13 @@ export function getConfigValidationTip(field: string, ctx: ConfigTipKind): strin
   if (field.startsWith('env.') || field === 'env') {
     return 'Environment variables must be strings — wrap numbers and booleans in quotes, e.g. "DEBUG": "true".';
   }
+  // Named-field overrides that explain the SEMANTICS of the value (not just its shape),
+  // mirroring Claude Code's field-matched getValidationTip (e.g. what each permission
+  // mode does, what cleanupPeriodDays=0 means). These augment — never replace — the
+  // generic per-kind tips below: a field without a specific override falls straight
+  // through to the shape tip, so no existing behavior changes.
+  const specific = fieldSpecificConfigTip(field, ctx);
+  if (specific) return specific;
   switch (ctx.kind) {
     case 'enum':
       return `Valid values: ${ctx.allowed.map(v => `"${v}"`).join(', ')}.`;
@@ -2108,6 +2157,20 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
     if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field], tip: getConfigValidationTip(field, { kind: 'range' }) });
+  }
+  // 3b. cleanupPeriodDays BOUNDS — a session-transcript retention WINDOW in days, not
+  //     a generic EngineConfig numeric knob, so it is validated here rather than via the
+  //     loop above. Valid domain: a non-negative WHOLE number of days (0 disables
+  //     cleanup; a positive integer keeps that many days). A negative value would
+  //     silently behave as "disabled", and a fractional value mis-rounds the cutoff — so
+  //     both are surfaced with the field-specific retention tip. Skip when the base type
+  //     was already flagged (no double-report). Parity: Claude's cleanupPeriodDays
+  //     `too_small`/bounds validation with the data-retention validation tip.
+  if (config.cleanupPeriodDays !== undefined && !typeInvalid.has('cleanupPeriodDays')) {
+    const d = config.cleanupPeriodDays;
+    if (!Number.isInteger(d) || d < 0) {
+      issues.push({ field: 'cleanupPeriodDays', message: `must be a non-negative whole number of days (0 disables cleanup) (got ${JSON.stringify(d)})`, value: d, tip: getConfigValidationTip('cleanupPeriodDays', { kind: 'range' }) });
+    }
   }
   // 4. Nested `superinference` flags must be booleans when present. Step 1 only guards
   //    that `superinference` is an object; a non-boolean nested flag (e.g.
