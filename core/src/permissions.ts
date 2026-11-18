@@ -1389,6 +1389,40 @@ export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard 
 }
 
 /**
+ * Best-effort strip of the shell-expansion / command-substitution constructs that
+ * make a path {@link detectPathExpansionHazard unvalidatable}, yielding a plain
+ * LITERAL "guess" of what the path might resolve to. Used ONLY to run a
+ * deny-side (forbidden-path) re-check over an obscured path before it is routed to
+ * a prompt — never to grant access. Mirrors Claude's `checkDenyRuleForGuessedPath`
+ * (PowerShellTool/pathValidation.ts L984-L1008): an obscured path must not be able
+ * to DOWNGRADE a hard credential/system deny into a mere "ask" by hiding the
+ * forbidden segment behind a backtick / `$(…)` / `${VAR}` / `$VAR` / `%VAR%` /
+ * leading-`=` construct — which, in an auto-allow session, an "ask" verdict would
+ * then silently grant.
+ *
+ * Removes (in order): backtick-delimited runs, `$(…)` substitutions, `${…}` and
+ * `$VAR` variable refs, `%VAR%` (Windows) refs, and a single leading `=`
+ * (zsh equals-expansion). Returns the collapsed remainder. Pure, no I/O. This is a
+ * guess heuristic, never a security boundary — the authoritative gate is still the
+ * hazard→prompt fall-through for anything the guess does not catch.
+ */
+export function stripPathObscuring(rawPath: string): string {
+  return rawPath
+    // Backtick command substitution: `` `whoami` `` → removed entirely.
+    .replace(/`[^`]*`/g, '')
+    // `$(…)` substitution (single level is enough for a best-effort guess).
+    .replace(/\$\([^)]*\)/g, '')
+    // `${VAR}` references.
+    .replace(/\$\{[^}]*\}/g, '')
+    // Bare `$VAR` references.
+    .replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, '')
+    // Windows `%VAR%` references.
+    .replace(/%[^%]*%/g, '')
+    // zsh equals-expansion: a single leading `=`.
+    .replace(/^=/, '');
+}
+
+/**
  * Glob metacharacters (`*`, `?`, `[`, `]`) in a filesystem-path token. Parity:
  * Claude Code's GLOB_PATTERN_REGEX (pathValidation.ts L50). A path token carrying
  * one of these is a glob pattern whose runtime filesystem expansion cannot be
@@ -6418,7 +6452,25 @@ export class PermissionManager {
     // rewritten by the shell at execution, so it can never be silently auto-allowed
     // even when it resolves inside the workspace — force a manual-approval prompt.
     // Mirrors Claude's pathValidation blanket-reject (pathValidation.ts L393-L436).
-    if (detectPathExpansionHazard(filePath)) return 'prompt';
+    if (detectPathExpansionHazard(filePath)) {
+      // Deny-only guess BEFORE prompting (parity: Claude's checkDenyRuleForGuessedPath,
+      // PowerShellTool/pathValidation.ts L984-L1008): strip the obscuring construct to a
+      // best-effort literal and, if THAT resolves to a forbidden credential/system path,
+      // DENY outright instead of merely prompting. Without this an obscured forbidden
+      // path (`${HOME}/.ssh/id_rsa`, `` /x/`whoami`/../../.aws/credentials ``) downgrades
+      // a hard deny to an "ask" — which an auto-allow session then silently grants (the
+      // checkPathPermission auto-grant branch). A tilde-variant is excluded (the guess
+      // for `~user` cannot be resolved to a concrete forbidden target) so it still
+      // prompts. The guess is used ONLY to deny, never to allow.
+      const guess = stripPathObscuring(filePath);
+      if (guess && guess !== filePath) {
+        const guessResolved = this.resolveForCheck(guess, cwd);
+        if (this.isForbiddenReadPath(guessResolved) || this.isForbiddenAtAnyHop(guess, cwd)) {
+          return 'deny';
+        }
+      }
+      return 'prompt';
+    }
     // Glob read paths cannot be statically validated (finding #15): the pre-glob
     // base is the only realpath'd segment, so a symlink matched inside the
     // expansion (e.g. `/project/[star]/passwd`, `/project/link → /etc`) is never
