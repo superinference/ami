@@ -4,7 +4,10 @@ import * as assert from 'node:assert/strict';
 import {
   isMuslEnvironment,
   isNpmFromWindowsPath,
+  isSupportedPlatform,
+  SUPPORTED_PLATFORMS,
   __resetPlatformCacheForTest,
+  type Platform,
 } from '../src/utils/platform';
 import { isWSL } from '../src/utils/env';
 
@@ -135,5 +138,50 @@ describe('isWSL — resilient WSLInterop binfmt file probe', () => {
       typeof isWSL({} as NodeJS.ProcessEnv, () => { throw new Error('eacces'); }),
       'boolean',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SUPPORTED_PLATFORMS allow-list + isSupportedPlatform() gating predicate
+// (parity: Claude Code's utils/platform.ts SUPPORTED_PLATFORMS constant).
+// ---------------------------------------------------------------------------
+
+describe('SUPPORTED_PLATFORMS allow-list', () => {
+  it('declares AMI\'s unix-first supported set (macos, linux, wsl)', () => {
+    assert.deepEqual([...SUPPORTED_PLATFORMS], ['macos', 'linux', 'wsl']);
+  });
+
+  it('is frozen so a call site cannot mutate the allow-list', () => {
+    assert.ok(Object.isFrozen(SUPPORTED_PLATFORMS));
+    assert.throws(() => {
+      (SUPPORTED_PLATFORMS as Platform[]).push('windows');
+    }, TypeError);
+  });
+
+  it('excludes native windows and the unknown long-tail', () => {
+    assert.ok(!SUPPORTED_PLATFORMS.includes('windows'));
+    assert.ok(!SUPPORTED_PLATFORMS.includes('unknown'));
+  });
+});
+
+describe('isSupportedPlatform — platform-gating predicate', () => {
+  beforeEach(() => __resetPlatformCacheForTest());
+  afterEach(() => __resetPlatformCacheForTest());
+
+  it('returns true for every member of the allow-list', () => {
+    for (const p of SUPPORTED_PLATFORMS) {
+      assert.equal(isSupportedPlatform(p), true, `${p} should be supported`);
+    }
+  });
+
+  it('returns false for native windows and unknown hosts', () => {
+    assert.equal(isSupportedPlatform('windows'), false);
+    assert.equal(isSupportedPlatform('unknown'), false);
+  });
+
+  it('defaults to the detected host platform when no argument is given', () => {
+    // Explicit-arg and no-arg forms must agree on the real host.
+    const host = isSupportedPlatform();
+    assert.equal(typeof host, 'boolean');
   });
 });

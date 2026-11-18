@@ -38,6 +38,39 @@ import { log } from '../logger';
  */
 export type Platform = 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown';
 
+/**
+ * The allow-list of host platforms AMI officially supports — the single building
+ * block any platform-gating decision (startup warning, capability check, feature
+ * guard) normalizes through instead of ad-hoc `=== 'win32'` comparisons. Parity
+ * with Claude Code's `SUPPORTED_PLATFORMS` config constant (`utils/platform.ts`),
+ * which drives its platform-gating/warnings.
+ *
+ * AMI is a unix-first CLI whose bash/tooling path assumes a POSIX host, so the
+ * supported set is `macos`, `linux`, and `wsl` (a Linux kernel under WSL). This is
+ * an intentional, documented divergence from Claude Code's Desktop-integration list
+ * (`['macos', 'wsl']`, which gates a macOS/WSL-only Claude Desktop MCP feature AMI
+ * has no equivalent of): AMI's allow-list reflects the platforms AMI itself runs on,
+ * so native `windows` and the `unknown` long-tail (freebsd/sunos/aix/…) are the
+ * excluded, best-effort cases. Frozen so the allow-list can never be mutated at a
+ * call site.
+ */
+export const SUPPORTED_PLATFORMS: readonly Platform[] = Object.freeze([
+  'macos',
+  'linux',
+  'wsl',
+]);
+
+/**
+ * True when the given platform (default: the detected host via {@link getPlatform})
+ * is in the {@link SUPPORTED_PLATFORMS} allow-list. The single predicate every
+ * platform-gating decision should call so the "is this host officially supported"
+ * question can never drift between sites. Parity with Claude Code's
+ * `SUPPORTED_PLATFORMS.includes(getPlatform())` gating checks.
+ */
+export function isSupportedPlatform(platform: Platform = getPlatform()): boolean {
+  return SUPPORTED_PLATFORMS.includes(platform);
+}
+
 /** Minimal shape of the debug logger (matches {@link log}), kept injectable for tests. */
 type DebugLogger = (component: string, msg: string, data?: Record<string, unknown>) => void;
 
