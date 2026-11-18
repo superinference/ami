@@ -53,6 +53,24 @@ export const FILE_READ_SHOW_SIZE_CAP_ENV = 'AMI_FILE_READ_SHOW_SIZE_CAP';
 export const FILE_READ_RANGE_NUDGE_ENV = 'AMI_FILE_READ_RANGE_NUDGE';
 
 /**
+ * Operator toggle (DEFAULT OFF) selecting the over-budget behavior of a Read whose
+ * content exceeds the per-read token budget ({@link FileReadingLimits.maxTokens}):
+ *
+ *   - unset / falsy (default) — AMI's behavior: the content is silently TRUNCATED
+ *     to the budget with a `[... truncated]` note (keeps partial content flowing);
+ *   - truthy (1/true/yes/on) — Claude-parity behavior: the read ERRORS with an
+ *     actionable "use offset/limit, or search instead" message
+ *     ({@link module:token-estimator.fileReadTokenBudgetMessage}) so the model
+ *     never receives a file that was silently cut mid-structure and is nudged to
+ *     a targeted re-read.
+ *
+ * Both behaviors are kept (AMI's truncation differentiator is the default; the
+ * Claude hard-error is opt-in). Surfaced in `ami --introspect` (experimentalEnvFlags).
+ * Mirrors Claude Code's MaxFileReadTokenExceededError throw (FileReadTool.ts).
+ */
+export const FILE_READ_ERROR_ON_BUDGET_ENV = 'AMI_FILE_READ_ERROR_ON_TOKEN_BUDGET';
+
+/**
  * Prompt-shaping flags that control which optional guidance the Read tool's
  * static description/schema surfaces. Independent of the numeric caps above —
  * these only affect the text the model sees, never the enforced limits.
@@ -72,6 +90,27 @@ export interface FileReadPromptFlags {
 function isOnByDefault(raw: string | undefined): boolean {
   if (raw === undefined) return true;
   return !/^(0|false|no|off)$/i.test(raw.trim());
+}
+
+/**
+ * Interpret an env toggle that DEFAULTS OFF: only an explicitly truthy token
+ * (1/true/yes/on, case-insensitive) turns it on; unset/empty/any other value
+ * keeps it off. The inverse of {@link isOnByDefault}.
+ */
+function isOffByDefault(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
+/**
+ * Resolve the {@link FILE_READ_ERROR_ON_BUDGET_ENV} toggle. Defaults OFF, so a
+ * clean environment keeps AMI's silent-truncation behavior; only an explicitly
+ * truthy value opts into the Claude-parity hard-error-with-nudge behavior.
+ */
+export function getFileReadErrorOnBudget(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return isOffByDefault(env[FILE_READ_ERROR_ON_BUDGET_ENV]);
 }
 
 /**

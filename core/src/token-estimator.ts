@@ -88,6 +88,23 @@ export function sliceToReadTokenBudget(text: string, maxTokens: number, fileExte
 }
 
 /**
+ * Actionable, model-facing error for a Read whose content exceeds the per-read
+ * token budget — the ERROR companion to {@link sliceToReadTokenBudget}'s silent
+ * truncation. Unlike a truncated payload (which silently drops the tail and can
+ * split a file mid-structure), this names BOTH remedies the model has: a targeted
+ * offset/limit range read, OR searching for the needed content instead of reading
+ * the whole file. Returned verbatim by the Read tool when the error-on-budget
+ * knob is on (see {@link module:file-read-limits.getFileReadErrorOnBudget}).
+ * Mirrors Claude Code's MaxFileReadTokenExceededError message
+ * (tools/FileReadTool/FileReadTool.ts:L175-L187).
+ */
+export function fileReadTokenBudgetMessage(tokenCount: number, maxTokens: number): string {
+  return `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). `
+    + 'Use offset and limit parameters to read specific portions of the file, or search for '
+    + 'specific content instead of reading the whole file.';
+}
+
+/**
  * Conservative token estimate for an image block.
  *
  * When real pixel dimensions are known, Claude charges roughly
