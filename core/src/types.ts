@@ -1634,6 +1634,14 @@ export interface AutoModeConfig {
   /** Classifier strategy: tool_use (false/undefined), both stages (true), stage-1-only
    *  ('fast'), or stage-2-only ('thinking'). Parity: `twoStageClassifier`. */
   twoStageClassifier?: boolean | 'fast' | 'thinking';
+  /** Serialize the proposed tool call handed to the classifier as a compact JSONL dict
+   *  line (`{"bash":"ls"}` for a tool call, the tool's input projected to its most
+   *  salient value) instead of the default verbose human sentence. JSON escaping keeps
+   *  hostile tool input from breaking out of its string context to forge another
+   *  transcript line. Off (undefined/false) → the default descriptive rendering. Parity:
+   *  Claude's `AutoModeConfig.jsonlTranscript` / `isJsonlTranscriptEnabled` →
+   *  `toCompactBlock` ({@code {"Bash":"ls"}} vs {@code `Bash ls`}). */
+  jsonlTranscript?: boolean;
 }
 
 export interface EngineConfig {
