@@ -244,3 +244,49 @@ export async function getSessionEnvironmentScript(
   log('session-env', `Session environment script ready (${sessionEnvScript.length} chars total)`);
   return sessionEnvScript;
 }
+
+/**
+ * Read-only introspection of the persisted-session-environment ASSEMBLY policy —
+ * the diagnostic/affordance surface a user needs to answer "why did (or didn't) my
+ * venv/conda activation survive across bash calls?" without reading source. Pure
+ * (reads the configured env + resolves the base dir path; no disk I/O, no spawn).
+ *
+ * Parity: Claude Code's `sessionEnvironment.ts` emits a chain of provenance
+ * messages (`loaded from CLAUDE_ENV_FILE`, `loaded from N hook file(s)`, `script
+ * ready`, `not yet supported on Windows`) as it assembles the env. AMI already
+ * logs the same provenance via `log('session-env', …)` during assembly; this adds
+ * the matching STATIC introspection — what AMI *would* source and from where —
+ * so the capability is discoverable through `ami --introspect`
+ * (introspection-on-every-change rule), complementing
+ * {@link describeSubprocessEnvIsolation} (what is STRIPPED) with what is SOURCED.
+ */
+export function describeSessionEnvironment(env: NodeJS.ProcessEnv = process.env): {
+  /** False on Windows (unsupported — `getSessionEnvironmentScript` returns null). */
+  supported: boolean;
+  /** Parent-process env-file vars honored, in precedence order (first wins). */
+  envFileVars: string[];
+  /** The env-file var that is currently set (precedence-resolved), or null. */
+  envFileConfigured: string | null;
+  /** Base dir under which per-session fragment dirs live (`<configDir>/session-env`). */
+  sessionEnvBaseDir: string;
+  /** Lifecycle events whose `<event>-hook-<n>.sh` fragments are sourced, in load order. */
+  hookEvents: string[];
+  /** On-disk fragment filename pattern a hook writes to persist exports. */
+  fragmentNamePattern: string;
+  /** Tri-state assembly cache states (per-session keyed). */
+  cacheStates: string[];
+  note: string;
+} {
+  const envFileVars = ['AMI_ENV_FILE', 'CLAUDE_ENV_FILE'];
+  const envFileConfigured = envFileVars.find((v) => (env[v] ?? '').trim().length > 0) ?? null;
+  return {
+    supported: _sessionEnvHooks.platform !== 'win32',
+    envFileVars,
+    envFileConfigured,
+    sessionEnvBaseDir: path.join(resolveConfigDir(env), 'session-env'),
+    hookEvents: Object.keys(HOOK_ENV_PRIORITY).sort((a, b) => HOOK_ENV_PRIORITY[a] - HOOK_ENV_PRIORITY[b]),
+    fragmentNamePattern: '<event>-hook-<index>.sh',
+    cacheStates: ['unloaded', 'empty', 'loaded'],
+    note: 'Assembled script (env file first, then deterministically-ordered hook fragments) is prepended to every bash command so venv/conda/export state persists across otherwise-stateless invocations; Windows unsupported, reads are ENOENT-tolerant. Complements subprocessEnvIsolation (what is stripped) with what is sourced.',
+  };
+}

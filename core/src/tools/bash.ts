@@ -1232,6 +1232,10 @@ export function describeSubprocessEnvIsolation(): {
   scrubsInputPrefixDuplicates: boolean;
   /** Explicit `/env NAME=VALUE` overrides are merged into the spawned env. */
   sessionEnvOverridesApplied: boolean;
+  /** `NODE_EXTRA_CA_CERTS` is fanned out to the per-runtime trust-store vars. */
+  caBundleFanoutVars: string[];
+  /** Proxy var groups fanned across upper/lower case so all tools share one relay. */
+  proxyFanoutVars: string[];
   note: string;
 } {
   return {
@@ -1240,7 +1244,9 @@ export function describeSubprocessEnvIsolation(): {
     safeVarPatterns: [SAFE_PREFIX_RE.source, ...SAFE_PREFIX_PATTERNS.map(p => p.source)],
     scrubsInputPrefixDuplicates: true,
     sessionEnvOverridesApplied: true,
-    note: 'the parent AMI process KEEPS these vars (lazy SDK reads); only spawned bash children have them stripped. Explicit /env overrides are then merged in.',
+    caBundleFanoutVars: ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'],
+    proxyFanoutVars: PROXY_FANOUT_GROUPS.flatMap(g => [...g]),
+    note: 'the parent AMI process KEEPS these vars (lazy SDK reads); only spawned bash children have them stripped. Explicit /env overrides are then merged in. A single NODE_EXTRA_CA_CERTS / proxy var is fanned out so curl/python/gh share one trust store and relay.',
   };
 }
 
@@ -1323,9 +1329,46 @@ export function applyCaBundleFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * Proxy concepts a spawned child honors, each with the case/name variants
+ * different runtimes read. curl/wget/git honor LOWER-case (`https_proxy`,
+ * `http_proxy`, `all_proxy`, `no_proxy`) first; Go/gh, python-requests and many
+ * JS clients read UPPER-case (`HTTPS_PROXY`, …). A relay/MITM-proxy operator who
+ * exports only one case therefore silently loses the other half of the toolchain.
+ */
+const PROXY_FANOUT_GROUPS: ReadonlyArray<readonly [string, string]> = [
+  ['HTTPS_PROXY', 'https_proxy'],
+  ['HTTP_PROXY', 'http_proxy'],
+  ['ALL_PROXY', 'all_proxy'],
+  ['NO_PROXY', 'no_proxy'],
+] as const;
+
+/**
+ * Fan each configured proxy var out to its other-case sibling so a child
+ * `curl`/`gh`/`python`/`git` all route through the SAME relay regardless of which
+ * case the operator (or an upstream relay launcher) exported. For each group the
+ * first set variant is the source of truth; the unset sibling is populated with
+ * it, but an explicitly-set sibling is never overwritten (explicit per-runtime
+ * override always wins). Parity: Claude Code's upstreamproxy `getUpstreamProxyEnv`
+ * injects `HTTPS_PROXY` + friends into every subprocess so relayed sessions work;
+ * AMI has no relay process but honors whatever proxy the environment provides and
+ * makes it consistent across tools. Mirrors {@link applyCaBundleFanout}. Mutates
+ * and returns `env`.
+ */
+export function applyProxyFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  for (const [upper, lower] of PROXY_FANOUT_GROUPS) {
+    const source = env[upper] ?? env[lower];
+    if (source === undefined) continue;
+    if (env[upper] === undefined) env[upper] = source;
+    if (env[lower] === undefined) env[lower] = source;
+  }
+  return env;
+}
+
 function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env = sanitizeEnvForSubprocess({ ...process.env }) as NodeJS.ProcessEnv;
   applyCaBundleFanout(env);
+  applyProxyFanout(env);
   env.GIT_EDITOR = 'false';
   env.GIT_PAGER = 'cat';
   env.EDITOR = 'false';
