@@ -2,7 +2,7 @@ import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import type { ProcessManager, TaskKind } from '../process-manager';
 import { previewCommand } from './command-preview';
 
-const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip', 'shell_id']);
+const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 'retry', 'skip', 'shell_id', 'prune_idle']);
 
 /**
  * Bounded window (ms) a `graceful` stop waits event-driven for the agent to finish
@@ -35,7 +35,9 @@ export type TaskKillReason =
   | 'retried'
   | 'retry_unsupported'
   | 'skipped'
-  | 'skip_unsupported';
+  | 'skip_unsupported'
+  // Bulk prune of every idle teammate (parity: TeamsDialog 'p' prune-idle handler).
+  | 'pruned_idle';
 
 /** Structured result surface (ToolResult.metadata) for task_kill. */
 export interface TaskKillMetadata {
@@ -55,6 +57,10 @@ export interface TaskKillMetadata {
   status?: string;
   pid?: number;
   exitCode?: number | null;
+  /** On a `prune_idle` bulk stop: the IDs of every idle teammate that was stopped. */
+  prunedTaskIds?: string[];
+  /** On a `prune_idle` bulk stop: how many idle teammates were stopped. */
+  prunedCount?: number;
 }
 
 /**
@@ -98,7 +104,10 @@ export const taskKillTool: ToolDefinition = {
     'also reap the task (remove it from the task list and delete its output file). ' +
     'Returns the stopped task\'s type (agent/bash) and command/description plus a ' +
     'machine-readable reason code on both success and failure ' +
-    '([code: invalid_input] / [code: not_found] / [code: kill_failed]).',
+    '([code: invalid_input] / [code: not_found] / [code: kill_failed]). ' +
+    'Pass prune_idle:true (no task_id) to BULK-STOP every idle teammate at once, ' +
+    'reclaiming concurrency slots from agents that have gone quiet while leaving busy ' +
+    'teammates untouched.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -154,8 +163,24 @@ export const taskKillTool: ToolDefinition = {
           'with the remaining agents, WITHOUT aborting the whole run. Only valid for a ' +
           'running workflow agent; mutually exclusive with interrupt/graceful/retry. Defaults to false.',
       },
+      // PARITY (additive): bulk prune-idle (Claude Code TeamsDialog 'p' handler) —
+      // stop EVERY idle teammate at once to reclaim concurrency slots held by agents
+      // that have gone quiet, leaving busy teammates untouched. When true, task_id is
+      // not required (the target is "all idle agents", not one task).
+      prune_idle: {
+        type: 'boolean',
+        description:
+          'When true, BULK-STOP every idle background AGENT (teammates that finished ' +
+          'their turn and are awaiting the next message) in one call, leaving busy ' +
+          'agents and background shells/monitors untouched. Use this to reclaim ' +
+          'concurrency slots from quiet teammates. When set, task_id is ignored and ' +
+          'not required. Mutually exclusive with the per-agent actions ' +
+          '(interrupt/graceful/retry/skip). Defaults to false.',
+      },
     },
-    required: ['task_id'],
+    // task_id is required for a single-task stop but NOT for a `prune_idle` bulk stop;
+    // the handler enforces task_id presence for the non-prune path.
+    required: [],
   },
   // PARITY (additive): structured-result schema describing the machine-readable
   // stop outcome AMI carries on `ToolResult.metadata` ({@link TaskKillMetadata}).
@@ -181,6 +206,8 @@ export const taskKillTool: ToolDefinition = {
       status: { type: 'string', description: 'Terminal status of the task (e.g. completed/failed/killed) when it was not running.' },
       pid: { type: 'number', description: 'OS process ID of the killed task, when known.' },
       exitCode: { type: ['number', 'null'], description: 'Exit code of an already-terminal task, when known.' },
+      prunedTaskIds: { type: 'array', items: { type: 'string' }, description: 'On a prune_idle bulk stop: the IDs of every idle teammate that was stopped.' },
+      prunedCount: { type: 'number', description: 'On a prune_idle bulk stop: how many idle teammates were stopped.' },
     },
     required: ['reason'],
   },
@@ -196,11 +223,34 @@ export const taskKillTool: ToolDefinition = {
     // Strict schema: reject unexpected/injected parameters.
     const unknown = Object.keys(input).filter(k => !ALLOWED_KEYS.has(k));
     if (unknown.length > 0) {
-      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful, retry, skip, shell_id. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      return { output: `Error: unknown input key(s): ${unknown.join(', ')}. Allowed: task_id, cleanup, interrupt, graceful, retry, skip, shell_id, prune_idle. [code: invalid_input]`, isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
 
     if (!context.processManager) {
       return { output: 'Error: Background process manager is not available. [code: manager_unavailable]', isError: true, metadata: meta({ reason: 'manager_unavailable' }) };
+    }
+
+    // BULK PRUNE-IDLE (parity: Claude Code's TeamsDialog 'p' handler,
+    // TeamsDialog.tsx:L207-217). Stop every idle teammate at once; the target is "all
+    // idle agents", so task_id is neither read nor required here. Validated + handled
+    // before the single-task path so a bare `{ prune_idle: true }` never trips the
+    // task_id requirement below. Mutually exclusive with the per-agent actions — those
+    // operate on ONE task_id and would be ambiguous paired with a bulk stop.
+    if (input.prune_idle !== undefined && typeof input.prune_idle !== 'boolean') {
+      return { output: 'Error: "prune_idle" must be a boolean. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
+    }
+    if (input.prune_idle === true) {
+      if ([input.interrupt, input.graceful, input.retry, input.skip].some(v => v === true)) {
+        return { output: 'Error: "prune_idle" is a bulk stop and cannot be combined with the per-agent actions (interrupt/graceful/retry/skip). [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
+      }
+      const pruned = typeof context.processManager.pruneIdleAgents === 'function'
+        ? context.processManager.pruneIdleAgents()
+        : [];
+      const prunedTaskIds = pruned.map(p => p.taskId);
+      const output = pruned.length === 0
+        ? 'No idle agents to prune — every agent is busy or already stopped.'
+        : `Pruned ${pruned.length} idle agent${pruned.length === 1 ? '' : 's'}: ${prunedTaskIds.join(', ')}.`;
+      return { output, isError: false, metadata: meta({ reason: 'pruned_idle', prunedTaskIds, prunedCount: pruned.length }) };
     }
 
     // FUNCTIONAL (parity): validate argument types up front instead of blindly

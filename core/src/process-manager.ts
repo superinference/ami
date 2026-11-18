@@ -1699,6 +1699,32 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
+   * FUNCTIONAL (parity with Claude Code's TeamsDialog 'p' prune-idle handler,
+   * TeamsDialog.tsx:L207-217): bulk-stop every tracked AGENT task that is currently
+   * {@link isIdle idle} (running, finished its turn, awaiting the next message), in
+   * one operation. Mirrors {@link killAllAgents} but filtered to the IDLE subset, so
+   * a leader can reclaim concurrency slots held by teammates that have gone quiet
+   * WITHOUT tearing down agents still doing work (a busy teammate — running and not
+   * idle — is left alone). Background bash shells and MCP monitors are never targeted
+   * (type filter, like {@link killAllAgents}). Returns the snapshots of the agents it
+   * stopped (empty when none were idle), so a caller can reconcile its own selection
+   * state after the removals (parity: Claude recomputing the selection index).
+   */
+  pruneIdleAgents(): BackgroundProcess[] {
+    const stopped: BackgroundProcess[] = [];
+    for (const taskId of Array.from(this.processes.keys())) {
+      const entry = this.processes.get(taskId);
+      if (!entry || entry.status !== 'running' || entry.idle !== true) continue;
+      if (this.taskType(taskId) !== 'agent') continue;
+      if (this.kill(taskId)) {
+        const snapshot = this.get(taskId);
+        if (snapshot) stopped.push(snapshot);
+      }
+    }
+    return stopped;
+  }
+
+  /**
    * FUNCTIONAL (parity): pause a RUNNING task's elapsed-time clock. Idempotent — a
    * second pause() before a resume() is a no-op (returns false). Used by the stall
    * watchdog so a task blocked on an interactive prompt doesn't inflate its
@@ -2402,6 +2428,49 @@ export class ProcessManager extends EventEmitter {
     if (!cbs || cbs.length === 0) return;
     entry._onIdleCallbacks = [];
     for (const cb of cbs) cb();
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's `hasWorkingInProcessTeammates`,
+   * teammate.ts:L205-292): whether any tracked AGENT is still WORKING — running AND
+   * not {@link isIdle idle}. This is the subtle 'alive but busy' distinction vs
+   * {@link runningAgentCount} / `hasActiveAgents` (which count every running agent,
+   * including ones that have gone idle between turns). Used to decide whether a
+   * leader / headless run must wait for teammates before shutting down.
+   */
+  hasWorkingAgents(): boolean {
+    for (const entry of this.processes.values()) {
+      if (entry.status === 'running' && entry.kind === 'agent' && entry.idle !== true) return true;
+    }
+    return false;
+  }
+
+  /**
+   * FUNCTIONAL (parity with Claude Code's `waitForTeammatesToBecomeIdle`,
+   * teammate.ts:L205-292): resolve once EVERY tracked agent that is currently working
+   * (running AND not idle) has gone idle — or terminal — WITHOUT polling. Snapshots
+   * the working set first; returns resolved immediately when none are working;
+   * otherwise awaits each via {@link waitForIdle}, which itself resolves instantly for
+   * any that became idle/terminal between the snapshot and registration (handling the
+   * race Claude handles by re-reading isIdle inside its updater). An optional
+   * `timeoutMs` caps the wait so a wedged teammate can't block shutdown forever;
+   * a falsy/<=0 value waits indefinitely. Never rejects.
+   */
+  waitForAllAgentsIdle(timeoutMs?: number): Promise<void> {
+    const working: string[] = [];
+    for (const [taskId, entry] of this.processes) {
+      if (entry.status === 'running' && entry.kind === 'agent' && entry.idle !== true) working.push(taskId);
+    }
+    if (working.length === 0) return Promise.resolve();
+    const all = Promise.all(working.map((id) => this.waitForIdle(id))).then(() => undefined);
+    if (!timeoutMs || timeoutMs <= 0) return all;
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const done = (): void => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
+      const timer = setTimeout(done, timeoutMs);
+      timer.unref?.();
+      void all.then(done);
+    });
   }
 
   /**

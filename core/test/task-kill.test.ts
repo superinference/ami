@@ -8,7 +8,10 @@ describe('taskKillTool', () => {
   it('has correct name and schema', () => {
     assert.equal(taskKillTool.name, 'task_kill');
     assert.equal(taskKillTool.isReadOnly, false);
-    assert.deepEqual(taskKillTool.inputSchema.required, ['task_id']);
+    // task_id is NOT a blanket schema requirement: the `prune_idle` bulk mode targets
+    // "all idle agents" with no task_id, so the handler enforces task_id presence for
+    // the single-task path instead (required: []). See the prune_idle cases below.
+    assert.deepEqual(taskKillTool.inputSchema.required, []);
   });
 
   it('returns error when processManager is not available', async () => {
