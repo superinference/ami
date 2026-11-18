@@ -18,6 +18,8 @@
  * only: it NEVER executes an install (the returned command is data a caller can
  * surface or run under its own permission/supply-chain gate).
  */
+import { homedir } from 'node:os';
+
 import { firstAvailableBinary, isBinaryInstalled } from './which';
 
 /**
@@ -69,18 +71,29 @@ export function detectPythonPackageManager(
  *   - uv:   `uv tool install <tool>`   (isolated global install)
  *   - pipx: `pipx install <tool>`      (isolated global install)
  *   - pip:  `pip install --user <tool>` (no-sudo user install)
+ *
+ * SUPPLY-CHAIN HARDENING: `cwd` is always the user's home directory. uv (`uv.toml`
+ * / `pyproject.toml`), pip (`pip.conf`) and pipx all read package-index settings
+ * from the CURRENT working directory first, so running an installer inside an
+ * untrusted project lets a planted `uv.toml`/`pip.conf` with `index-url =
+ * http://attacker/...` silently redirect the download to a malicious PyPI mirror.
+ * Pinning the install cwd to `$HOME` defeats that project-level redirection.
+ * Parity with Claude Code's `installIt2`, which spawns every installer with
+ * `cwd: homedir()` for exactly this reason (utils/swarm/backends/it2Setup.ts
+ * L95-96). The `--user` flag on pip additionally avoids a sudo escalation.
  */
 export function pythonInstallCommand(
   tool: string,
   packageManager: PythonPackageManager,
-): { cmd: string; args: string[] } {
+): { cmd: string; args: string[]; cwd: string } {
+  const cwd = homedir();
   switch (packageManager) {
     case 'uvx':
-      return { cmd: 'uv', args: ['tool', 'install', tool] };
+      return { cmd: 'uv', args: ['tool', 'install', tool], cwd };
     case 'pipx':
-      return { cmd: 'pipx', args: ['install', tool] };
+      return { cmd: 'pipx', args: ['install', tool], cwd };
     case 'pip':
-      return { cmd: 'pip', args: ['install', '--user', tool] };
+      return { cmd: 'pip', args: ['install', '--user', tool], cwd };
   }
 }
 
@@ -101,5 +114,9 @@ export function pythonBootstrapHint(
     return `No Python package manager (uv/pipx/pip) found to install "${tool}".`;
   }
   const { cmd, args } = pythonInstallCommand(tool, pm);
-  return `Install it with: ${cmd} ${args.join(' ')}`;
+  // Surface the supply-chain advisory: the install should run from $HOME so a
+  // project-local pip.conf/uv.toml cannot redirect the package index (the same
+  // hardening pythonInstallCommand bakes into its `cwd`). The user runs this by
+  // hand (AMI never auto-installs), so the guidance has to be explicit.
+  return `Install it with: ${cmd} ${args.join(' ')} (run it from your home directory so a project-local pip.conf/uv.toml can't redirect the package index).`;
 }

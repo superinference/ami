@@ -64,21 +64,26 @@ describe('detectPythonPackageManager: ordered preference + alias collapse', () =
 
 describe('pythonInstallCommand: spawn-ready install table', () => {
   it('uv tool install for the uvx kind', () => {
-    assert.deepEqual(pythonInstallCommand('ruff', 'uvx'), { cmd: 'uv', args: ['tool', 'install', 'ruff'] });
+    assert.deepEqual(pythonInstallCommand('ruff', 'uvx'), { cmd: 'uv', args: ['tool', 'install', 'ruff'], cwd: os.homedir() });
   });
   it('pipx install for the pipx kind', () => {
-    assert.deepEqual(pythonInstallCommand('ruff', 'pipx'), { cmd: 'pipx', args: ['install', 'ruff'] });
+    assert.deepEqual(pythonInstallCommand('ruff', 'pipx'), { cmd: 'pipx', args: ['install', 'ruff'], cwd: os.homedir() });
   });
   it('pip install --user for the pip kind', () => {
-    assert.deepEqual(pythonInstallCommand('ruff', 'pip'), { cmd: 'pip', args: ['install', '--user', 'ruff'] });
+    assert.deepEqual(pythonInstallCommand('ruff', 'pip'), { cmd: 'pip', args: ['install', '--user', 'ruff'], cwd: os.homedir() });
+  });
+  it('supply-chain hardening: cwd is $HOME for EVERY manager (defeats project-local pip.conf/uv.toml index redirection)', () => {
+    for (const pm of ['uvx', 'pipx', 'pip'] as const) {
+      assert.equal(pythonInstallCommand('ruff', pm).cwd, os.homedir());
+    }
   });
 });
 
 describe('pythonBootstrapHint: human-readable affordance', () => {
-  it('names the exact install command for the best available manager', () => {
+  it('names the exact install command for the best available manager, with the $HOME supply-chain advisory', () => {
     assert.equal(
       pythonBootstrapHint('python-lsp-server', probe(['pipx', 'pip'])),
-      'Install it with: pipx install python-lsp-server',
+      'Install it with: pipx install python-lsp-server (run it from your home directory so a project-local pip.conf/uv.toml can\'t redirect the package index).',
     );
   });
 
