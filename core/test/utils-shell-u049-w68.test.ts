@@ -23,6 +23,7 @@ import * as assert from 'node:assert/strict';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as child_process from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
@@ -306,7 +307,17 @@ describe('U049 execCommand: real snapshot sourcing (e2e)', () => {
       assert.ok(file, 'snapshot created');
       const content = fs.readFileSync(file!, 'utf8');
       assert.match(content, /alias -- gg=/, 'alias captured');
-      assert.match(content, /helper \(\)/, 'function captured');
+      // Bash function bodies are base64-encoded (U395 parity), not verbatim, so a
+      // function is captured as an `eval "$(… | base64 -d)"` wrapper and restored
+      // when the snapshot is sourced.
+      assert.doesNotMatch(content, /helper \(\)/, 'function body is encoded, not verbatim');
+      assert.match(content, /\| base64 -d\)"/, 'function captured via base64 wrapper');
+      const restored = child_process.execFileSync(
+        shell,
+        ['-c', `source ${JSON.stringify(file)} 2>/dev/null; type helper`],
+        { encoding: 'utf8' },
+      );
+      assert.match(restored, /helper is a function/, 'sourcing the snapshot restores the function');
       assert.match(content, /export PATH=/, 'PATH captured');
       fs.rmSync(file!, { force: true });
     } finally {

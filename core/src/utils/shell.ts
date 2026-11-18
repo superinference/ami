@@ -27,6 +27,21 @@ export const shellHooks = {
   execFileSync: child_process.execFileSync as typeof child_process.execFileSync,
   accessSync: fs.accessSync as typeof fs.accessSync,
   existsSync: fs.existsSync as typeof fs.existsSync,
+  /**
+   * Synchronous `stat`, used by {@link createShellSnapshot} to verify the capture
+   * artifact really exists on disk after the capture shell exits 0 and to record
+   * its byte size — parity with Claude Code's post-creation `stat().size` check
+   * (ShellSnapshot.ts), which distinguishes an exit-0-but-file-missing/empty case
+   * from a genuine success. Replaceable in tests via `mock.method(shellHooks, 'statSync', …)`.
+   */
+  statSync: fs.statSync as typeof fs.statSync,
+  /**
+   * Synchronous `readdir`, used by {@link createShellSnapshot} to log the
+   * snapshot directory's contents when the artifact is missing after a
+   * successful-exit capture (parity with Claude Code's `readdir(snapshotsDir)`
+   * diagnostic in the `tengu_shell_unknown_error` path). Replaceable in tests.
+   */
+  readdirSync: fs.readdirSync as typeof fs.readdirSync,
   realpathSync: fs.realpathSync as typeof fs.realpathSync,
   kill: ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); }),
   /**
@@ -864,11 +879,20 @@ export function buildRipgrepShellIntegration(config: RipgrepConfig = resolveRipg
  */
 function buildSnapshotScript(shellPath: string, configFileExists: boolean): string {
   const isZsh = shellPath.includes('zsh');
+  // zsh function bodies are written verbatim; bash function bodies are base64-encoded
+  // and wrapped in `eval "$(… base64 -d)"` so special characters survive the capture
+  // intact — parity with Claude Code's `getUserSnapshotContent` (ShellSnapshot.ts:L203-232).
+  // `declare -f`/`typeset -f >/dev/null` runs first to force-autoload lazy functions;
+  // single-underscore completion funcs are filtered (`grep -vE '^_[^_]'`) while
+  // double-underscore helpers (e.g. __pyenv_init) are kept.
   const functions = isZsh
     ? `typeset -f > /dev/null 2>&1
 typeset +f | grep -vE '^_[^_]' | while read func; do typeset -f "$func" >> "$SNAPSHOT_FILE"; done`
     : `declare -f > /dev/null 2>&1
-declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do declare -f "$func" >> "$SNAPSHOT_FILE"; done`;
+declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do
+  encoded_func=$(declare -f "$func" | base64)
+  echo "eval \\"\\$(echo '$encoded_func' | base64 -d)\\" > /dev/null 2>&1" >> "$SNAPSHOT_FILE"
+done`;
   const options = isZsh
     ? `setopt | sed 's/^/setopt /' | head -n 1000 >> "$SNAPSHOT_FILE"
 echo "setopt aliases" >> "$SNAPSHOT_FILE"`
@@ -930,10 +954,35 @@ export function createShellSnapshot(shellPath: string): string | null {
       stdio: ['ignore', 'ignore', 'ignore'],
       env: { ...process.env, AMI_SNAPSHOT_FILE: file, GIT_EDITOR: 'true' },
     });
+    // Post-creation verification (parity with Claude Code's `stat().size` check,
+    // ShellSnapshot.ts:L521-568): the capture shell can exit 0 yet leave no artifact
+    // (e.g. a `>| "$SNAPSHOT_FILE"` that silently failed, or the tmpdir was swept
+    // mid-capture). Distinguish that exit-0-but-missing case from a real success,
+    // and when it happens log the snapshot directory's contents so the
+    // "process succeeded but produced nothing" edge is diagnosable.
     if (!shellHooks.existsSync(file)) {
       shellHooks.onShellDebug(`Snapshot file was not created: ${file}`);
+      try {
+        const dirContents = shellHooks.readdirSync(dir);
+        shellHooks.onShellDebug(`Snapshot directory ${dir} contains ${dirContents.length} file(s)`);
+      } catch {
+        shellHooks.onShellDebug(`Snapshot directory not accessible: ${dir}`);
+      }
       return null;
     }
+    // Report the artifact's byte size (bounded by the 1MB maxBuffer capture cap)
+    // so a zero-byte / runaway snapshot is observable via the debug surface.
+    let snapshotSize: number | undefined;
+    try {
+      snapshotSize = shellHooks.statSync(file).size;
+    } catch {
+      // stat raced the file away after existsSync; size stays unknown.
+    }
+    shellHooks.onShellDebug(
+      snapshotSize === undefined
+        ? `Shell snapshot created (size unknown): ${file}`
+        : `Shell snapshot created successfully (${snapshotSize} bytes)`,
+    );
     return file;
   } catch (err) {
     shellHooks.onShellDebug(`Failed to create shell snapshot: ${(err as Error).message}`);
