@@ -9,7 +9,7 @@ import { projectStateDir, ndjsonSafeStringify, canonicalGitRoot, resolveConfigDi
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, fsHooks, OWNER_ONLY_FILE_MODE, OWNER_ONLY_DIR_MODE } from './utils/fs-atomic';
 import { getGitBranch } from './utils/git';
-import { stripDisplayTags } from './utils/display-tags';
+import { stripDisplayTags, extractTag } from './utils/display-tags';
 import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
 import { isWSL } from './utils/env';
@@ -349,13 +349,6 @@ export function extractLastJsonStringField(text: string, field: string): string 
 const SKIP_FIRST_PROMPT_PATTERN =
   /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/;
 
-/** Captures the command name from a `<command-name>…</command-name>` wrapper so a
- *  slash-command-only turn becomes a clean label fallback instead of raw XML. */
-const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/;
-
-/** Captures bash-mode input so a `! cmd` turn is labelled as the user typed it. */
-const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/;
-
 /** Compaction summaries are the ONLY record of the pre-compaction conversation.
  *  They are kept inline in full (never offloaded) so a missing blob can never
  *  cost us the summarized history on --resume. */
@@ -408,15 +401,17 @@ function collectMeaningfulPrompts(messages: Message[]): { prompts: string[]; com
       if (flat.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
 
       // Slash command: remember the first as a fallback, keep looking for a prompt.
-      const cmd = COMMAND_NAME_RE.exec(flat);
-      if (cmd) {
-        if (!commandFallback) commandFallback = cmd[1].trim();
+      // Single canonical named-tag extraction (extractTag) rather than an ad-hoc
+      // per-tag regex (§0b.6 — no duplicated tag-parsing logic).
+      const cmd = extractTag(flat, 'command-name');
+      if (cmd !== null) {
+        if (!commandFallback) commandFallback = cmd.trim();
         continue;
       }
 
       // Bash input: label as typed — checked BEFORE the generic XML-tag skip.
-      const bash = BASH_INPUT_RE.exec(flat);
-      if (bash) { prompts.push(`! ${bash[1].trim()}`); continue; }
+      const bash = extractTag(flat, 'bash-input');
+      if (bash !== null) { prompts.push(`! ${bash.trim()}`); continue; }
 
       if (SKIP_FIRST_PROMPT_PATTERN.test(flat)) continue;
 

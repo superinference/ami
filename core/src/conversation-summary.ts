@@ -2,6 +2,7 @@ import type { Message, AssistantMessage, ToolMessage } from './types';
 import { estimateMessageTokens, estimateToolCallTokens } from './token-estimator';
 import { computeLineDiff } from './line-diff';
 import { FILE_MUTATING_TOOLS } from './tools/background-live-turns';
+import { isHumanTurn } from './message-display';
 
 /**
  * File-extension → human language label, mirroring Claude Code's insights
@@ -170,12 +171,6 @@ function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-/** A message counts as a human turn when it is a user message that is NOT an
- *  engine-injected meta/control message. */
-export function isHumanTurn(msg: Message): boolean {
-  return msg.role === 'user' && !(msg as { isMeta?: boolean }).isMeta;
 }
 
 export function extractConversationMeta(messages: Message[]): ConversationMeta {

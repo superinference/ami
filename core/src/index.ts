@@ -454,7 +454,7 @@ export { detectToolConflict, isReservedToolName, ToolRegistryGuard, validateTool
 export type { ToolConflict, RegistrableToolLike, ToolRegistryGuardOptions } from './tools/tool-registry-guard';
 export { RESERVED_TOOL_PREFIXES } from './tools/tool-registry-guard';
 export { GLOB_RIPGREP_ENV, isRipgrepGlobEnabled } from './tools/glob';
-export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, isHumanTurn, estimateCompactionMessageTokens, dropOrphanedToolResults, selectRecentWithinBudget, buildTruncationMarker, getLanguageFromPath, categorizeToolError, responseTimeHistogram, formatDuration, formatConversationSummary } from './conversation-summary';
+export { countToolUses, extractFilesModified, extractConversationMeta, getConversationDuration, estimateCompactionMessageTokens, dropOrphanedToolResults, selectRecentWithinBudget, buildTruncationMarker, getLanguageFromPath, categorizeToolError, responseTimeHistogram, formatDuration, formatConversationSummary } from './conversation-summary';
 export type { ConversationMeta, BudgetSelection } from './conversation-summary';
 export { computeLineDiff } from './line-diff';
 export { sanitizeToolInput, validateRequiredFields, detectPromptInjection, recoverJsonStringFields, expandTabs, DEFAULT_TAB_INTERVAL } from './tools/input-sanitizer';
@@ -525,6 +525,9 @@ export {
   REDACTED_THINKING_PLACEHOLDER,
   isRedactedThinkingBlock,
   thinkingDisplayText,
+  SI_RETRIEVAL_PREFIX,
+  isInjectedUserMessage,
+  isHumanTurn,
 } from './message-display';
 export type {
   ToolResultState,

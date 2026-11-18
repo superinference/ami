@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { stripDisplayTags, stripInjectedContextTags } from '../src/utils/display-tags';
+import { stripDisplayTags, stripInjectedContextTags, extractTag } from '../src/utils/display-tags';
 import { SessionManager } from '../src/session';
 import type { Session } from '../src/session';
 import { generateTitle } from '../src/title-generator';
@@ -207,5 +207,55 @@ describe('generateTitle (wired to stripDisplayTags)', () => {
     );
     assert.equal(title, 'Add a retry helper');
     assert.ok(!title.includes('machine noise'));
+  });
+});
+
+describe('extractTag (generic named-tag extraction primitive)', () => {
+  it('extracts the inner content of a named tag block', () => {
+    assert.equal(extractTag('<command-name>/clear</command-name>', 'command-name'), '/clear');
+    assert.equal(
+      extractTag('before <local-command-stdout>line1\nline2</local-command-stdout> after', 'local-command-stdout'),
+      'line1\nline2',
+    );
+  });
+
+  it('is case-insensitive and tolerates attributes on the opening tag', () => {
+    assert.equal(extractTag('<CommandName>/x</CommandName>', 'commandname'), '/x');
+    assert.equal(extractTag('<bash-input lang="sh">ls -la</bash-input>', 'bash-input'), 'ls -la');
+  });
+
+  it('returns null when the tag is absent or unmatched', () => {
+    assert.equal(extractTag('plain text, no tags', 'command-name'), null);
+    assert.equal(extractTag('<command-name>/x', 'command-name'), null); // no closing tag
+  });
+
+  it('returns null for empty/blank html or tagName', () => {
+    assert.equal(extractTag('', 'tag'), null);
+    assert.equal(extractTag('   ', 'tag'), null);
+    assert.equal(extractTag('<tag>x</tag>', ''), null);
+    assert.equal(extractTag('<tag>x</tag>', '   '), null);
+  });
+
+  it('returns null when the matched block has empty content', () => {
+    assert.equal(extractTag('<tag></tag>', 'tag'), null);
+  });
+
+  it('escapes regex metacharacters in the tag name (literal match)', () => {
+    assert.equal(extractTag('<a.b>x</a.b>', 'a.b'), 'x');
+    assert.equal(extractTag('<aXb>x</aXb>', 'a.b'), null); // '.' must NOT match 'X'
+  });
+
+  it('is nesting-aware: the non-greedy body stops at the first close (parity with reference)', () => {
+    const html = '<box><box>inner</box> outer</box>';
+    assert.equal(extractTag(html, 'box'), '<box>inner');
+  });
+
+  it('skips a match whose preceding tags leave it at a non-zero nesting depth', () => {
+    // A leading unmatched close tag puts the later block at depth -1 → skipped → null.
+    assert.equal(extractTag('foo</box><box>bar</box>', 'box'), null);
+  });
+
+  it('matches the first depth-0 block when several siblings exist', () => {
+    assert.equal(extractTag('<t>first</t><t>second</t>', 't'), 'first');
   });
 });

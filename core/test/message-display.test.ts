@@ -10,9 +10,12 @@ import {
   REDACTED_THINKING_PLACEHOLDER,
   isRedactedThinkingBlock,
   thinkingDisplayText,
+  SI_RETRIEVAL_PREFIX,
+  isInjectedUserMessage,
+  isHumanTurn,
 } from '../src/message-display';
 import { SYNTHETIC_TOOL_RESULT_PLACEHOLDER } from '../src/provider-transform';
-import type { ToolResult } from '../src/types';
+import type { ToolResult, Message } from '../src/types';
 
 describe('message-display: classifyToolResultState', () => {
   it('discriminates all five mutually-exclusive states', () => {
@@ -108,5 +111,86 @@ describe('message-display: redacted thinking', () => {
     assert.equal(thinkingDisplayText({ type: 'thinking' }, '  reasoning  '), 'reasoning');
     assert.equal(thinkingDisplayText({ type: 'thinking' }, '   '), undefined);
     assert.equal(thinkingDisplayText({ type: 'thinking' }), undefined);
+  });
+});
+
+describe('message-display: isInjectedUserMessage', () => {
+  const user = (over: Partial<Message> = {}): Message =>
+    ({ role: 'user', content: 'hello', ...over } as Message);
+
+  it('is false for a genuine human user message', () => {
+    assert.equal(isInjectedUserMessage(user()), false);
+    assert.equal(isInjectedUserMessage(user({ content: 'fix the login bug' })), false);
+  });
+
+  it('is false for non-user roles', () => {
+    assert.equal(isInjectedUserMessage({ role: 'assistant', content: 'x' } as Message), false);
+    assert.equal(isInjectedUserMessage({ role: 'tool', tool_call_id: 't', content: 'r' } as Message), false);
+    assert.equal(isInjectedUserMessage({ role: 'system', content: 's' } as Message), false);
+  });
+
+  it('is true for transcript-only / hook-additional-context attachments', () => {
+    assert.equal(isInjectedUserMessage(user({ isVisibleInTranscriptOnly: true } as Partial<Message>)), true);
+    assert.equal(isInjectedUserMessage(user({ hookAdditionalContext: true } as Partial<Message>)), true);
+  });
+
+  it('is true for a message that begins with the SI retrieval prefix', () => {
+    assert.equal(isInjectedUserMessage(user({ content: `${SI_RETRIEVAL_PREFIX}\nsome retrieved context` })), true);
+  });
+
+  it('is true for an all-injected system-reminder turn', () => {
+    assert.equal(
+      isInjectedUserMessage(user({ content: '<system-reminder>The file X changed externally.</system-reminder>' })),
+      true,
+    );
+  });
+
+  it('is false for a human turn that merely carries an injected block alongside prose', () => {
+    assert.equal(
+      isInjectedUserMessage(user({ content: '<system-reminder>noise</system-reminder>\nPlease add a retry helper' })),
+      false,
+    );
+  });
+
+  it('is false for empty content', () => {
+    assert.equal(isInjectedUserMessage(user({ content: '' })), false);
+  });
+});
+
+describe('message-display: isHumanTurn', () => {
+  it('counts a genuine human user message', () => {
+    assert.equal(isHumanTurn({ role: 'user', content: 'hi' } as Message), true);
+  });
+
+  it('excludes isMeta control nudges', () => {
+    assert.equal(isHumanTurn({ role: 'user', content: 'nudge', isMeta: true } as Message), false);
+  });
+
+  it('excludes engine-injected system-reminder and SI-retrieval user turns', () => {
+    assert.equal(
+      isHumanTurn({ role: 'user', content: '<system-reminder>external change</system-reminder>' } as Message),
+      false,
+    );
+    assert.equal(
+      isHumanTurn({ role: 'user', content: `${SI_RETRIEVAL_PREFIX}\nctx` } as Message),
+      false,
+    );
+  });
+
+  it('excludes non-user roles', () => {
+    assert.equal(isHumanTurn({ role: 'assistant', content: 'x' } as Message), false);
+    assert.equal(isHumanTurn({ role: 'tool', tool_call_id: 't', content: 'r' } as Message), false);
+  });
+
+  it('does not over-count injected turns mixed with real human turns', () => {
+    const messages: Message[] = [
+      { role: 'user', content: 'first real question' } as Message,
+      { role: 'assistant', content: 'answer' } as Message,
+      { role: 'user', content: '<system-reminder>file changed</system-reminder>' } as Message,
+      { role: 'user', content: 'nudge', isMeta: true } as Message,
+      { role: 'user', content: `${SI_RETRIEVAL_PREFIX}\nctx` } as Message,
+      { role: 'user', content: 'second real question' } as Message,
+    ];
+    assert.equal(messages.filter(isHumanTurn).length, 2);
   });
 });

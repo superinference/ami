@@ -12,8 +12,10 @@
  *  - `AssistantRedactedThinkingMessage` redacted/encrypted reasoning placeholder
  */
 
-import type { ToolResult } from './types';
+import type { ToolResult, Message, UserMessage } from './types';
 import { SYNTHETIC_TOOL_RESULT_PLACEHOLDER } from './provider-transform';
+import { stripInjectedContextTags } from './utils/display-tags';
+import { contentToText } from './session';
 
 // ---------------------------------------------------------------------------
 // Tool-result state (parity: UserToolResultMessage.tsx L40-L104)
@@ -226,4 +228,52 @@ export function thinkingDisplayText(block: unknown, plaintext?: string): string 
   if (isRedactedThinkingBlock(block)) return REDACTED_THINKING_PLACEHOLDER;
   const text = (plaintext ?? '').trim();
   return text.length > 0 ? text : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Human-turn classification (parity: messagePredicates.ts isHumanTurn, L6-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marker prefixing the engine-injected SuperInference retrieval context block when
+ * it is surfaced as a user turn. SINGLE SOURCE OF TRUTH — `common/src/si-observe`
+ * re-exports this so the string that is WRITTEN (the injector) and the string that
+ * is DETECTED here (turn classification) can never drift.
+ */
+export const SI_RETRIEVAL_PREFIX = '[SI retrieval]';
+
+/**
+ * True when a user-role message is engine-injected rather than typed by the human:
+ *   - a transcript-only or hook-additional-context attachment, or
+ *   - content that begins with the {@link SI_RETRIEVAL_PREFIX} retrieval block, or
+ *   - content consisting ENTIRELY of injected-context wrapper tags
+ *     (`<system-reminder>` / IDE / local-command markers — detected via the canonical
+ *     {@link stripInjectedContextTags}, so a turn that still carries human prose
+ *     alongside an injected block is NOT treated as injected).
+ * Non-user messages are never "injected user messages".
+ */
+export function isInjectedUserMessage(m: Message): boolean {
+  if (m.role !== 'user') return false;
+  const u = m as UserMessage;
+  if (u.isVisibleInTranscriptOnly || u.hookAdditionalContext) return true;
+  const text = contentToText(u.content).trimStart();
+  if (!text) return false;
+  if (text.startsWith(SI_RETRIEVAL_PREFIX)) return true;
+  // All-injected turn: nothing survives stripping the injected-context wrappers.
+  return stripInjectedContextTags(text) === '';
+}
+
+/**
+ * The canonical human-turn discriminant: a user-role message that is neither an
+ * ephemeral `isMeta` control message nor an {@link isInjectedUserMessage}. Used by
+ * every human-turn count / lookup so engine-injected framing (system-reminder
+ * blocks, the SI retrieval prefix, meta nudges) never inflates the tally.
+ *
+ * Parity: Claude Code's `isHumanTurn` discriminant
+ * (references/claude/claude-code-main/src/utils/messagePredicates.ts:L6-8),
+ * adapted to AMI's schema (tool results are `role:'tool'`, so the `toolUseResult`
+ * half is structural; the `!isMeta` half plus injected-message exclusion is here).
+ */
+export function isHumanTurn(m: Message): m is UserMessage {
+  return m.role === 'user' && !(m as UserMessage).isMeta && !isInjectedUserMessage(m);
 }

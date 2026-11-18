@@ -84,3 +84,58 @@ const INJECTED_CONTEXT_TAGS_PATTERN = /<(system-reminder|system|ide_opened_file|
 export function stripInjectedContextTags(text: string): string {
   return text.replace(INJECTED_CONTEXT_TAGS_PATTERN, '').trim();
 }
+
+/** Escape the regex metacharacters in an arbitrary tag name so it can be spliced
+ *  into a dynamically-built pattern as a literal. Inlined (not a shared helper) to
+ *  keep {@link extractTag} self-contained; it is the only consumer. */
+function escapeTagName(tag: string): string {
+  return tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Extract the inner content of the FIRST correctly-nested `<tag>…</tag>` block
+ * for an arbitrary `tagName`, returning `null` when absent. The reusable,
+ * parameterized complement to the strip helpers above: where {@link stripDisplayTags}
+ * REMOVES wrapper blocks, this PULLS a named channel out of message content — e.g.
+ * the command name/args/output markers a local slash-command turn carries
+ * (`<command-name>`, `<bash-input>`, `<local-command-stdout>`). Parity: Claude's
+ * `extractTag` (references/claude/claude-code-main/src/utils/messages.ts:633-687),
+ * used by `UserLocalCommandOutputMessage` to render local-command stdout/stderr.
+ *
+ * Behaviour matched to the reference:
+ *   - case-insensitive tag match; opening tag may carry attributes
+ *     (`<tag foo="bar">`); the body is multi-line and matched non-greedily.
+ *   - empty/blank `html` or `tagName` ⇒ `null`.
+ *   - nesting-aware: a match is only returned when it sits at nesting depth 0
+ *     (counting opening/closing tags of the same name that precede it), so a
+ *     nested same-name block does not return the inner fragment of an outer one.
+ *   - returns `null` when a match is found but its content is empty.
+ */
+export function extractTag(html: string, tagName: string): string | null {
+  if (!html.trim() || !tagName.trim()) return null;
+
+  const escaped = escapeTagName(tagName);
+  // eslint-disable-next-line security/detect-non-literal-regexp -- `escaped` is regex-escaped above, so the only dynamic input is a literal tag name; no injection.
+  const pattern = new RegExp(`<${escaped}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${escaped}>`, 'gi');
+  // eslint-disable-next-line security/detect-non-literal-regexp -- same escaped literal; counts nesting depth before a match.
+  const openingTag = new RegExp(`<${escaped}(?:\\s+[^>]*?)?>`, 'gi');
+  // eslint-disable-next-line security/detect-non-literal-regexp -- same escaped literal; counts nesting depth before a match.
+  const closingTag = new RegExp(`<\\/${escaped}>`, 'gi');
+
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  while ((match = pattern.exec(html)) !== null) {
+    const content = match[1];
+    const beforeMatch = html.slice(lastIndex, match.index);
+
+    let depth = 0;
+    openingTag.lastIndex = 0;
+    while (openingTag.exec(beforeMatch) !== null) depth++;
+    closingTag.lastIndex = 0;
+    while (closingTag.exec(beforeMatch) !== null) depth--;
+
+    if (depth === 0 && content) return content;
+    lastIndex = match.index + match[0].length;
+  }
+  return null;
+}

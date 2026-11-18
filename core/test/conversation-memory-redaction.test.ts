@@ -9,7 +9,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { extractConversationMeta, isHumanTurn } from '../src/conversation-summary';
+import { extractConversationMeta } from '../src/conversation-summary';
+// isHumanTurn moved to its canonical home (message-display) as the single
+// human-turn discriminant; conversation-summary now imports it from there.
+import { isHumanTurn } from '../src/message-display';
 import type { Message } from '../src/types';
 import { MemoryManager } from '../src/memory';
 import { projectStateDir } from '../src/reference-journal';
