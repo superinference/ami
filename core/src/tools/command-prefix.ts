@@ -144,3 +144,35 @@ export function unwrapWrapperChain(command: string): UnwrappedCommand | null {
   if (wrappers.length === 0) return null;
   return { wrappers, inner: tokens.join(' ') };
 }
+
+/**
+ * Compound-prefix bare-root drop guard.
+ *
+ * When word-aligned longest-common-prefix collapse of a group of compound-command
+ * prefixes sharing a root degenerates to a SINGLE word (`git add` + `git commit`
+ * → `git`, `git fetch` + `git worktree add` → `git`), that collapsed root must NOT
+ * be emitted as an "allow always" permission rule when the root is subcommand
+ * aware: a bare `git` rule would auto-allow `git push --force` forever. In that
+ * case the caller DROPS the whole group rather than suggest the too-broad root (or
+ * N un-collapsed rules). A multi-word LCP (`npm run`) is always safe to keep — it
+ * is narrowly scoped — so this returns false for it.
+ *
+ * Mirrors Claude Code's `getCompoundCommandPrefixesStatic` collapse guard
+ * (utils/powershell/staticPrefix.ts L271-280): when `lcpWordCount <= 1` and the
+ * root declares subcommands / has a `DEPTH_RULES` entry, the group is dropped.
+ *
+ * `isSubcommandAwareRoot` is INJECTED — the subcommand-aware-root oracle
+ * (`SUBCOMMAND_AWARE_ROOTS` / the command-spec table) lives in the permission
+ * layer, which imports this module; taking it as a parameter keeps this primitive
+ * dependency-free (no import cycle) and unit-testable in isolation.
+ */
+export function isBareSubcommandAwareRoot(
+  collapsedPrefix: string,
+  isSubcommandAwareRoot: (root: string) => boolean,
+): boolean {
+  const trimmed = collapsedPrefix.trim();
+  // Empty or multi-word prefixes are never a bare root: a scoped `cmd subcommand`
+  // (or `npm run`) rule is safe to keep.
+  if (trimmed === '' || trimmed.includes(' ')) return false;
+  return isSubcommandAwareRoot(trimmed);
+}

@@ -61,9 +61,18 @@ test('suggestAllowPrefix + compound derivation benefit from flag-value skipping 
   // now it derives a correctly scoped `git status`.
   assert.equal(suggestAllowPrefix('git -C /repo status'), 'git status');
   // Compound command: each subcommand scoped through the same spec-driven path.
+  // FUNCTIONAL CHANGE (U345 w112, Claude-parity §0c): `git fetch`+`git pull` LCP
+  // to the bare subcommand-aware root `git`, which the collapse guard now DROPS
+  // (previously emitted ['git'], auto-allowing `git push --force`).
   assert.deepEqual(
     getCompoundCommandPrefixes('git -C /repo fetch && git -C /repo pull'),
-    ['git'],
+    [],
+  );
+  // Flag-value skipping still benefits a compound whose LCP stays multi-word:
+  // `npm -w pkg run build`+`npm -w pkg run test` → the scoped `npm run` rule.
+  assert.deepEqual(
+    getCompoundCommandPrefixes('npm -w pkg run build && npm -w pkg run test'),
+    ['npm run'],
   );
 });
 

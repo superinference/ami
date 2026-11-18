@@ -9,7 +9,7 @@ import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystem
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS, canonicalizePowerShellCommandName } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
-import { unwrapWrapperChain } from './tools/command-prefix';
+import { unwrapWrapperChain, isBareSubcommandAwareRoot } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
@@ -3891,7 +3891,17 @@ export function getCompoundCommandPrefixes(
     else groups.set(root, [prefix]);
   }
   const collapsed: string[] = [];
-  for (const group of groups.values()) collapsed.push(wordAlignedCommonPrefix(group));
+  for (const group of groups.values()) {
+    const lcp = wordAlignedCommonPrefix(group);
+    // Bare-root drop guard: never collapse a group down to a single subcommand
+    // aware root (`git fetch`+`git worktree add` → `git`, `git add`+`git commit`
+    // → `git`). A bare `git:*` rule would auto-allow `git push --force` forever,
+    // so DROP the whole group rather than suggest the too-broad root. A multi-word
+    // LCP (`npm run`) is narrowly scoped and kept. Mirrors Claude's
+    // getCompoundCommandPrefixesStatic collapse guard (staticPrefix.ts L271-280).
+    if (isBareSubcommandAwareRoot(lcp, root => SUBCOMMAND_AWARE_ROOTS.has(root))) continue;
+    collapsed.push(lcp);
+  }
   return collapsed;
 }
 

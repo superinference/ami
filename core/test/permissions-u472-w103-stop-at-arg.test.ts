@@ -66,11 +66,14 @@ test('leaf subcommand depth cap keeps a transient SHA/ref/tag out of the grant',
 
 test('transient tokens are excluded end-to-end from a compound allow grant', () => {
   // The exact function tool-executor calls to seed "allow always" rules: a
-  // compound chain of git commands with transient ref/SHA args collapses to a
-  // single root-scoped rule with NO transient token embedded.
+  // compound chain of git commands with transient ref/SHA args scopes each
+  // subcommand with NO transient token embedded (`git show`, `git checkout`).
+  // FUNCTIONAL CHANGE (U345 w112, Claude-parity §0c): those two LCP to the bare
+  // subcommand-aware root `git`, which the collapse guard now DROPS rather than
+  // emit ['git'] (which would auto-allow `git push --force`).
   assert.deepEqual(
     getCompoundCommandPrefixes('git show 81210f8 && git checkout mybranch'),
-    ['git'],
+    [],
   );
   // A URL-bearing download subcommand contributes only its safe root, never
   // the URL, alongside a sibling subcommand's scoped prefix.

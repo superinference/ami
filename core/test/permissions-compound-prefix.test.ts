@@ -41,11 +41,31 @@ test('excludeSubcommand drops read-only / auto-allowed subcommands', () => {
 
 test('subcommands sharing a root collapse via word-aligned LCP', () => {
   assert.deepEqual(
+    getCompoundCommandPrefixes('npm run lint && npm run test'),
+    ['npm run'],
+  );
+});
+
+// U345 (w112) — bare-root drop guard on the compound LCP collapse.
+// FUNCTIONAL CHANGE (Claude-parity, §0c): a group whose word-aligned LCP
+// degenerates to a bare SUBCOMMAND-AWARE root (`git fetch`+`git worktree add`
+// → `git`, `git add`+`git commit` → `git`) is now DROPPED rather than emitted.
+// Previously this returned ['git'], which would auto-allow `git push --force`.
+// Mirrors Claude's getCompoundCommandPrefixesStatic collapse guard
+// (utils/powershell/staticPrefix.ts L271-280).
+test('bare subcommand-aware root collapse is dropped, not emitted', () => {
+  assert.deepEqual(
     getCompoundCommandPrefixes('git fetch origin && git worktree add wt'),
-    ['git'],
+    [],
   );
   assert.deepEqual(
-    getCompoundCommandPrefixes('npm run lint && npm run test'),
+    getCompoundCommandPrefixes('git add . && git commit -m "x"'),
+    [],
+  );
+  // Mixed roots: the git group drops (bare root), the npm group keeps its
+  // two-word `npm run`.
+  assert.deepEqual(
+    getCompoundCommandPrefixes('git add . && git commit -m "x" && npm run build && npm run test'),
     ['npm run'],
   );
 });
