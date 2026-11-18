@@ -1645,6 +1645,60 @@ export function formatHookDenyReason(event: string | undefined, reason?: string)
   }
 }
 
+/**
+ * Decode a COMPLETED background ('async') hook's result sentinel — the string
+ * {@link HookManager} (runHookByType) returns — into a human-facing re-wake
+ * message, or `undefined` when there is nothing to deliver.
+ *
+ * This is the delivery side of Claude Code's `checkForAsyncHookResponses`: a
+ * backgrounded hook that exits 0 (or non-blocking non-zero) with
+ * `additionalContext` / `systemMessage` / `updatedInput` / plain stdout produces
+ * a result that the fire-and-forget path would otherwise DISCARD (the turn has
+ * already moved on without awaiting it). The hook's result is parsed once and
+ * re-injected via the existing `hookRewake` channel.
+ *
+ * A DENY result (command exit 2, prompt engine-error / DENY) ALREADY emitted its
+ * own `hookRewake` at the source inside runHookByType, so this returns
+ * `undefined` for it — the completed-hook delivery never double-fires. A decoded
+ * sentinel the command path can emit:
+ *  - `SYSTEM:<msg>`   → the warning/non-blocking message
+ *  - `ASK:<reason>`   → an approval-required notice
+ *  - `MODIFY:{additionalContext}` → the additional context string
+ *  - `MODIFY:<updatedInput>`      → an updated-tool-input notice
+ *  - plain text       → delivered verbatim
+ */
+export function asyncRewakeDeliveryMessage(result: string): string | undefined {
+  const trimmed = (result ?? '').trim();
+  if (!trimmed) return undefined;
+  // DENY / exit-2 / engine-error outputs already re-woke at their source.
+  if (trimmed.startsWith('DENY:')) return undefined;
+  if (trimmed.startsWith('SYSTEM:')) {
+    const msg = trimmed.slice('SYSTEM:'.length).trim();
+    return msg || undefined;
+  }
+  if (trimmed.startsWith('ASK:')) {
+    const reason = trimmed.slice('ASK:'.length).trim();
+    return reason ? `Requires approval: ${reason}` : 'Requires approval';
+  }
+  if (trimmed.startsWith('MODIFY:')) {
+    const payload = trimmed.slice('MODIFY:'.length);
+    let parsed: { additionalContext?: unknown };
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      // Malformed MODIFY payload carries nothing to deliver.
+      return undefined;
+    }
+    if (typeof parsed.additionalContext === 'string' && parsed.additionalContext.trim()) {
+      return parsed.additionalContext.trim();
+    }
+    // Any other MODIFY payload is the raw updated-tool-input object.
+    return `Updated tool input: ${payload}`;
+  }
+  // Plain-text success output from a background hook.
+  return trimmed;
+}
+
 /** Global hook kill-switch via environment (Claude Code's `CLAUDE_CODE_SIMPLE`):
  *  when set truthy, EVERY hook source is skipped at load time — a fast,
  *  config-file-free escape hatch for a user who wants a hook-free session. The
@@ -3477,7 +3531,21 @@ export class HookManager extends EventEmitter {
     if (typeof timer.unref === 'function') timer.unref();
     const outcome = { success: true };
     const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal, outcome, envFileHint)
-      .then(() => { if (outcome.success && onSuccess) onSuccess(); })
+      .then((output) => {
+        if (outcome.success && onSuccess) onSuccess();
+        // Deliver the COMPLETED background hook's result back into the turn once
+        // (Claude Code's checkForAsyncHookResponses). Without this a backgrounded
+        // hook that exits 0 with additionalContext / systemMessage / plain stdout
+        // is silently dropped — the fire-and-forget path moved on without reading
+        // its output. Gated on the hook's explicit `asyncRewake` opt-in, matching
+        // the DENY/exit-2 re-wake gate; DENY outputs already re-woke at their
+        // source (asyncRewakeDeliveryMessage returns undefined for them), so this
+        // never double-fires.
+        if (config.asyncRewake && typeof output === 'string') {
+          const message = asyncRewakeDeliveryMessage(output);
+          if (message) this.emit('hookRewake', { event: config.type, message, ...this.rewakeAttribution(config) });
+        }
+      })
       .catch(() => { /* async hooks never surface errors to the turn */ })
       .finally(() => {
         clearTimeout(timer);
