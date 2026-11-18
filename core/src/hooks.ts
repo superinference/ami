@@ -3777,6 +3777,10 @@ export class HookManager extends EventEmitter {
    * Command hooks execute a shell command; exit code 0 = allow, non-zero = deny.
    */
   loadFromFile(cwd: string): void {
+    // Remember the directory this load read from so a later no-arg
+    // {@link reloadFromDisk}/{@link reloadPluginHooks} re-reads the SAME workspace
+    // (the engine calls loadFromFile with config.cwd but does not setCwd first).
+    this._cwd = cwd;
     // Reset the introspection descriptor set so a reload reflects the current
     // on-disk config (no stale accumulation across loads).
     this._descriptors = [];
@@ -4068,19 +4072,78 @@ export class HookManager extends EventEmitter {
    * removes nothing).
    */
   clearPluginHooks(): number {
+    const removed = this.removeConfigHooksWhere(
+      prov => prov.pluginName !== undefined || prov.pluginRoot !== undefined,
+    );
+    if (removed > 0) coreLog('hooks', `Cleared ${removed} plugin hook(s)`);
+    return removed;
+  }
+
+  /**
+   * Remove every config/file-registered hook whose captured provenance satisfies
+   * `pred`, across all events. The single clear primitive shared by
+   * {@link clearPluginHooks} (plugin-only predicate) and {@link clearConfigHooks}
+   * (clear-all predicate) so neither re-implements the event-array walk + per-fn
+   * provenance lookup. Runtime/engine-registered hooks carry NO provenance and are
+   * therefore never matched (preserved). Returns the number removed.
+   */
+  private removeConfigHooksWhere(
+    pred: (prov: { source: string; pluginName?: string; pluginRoot?: string }) => boolean,
+  ): number {
     let removed = 0;
     for (const event of HOOK_EVENTS) {
       const arr = this.configHookArray(event);
       if (!arr) continue;
       for (const fn of [...arr]) {
         const prov = this._hookProvenance.get(fn);
-        if (prov && (prov.pluginName !== undefined || prov.pluginRoot !== undefined)) {
+        if (prov && pred(prov)) {
           if (this.removeConfigHook(event, fn)) removed++;
         }
       }
     }
-    if (removed > 0) coreLog('hooks', `Cleared ${removed} plugin hook(s)`);
     return removed;
+  }
+
+  /**
+   * Remove EVERY file/config/plugin-sourced hook registration (anything
+   * {@link processHookEntry} loaded from disk, identified by recorded provenance).
+   * Runtime/engine-registered hooks (no provenance) are preserved. The clear half
+   * of {@link reloadFromDisk}. Returns the number removed.
+   */
+  clearConfigHooks(): number {
+    const removed = this.removeConfigHooksWhere(() => true);
+    if (removed > 0) coreLog('hooks', `Cleared ${removed} config hook(s)`);
+    return removed;
+  }
+
+  /**
+   * Force a fresh mid-session re-read of the on-disk hook configuration (Claude
+   * Code's updateHooksConfigSnapshot): clear every file/config/plugin-sourced hook
+   * (via {@link clearConfigHooks}) then re-run {@link loadFromFile}, so an external
+   * edit to `.ami/hooks.json` / `settings.json` made AFTER startup is picked up
+   * without restarting the process. Runtime/engine-registered hooks are preserved.
+   *
+   * Unlike Claude Code, AMI's hook loader reads each source straight from disk with
+   * `fs.readFileSync` on every load and keeps no settings cache, so this re-read
+   * inherently reflects the current file contents and cannot be defeated by a file
+   * watcher's stability-threshold debounce — the stale-cache race the upstream
+   * `resetSettingsCache()` guards against does not exist here.
+   *
+   * Returns `{ cleared, registered }` (hooks removed, then re-registered from disk)
+   * for the `/hooks refresh` summary. `cwd` defaults to the directory of the last
+   * load (recorded by {@link loadFromFile}).
+   */
+  reloadFromDisk(cwd: string = this._cwd): { cleared: number; registered: number } {
+    const cleared = this.clearConfigHooks();
+    this.loadFromFile(cwd);
+    let registered = 0;
+    for (const event of HOOK_EVENTS) {
+      const arr = this.configHookArray(event);
+      if (!arr) continue;
+      for (const fn of arr) if (this._hookProvenance.has(fn)) registered++;
+    }
+    coreLog('hooks', `reloadFromDisk: cleared ${cleared}, registered ${registered} config hook(s)`);
+    return { cleared, registered };
   }
 
   /**
