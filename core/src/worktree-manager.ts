@@ -91,6 +91,89 @@ export function isSafeRefName(ref: string): boolean {
 }
 
 /**
+ * Memoization cache for {@link resolveGitDir}, keyed by the absolute start path
+ * (parity: Claude's `resolveGitDirCache`, utils/git/gitFilesystem.ts). Every
+ * downstream subprocess-free git reader (branch/HEAD) goes through the one
+ * memoized resolver so a worktree/submodule `.git`-file is parsed at most once
+ * per path.
+ */
+const resolveGitDirCache = new Map<string, string | null>();
+
+function computeGitDir(startPath: string): string | null {
+  const gitPath = path.join(startPath, '.git');
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(gitPath);
+  } catch {
+    return null; // no `.git` here (not a repo / unreadable)
+  }
+  // Regular repository: `.git` is a directory and IS the git dir.
+  if (stat.isDirectory()) return gitPath;
+  // A linked worktree / submodule stores `.git` as a FILE: `gitdir: <path>\n`.
+  if (!stat.isFile()) return null;
+  let content: string;
+  try {
+    content = fs.readFileSync(gitPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  // `.trim()` strips the trailing newline/CR (git writes `gitdir: <path>\n`,
+  // mirroring git's own setup.c which trims the pointer).
+  const trimmed = content.trim();
+  const prefix = 'gitdir:';
+  if (!trimmed.startsWith(prefix)) return null;
+  const rel = trimmed.slice(prefix.length).trim();
+  if (!rel) return null;
+  // The pointer is resolved relative to the worktree root (absolute pointers
+  // are used verbatim), then confirmed to exist so a stale pointer reads as
+  // "no git dir" rather than a path that cannot be read.
+  const resolved = path.isAbsolute(rel) ? rel : path.resolve(startPath, rel);
+  return fs.existsSync(resolved) ? resolved : null;
+}
+
+/**
+ * Resolve the REAL git directory for `startPath`, transparently handling the
+ * worktree/submodule case where `.git` is a FILE containing `gitdir: <path>`
+ * rather than a directory (parity: Claude's `resolveGitDir`,
+ * utils/git/gitFilesystem.ts:L28-L76). Returns the directory a reader should
+ * join `HEAD`/refs onto, or `null` when `startPath` is not a git repo / the
+ * pointer is stale/unreadable. Memoized per absolute start path.
+ *
+ * This is the LENIENT resolver used by subprocess-free readers (e.g. the
+ * journal's git-branch reader). {@link validateWorktreeGitFile} is the STRICT
+ * validator that additionally enforces the commondir trust chain and reports a
+ * granular error; this helper only answers "where is the git dir".
+ */
+export function resolveGitDir(startPath: string): string | null {
+  const key = path.resolve(startPath);
+  const cached = resolveGitDirCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = computeGitDir(key);
+  resolveGitDirCache.set(key, result);
+  return result;
+}
+
+/**
+ * Read the current branch name for the repo at `cwd` WITHOUT a git subprocess,
+ * correctly in a linked worktree where `.git` is a `gitdir:` pointer file
+ * (parity: Claude's filesystem git-HEAD reader). Resolves the real git dir via
+ * {@link resolveGitDir} before reading `HEAD`, so an agent/task running inside a
+ * `.ami/worktrees/` worktree records its actual branch instead of an empty
+ * string. Returns `''` on a detached HEAD, a non-repo, or any read failure.
+ */
+export function readGitBranchFromDisk(cwd: string): string {
+  const gitDir = resolveGitDir(cwd);
+  if (!gitDir) return '';
+  try {
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
+    const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+    return m ? m[1] : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Resolve the canonical MAIN repository root, even when invoked from inside an
  * existing worktree (so nested-worktree creation targets the real repo, not a
  * linked worktree). Falls back to cwd when git can't answer.
@@ -333,6 +416,29 @@ export function createWorktreeSession(cwd: string, name: string, opts: { signal?
 }
 
 /**
+ * True when the working tree at `worktreePath` has no changes (parity: Claude's
+ * central `getIsClean`, utils/git.ts:L356-L367). The ONE canonical cleanliness
+ * helper so every callsite shares the same hardened read instead of re-spelling
+ * `git status --porcelain`:
+ *   - `--no-optional-locks` — a read-only status never takes git's optional index
+ *     lock, so it cannot contend with a concurrent git operation in the tree.
+ *   - `ignoreUntracked` appends `--untracked-files=no` (git's `-uno`) so a tree
+ *     whose ONLY changes are untracked files reads as clean — the knob Claude's
+ *     `getIsClean({ ignoreUntracked })` exposes, which AMI previously lacked.
+ * Fail-closed: a git failure returns `false` (an unverifiable tree is treated as
+ * dirty), matching the never-act-on-uncertainty contract used across this module.
+ */
+export function isClean(worktreePath: string, opts: { ignoreUntracked?: boolean } = {}): boolean {
+  try {
+    const args = ['--no-optional-locks', 'status', '--porcelain'];
+    if (opts.ignoreUntracked) args.push('--untracked-files=no');
+    return gitExec(args, { cwd: worktreePath }) === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Count changes in a worktree (uncommitted files + unpushed commits).
  * Returns null on git failure (fail-closed — never removes on error).
  */
@@ -450,13 +556,11 @@ export function getWorktreeFileStatus(
  */
 export function stashToCleanState(worktreePath: string, message: string): boolean {
   try {
-    const before = gitExec(['--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath });
-    if (!before) return false; // nothing to stash
+    if (isClean(worktreePath)) return false; // nothing to stash
     gitExec(['stash', 'push', '-u', '-m', message], { cwd: worktreePath, stdio: 'pipe' });
     // Confirm the stash actually cleaned the tree (git stash can no-op in edge
     // cases); only report success when the working tree is genuinely clean.
-    const after = gitExec(['--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath });
-    return after === '';
+    return isClean(worktreePath);
   } catch {
     return false;
   }
@@ -475,7 +579,36 @@ export interface WorktreeCleanupResult {
   failed: Array<{ name: string; error: string }>;
 }
 
-export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): WorktreeCleanupResult {
+/**
+ * One day in milliseconds — the default throttle interval for recurring
+ * background cleanup (parity: Claude's `ONE_DAY_MS` marker-file throttle,
+ * utils/cleanup.ts). Exported so a caller can reason about the same window.
+ */
+export const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Marker file (inside the worktrees dir) recording the last throttled sweep. */
+const CLEANUP_MARKER = '.last-cleanup';
+
+/**
+ * Options for the recurring stale-worktree sweep.
+ *   - `throttle` gates the sweep to at most once per {@link ONE_DAY_MS} via a
+ *     marker file, so a long-lived / repeatedly-shutdown session does not
+ *     re-walk + re-prune every worktree on every invocation.
+ *   - `retentionCount` keeps the N most-recently-modified worktrees regardless
+ *     of age (parity: Claude's keep-newest-N retention knob,
+ *     `NPM_CACHE_RETENTION_COUNT`), so the freshest worktrees are never reclaimed
+ *     by a pure age cutoff even once they cross the threshold.
+ */
+export interface WorktreeCleanupOptions {
+  throttle?: boolean;
+  retentionCount?: number;
+}
+
+export function cleanupStaleWorktrees(
+  cwd: string,
+  maxAgeDays: number = 30,
+  opts: WorktreeCleanupOptions = {},
+): WorktreeCleanupResult {
   const worktreeDir = path.join(cwd, '.ami', 'worktrees');
   if (!fs.existsSync(worktreeDir)) return { cleaned: [], failed: [] };
 
@@ -484,6 +617,17 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): Wor
   // fail safe and skip all destructive removal until the config is fixed.
   if (isProjectConfigInvalid(cwd)) return { cleaned: [], failed: [] };
 
+  const markerPath = path.join(worktreeDir, CLEANUP_MARKER);
+  // Once-per-interval throttle: when enabled, skip entirely if the previous
+  // sweep's marker is newer than ONE_DAY_MS (recurring background cleanup should
+  // not re-run on every shutdown of a long session).
+  if (opts.throttle) {
+    const last = mtimeOrUndefined(markerPath);
+    if (last !== undefined && (Date.now() - last) < ONE_DAY_MS) {
+      return { cleaned: [], failed: [] };
+    }
+  }
+
   const cleaned: string[] = [];
   const failed: Array<{ name: string; error: string }> = [];
   const now = Date.now();
@@ -491,10 +635,26 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): Wor
   // Never reap the worktree the active session is currently using.
   const activePath = currentSession?.worktreePath ? path.resolve(currentSession.worktreePath) : null;
 
+  // Keep-newest-N retention: the `retentionCount` most-recently-modified worktree
+  // directories are protected from removal regardless of age.
+  let protectedNames: Set<string> | null = null;
+  if (typeof opts.retentionCount === 'number' && opts.retentionCount > 0) {
+    const dirs: Array<{ name: string; mtimeMs: number }> = [];
+    for (const entry of fs.readdirSync(worktreeDir)) {
+      try {
+        const st = fs.statSync(path.join(worktreeDir, entry));
+        if (st.isDirectory()) dirs.push({ name: entry, mtimeMs: st.mtimeMs });
+      } catch { /* unreadable — not a retention candidate */ }
+    }
+    dirs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    protectedNames = new Set(dirs.slice(0, opts.retentionCount).map(d => d.name));
+  }
+
   for (const entry of fs.readdirSync(worktreeDir)) {
     const fullPath = path.join(worktreeDir, entry);
     try {
       if (activePath && path.resolve(fullPath) === activePath) continue;
+      if (protectedNames?.has(entry)) continue; // keep newest-N regardless of age
       const stat = fs.statSync(fullPath);
       if (!stat.isDirectory()) continue;
 
@@ -522,6 +682,11 @@ export function cleanupStaleWorktrees(cwd: string, maxAgeDays: number = 30): Wor
   try {
     gitExec(['worktree', 'prune'], { cwd, timeout: 5000, stdio: 'ignore' });
   } catch { /* best effort */ }
+
+  // Record this sweep so the once-per-interval throttle can skip the next call.
+  if (opts.throttle) {
+    try { fs.writeFileSync(markerPath, String(now)); } catch { /* best effort */ }
+  }
 
   return { cleaned, failed };
 }
