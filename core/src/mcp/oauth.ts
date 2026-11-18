@@ -1602,8 +1602,22 @@ export function mcpTokenFileName(credentialKey: string): string {
  * session can enforce CSRF/session-fixation protection (RFC 6749 §10.12): when a
  * `state` is returned it MUST equal the one passed in, or the flow is rejected. A
  * legacy implementation that omits `state` keeps the prior (unchecked) behavior.
+ *
+ * It MAY also return a `reportOutcome` callback: the session invokes it exactly once
+ * after the authorization code has been spent — `{ ok: true }` when tokens were
+ * obtained and stored, `{ ok: false, error }` when the token exchange (or a CSRF
+ * re-check) failed. A browser-based consent leg can hold its callback response open
+ * until this fires and then render the REAL result to the user's tab, instead of
+ * optimistically claiming success the instant the code lands. Authorizers that render
+ * their page immediately simply omit it (the session's call becomes a no-op).
  */
-export type AuthorizeFn = (params: { authorizationUrl: string; redirectUri: string; state: string }) => Promise<{ code: string; state?: string }>;
+export interface AuthorizeResult {
+  code: string;
+  state?: string;
+  reportOutcome?: (outcome: { ok: boolean; error?: string }) => void;
+}
+
+export type AuthorizeFn = (params: { authorizationUrl: string; redirectUri: string; state: string }) => Promise<AuthorizeResult>;
 
 export interface McpOAuthSessionOptions {
   /** The MCP server URL — used as the RFC 8707 resource and for well-known fallback. */
@@ -2120,7 +2134,7 @@ export class McpOAuthSession implements McpOAuthProvider {
    * solely on the caller's abort signal). The timer is unref'd so it never keeps the
    * event loop alive, and always cleared when consent settles first.
    */
-  private async awaitConsent(consent: Promise<{ code: string; state?: string }>): Promise<{ code: string; state?: string }> {
+  private async awaitConsent(consent: Promise<AuthorizeResult>): Promise<AuthorizeResult> {
     const ms = this.opts.flowTimeoutMs ?? OAUTH_FLOW_TIMEOUT_MS;
     if (!ms || ms <= 0) return consent;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2149,6 +2163,17 @@ export class McpOAuthSession implements McpOAuthProvider {
     if (this.opts.xaa && isXaaEnabled(this.opts.env)) {
       return this.performXaaAuthorization();
     }
+    // Report the token-exchange outcome back to the consent leg exactly once, so a
+    // browser-based authorizer can defer its final callback page until the REAL result
+    // is known (success only after tokens are stored; error on a failed exchange/CSRF
+    // re-check). A no-op for authorizers that resolved their page immediately.
+    let authResult: AuthorizeResult | undefined;
+    let outcomeReported = false;
+    const reportOutcome = (ok: boolean, error?: string): void => {
+      if (outcomeReported) return;
+      outcomeReported = true;
+      authResult?.reportOutcome?.({ ok, error });
+    };
     try {
       const { prmScopes } = await this.discoverAuthorizationServer(wwwAuthenticate);
       const authMeta = this.authMeta!;
@@ -2202,7 +2227,7 @@ export class McpOAuthSession implements McpOAuthProvider {
         loginHint: this.opts.loginHint,
       });
       this.log({ step: 'authorize', message: `awaiting interactive consent at ${redactOAuthUrl(authorizationUrl)}` });
-      const authResult = await this.awaitConsent(this.opts.authorize({ authorizationUrl, redirectUri, state }));
+      authResult = await this.awaitConsent(this.opts.authorize({ authorizationUrl, redirectUri, state }));
       // RFC 6749 §10.12 CSRF protection: if the consent leg echoes the callback
       // `state`, it MUST match the one we generated. A mismatch means the redirect
       // did not originate from our request — reject before spending the code.
@@ -2228,8 +2253,11 @@ export class McpOAuthSession implements McpOAuthProvider {
       // refresh token), so a long-running session refreshes ahead of this expiry.
       if (this.canSilentRefresh()) this.refreshScheduler?.schedule(tokens.expiresAt);
       this.log({ step: 'token-stored', message: 'access token obtained and stored', ok: true });
+      reportOutcome(true);
       return true;
     } catch (error) {
+      // Surface the failure to the consent leg's (optionally deferred) browser page.
+      reportOutcome(false, error instanceof Error ? error.message : String(error));
       // A user cancellation (caller signal aborted) and an overall-flow timeout are
       // NOT generic failures — surface each as a distinct 'cancelled' event so a
       // frontend can attribute a hung/aborted consent leg precisely rather than
