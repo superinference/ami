@@ -623,3 +623,14 @@ export type {
   SecretToolRunner,
   LibsecretStorageOptions,
 } from './secure-storage';
+
+// --- JetBrains IDE detection building blocks (config table + path resolver) ---
+export {
+  JETBRAINS_IDE_DIR_MAP,
+  SUPPORTED_JETBRAINS_IDES,
+  isSupportedJetBrainsIde,
+  getJetBrainsIdeDirPatterns,
+  defaultIdeDirectoryContext,
+  resolveJetBrainsConfigDirectories,
+} from './ide';
+export type { JetBrainsIdeType, IdeDirectoryContext } from './ide';
