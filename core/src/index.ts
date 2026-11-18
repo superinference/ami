@@ -258,6 +258,8 @@ export type { Intent, Scope, PromptCategory, PromptTier, TierSignals } from './p
 export type { RateLimitBucket, RateLimitStatus, RateLimitOverage, RawWindowUtilization, RawUtilization, RateLimitTrackerOptions } from './rate-limiter';
 export { SELECTION_STRATEGIES } from './credential-pool';
 export type { CredentialEntry, SelectionStrategy } from './credential-pool';
+export { checkGcpCredentialsValid, GCP_CREDENTIALS_CHECK_TIMEOUT_MS } from './gcp-credentials';
+export type { CheckGcpCredentialsOptions, GcpAccessTokenFetcher } from './gcp-credentials';
 export type { ExecCommandOptions, ExecCommandResult } from './utils/shell';
 export { collectAncestorPids, readParentPidMap, ANCESTOR_WALK_TIMEOUT_MS } from './utils/shell';
 export { getProcessCommand, collectChildPids, collectAncestorCommands, PROCESS_COMMAND_TIMEOUT_MS } from './utils/process-utils';
