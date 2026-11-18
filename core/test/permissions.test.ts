@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix, isBuildConfigFile, normalizePermissionMode, PERMISSION_MODES } from '../src/permissions';
+import { PermissionManager, detectHardlineCommand, detectCommandChaining, normalizeLineContinuations, stripEnvVarPrefix, isBuildConfigFile, normalizePermissionMode, PERMISSION_MODES, isAcceptEditsFilesystemMutation } from '../src/permissions';
 import type { PermissionMode, PermissionRule } from '../src/permissions';
 
 function makeTempDir(): string {
@@ -808,6 +808,44 @@ describe('credential-path reads are never auto-safe', () => {
   it('ask mode: an explicit deny still wins over the credential force-prompt', async () => {
     const pm = new PermissionManager('ask', [{ tool: 'bash', pattern: 'cat *', action: 'deny' }]);
     assert.equal(await pm.check('bash', { command: 'cat ~/.ssh/id_rsa' }), 'deny');
+  });
+
+  // U003 — acceptEdits auto-allow of benign PowerShell write cmdlets (Windows
+  // counterpart of the bash mkdir/touch/cp set), with Remove-Item + New-Item
+  // link creation kept gated.
+  it('acceptEdits auto-allows benign PowerShell write cmdlets', async () => {
+    const pm = new PermissionManager('acceptEdits');
+    assert.equal(await pm.check('bash', { command: 'Set-Content notes.txt "hello"' }), 'allow');
+    assert.equal(await pm.check('bash', { command: 'Add-Content log.txt "line"' }), 'allow');
+    assert.equal(await pm.check('bash', { command: 'New-Item -ItemType Directory build' }), 'allow');
+    // alias resolves in
+    assert.equal(await pm.check('bash', { command: 'ni data.txt' }), 'allow');
+  });
+
+  it('acceptEdits still prompts for a PowerShell deletion (Remove-Item stays gated)', async () => {
+    const pm = new PermissionManager('acceptEdits');
+    assert.equal(await pm.check('bash', { command: 'Remove-Item x.txt' }), 'ask');
+  });
+
+  it('acceptEdits still prompts for New-Item link creation', async () => {
+    const pm = new PermissionManager('acceptEdits');
+    assert.equal(
+      await pm.check('bash', { command: 'New-Item -ItemType SymbolicLink -Path link -Target /etc/passwd' }),
+      'ask',
+    );
+  });
+
+  it('isAcceptEditsFilesystemMutation recognizes bash fs + lone PowerShell writes, rejecting mixed/dangerous forms', () => {
+    // bash set (unchanged)
+    assert.equal(isAcceptEditsFilesystemMutation('mkdir foo && touch bar'), true);
+    // lone PowerShell write cmdlet
+    assert.equal(isAcceptEditsFilesystemMutation('Set-Content a.txt "x"'), true);
+    assert.equal(isAcceptEditsFilesystemMutation('New-Item -ItemType File a.txt'), true);
+    // a bash-fs + PS mix is NOT auto-allowed (conservative)
+    assert.equal(isAcceptEditsFilesystemMutation('mkdir foo && Set-Content a.txt "x"'), false);
+    // PS deletion / link creation rejected
+    assert.equal(isAcceptEditsFilesystemMutation('Remove-Item a.txt'), false);
+    assert.equal(isAcceptEditsFilesystemMutation('New-Item -ItemType Junction j'), false);
   });
 });
 

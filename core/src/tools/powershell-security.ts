@@ -1472,6 +1472,100 @@ export function isReadOnlyPowerShellCommand(command: string): boolean {
   return true;
 }
 
+/**
+ * Benign edit-adjacent PowerShell WRITE cmdlets that `acceptEdits` mode may
+ * auto-allow — the Windows counterpart of the POSIX ACCEPT_EDITS_FS_COMMANDS
+ * (`mkdir`/`touch`/`mv`/`cp`/`sed`). Canonical (lowercase) cmdlet names so an
+ * alias (`sc`→`set-content`, `ac`→`add-content`, `ni`→`new-item`) resolves in
+ * via {@link resolveToCanonical}. Mirrors Claude's PowerShell modeValidation
+ * write-cmdlet allowlist.
+ *
+ * DELIBERATE EXCLUSIONS (superset divergence — never regress a delete guard):
+ *  - `remove-item`/`clear-content` and their aliases are NOT here — every
+ *    deletion/truncation stays gated behind an explicit prompt even in
+ *    acceptEdits, exactly as the bash set excludes `rm`/`rmdir`.
+ */
+export const POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS: ReadonlySet<string> = new Set([
+  'set-content',
+  'add-content',
+  'out-file',
+  'tee-object',
+  'new-item',
+]);
+
+/**
+ * `New-Item -ItemType` values that create a FILESYSTEM LINK rather than a plain
+ * file/directory. Link creation is a redirection/escape vector (a symlink can
+ * point a later "edit" at a secret or system path), so `acceptEdits` must NEVER
+ * silently auto-allow it — it falls through to an explicit prompt. Mirrors
+ * Claude's New-Item link-creation detection.
+ */
+const NEW_ITEM_LINK_ITEM_TYPES: ReadonlySet<string> = new Set([
+  'symboliclink',
+  'hardlink',
+  'junction',
+]);
+
+/**
+ * True when `command` is a SINGLE benign PowerShell write cmdlet that
+ * `acceptEdits` mode may auto-allow (the Windows counterpart of
+ * {@link isReadOnlyPowerShellCommand}'s read path, for writes).
+ *
+ * Fail-closed, by construction conservative:
+ *  - rejects any un-analyzable construct ({@link PS_READONLY_DISQUALIFY_RE}:
+ *    `$`/backtick/`{}`/`()`/`@`/`&`/`>`) and any statement separator (`;`/`|`/
+ *    newline) — one write cmdlet per invocation, nothing chained or piped;
+ *  - the command-position name must canonicalize into
+ *    {@link POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS};
+ *  - `New-Item` creating a link ({@link NEW_ITEM_LINK_ITEM_TYPES} via
+ *    `-ItemType`, incl. colon-bound / abbreviated / alt-dash forms) is rejected;
+ *  - a defense-in-depth {@link detectDangerousPowerShellCommand} /
+ *    {@link detectUnsafeTypeCast} scan must find no hazard.
+ *
+ * Anything it cannot prove benign returns false → the caller falls through to a
+ * prompt. Credential/system-path and destructive guards still run in the
+ * permission engine around this check; this only WIDENS the benign-write
+ * auto-allow, never the dangerous surface.
+ */
+export function isAcceptEditsPowerShellWrite(command: string): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return false;
+  // One write cmdlet, nothing chained/piped/redirected/expanded (fail-closed).
+  if (PS_READONLY_DISQUALIFY_RE.test(trimmed)) return false;
+  if (/[;\n\r|]/.test(trimmed)) return false;
+
+  const tokens = trimmed.match(/\S+/g);
+  if (tokens === null || tokens.length === 0) return false;
+  const first = tokens[0]!;
+  // A leading flag/switch is malformed for a write classify.
+  if (first.startsWith('-') || first.startsWith('/')) return false;
+  // Strip a module qualifier (`Microsoft.PowerShell.Management\New-Item`) then
+  // resolve aliases (`sc`/`ac`/`ni`) + `.exe` to the canonical cmdlet name.
+  const bare = (first.split(/[\\/]/).pop() ?? first);
+  const cmdlet = resolveToCanonical(bare);
+  if (!POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS.has(cmdlet)) return false;
+
+  // New-Item link creation is a redirection vector — never auto-allow it.
+  if (cmdlet === 'new-item') {
+    for (let i = 1; i < tokens.length; i++) {
+      const norm = normalizeParamToken(tokens[i]!);
+      if (!norm.startsWith('-')) continue;
+      // Match `-ItemType SymbolicLink`, `-ItemType:SymbolicLink`, and any
+      // abbreviated spelling (`-it`/`-item…`) PowerShell accepts for the param.
+      const [name, inlineValue] = norm.split(':', 2);
+      if (name !== undefined && '-itemtype'.startsWith(name) && name.length >= 2) {
+        const value = (inlineValue ?? tokens[i + 1] ?? '').replace(/`/g, '').toLowerCase();
+        if (NEW_ITEM_LINK_ITEM_TYPES.has(value)) return false;
+      }
+    }
+  }
+
+  // Defense in depth: never auto-allow something the hazard detectors flag.
+  if (detectDangerousPowerShellCommand(trimmed).blocked) return false;
+  if (detectUnsafeTypeCast(trimmed).blocked) return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Per-cmdlet path-parameter configuration + path extraction.
 //

@@ -5,7 +5,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
-import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { unwrapWrapperChain } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
@@ -2733,6 +2733,13 @@ const ACCEPT_EDITS_EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'file
  * `sed -i`) the way Claude does — without broadening to arbitrary commands.
  * A command substitution (`$(...)`, backticks, `$VAR`) is rejected outright so it
  * cannot smuggle a non-fs command into an otherwise-benign invocation.
+ *
+ * On Windows the bash tool runs PowerShell, so a single benign PowerShell write
+ * cmdlet (`Set-Content`/`Add-Content`/`Out-File`/`Tee-Object`/`New-Item` file|dir)
+ * is ALSO auto-allowed — the Windows counterpart of the POSIX set — via
+ * {@link isAcceptEditsPowerShellWrite}, which fails closed and excludes
+ * `Remove-Item` and `New-Item` link creation (parity: Claude's PowerShell
+ * modeValidation write-cmdlet allowlist + link-creation detection).
  */
 export function isAcceptEditsFilesystemMutation(command: string): boolean {
   const trimmed = command.trim();
@@ -2740,11 +2747,13 @@ export function isAcceptEditsFilesystemMutation(command: string): boolean {
   if (containsShellSubstitution(trimmed) || trimmed.includes('`')) return false;
   const subs = splitCompoundCommand(trimmed);
   if (subs.length === 0) return false;
-  for (const sub of subs) {
+  const allBashFsMutations = subs.every(sub => {
     const base = stripEnvVarPrefix(sub, /* safeEnvOnly */ false).trim().split(/\s+/)[0];
-    if (!base || !ACCEPT_EDITS_FS_COMMANDS.has(base)) return false;
-  }
-  return true;
+    return !!base && ACCEPT_EDITS_FS_COMMANDS.has(base);
+  });
+  if (allBashFsMutations) return true;
+  // Not an all-bash-fs compound — accept a lone benign PowerShell write cmdlet.
+  return isAcceptEditsPowerShellWrite(trimmed);
 }
 
 /**

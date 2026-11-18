@@ -35,6 +35,8 @@ import {
   detectScriptBlockInjection,
   detectDynamicCommandName,
   detectInvokeExpression,
+  POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS,
+  isAcceptEditsPowerShellWrite,
 } from '../src/tools/powershell-security';
 import { validateBashSecurity, detectPowerShellExecution } from '../src/tools/bash-security';
 
@@ -824,5 +826,79 @@ describe('new PowerShell detectors — end-to-end via detectPowerShellExecution'
       const r = detectPowerShellExecution(c);
       assert.equal(r.blocked, false, c);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isAcceptEditsPowerShellWrite (U003 — acceptEdits auto-allow of benign
+// PowerShell write cmdlets; Remove-Item + New-Item link creation excluded)
+// ---------------------------------------------------------------------------
+describe('isAcceptEditsPowerShellWrite', () => {
+  it('allows benign single write cmdlets', () => {
+    for (const c of [
+      'Set-Content file.txt "hello"',
+      'Add-Content log.txt "line"',
+      'Out-File -FilePath out.txt',
+      'Tee-Object -FilePath t.txt',
+      'New-Item notes.md',
+      'New-Item -ItemType Directory build',
+      'New-Item -ItemType File data.txt',
+    ]) {
+      assert.equal(isAcceptEditsPowerShellWrite(c), true, c);
+    }
+  });
+
+  it('resolves aliases to the canonical write cmdlet', () => {
+    assert.equal(isAcceptEditsPowerShellWrite('ac file.txt "x"'), true); // ac → add-content
+    assert.equal(isAcceptEditsPowerShellWrite('ni newfile.txt'), true); // ni → new-item
+  });
+
+  it('rejects Remove-Item and its aliases (deletions stay gated)', () => {
+    for (const c of ['Remove-Item x.txt', 'rm x.txt', 'del x.txt', 'Clear-Content x.txt']) {
+      assert.equal(isAcceptEditsPowerShellWrite(c), false, c);
+    }
+  });
+
+  it('rejects New-Item link creation (symlink/hardlink/junction)', () => {
+    for (const c of [
+      'New-Item -ItemType SymbolicLink -Path link -Target /etc/passwd',
+      'New-Item -ItemType:SymbolicLink link',
+      'New-Item -ItemType HardLink hl',
+      'New-Item -ItemType Junction j',
+      'New-Item -it SymbolicLink link',
+    ]) {
+      assert.equal(isAcceptEditsPowerShellWrite(c), false, c);
+    }
+  });
+
+  it('fails closed on empty / malformed / chained / piped / redirected / expanded', () => {
+    for (const c of [
+      'Set-Content a.txt "x"; Remove-Item b.txt',
+      'Set-Content a.txt "x" | Out-Null',
+      'Set-Content a.txt "x" > b.txt',
+      'Set-Content a.txt $(iex evil)',
+      'Set-Content a.txt "$secret"',
+      '',
+      '   ',
+      '-FilePath x',
+      '/switch y',
+      'Get-Content a.txt',
+    ]) {
+      assert.equal(isAcceptEditsPowerShellWrite(c), false, JSON.stringify(c));
+    }
+  });
+
+  it('rejects a write cmdlet the hazard detectors flag (defense in depth)', () => {
+    // dangerous-cmdlet detector: the `--%` stop-parsing token.
+    assert.equal(isAcceptEditsPowerShellWrite('Set-Content a.txt --% x'), false);
+    // unsafe-type-cast detector: a non-allowlisted .NET type cast.
+    assert.equal(isAcceptEditsPowerShellWrite('Set-Content a.txt [System.Net.WebClient]::foo'), false);
+  });
+
+  it('canonical write-cmdlet set excludes deletions', () => {
+    assert.equal(POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS.has('set-content'), true);
+    assert.equal(POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS.has('new-item'), true);
+    assert.equal(POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS.has('remove-item'), false);
+    assert.equal(POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS.has('clear-content'), false);
   });
 });
