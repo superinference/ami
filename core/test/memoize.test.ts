@@ -4,6 +4,7 @@ import {
   memoizeWithTTL,
   memoizeWithTTLAsync,
   memoizeWithLRU,
+  memoizeAsyncWithLRU,
 } from '../src/utils/memoize';
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -288,5 +289,142 @@ describe('memoizeWithLRU (bounded LRU with pluggable key + peek)', () => {
     assert.equal(m.cache.size(), 100, 'bounded to the default of 100');
     assert.equal(m.cache.has('0'), false, 'the earliest keys were evicted');
     assert.equal(m.cache.has('149'), true);
+  });
+});
+
+describe('memoizeAsyncWithLRU (async bounded LRU + evict-on-rejection)', () => {
+  it('coalesces concurrent callers onto one cached promise', async () => {
+    let calls = 0;
+    const m = memoizeAsyncWithLRU(
+      async (n: number) => {
+        calls++;
+        await tick();
+        return n + 1;
+      },
+      (n) => String(n),
+    );
+    const p1 = m(10);
+    const p2 = m(10);
+    assert.strictEqual(p1, p2, 'repeat lookup returns the identical cached promise');
+    assert.deepEqual(await Promise.all([p1, p2]), [11, 11]);
+    assert.equal(calls, 1, 'both callers shared one invocation');
+    // A later call is served from the cached (already-settled) promise.
+    assert.equal(await m(10), 11);
+    assert.equal(calls, 1, 'settled result stays cached (no TTL expiry)');
+  });
+
+  it('caches a promise resolving to null (null-safe, unlike a value LRU)', async () => {
+    let calls = 0;
+    const m = memoizeAsyncWithLRU(
+      async (_k: string): Promise<string | null> => {
+        calls++;
+        return null;
+      },
+      (k) => k,
+    );
+    assert.equal(await m('x'), null);
+    assert.equal(await m('x'), null);
+    assert.equal(calls, 1, 'the null-resolving promise was cached');
+  });
+
+  it('evicts the cached promise on rejection so the next call retries', async () => {
+    let calls = 0;
+    const m = memoizeAsyncWithLRU(
+      async (_k: string) => {
+        calls++;
+        throw new Error('boom ' + calls);
+      },
+      (k) => k,
+    );
+    await assert.rejects(m('x'), /boom 1/);
+    await tick(); // let the identity-guarded .catch eviction run
+    assert.equal(m.cache.has('x'), false, 'the rejected entry was evicted');
+    await assert.rejects(m('x'), /boom 2/, 'a fresh invocation retried');
+    assert.equal(calls, 2);
+  });
+
+  it('identity-guards eviction: a stale rejection does not delete a newer entry', async () => {
+    const deferreds: Array<{ promise: Promise<number>; reject: (e: unknown) => void }> = [];
+    const m = memoizeAsyncWithLRU(
+      (_k: string): Promise<number> => {
+        let reject!: (e: unknown) => void;
+        const promise = new Promise<number>((_res, rej) => { reject = rej; });
+        deferreds.push({ promise, reject });
+        return promise;
+      },
+      (k) => k,
+    );
+
+    const p1 = m('k'); // stores deferreds[0]
+    assert.strictEqual(m.cache.get('k'), p1);
+    // Simulate an LRU eviction of the key, then a fresh cold miss repopulating it
+    // with a NEWER promise before the first one has settled.
+    m.cache.delete('k');
+    const p2 = m('k'); // stores deferreds[1]
+    assert.strictEqual(m.cache.get('k'), p2);
+
+    // The original (now stale) promise rejects: its identity-guarded .catch must
+    // NOT delete the newer entry, since cache.get('k') is no longer that promise.
+    deferreds[0].reject(new Error('stale'));
+    await assert.rejects(p1, /stale/);
+    await tick();
+    assert.equal(m.cache.has('k'), true, 'the newer entry survived the stale rejection');
+    assert.strictEqual(m.cache.get('k'), p2, 'the cached promise is still the newer one');
+
+    // Cleanup: settle the live promise (and let its own eviction run).
+    deferreds[1].reject(new Error('cleanup'));
+    await assert.rejects(p2, /cleanup/);
+    await tick();
+  });
+
+  it('bounds the cache to maxCacheSize and evicts the oldest key', async () => {
+    const m = memoizeAsyncWithLRU(
+      async (k: string) => k,
+      (k) => k,
+      2,
+    );
+    await m('a');
+    await m('b');
+    await m('c'); // exceeds 2 -> 'a' evicted
+    assert.equal(m.cache.has('a'), false);
+    assert.equal(m.cache.has('b'), true);
+    assert.equal(m.cache.has('c'), true);
+    assert.equal(m.cache.size(), 2);
+  });
+
+  it('cache.get is a non-promoting peek that resolves to the result', async () => {
+    const m = memoizeAsyncWithLRU(
+      async (k: string) => k.toUpperCase(),
+      (k) => k,
+      2,
+    );
+    await m('a');
+    await m('b');
+    const peeked = m.cache.get('a');
+    assert.ok(peeked);
+    assert.equal(await peeked, 'A');
+    await m('c'); // peek did not promote 'a' -> it is the oldest and evicted
+    assert.equal(m.cache.has('a'), false, 'peek did not save a from eviction');
+    assert.equal(m.cache.get('missing'), undefined);
+  });
+
+  it('exposes clear/delete/size and defaults the bound to 100', async () => {
+    let calls = 0;
+    const m = memoizeAsyncWithLRU(
+      async (k: number) => {
+        calls++;
+        return k;
+      },
+      (k) => String(k),
+    );
+    for (let i = 0; i < 150; i++) await m(i);
+    assert.equal(m.cache.size(), 100, 'bounded to the default of 100');
+    assert.equal(m.cache.has('0'), false, 'the earliest keys were evicted');
+    assert.equal(m.cache.has('149'), true);
+    assert.equal(m.cache.delete('149'), true);
+    assert.equal(m.cache.delete('149'), false);
+    m.cache.clear();
+    assert.equal(m.cache.size(), 0);
+    assert.ok(calls > 0);
   });
 });

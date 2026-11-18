@@ -12,6 +12,10 @@ import { logError } from '../logger';
  *                                    cold-miss dedup (single-flight).
  *   - {@link memoizeWithLRU}       — bounded LRU with a pluggable key function and
  *                                    a non-promoting observe accessor.
+ *   - {@link memoizeAsyncWithLRU}  — async bounded LRU that caches the in-flight
+ *                                    promise and EVICTS it on rejection (identity-
+ *                                    guarded), so an aborted/failed lookup can't
+ *                                    poison future turns.
  *
  * Parity with Claude Code's `utils/memoize.ts`. The LRU is backed by an
  * insertion-ordered Map (no external `lru-cache` dependency): a hit re-inserts
@@ -49,6 +53,18 @@ export type LRUMemoizedFunction<Args extends unknown[], Result> = {
     delete: (key: string) => boolean;
     /** Observe without promoting recency (peek). */
     get: (key: string) => Result | undefined;
+    has: (key: string) => boolean;
+  };
+};
+
+export type AsyncLRUMemoizedFunction<Args extends unknown[], Result> = {
+  (...args: Args): Promise<Result>;
+  cache: {
+    clear: () => void;
+    size: () => number;
+    delete: (key: string) => boolean;
+    /** Observe the cached promise without promoting recency (peek). */
+    get: (key: string) => Promise<Result> | undefined;
     has: (key: string) => boolean;
   };
 };
@@ -244,4 +260,51 @@ export function memoizeWithLRU<
   };
 
   return memoized;
+}
+
+/**
+ * Memoize an ASYNC function with a bounded LRU that caches the in-flight PROMISE
+ * (so concurrent callers for the same key share one invocation) and EVICTS the
+ * cached entry if that promise rejects — an aborted or failed lookup can never
+ * poison future turns. Mirrors Claude Code's `utils/shell/prefix.ts` two-layer
+ * pattern (L111-L118): the outer memoizer stores the promise, and a `.catch`
+ * handler removes it on rejection.
+ *
+ * The eviction is **identity-guarded**: it deletes the key only while the stored
+ * promise is still the one that rejected (`cache.get(key) === promise`). After an
+ * LRU eviction a NEWER promise may already occupy the key, and a stale rejection
+ * must not delete that newer entry — exactly the edge case prefix.ts guards. This
+ * consolidates the hand-rolled "wrap a promise in `memoizeWithLRU` + bolt a
+ * `.catch` eviction on at the call site" idiom into one reusable policy so a
+ * caller never re-implements the identity guard.
+ *
+ * A successful result stays cached until evicted by LRU bound (there is no TTL —
+ * use {@link memoizeWithTTLAsync} when a result must expire). A rejected cold miss
+ * is evicted, so the next call retries.
+ */
+export function memoizeAsyncWithLRU<Args extends unknown[], Result>(
+  f: (...args: Args) => Promise<Result>,
+  cacheFn: (...args: Args) => string,
+  maxCacheSize: number = 100,
+): AsyncLRUMemoizedFunction<Args, Result> {
+  // Reuse the sync LRU as the backing store, caching the promise itself. The
+  // promise is non-nullable, so it satisfies the LRU's value constraint even when
+  // `Result` includes null/undefined.
+  const lru = memoizeWithLRU<Args, Promise<Result>>(
+    (...args: Args): Promise<Result> => {
+      const key = cacheFn(...args);
+      const promise = f(...args);
+      // Evict on rejection so aborted/failed calls don't poison future turns.
+      // Identity guard: after LRU eviction a newer promise may occupy this key;
+      // a stale rejection must not delete it.
+      promise.catch(() => {
+        if (lru.cache.get(key) === promise) lru.cache.delete(key);
+      });
+      return promise;
+    },
+    cacheFn,
+    maxCacheSize,
+  );
+
+  return lru;
 }

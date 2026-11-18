@@ -1,4 +1,4 @@
-import { memoizeWithLRU } from '../utils/memoize';
+import { memoizeAsyncWithLRU } from '../utils/memoize';
 
 /**
  * Extensible per-command option/argument schema resolver — AMI's parity analogue
@@ -149,17 +149,21 @@ export async function loadFigSpec(command: string): Promise<CommandSpec | null> 
 
 /**
  * Resolve a command's spec: a built-in spec first, then the Fig fallback, then
- * null. Memoized by command name via the shared LRU so a cold lookup's dynamic
- * import runs at most once per command. The memoized value is the Promise itself
- * (satisfying the LRU's non-nullable constraint); its resolution may be null.
+ * null. Memoized by command name via {@link memoizeAsyncWithLRU} (cap 200, parity
+ * with Claude Code's prefix.ts cache bound) so a cold lookup's dynamic import runs
+ * at most once per command. Because the shared primitive caches the in-flight
+ * promise and evicts it (identity-guarded) if it ever rejects, a transient failure
+ * during the dynamic import can't poison future lookups for that command — a later
+ * call retries cleanly.
  */
-export const getCommandSpec = memoizeWithLRU(
+export const getCommandSpec = memoizeAsyncWithLRU(
   async (command: string): Promise<CommandSpec | null> => {
     const builtin = BUILTIN_COMMAND_SPECS.find((s) => s.name === command);
     if (builtin) return builtin;
     return loadFigSpec(command);
   },
   (command: string) => command,
+  200,
 );
 
 /**
