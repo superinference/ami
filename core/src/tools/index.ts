@@ -408,6 +408,13 @@ export { detectToolConflict, isReservedToolName, ToolRegistryGuard, RESERVED_TOO
 export type { ToolConflict, ToolRegistryGuardOptions } from './tool-registry-guard';
 export {
   capabilityEnabled,
+  featureFlagEnvName,
+  isFeatureEnabled,
+  subsystemEnabled,
+  WORKFLOW_SCRIPTS_FEATURE,
+  CRON_FEATURE,
+  AGENT_TEAMS_FEATURE,
+  LSP_FEATURE,
   isTeammatesEnabled,
   isLspEnabled,
   isWorkflowScriptsEnabled,

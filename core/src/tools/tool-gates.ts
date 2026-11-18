@@ -28,6 +28,80 @@ export function capabilityEnabled(raw: string | undefined): boolean {
   return isEnvTruthy(raw);
 }
 
+/** Env-var prefixes for a generic feature flag, most-specific (AMI-native) first,
+ *  then the Claude Code-compatible alias — same dual-name convention as the
+ *  DISABLE_NONESSENTIAL_TRAFFIC / DISABLE_BACKGROUND_TASKS pairs. */
+const FEATURE_FLAG_ENV_PREFIXES = ['SUPERINFERENCE', 'CLAUDE_CODE'] as const;
+
+/**
+ * Build the generic feature-flag env-var name for a capability. Parity: Claude
+ * Code's `feature(<NAME>)` reads a `CLAUDE_CODE_FEATURE_<NAME>` override; AMI
+ * accepts its own `SUPERINFERENCE_FEATURE_<NAME>` spelling first. The NAME is
+ * upper-cased and every non-alphanumeric run is collapsed to a single `_`
+ * (leading/trailing separators trimmed), so `workflow-scripts`,
+ * `workflow_scripts` and `WORKFLOW_SCRIPTS` all resolve to the same flag.
+ */
+export function featureFlagEnvName(
+  name: string,
+  prefix: (typeof FEATURE_FLAG_ENV_PREFIXES)[number] = 'SUPERINFERENCE',
+): string {
+  const norm = name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${prefix}_FEATURE_${norm}`;
+}
+
+/**
+ * Generic named-capability gate (parity: Claude Code's `feature()` + its
+ * `features` map). The ONE reader of the previously-inert
+ * `ProjectConfig.features` map: `applyConfigFeatureFlags` (config.ts) bridges the
+ * persisted map onto the `SUPERINFERENCE_FEATURE_<NAME>` env at startup, so this
+ * stays a pure env reader — no `config` threading through every tool
+ * `isEnabled()` closure — while the config knob still takes effect.
+ *
+ * Resolution (first decisive signal wins): the AMI-native env override
+ * `SUPERINFERENCE_FEATURE_<NAME>`, then the Claude-compatible
+ * `CLAUDE_CODE_FEATURE_<NAME>` alias, then `defaultEnabled`. A set, non-empty env
+ * value decides via {@link isEnvTruthy} (`0`/`false`/`no`/`off` disable, any
+ * other value enables).
+ */
+export function isFeatureEnabled(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  defaultEnabled = true,
+): boolean {
+  for (const prefix of FEATURE_FLAG_ENV_PREFIXES) {
+    const raw = env[featureFlagEnvName(name, prefix)];
+    if (raw !== undefined && raw.trim() !== '') return isEnvTruthy(raw);
+  }
+  return defaultEnabled;
+}
+
+/**
+ * Resolve a default-ON subsystem gate that has BOTH a dedicated env switch and a
+ * generic feature-flag name. The dedicated env var (the most specific operator
+ * signal) wins when set and non-empty; otherwise the generic
+ * {@link isFeatureEnabled} flag decides (so the `config.features` map can gate the
+ * subsystem), defaulting ON to preserve AMI's always-on behavior.
+ */
+export function subsystemEnabled(
+  dedicated: string | undefined,
+  featureName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (dedicated !== undefined && dedicated.trim() !== '') return isEnvTruthy(dedicated);
+  return isFeatureEnabled(featureName, env, true);
+}
+
+/** Canonical feature-flag names for the default-ON subsystem gates (parity with
+ *  Claude Code's `feature('WORKFLOW_SCRIPTS')`-style task-registry gating). */
+export const WORKFLOW_SCRIPTS_FEATURE = 'WORKFLOW_SCRIPTS';
+export const CRON_FEATURE = 'CRON';
+export const AGENT_TEAMS_FEATURE = 'AGENT_TEAMS';
+export const LSP_FEATURE = 'LSP';
+
 /** Env var that toggles the multi-agent teammate subsystem (default ON). */
 export const AGENT_TEAMS_ENV = 'AMI_AGENT_TEAMS';
 /** CLI flag that force-enables the teammate subsystem (mirrors Claude's `--agent-teams`). */
@@ -41,7 +115,8 @@ export const AGENT_TEAMS_OFF_FLAG = '--no-agent-teams';
  * teammates are enabled, so prompt/tool-registration/UI stay consistent.
  *
  * Resolution order (first match wins): `--no-agent-teams` → off,
- * `--agent-teams` → on, then {@link AGENT_TEAMS_ENV}. Default ON.
+ * `--agent-teams` → on, then {@link AGENT_TEAMS_ENV}, then the generic
+ * `AGENT_TEAMS` feature flag (from `config.features`). Default ON.
  */
 export function isTeammatesEnabled(
   env: NodeJS.ProcessEnv = process.env,
@@ -49,7 +124,7 @@ export function isTeammatesEnabled(
 ): boolean {
   if (argv.includes(AGENT_TEAMS_OFF_FLAG)) return false;
   if (argv.includes(AGENT_TEAMS_ON_FLAG)) return true;
-  return capabilityEnabled(env[AGENT_TEAMS_ENV]);
+  return subsystemEnabled(env[AGENT_TEAMS_ENV], AGENT_TEAMS_FEATURE, env);
 }
 
 /** Env var that toggles the LSP tool subsystem (default ON). */
@@ -58,10 +133,11 @@ export const LSP_ENV = 'AMI_LSP';
 /**
  * Gate for the LSP tools (`diagnostics`, `find_references`, `lsp`). Parity with
  * Claude's ENABLE_LSP_TOOL knob, but default ON (AMI ships LSP always-on) with
- * {@link LSP_ENV} as the disable switch.
+ * {@link LSP_ENV} as the disable switch, with the generic `LSP` feature flag
+ * (from `config.features`) as a fallback.
  */
 export function isLspEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return capabilityEnabled(env[LSP_ENV]);
+  return subsystemEnabled(env[LSP_ENV], LSP_FEATURE, env);
 }
 
 /**
@@ -182,10 +258,12 @@ export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 /**
  * Gate for the `workflow` tool. Parity with Claude's `feature('WORKFLOW_SCRIPTS')`
  * conditional task registration, so the capability can be flipped off from one
- * place without removing code. Default ON.
+ * place without removing code. The dedicated {@link WORKFLOW_SCRIPTS_ENV} wins;
+ * otherwise the generic `WORKFLOW_SCRIPTS` feature flag (from `config.features`)
+ * decides. Default ON.
  */
 export function isWorkflowScriptsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return capabilityEnabled(env[WORKFLOW_SCRIPTS_ENV]);
+  return subsystemEnabled(env[WORKFLOW_SCRIPTS_ENV], WORKFLOW_SCRIPTS_FEATURE, env);
 }
 
 /** Env var that toggles the cron / scheduled-prompt subsystem (default ON). */
@@ -195,10 +273,11 @@ export const CRON_ENV = 'AMI_CRON';
  * Gate for the cron / scheduling tools (`cron_create`, `cron_delete`,
  * `cron_list`, `schedule_wakeup`). Parity with Claude's `isKairosCronEnabled()`
  * feature-flag check on its ScheduleCron tools, but default ON (AMI ships
- * scheduling always-on) with {@link CRON_ENV} as the single disable switch.
+ * scheduling always-on) with {@link CRON_ENV} as the single disable switch and
+ * the generic `CRON` feature flag (from `config.features`) as a fallback.
  */
 export function isCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return capabilityEnabled(env[CRON_ENV]);
+  return subsystemEnabled(env[CRON_ENV], CRON_FEATURE, env);
 }
 
 /**

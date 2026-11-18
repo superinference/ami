@@ -7,7 +7,7 @@ import { validateEngineConfig, mergeSkillUsageStat, type EngineConfig, type Skil
 import { withFileLockSync, type FileLockSyncOptions } from './utils/file-lock';
 import { treeify, type TreeNode, type TreeifyOptions } from './utils/treeify';
 import { levenshteinDistance } from './tools/path-suggest';
-import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT } from './tools/tool-gates';
+import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT, featureFlagEnvName } from './tools/tool-gates';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 import { readNativeManagedPolicy } from './managed-policy-source';
 
@@ -4013,10 +4013,40 @@ export function applyConfigBackgroundTasks(
  * applied separately (it returns a value threaded into the PermissionManager's allowed
  * read roots rather than mutating `target`).
  */
+/**
+ * Bridge the persisted {@link ProjectConfig.features} map onto the generic
+ * `SUPERINFERENCE_FEATURE_<NAME>` env vars that the capability gates in
+ * `tools/tool-gates.ts` (`isFeatureEnabled` / the default-ON subsystem gates)
+ * read, so a config-file feature toggle actually gates tool registration without
+ * threading `config` through every `ToolDefinition.isEnabled()` closure. This is
+ * the config-side consumer that makes the otherwise-inert `features` map live
+ * (parity: Claude Code's `features` map / `feature()`).
+ *
+ * An already-set env override wins (operator intent beats the file), matching
+ * every other `applyConfig*` bridge and the `features` doc comment
+ * ("`SUPERINFERENCE_FEATURE_<NAME>` / `CLAUDE_CODE_FEATURE_<NAME>` still win").
+ * Non-boolean entries are ignored.
+ */
+export function applyConfigFeatureFlags(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  const features = config?.features;
+  if (!features) return;
+  for (const [name, enabled] of Object.entries(features)) {
+    if (typeof enabled !== 'boolean') continue;
+    const envName = featureFlagEnvName(name);
+    const aliasName = featureFlagEnvName(name, 'CLAUDE_CODE');
+    if (target[envName] !== undefined || target[aliasName] !== undefined) continue;
+    target[envName] = enabled ? '1' : '0';
+  }
+}
+
 export function applyConfigStartupKnobs(
   config: ProjectConfig | null | undefined,
   target: NodeJS.ProcessEnv = process.env,
 ): void {
+  applyConfigFeatureFlags(config, target);
   applyConfigCaCerts(config, target);
   applyConfigGitignore(config, target);
   applyConfigAutoCompact(config, target);
