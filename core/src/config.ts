@@ -876,6 +876,25 @@ export interface ProjectConfig {
    * `minimumVersion` policy setting paired with {@link autoUpdatesChannel}.
    */
   minimumVersion?: string;
+  /**
+   * Opt-IN flag for voice-input mode (parity: Claude Code's `voiceEnabled`
+   * settings boolean gating `isVoiceModeEnabled()` and the advertised `/voice`
+   * command). Default OFF — voice mode is additive/opt-in, so only an explicit
+   * `true` (at any config tier) enables it. Resolved by {@link isVoiceModeEnabled}
+   * off the MERGED config; a merge knob (any tier may set it).
+   */
+  voiceEnabled?: boolean;
+  /**
+   * Opt-IN declaration that the user WANTS the auto-allow ("auto"/bypass) permission
+   * mode (parity: Claude Code's `hasAutoModeOptIn()` settings flag). AMI's permission
+   * model is opt-OUT — `auto-allow` is always in the Shift+Tab cycle unless managed
+   * policy ({@link disableBypassPermissionsMode}) removes it — so this knob adds the
+   * missing INTENT signal: it lets the UI distinguish "the user asked for auto but it
+   * is unavailable (managed-blocked)" from "the user never requested auto". It does NOT
+   * itself grant auto-allow (managed policy still wins); it only records interest.
+   * Resolved by {@link hasAutoModeOptIn} off the MERGED config; a merge knob.
+   */
+  autoAllowOptIn?: boolean;
 }
 
 /**
@@ -1599,6 +1618,10 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // unknown-key warning) + base-type validated + emitted in the JSON schema.
   ['showClearContextOnPlanAccept', 'boolean'], ['prStatusFooterEnabled', 'boolean'],
   ['lastReleaseNotesSeen', 'string'],
+  // Opt-in capability knobs (voice input + auto-mode intent) resolved off the merged
+  // config by isVoiceModeEnabled / hasAutoModeOptIn — declared here so a file-tier value
+  // is recognized (no spurious unknown-key warning) + base-type validated + schema-emitted.
+  ['voiceEnabled', 'boolean'], ['autoAllowOptIn', 'boolean'],
   // Update-channel knobs (see ProjectConfig) consumed by the self-updater/launcher —
   // declared here so they are recognized + value-validated (autoUpdatesChannel is an
   // enum in PROJECT_CONFIG_ENUMS) + emitted in the JSON schema. Parity: Claude's
@@ -3288,6 +3311,8 @@ export function mergeConfigs(
     // isPrStatusFooterEnabled / getLastReleaseNotesSeen) reads it off the merged config.
     if (layer.showClearContextOnPlanAccept !== undefined) merged.showClearContextOnPlanAccept = layer.showClearContextOnPlanAccept;
     if (layer.prStatusFooterEnabled !== undefined) merged.prStatusFooterEnabled = layer.prStatusFooterEnabled;
+    if (layer.voiceEnabled !== undefined) merged.voiceEnabled = layer.voiceEnabled;
+    if (layer.autoAllowOptIn !== undefined) merged.autoAllowOptIn = layer.autoAllowOptIn;
     if (layer.lastReleaseNotesSeen !== undefined) merged.lastReleaseNotesSeen = layer.lastReleaseNotesSeen;
     if (layer.autoUpdatesChannel !== undefined) merged.autoUpdatesChannel = layer.autoUpdatesChannel;
     if (layer.minimumVersion !== undefined) merged.minimumVersion = layer.minimumVersion;
@@ -4171,6 +4196,267 @@ export function isPrStatusFooterEnabled(
   config: ProjectConfig | null | undefined,
 ): boolean {
   return config?.prStatusFooterEnabled !== false;
+}
+
+/**
+ * Whether voice-input mode is enabled, resolved off the already-MERGED
+ * {@link ProjectConfig}. Parity: Claude Code's `isVoiceModeEnabled()` reading
+ * `getInitialSettings().voiceEnabled`. Default OFF — only an explicit
+ * {@link ProjectConfig.voiceEnabled} `=== true` (at any tier) turns it on, so the
+ * UI surface that advertises voice (e.g. a `/voice` affordance) stays hidden unless
+ * the user opts in.
+ */
+export function isVoiceModeEnabled(
+  config: ProjectConfig | null | undefined,
+): boolean {
+  return config?.voiceEnabled === true;
+}
+
+/**
+ * Whether the user has explicitly OPTED IN to the auto-allow permission mode,
+ * resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * `hasAutoModeOptIn()`. AMI offers auto-allow opt-OUT by default, so this is purely
+ * an INTENT signal: a consumer can tell "wanted auto but it is unavailable
+ * (managed-blocked)" (opt-in `true` + {@link isBypassPermissionsModeDisabled}) apart
+ * from "never requested auto" (unset). It does NOT by itself grant auto-allow.
+ */
+export function hasAutoModeOptIn(
+  config: ProjectConfig | null | undefined,
+): boolean {
+  return config?.autoAllowOptIn === true;
+}
+
+/**
+ * Config-knob hygiene primitive: return `undefined` (i.e. OMIT the key) when a value
+ * equals the resolved default, otherwise the value verbatim. Keeps persisted config
+ * MINIMAL so a knob tracks a MOVING default instead of pinning a stale literal — the
+ * next read re-derives the current default rather than reading back a redundant value.
+ * Parity: Claude Code's migration/effort write paths that store `undefined` when the
+ * chosen value already equals the computed default (e.g. `toPersistableEffort`,
+ * `parseUserSpecifiedModel(x) === parseUserSpecifiedModel(default)` pruning). Generic
+ * over the value type; both operands may be `undefined` (an unset value stays unset).
+ */
+export function omitWhenEqualsDefault<T>(
+  value: T | undefined,
+  defaultValue: T | undefined,
+): T | undefined {
+  return value === defaultValue ? undefined : value;
+}
+
+/**
+ * Normalize a chosen effort/thinking LEVEL into its persistable form: store `undefined`
+ * (unset) when it equals the model's default level, so the saved setting stays RELATIVE
+ * to the model default and switching models naturally re-derives the correct default
+ * rather than pinning an absolute level that overrides a differently-defaulted model.
+ * Parity: Claude Code's `EffortCallout` persisting `value === defaultLevel ? undefined :
+ * value` via `toPersistableEffort`. Delegates to {@link omitWhenEqualsDefault}; a
+ * `defaultLevel` of `undefined` means "no model default known", so any concrete level is
+ * kept verbatim.
+ */
+export function toPersistableEffort(
+  value: string | undefined,
+  defaultLevel: string | undefined,
+): string | undefined {
+  return omitWhenEqualsDefault(value, defaultLevel);
+}
+
+/**
+ * Idempotent, guarded rename of a single config KEY (parity: Claude Code's
+ * `migrate*AtStartup` pattern — e.g. `migrateReplBridgeEnabledToRemoteControlAtStartup`
+ * — driven by a `saveGlobalConfig(prev => next)` read-modify-write). Returns a NEW
+ * config with `oldKey`'s value copied (through `coerce`) into `newKey` and `oldKey`
+ * deleted, but ONLY on the exact `(oldKey present AND newKey unset)` branch; every other
+ * case is a no-op that returns the SAME reference, which gives two boundary guards:
+ *   1. old key absent  → nothing to migrate (safe to re-run every launch);
+ *   2. new key already set → NEVER clobber the user's explicit value.
+ * Re-running after a successful migration is a no-op (the old key is gone). Pure — the
+ * durable write is the caller's (see {@link runConfigKeyMigrations}).
+ */
+export function migrateConfigKey(
+  config: ProjectConfig,
+  oldKey: string,
+  newKey: string,
+  coerce: (value: unknown) => unknown = (v) => v,
+): ProjectConfig {
+  const rec = config as Record<string, unknown>;
+  if (!(oldKey in rec)) return config;
+  if (rec[newKey] !== undefined) return config;
+  const next: Record<string, unknown> = { ...rec };
+  next[newKey] = coerce(rec[oldKey]);
+  delete next[oldKey];
+  return next as ProjectConfig;
+}
+
+/** One deprecated→successor config-key rename applied at startup by {@link runConfigKeyMigrations}. */
+export interface ConfigKeyMigration {
+  /** The deprecated key to read + delete. */
+  from: string;
+  /** The successor key to write (only when currently unset). */
+  to: string;
+  /** Optional value transform (e.g. `Boolean`) applied while copying `from`→`to`. */
+  coerce?: (value: unknown) => unknown;
+}
+
+/**
+ * The ordered registry of deprecated config-key renames. APPEND a new
+ * {@link ConfigKeyMigration} here whenever a config key is renamed/deprecated so an
+ * existing user's saved value is carried forward (coerced) instead of being silently
+ * orphaned — exactly as new directory/value migrations are appended to the startup set.
+ * Empty until the first key deprecation; the runner below iterates it every launch.
+ */
+export const DEPRECATED_CONFIG_KEY_MIGRATIONS: ReadonlyArray<ConfigKeyMigration> = [];
+
+/**
+ * Apply every registered {@link DEPRECATED_CONFIG_KEY_MIGRATIONS} to the config at
+ * `configPath` in ONE lock-safe read-modify-write (via {@link saveGlobalConfig}'s
+ * underlying {@link updateConfigFile}). Each rename is {@link migrateConfigKey}-guarded
+ * (act only when old present AND new unset), so the whole pass is idempotent and
+ * clobber-safe and may run on every startup. Returns the list of `from` keys actually
+ * migrated (empty when nothing changed or there is no resolvable config path), so the
+ * caller can surface a one-time notice. Best-effort: a write failure is swallowed by the
+ * caller's error handling, never thrown into startup.
+ */
+export function runConfigKeyMigrations(
+  configPath: string | null = getGlobalConfigPath(),
+  migrations: ReadonlyArray<ConfigKeyMigration> = DEPRECATED_CONFIG_KEY_MIGRATIONS,
+): string[] {
+  if (!configPath || migrations.length === 0) return [];
+  const migrated: string[] = [];
+  updateConfigFile(configPath, (current) => {
+    let next = current;
+    for (const m of migrations) {
+      const applied = migrateConfigKey(next, m.from, m.to, m.coerce);
+      if (applied !== next) migrated.push(m.from);
+      next = applied;
+    }
+    return next;
+  });
+  return migrated;
+}
+
+/**
+ * Append `newItem` to a JSONC ARRAY file's content while PRESERVING existing comments
+ * and formatting (parity: Claude Code's `addItemToJSONCArray`, which uses jsonc-parser
+ * `modify()`+`applyEdits` with `isArrayInsertion`). AMI's object config writes go
+ * through {@link safeWriteConfig} (a full `JSON.stringify` rewrite that STRIPS comments);
+ * this is the array-append counterpart that does NOT clobber comments. Cases mirror the
+ * reference:
+ *   - empty/whitespace content → a fresh single-element array;
+ *   - content parses to an empty array → the item becomes index 0;
+ *   - content parses to a non-empty array → the item is appended after the last element;
+ *   - content is valid JSON but NOT an array → replaced with a fresh single-element array;
+ *   - unparseable / the array brackets cannot be located → fall back to a full
+ *     `JSON.stringify` of `[...parsed, newItem]` (or `[newItem]`).
+ * The insertion edits the raw text around the array's own brackets (string/comment-aware
+ * bracket matching), so sibling comments survive; only an empty array's INTERIOR comment
+ * is not retained (the array is reformatted). Two-space indentation, matching AMI's
+ * {@link safeWriteConfig} house style.
+ */
+export function addItemToJSONCArray(content: string, newItem: unknown): string {
+  const fresh = () => JSON.stringify([newItem], null, 2) + '\n';
+  try {
+    if (!content || content.trim() === '') return fresh();
+    const clean = stripBom(content);
+    const parsed = parseJsonc(clean);
+    if (!Array.isArray(parsed)) return fresh();
+    const edited = insertIntoJsoncArray(clean, parsed.length === 0, newItem);
+    if (edited === null) return JSON.stringify([...parsed, newItem], null, 2) + '\n';
+    return edited;
+  } catch {
+    return fresh();
+  }
+}
+
+/** Locate the first top-level `[ … ]` in a JSONC string (string/comment aware). */
+function findTopLevelArrayBrackets(
+  s: string,
+): { open: number; close: number } | null {
+  let inString = false;
+  let escape = false;
+  let open = -1;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '/' && s[i + 1] === '/') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (ch === '/' && s[i + 1] === '*') { i += 2; while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++; i++; continue; }
+    if (open === -1) {
+      if (ch === '[') { open = i; depth = 1; continue; }
+      if (/\s/.test(ch!)) continue;
+      return null; // first significant token is not '[' → not an array document
+    }
+    if (ch === '[' || ch === '{') depth++;
+    else if (ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) return { open, close: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * Comment-preserving insertion of `newItem` into the first top-level array of `clean`.
+ * Returns the edited text, or `null` when the array brackets cannot be located (caller
+ * falls back to a full re-stringify).
+ */
+function insertIntoJsoncArray(
+  clean: string,
+  isEmpty: boolean,
+  newItem: unknown,
+): string | null {
+  const brackets = findTopLevelArrayBrackets(clean);
+  if (!brackets) return null;
+  const { open, close } = brackets;
+  // Indentation: the whitespace on the line that holds the closing bracket, and one
+  // level (two spaces) deeper for the element itself.
+  const closeLineStart = clean.lastIndexOf('\n', close - 1) + 1;
+  const closeIndentRaw = clean.slice(closeLineStart, close);
+  const closeIndent = /^\s*$/.test(closeIndentRaw) ? closeIndentRaw : '';
+  const elementIndent = closeIndent + '  ';
+  const itemText = JSON.stringify(newItem, null, 2)
+    .split('\n')
+    .map((line, idx) => (idx === 0 ? line : elementIndent + line))
+    .join('\n');
+  if (isEmpty) {
+    return (
+      clean.slice(0, open + 1) +
+      '\n' + elementIndent + itemText + '\n' + closeIndent +
+      clean.slice(close)
+    );
+  }
+  // Non-empty: find the end of the last VALUE character (skipping whitespace, commas,
+  // and comments) so a comma + the new element can be spliced in after it, preserving
+  // any trailing comment/whitespace that follows.
+  let lastValueEnd = open + 1;
+  let inString = false;
+  let escape = false;
+  for (let i = open + 1; i < close; i++) {
+    const ch = clean[i];
+    if (escape) { escape = false; lastValueEnd = i + 1; continue; }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      lastValueEnd = i + 1;
+      continue;
+    }
+    if (ch === '"') { inString = true; lastValueEnd = i + 1; continue; }
+    if (ch === '/' && clean[i + 1] === '/') { while (i < close && clean[i] !== '\n') i++; i--; continue; }
+    if (ch === '/' && clean[i + 1] === '*') { i += 2; while (i < close && !(clean[i] === '*' && clean[i + 1] === '/')) i++; i++; continue; }
+    if (/\s/.test(ch!) || ch === ',') continue;
+    lastValueEnd = i + 1;
+  }
+  return (
+    clean.slice(0, lastValueEnd) + ',' +
+    '\n' + elementIndent + itemText +
+    clean.slice(lastValueEnd, close) +
+    clean.slice(close)
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -126,6 +126,7 @@ describe('formatStartupMigrationNotices', () => {
       ranVersion: CURRENT_MIGRATION_VERSION,
       relocatedDirs: ['plugins', 'skills'],
       modelAlias: { from: 'old-model', to: 'new-model', path: '/tmp/config.json' },
+      renamedConfigKeys: [],
     };
     const notices = formatStartupMigrationNotices(res);
     assert.equal(notices.length, 2);
@@ -137,11 +138,11 @@ describe('formatStartupMigrationNotices', () => {
 
   it('is empty on a skipped (no-op) run and on a run that changed nothing', () => {
     assert.deepEqual(
-      formatStartupMigrationNotices({ ranVersion: null, relocatedDirs: [], modelAlias: null }),
+      formatStartupMigrationNotices({ ranVersion: null, relocatedDirs: [], modelAlias: null, renamedConfigKeys: [] }),
       [],
     );
     assert.deepEqual(
-      formatStartupMigrationNotices({ ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs: [], modelAlias: null }),
+      formatStartupMigrationNotices({ ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs: [], modelAlias: null, renamedConfigKeys: [] }),
       [],
     );
   });
@@ -155,6 +156,7 @@ describe('formatStartupMigrationNotices', () => {
       ranVersion: CURRENT_MIGRATION_VERSION,
       relocatedDirs: ['plugins'],
       modelAlias: { from: 'old-model', to: 'new-model', path: '/tmp/config.json' },
+      renamedConfigKeys: [],
     };
     const notices = formatStartupMigrationNotices(res, {
       appendOptOut: msg => `${msg} [opt-out:${LEGACY_MODEL_REMAP_OPT_OUT_ENV}]`,
@@ -173,6 +175,7 @@ describe('formatStartupMigrationNotices', () => {
       ranVersion: CURRENT_MIGRATION_VERSION,
       relocatedDirs: [],
       modelAlias: { from: 'old-model', to: 'new-model', path: '/tmp/config.json' },
+      renamedConfigKeys: [],
     };
     const notices = formatStartupMigrationNotices(res);
     assert.equal(notices.length, 1);

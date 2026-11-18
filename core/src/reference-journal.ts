@@ -25,7 +25,7 @@ import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { memoizeWithLRU } from './utils/memoize';
 import { log, logError } from './logger';
-import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked, stripBom } from './config';
+import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked, stripBom, runConfigKeyMigrations } from './config';
 import type { DiffHunk } from './types';
 
 /** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
@@ -429,6 +429,8 @@ export interface StartupMigrationResult {
   relocatedDirs: string[];
   /** The deprecated→successor pinned-model rewrite applied to user settings, if any. */
   modelAlias: ModelAliasMigration | null;
+  /** Deprecated config KEYS renamed to their successor by {@link runConfigKeyMigrations}. */
+  renamedConfigKeys: string[];
 }
 
 /**
@@ -454,12 +456,13 @@ export async function runStartupMigrations(
   if (configPath) {
     const stored = loadConfigFileChecked(configPath).config?.migrationVersion ?? 0;
     if (stored === CURRENT_MIGRATION_VERSION) {
-      return { ranVersion: null, relocatedDirs: [], modelAlias: null };
+      return { ranVersion: null, relocatedDirs: [], modelAlias: null, renamedConfigKeys: [] };
     }
   }
   // Ordered migration set — append new migrations here and bump CURRENT_MIGRATION_VERSION.
   const relocatedDirs = migrateLegacyDataDir(env);
   const modelAlias = await migrateDeprecatedModelAlias(configPath);
+  const renamedConfigKeys = runConfigKeyMigrations(configPath);
   if (configPath) {
     try {
       updateConfigFile(configPath, current =>
@@ -471,7 +474,7 @@ export async function runStartupMigrations(
       logError('run-migrations', 'failed to stamp migration version', { error: String(err) });
     }
   }
-  return { ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs, modelAlias };
+  return { ranVersion: CURRENT_MIGRATION_VERSION, relocatedDirs, modelAlias, renamedConfigKeys };
 }
 
 /**
@@ -516,6 +519,11 @@ export function formatStartupMigrationNotices(
       `Updated your pinned model from "${result.modelAlias.from}" to "${result.modelAlias.to}" ` +
       `(the previous id was retired) in ${result.modelAlias.path}.`;
     notices.push(opts.appendOptOut ? opts.appendOptOut(base) : base);
+  }
+  if (result.renamedConfigKeys.length) {
+    notices.push(
+      `Migrated deprecated config key(s) (${result.renamedConfigKeys.join(', ')}) to their current name.`,
+    );
   }
   return notices;
 }

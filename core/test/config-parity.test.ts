@@ -119,6 +119,8 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // always-think default — declared/validated/merged so a config-file value
       // takes effect (isSpeculationEnabled / shouldEnableThinkingByDefault).
       speculationEnabled: true, alwaysThinkingEnabled: true,
+      // Opt-in capability knobs (U010/w102): voice input + auto-mode intent signal.
+      voiceEnabled: true, autoAllowOptIn: true,
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
