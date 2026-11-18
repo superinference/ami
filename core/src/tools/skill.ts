@@ -783,6 +783,20 @@ export const skillTool: ToolDefinition = {
     const subEngine = context._engineFactory(subConfig);
     let result = '';
 
+    // Opt-in live-progress cap (parity: Claude's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW
+    // + verbose flag, adapted to AMI's live-stream model). When
+    // `_maxSkillProgressMessages` is a non-negative finite integer, only the first N
+    // nested tool-use STEPS of the forked skill are surfaced live to the parent stream;
+    // further steps (their start/progress/result rows) are suppressed and summarized as
+    // a "+K more tool use" line appended to the result. Unset / negative / non-finite →
+    // AMI's full live streaming (verbose), every nested event surfaced.
+    const progressCap = context._maxSkillProgressMessages;
+    const progressCapped =
+      typeof progressCap === 'number' && Number.isFinite(progressCap) && progressCap >= 0;
+    let shownToolUses = 0;
+    let hiddenToolUses = 0;
+    const hiddenToolCallIds = new Set<string>();
+
     try {
       for await (const event of subEngine.submit(withSkillBaseDir(skillContent, skill))) {
         if (event.type === 'text_delta') {
@@ -792,7 +806,23 @@ export const skillTool: ToolDefinition = {
           result += `\nError: ${event.error}`;
         }
         // Surface the forked skill's nested activity (tool use/results/text) to
-        // the parent stream so its progress is visible live, not just at the end.
+        // the parent stream so its progress is visible live, not just at the end —
+        // subject to the opt-in tool-use cap above.
+        if (progressCapped) {
+          if (event.type === 'tool_use_start') {
+            if (shownToolUses >= (progressCap as number)) {
+              hiddenToolUses++;
+              hiddenToolCallIds.add(event.toolCallId);
+              continue; // suppress this (and its paired rows) from the live stream
+            }
+            shownToolUses++;
+          } else if (
+            (event.type === 'tool_use_progress' || event.type === 'tool_use_result') &&
+            hiddenToolCallIds.has(event.toolCallId)
+          ) {
+            continue; // paired progress/result of a suppressed tool-use step
+          }
+        }
         context._emitChild?.(event);
       }
     } catch (err) {
@@ -817,6 +847,11 @@ export const skillTool: ToolDefinition = {
     const sandboxNote = sandboxParts.length > 0 ? ` · sandbox: ${sandboxParts.join(', ')}` : '';
     const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}${agentNote}${sandboxNote}]${warningText}`;
     const sandboxMeta = sandboxCeiling ? { sandbox: { readOnlyBash: !!sandboxCeiling.readOnlyBashOnly, writeRoots: sandboxCeiling.writeRoots ?? [] } } : {};
+    // Summary of the nested tool-use steps suppressed from the live stream by the
+    // `_maxSkillProgressMessages` cap (parity: Claude's "+N more tool use" byline).
+    const progressSummary =
+      hiddenToolUses > 0 ? `\n+${hiddenToolUses} more tool ${hiddenToolUses === 1 ? 'use' : 'uses'}` : '';
+    const progressMeta = hiddenToolUses > 0 ? { progressHidden: hiddenToolUses } : {};
 
     // FUNCTIONAL (parity/errors): a sub-skill that was aborted mid-run (parent
     // cancel forwarded into subAbort, or the parent signal itself aborted) ended
@@ -841,7 +876,7 @@ export const skillTool: ToolDefinition = {
     }
 
     return {
-      output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}`,
+      output: `${header}\n${capSkillOutput(result) || '(skill produced no output)'}${progressSummary}`,
       isError: false,
       metadata: {
         mode: 'forked',
@@ -850,6 +885,7 @@ export const skillTool: ToolDefinition = {
         toolCount: tools.length,
         ...(agentDef ? { agent: agentDef.name } : {}),
         ...sandboxMeta,
+        ...progressMeta,
         ...(toolWarnings.length > 0 ? { toolWarnings } : {}),
       },
     };

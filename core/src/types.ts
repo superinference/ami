@@ -759,6 +759,11 @@ export interface ToolContext {
    *  the task tool can apply it as the default model for a spawn that names none (tri-state:
    *  string = force that model, `null` = follow the leader, absent = provider-aware fallback). */
   _subagentDefaultModel?: string | null;
+  /** Forwarded {@link EngineConfig.maxSkillProgressMessages}: caps how many of a
+   *  forked skill's nested tool-use steps the skill tool surfaces live to the parent
+   *  stream (the rest are summarized as "+K more tool use"). Undefined / negative /
+   *  non-finite → surface every nested event (AMI's full live-stream default). */
+  _maxSkillProgressMessages?: number;
   _permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   _allowLocalhostForTesting?: boolean;
   _engineFactory?: (config: EngineConfig) => { submit(prompt: string): AsyncIterable<EngineEvent>; shutdown?(): void };
@@ -2103,6 +2108,16 @@ export interface EngineConfig {
    *  that default; `null` means "Default → follow the leader" (keep the parent's exact
    *  model); omitted falls through to the provider-aware hardcoded fallback. */
   subagentDefaultModel?: string | null;
+  /** Opt-in cap on how many of a forked skill's nested tool-use steps are surfaced
+   *  LIVE to the parent stream. When set to a non-negative integer N, only the first
+   *  N `tool_use_start` steps (and their progress/result rows) of a forked skill are
+   *  forwarded as child events; further tool-use steps are suppressed from the live
+   *  stream and summarized as a "+K more tool use" line appended to the skill's
+   *  result. `0` surfaces the result only. Default (unset / negative / non-finite)
+   *  keeps AMI's full live streaming — every nested event is surfaced (verbose).
+   *  Parity: Claude Code's SkillTool `MAX_PROGRESS_MESSAGES_TO_SHOW` (=3) + `verbose`
+   *  flag, adapted to AMI's live-stream model (opt-in cap; verbose is the default). */
+  maxSkillProgressMessages?: number;
   /** Map of canonical model id → provider-specific model string (e.g. a Bedrock
    *  inference-profile ARN), layered on top of the resolved model. Parity: `modelOverrides`. */
   modelOverrides?: Record<string, string>;
@@ -2618,6 +2633,9 @@ export function validateEngineConfig(config: Partial<EngineConfig>): { valid: bo
   if (config.lspRecommendationIgnoredCount !== undefined) {
     if (!validateNumericKnob(config.lspRecommendationIgnoredCount, 'lspRecommendationIgnoredCount', { min: 0, integer: true }, warnings)) valid = false;
   }
+  if (config.maxSkillProgressMessages !== undefined) {
+    if (!validateNumericKnob(config.maxSkillProgressMessages, 'maxSkillProgressMessages', { min: 0, integer: true }, warnings)) valid = false;
+  }
   if (config.sandbox !== undefined) {
     if (!validateSandboxPolicy(config.sandbox, warnings)) valid = false;
   }
@@ -2638,6 +2656,7 @@ export function sanitizeEngineConfig(config: Partial<EngineConfig>): Partial<Eng
   if (out.bashOutputMaxChars !== undefined) out.bashOutputMaxChars = Math.max(1, Math.round(out.bashOutputMaxChars));
   if (out.taskOutputMaxChars !== undefined) out.taskOutputMaxChars = Math.max(1, Math.round(out.taskOutputMaxChars));
   if (out.lspRecommendationIgnoredCount !== undefined) out.lspRecommendationIgnoredCount = Math.max(0, Math.round(out.lspRecommendationIgnoredCount));
+  if (out.maxSkillProgressMessages !== undefined) out.maxSkillProgressMessages = Math.max(0, Math.round(out.maxSkillProgressMessages));
   if (out.sandbox !== undefined) out.sandbox = sanitizeSandboxPolicy(out.sandbox);
   return out;
 }

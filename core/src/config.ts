@@ -132,6 +132,12 @@ export interface ProjectConfig {
    * fallback. Parity: Claude Code's `teammateDefaultModel` / getDefaultTeammateModel.
    */
   subagentDefaultModel?: string;
+  /** Opt-in cap on how many of a forked skill's nested tool-use steps are surfaced
+   *  live to the parent stream; the rest are summarized as "+K more tool use" in the
+   *  skill result. A non-negative integer (0 = result-only). Omitted keeps AMI's full
+   *  live streaming. Parity: Claude Code's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW +
+   *  verbose flag (adapted to AMI's live-stream model). */
+  maxSkillProgressMessages?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them. */
   deferTools?: boolean;
   /** Extra tool names to always keep loaded when deferTools is on. */
@@ -1942,7 +1948,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['bashOutputMaxChars', 'number'], ['taskOutputMaxChars', 'number'],
   ['toolOutputMaxChars', 'number'],
   ['maxWebSearchesPerSession', 'number'], ['migrationVersion', 'number'],
-  ['cleanupPeriodDays', 'number'],
+  ['cleanupPeriodDays', 'number'], ['maxSkillProgressMessages', 'number'],
   ['safeMode', 'boolean'], ['hasTrustDialogAccepted', 'boolean'],
   ['trustedProjectPaths', 'string[]'],
   ['deferTools', 'boolean'], ['tipsEnabled', 'boolean'],
@@ -2474,7 +2480,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   // 3. Numeric RANGE — delegate to the single canonical EngineConfig validator, one
   //    field at a time so each invalid value is attributed to its own field. Skip a
   //    field already flagged in step 1 so a non-number can't reach the range logic.
-  for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd', 'maxWebSearchesPerSession', 'bashOutputMaxChars', 'taskOutputMaxChars'] as const) {
+  for (const field of ['maxTurns', 'tokenBudget', 'maxBudgetUsd', 'maxWebSearchesPerSession', 'bashOutputMaxChars', 'taskOutputMaxChars', 'maxSkillProgressMessages'] as const) {
     if (config[field] === undefined || typeInvalid.has(field)) continue;
     const r = validateEngineConfig({ [field]: config[field] } as Partial<EngineConfig>);
     if (!r.valid) issues.push({ field, message: r.warnings.join('; '), value: config[field], tip: getConfigValidationTip(field, { kind: 'range' }) });
@@ -3690,6 +3696,7 @@ export function mergeConfigs(
     if (layer.maxWebSearchesPerSession !== undefined) merged.maxWebSearchesPerSession = layer.maxWebSearchesPerSession;
     if (layer.cleanupPeriodDays !== undefined) merged.cleanupPeriodDays = layer.cleanupPeriodDays;
     if (layer.subagentDefaultModel !== undefined) merged.subagentDefaultModel = layer.subagentDefaultModel;
+    if (layer.maxSkillProgressMessages !== undefined) merged.maxSkillProgressMessages = layer.maxSkillProgressMessages;
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
     // Array-valued settings ACCUMULATE across layers (concat + dedupe), so a
     // higher layer augments rather than clobbers a lower one — parity with
