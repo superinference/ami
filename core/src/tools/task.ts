@@ -27,7 +27,7 @@ import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions'
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel, getRuntimeMainLoopModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
-import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness } from '../skills';
+import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness, BUBBLE_PERMISSION_MODE } from '../skills';
 import { withFrontmatterHookPluginRoot } from '../hooks';
 import { buildAgentMemoryPrompt } from '../memory';
 import { log } from '../logger';
@@ -630,7 +630,7 @@ export function clampPermissionMode(requested: string, parentMode: string | unde
  * permission decision up to the parent's live stance". A fork is an in-context clone,
  * so it must behave with EXACTLY the parent's permissions, not a fixed snapshot.
  */
-export const FORK_BUBBLE_PERMISSION_MODE = 'bubble';
+export const FORK_BUBBLE_PERMISSION_MODE = BUBBLE_PERMISSION_MODE;
 
 /**
  * Resolve the `'bubble'` fork-child sentinel to the parent's live permission mode.
@@ -2824,9 +2824,15 @@ export const taskTool: ToolDefinition = {
       // and keep their declared mode. The clamp is a no-op when the parent mode is not
       // threaded (bare/test contexts), so it never regresses existing behavior.
       subagentIsBuiltIn = isBuiltInAgent(agentDef);
-      agentPermissionMode = agentDef.permissionMode && !subagentIsBuiltIn
-        ? clampPermissionMode(agentDef.permissionMode, context._parentPermissionMode)
-        : agentDef.permissionMode;
+      // An agent definition may declare the `'bubble'` sentinel (parity: Claude's
+      // async/background-agent bubble mode) — resolve it to the parent's LIVE stance
+      // FIRST so every permission decision bubbles up to the parent terminal instead
+      // of being auto-denied or mis-clamped as an unknown mode. A concrete declared
+      // mode passes through resolveBubblePermissionMode unchanged.
+      const resolvedAgentMode = resolveBubblePermissionMode(agentDef.permissionMode, context._parentPermissionMode);
+      agentPermissionMode = resolvedAgentMode && !subagentIsBuiltIn
+        ? clampPermissionMode(resolvedAgentMode, context._parentPermissionMode)
+        : resolvedAgentMode;
       agentTokenBudget = agentDef.autoCompactWindow;
       agentBackgroundDefault = agentDef.background === true;
       agentIsolationDefault = agentDef.isolation;

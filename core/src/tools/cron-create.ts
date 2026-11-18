@@ -12,7 +12,7 @@ export function resetCronScheduler(): void {
   resetScheduler();
 }
 
-const ALLOWED_KEYS = new Set(['cron', 'prompt', 'name', 'recurring', 'durable', 'permanent', 'maxAgeDays', 'utc']);
+const ALLOWED_KEYS = new Set(['cron', 'prompt', 'name', 'recurring', 'durable', 'permanent', 'maxAgeDays', 'utc', 'model', 'allowedTools']);
 
 // PARITY (additive): upper bound on a scheduled prompt's length. A prompt far
 // larger than this is almost always an accident (e.g. a whole file pasted in)
@@ -139,6 +139,19 @@ export const cronCreateTool: ToolDefinition = {
           'Default false (local time). The list view renders a UTC job in your local time with a TZ label.',
         default: false,
       },
+      model: {
+        type: 'string',
+        description:
+          'Optional per-job model override: the fired run is instructed to use this model instead of the ' +
+          'session default (e.g. a cheaper model for a routine recurring check). Omit to inherit the session model.',
+      },
+      allowedTools: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional per-job allowed-tools whitelist: the fired run is restricted to these tool names ' +
+          '(e.g. ["bash","file_read"] for a read-only health check). Omit to inherit the session toolset.',
+      },
     },
     required: ['cron', 'prompt'],
   },
@@ -180,6 +193,31 @@ export const cronCreateTool: ToolDefinition = {
         return { output: `Error: maxAgeDays must be a non-negative integer number of days (got ${String(input.maxAgeDays)}); use 0 for never-expire.`, isError: true };
       }
       maxAgeDays = n;
+    }
+
+    // Optional per-job model override (parity: Claude's session_context.model). A
+    // present-but-blank/non-string value is a mistake — reject it up front rather
+    // than storing an empty override that silently inherits the session model.
+    let model: string | undefined;
+    if (input.model !== undefined) {
+      if (typeof input.model !== 'string' || !input.model.trim()) {
+        return { output: `Error: model must be a non-empty string model id (got ${String(input.model)}).`, isError: true };
+      }
+      model = input.model.trim();
+    }
+    // Optional per-job allowed-tools whitelist (parity: Claude's allowed_tools). Must
+    // be an array of non-empty tool-name strings; an empty array (deny-everything) is
+    // almost always a mistake for a scheduled task, so it is refused with a clear error.
+    let allowedTools: string[] | undefined;
+    if (input.allowedTools !== undefined) {
+      if (!Array.isArray(input.allowedTools) || input.allowedTools.some(t => typeof t !== 'string' || !t.trim())) {
+        return { output: 'Error: allowedTools must be an array of non-empty tool-name strings (e.g. ["bash","file_read"]).', isError: true };
+      }
+      const names = (input.allowedTools as string[]).map(t => t.trim());
+      if (names.length === 0) {
+        return { output: 'Error: allowedTools must list at least one tool (omit it entirely to inherit the session toolset).', isError: true };
+      }
+      allowedTools = names;
     }
 
     // Full field-level validation (not just field count) with a clear error.
@@ -232,7 +270,7 @@ export const cronCreateTool: ToolDefinition = {
 
     let job;
     try {
-      job = sched.create({ cron, prompt, name, recurring, durable, permanent, maxAgeDays, utc, agentId: context.agentId });
+      job = sched.create({ cron, prompt, name, recurring, durable, permanent, maxAgeDays, utc, model, allowedTools, agentId: context.agentId });
     } catch (err) {
       // MAX_JOBS cap and the minimum-interval floor surface as clean validation.
       return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -265,11 +303,17 @@ export const cronCreateTool: ToolDefinition = {
 
     // Echo the chosen name (when given) so the caller sees the label it can reuse.
     const nameLine = job.name ? `\n  Name: ${job.name}` : '';
+    // Echo any per-job model/tool overrides so the caller sees they were recorded
+    // (and will be applied when the job fires).
+    const overrideNote =
+      (job.model ? `\n  Model override: ${job.model}` : '') +
+      (job.allowedTools ? `\n  Allowed tools: ${job.allowedTools.join(', ')}` : '');
+
     return {
       output:
         `Scheduled ${recurring ? 'recurring' : 'one-shot'} job ${job.id}${nameLine}\n` +
         `  Schedule: ${schedule} (${utc ? 'defined in UTC, shown in local time' : 'local time'})\n  Next run: ${nextRun}\n` +
-        `  Recurring: ${recurring}\n  Durable: ${effectiveDurable}${expiry}${durabilityNote}\n` +
+        `  Recurring: ${recurring}\n  Durable: ${effectiveDurable}${expiry}${durabilityNote}${overrideNote}\n` +
         '  Cancel with cron_delete.',
     };
   },

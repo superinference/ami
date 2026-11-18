@@ -307,9 +307,14 @@ export interface AgentDefinition {
   tools?: string[];
   disallowedTools?: string[];
   /** Permission mode override for sub-agent invocation. `'plan'` runs the sub-agent
-   *  in read-only plan mode (reads/searches allowed, mutations denied) — the valid
-   *  set is {@link AGENT_PERMISSION_MODES}. */
-  permissionMode?: 'auto-allow' | 'ask' | 'deny-all' | 'plan';
+   *  in read-only plan mode (reads/searches allowed, mutations denied). `'bubble'`
+   *  is the sentinel (parity with Claude Code's async/background-agent `bubble`
+   *  permission mode): instead of pinning a fixed mode, the spawned agent runs with
+   *  the PARENT's live permission stance so every permission decision bubbles up to
+   *  the parent terminal rather than auto-denying — resolved at spawn time by
+   *  {@link BUBBLE_PERMISSION_MODE}/`resolveBubblePermissionMode` in task.ts. The
+   *  valid declarable set is {@link AGENT_DECLARABLE_PERMISSION_MODES}. */
+  permissionMode?: 'auto-allow' | 'ask' | 'deny-all' | 'plan' | 'bubble';
   /** Token budget for auto-compaction inside this subagent's context window. */
   autoCompactWindow?: number;
   /** Which tier this agent was loaded from (built-in | plugin | user | project). */
@@ -1006,6 +1011,27 @@ export function missingSkillArgumentMessage(
  *  already accepts `plan`) so the two never diverge. */
 export const AGENT_PERMISSION_MODES = ['auto-allow', 'ask', 'deny-all', 'plan'] as const;
 
+/** The `'bubble'` permission-mode SENTINEL an agent definition may declare (parity
+ *  with Claude Code's async/background-agent `bubble` permission mode,
+ *  runAgent.ts:L440-L463). It is NOT one of {@link AGENT_PERMISSION_MODES} (the real
+ *  engine modes kept in lockstep with the engine's `PERMISSION_MODES`) — it means
+ *  "do not pin a mode of my own; run with the parent's LIVE stance so every
+ *  permission decision bubbles up to the parent terminal instead of auto-denying".
+ *  Resolved to the parent's concrete mode at spawn time by `resolveBubblePermissionMode`
+ *  (task.ts) BEFORE the engine's enum validation, so it never reaches the
+ *  PermissionManager as a literal. Re-exported as `FORK_BUBBLE_PERMISSION_MODE` from
+ *  task.ts (single source — no second literal). */
+export const BUBBLE_PERMISSION_MODE = 'bubble';
+
+/** The permission modes an agent/skill FILE frontmatter may legally DECLARE: every
+ *  real engine mode ({@link AGENT_PERMISSION_MODES}) PLUS the {@link BUBBLE_PERMISSION_MODE}
+ *  sentinel. This is the validation set for a declared `permission-mode:` (distinct
+ *  from {@link AGENT_PERMISSION_MODES}, which stays the engine-mode lockstep set), so a
+ *  definition declaring `permission-mode: bubble` validates instead of warning. */
+export const AGENT_DECLARABLE_PERMISSION_MODES = [
+  ...AGENT_PERMISSION_MODES, BUBBLE_PERMISSION_MODE,
+] as const;
+
 /** Structured outcome of validating an agent definition. */
 export interface AgentValidationResult {
   valid: boolean;      // no hard errors (the definition is loadable)
@@ -1054,10 +1080,10 @@ export function validateAgentDefinition(
 
   if (
     raw.permissionMode !== undefined &&
-    !(AGENT_PERMISSION_MODES as readonly string[]).includes(raw.permissionMode)
+    !(AGENT_DECLARABLE_PERMISSION_MODES as readonly string[]).includes(raw.permissionMode)
   ) {
     warnings.push(
-      `Unknown permission mode "${raw.permissionMode}" (valid: ${AGENT_PERMISSION_MODES.join(', ')})`,
+      `Unknown permission mode "${raw.permissionMode}" (valid: ${AGENT_DECLARABLE_PERMISSION_MODES.join(', ')})`,
     );
   }
 

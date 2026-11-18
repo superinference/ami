@@ -36,6 +36,16 @@ export interface CronJob {
   maxRuns?: number;
   /** How many times this job has fired. Only tracked when `maxRuns` is set. */
   runCount?: number;
+  /** Optional per-job MODEL override (parity with Claude Code's scheduled-job
+   *  `session_context.model`, scheduleRemoteAgents.ts:L206/L289). When set, the fired
+   *  prompt instructs the run to use this model instead of whatever the session
+   *  currently has. Undefined = inherit the session model. Surfaced in the fire notice. */
+  model?: string;
+  /** Optional per-job ALLOWED-TOOLS whitelist (parity with Claude Code's scheduled-job
+   *  `allowed_tools`, scheduleRemoteAgents.ts:L210). When set, the fired prompt is
+   *  restricted to this toolset. Undefined = inherit the session tools. Surfaced in the
+   *  fire notice. */
+  allowedTools?: string[];
 }
 
 export const MAX_AGE_DAYS = 7;
@@ -439,7 +449,7 @@ export class CronScheduler {
     };
   }
 
-  create(opts: { cron: string; prompt: string; name?: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number; utc?: boolean }): CronJob {
+  create(opts: { cron: string; prompt: string; name?: string; recurring?: boolean; durable?: boolean; agentId?: string; permanent?: boolean; maxRuns?: number; maxAgeDays?: number; utc?: boolean; model?: string; allowedTools?: string[] }): CronJob {
     if (this.jobs.size >= MAX_JOBS) {
       throw new Error(`Maximum of ${MAX_JOBS} cron jobs reached. Delete existing jobs first.`);
     }
@@ -517,6 +527,8 @@ export class CronScheduler {
       ...(utc ? { utc: true } : {}),
       ...(opts.maxRuns !== undefined ? { maxRuns: opts.maxRuns, runCount: 0 } : {}),
       ...(opts.maxAgeDays !== undefined ? { maxAgeDays: opts.maxAgeDays } : {}),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.allowedTools && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
     };
     this.jobs.set(id, job);
     if (job.durable) this.saveDurable();
