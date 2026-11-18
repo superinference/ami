@@ -1267,7 +1267,8 @@ export const ENGINE_EVENT_TYPES = [
   'plan_mode_changed', 'task_updated', 'skill_activated',
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
-  'external_import_blocked', 'peer_message', 'background_task_complete', 'done',
+  'external_import_blocked', 'peer_message', 'background_task_complete',
+  'hook_response', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1585,6 +1586,17 @@ export type EngineEvent =
    *  `output_file` field (`utils/sdkEventQueue.ts`). Omitted only on a legacy direct
    *  emit that never recorded a spool path. */
   | { type: 'background_task_complete'; taskId: string; status: string; summary: string; outputFile?: string }
+  /** A backgrounded (async) hook finished. The engine's `hookRewake` channel only
+   *  surfaces a DENY/exit-2 or an error as a flattened `[hookRewake:…]` system string
+   *  for the MODEL; this event is the USER/introspection-facing completion RECORD for
+   *  EVERY async hook — including a clean success — classified by `outcome`
+   *  (`'success'` | `'error'` | `'cancelled'`), with the command hook's `exitCode` and
+   *  SEPARATELY-captured `stdout`/`stderr` rather than one merged blob, plus the
+   *  installing plugin's provenance when the hook came from a bundle. Emitted once per
+   *  async hook from a SINGLE engine site. Parity: Claude Code's
+   *  `finalizeHook`/`emitHookResponse` structured async-hook response
+   *  (utils/hooks/AsyncHookRegistry.ts). */
+  | { type: 'hook_response'; event: string; outcome: 'success' | 'error' | 'cancelled'; exitCode?: number; stdout?: string; stderr?: string; pluginName?: string; pluginId?: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**

@@ -3050,6 +3050,22 @@ async function runCommandHookAsync(
   });
 }
 
+/**
+ * Mutable out-param threaded through the hook runners to carry a hook's execution
+ * result back to {@link HookManager.fireAsyncHook}. `success` drives the
+ * `once:true` self-removal gate (see `runHookByType`); the optional `exitCode` /
+ * `stdout` / `stderr` are captured by the command path so an async hook's
+ * structured completion record (`hook_response` EngineEvent) reports the exit code
+ * and SEPARATELY-captured streams rather than one merged blob. Parity: Claude
+ * Code's hook outcome passed to `finalizeHook`/`emitHookResponse`.
+ */
+export interface HookOutcome {
+  success: boolean;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
 export class HookManager extends EventEmitter {
   private _engineFactory: EngineFactory | null = null;
   private _providerConfig: any = null;
@@ -3534,7 +3550,7 @@ export class HookManager extends EventEmitter {
     const asyncTimeoutMs = validateHookTimeout(config.asyncTimeout ?? DEFAULT_ASYNC_HOOK_TIMEOUT_MS);
     const timer = setTimeout(onAbort, asyncTimeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
-    const outcome = { success: true };
+    const outcome: HookOutcome = { success: true };
     const p: Promise<unknown> = this.runHookByType(config, cwd, eventData, ac.signal, outcome, envFileHint)
       .then((output) => {
         if (outcome.success && onSuccess) onSuccess();
@@ -3558,6 +3574,22 @@ export class HookManager extends EventEmitter {
         parentSignal?.removeEventListener('abort', onAbort);
         this._pendingAsync.delete(p);
         onSettled?.(outcome.success);
+        // Structured completion RECORD for EVERY async hook (not only the
+        // DENY/exit-2/error re-wake above) — classify how it ended so a
+        // user/introspection surface sees a clean success too. An aborted signal
+        // means the hook was cancelled (shutdown) or hit its async-timeout budget;
+        // otherwise `outcome.success` discriminates success vs error. Parity:
+        // Claude Code's finalizeHook/emitHookResponse (AsyncHookRegistry.ts).
+        const resolvedOutcome: 'success' | 'error' | 'cancelled' =
+          ac.signal.aborted ? 'cancelled' : outcome.success ? 'success' : 'error';
+        this.emit('hookResponse', {
+          event,
+          outcome: resolvedOutcome,
+          exitCode: outcome.exitCode,
+          stdout: outcome.stdout,
+          stderr: outcome.stderr,
+          ...this.rewakeAttribution(config),
+        });
       });
     this._pendingAsync.set(p, { event, startedAt: Date.now() });
   }
@@ -5860,7 +5892,7 @@ export class HookManager extends EventEmitter {
     // consumed by a failed attempt and stays registered to retry. A clean run
     // (exit 0 / no engine error / 2xx) leaves it true even if the hook returned a
     // DENY *decision* — that is a successful execution that happened to block.
-    outcome?: { success: boolean },
+    outcome?: HookOutcome,
     // Per-hook env-file hint: the real lifecycle event + this hook's index, so an
     // env-ingestible command hook receives its deterministic CLAUDE_ENV_FILE path
     // (see buildHookEnv). Absent for non-arm callers / non-ingestible events.
@@ -5916,6 +5948,11 @@ export class HookManager extends EventEmitter {
         const args = config.args?.map(a => substituteUserConfigValues(substitutePluginData(substitutePluginRoot(a, pluginRoot), pluginDataDir), pluginOptions));
         try {
           const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler);
+          // Capture the raw result on the shared outcome so an async hook's
+          // `hook_response` completion record can report the exit code and the
+          // SEPARATELY-captured streams (parity: Claude Code's split stdout/stderr +
+          // exitCode in emitHookResponse), independent of the decision parsed below.
+          if (outcome) { outcome.exitCode = exitCode; outcome.stdout = stdout; outcome.stderr = stderr; }
           // Claude Code exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
@@ -6011,7 +6048,7 @@ export class HookManager extends EventEmitter {
     }
   }
 
-  private async runPromptHook(config: PromptHookConfig, eventData: string, signal?: AbortSignal, outcome?: { success: boolean }): Promise<string> {
+  private async runPromptHook(config: PromptHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome): Promise<string> {
     const r = await this.runEngineHook('prompt', config.prompt, 'Event data', config.model, config.timeout, 30_000, eventData, signal);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
@@ -6188,7 +6225,7 @@ export class HookManager extends EventEmitter {
     return { output: sanitizeHookOutput(result), error };
   }
 
-  private async runHttpHook(config: HttpHookConfig, eventData: string, signal?: AbortSignal, outcome?: { success: boolean }): Promise<string> {
+  private async runHttpHook(config: HttpHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome): Promise<string> {
     const http = require('http');
     const https = require('https');
     // Fail-closed: an HTTP hook that times out or errors DENIES when onFailure:block.
@@ -6377,7 +6414,7 @@ export class HookManager extends EventEmitter {
     }
   }
 
-  private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: { success: boolean }): Promise<string> {
+  private async runAgentHook(config: AgentHookConfig, eventData: string, signal?: AbortSignal, outcome?: HookOutcome): Promise<string> {
     const r = await this.runEngineHook('agent', config.prompt, 'Context', config.model, config.timeout, 60_000, eventData, signal);
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
