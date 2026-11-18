@@ -3130,7 +3130,18 @@ export class ProcessManager extends EventEmitter {
     let readopted = 0;
     let reaped = 0;
     for (const rec of records) {
-      if (!rec || typeof rec.taskId !== 'string' || typeof rec.pid !== 'number') continue;
+      // PARSE-FAILURE GUARD (parity with Claude Code's ITermBackend split-output
+      // check, ITermBackend.ts:L217-L223): the registry sidecar is UNTRUSTED input
+      // on resume (corrupt / hand-edited / written by a crashed-or-old build), so a
+      // record's id/handle is validated before it is propagated into tracked state.
+      // An empty/whitespace taskId is unkillable and unlistable; a non-positive or
+      // non-integer pid would turn adoptRunning's `process.kill(-pid, …)` into a
+      // signal to the WRONG process group (pid 0 = our OWN group). Reject (skip) the
+      // bad record instead of corrupting state — mirroring the reference's
+      // "parsed-empty => don't trust it" guard, per-record so one torn entry does not
+      // abort the whole reconcile.
+      if (!rec || typeof rec.taskId !== 'string' || rec.taskId.trim() === '') continue;
+      if (typeof rec.pid !== 'number' || !Number.isInteger(rec.pid) || rec.pid <= 0) continue;
       if (this.processes.has(rec.taskId)) continue; // already live in this process
       if (isAlive(rec.pid)) {
         this.adoptRunning(rec, isAlive);
