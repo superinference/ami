@@ -590,6 +590,32 @@ export interface McpServerConfig {
 export const MCP_SERVER_STATES = ['pending', 'connecting', 'ready', 'error', 'stopped', 'disabled', 'needs-auth'] as const;
 export type McpServerState = (typeof MCP_SERVER_STATES)[number];
 
+/**
+ * OAuth credential-state introspection for an `oauth`-configured server — the
+ * read-only `/mcp` counterpart of Claude Code's `mcp xaa show` subcommand
+ * (commands/mcp/xaaIdpCommand.ts:L220-240). Surfaces WHICH identity the server is
+ * configured for (resolved `clientId`, `scope`, `callbackPort`) and whether its
+ * secrets are in place (`hasClientSecret` = a client secret is stored vs PKCE-only,
+ * `loggedIn` = a persisted OAuth token file already exists on disk) WITHOUT ever
+ * exposing the secret or token values themselves. `undefined` on a server with no
+ * `oauth` config.
+ */
+export interface McpOAuthCredentialState {
+  /** Resolved OAuth client id (config.oauth.clientId), when statically configured. */
+  clientId?: string;
+  /** Requested OAuth scope (config.oauth.scope), when configured. */
+  scope?: string;
+  /** Pinned loopback callback port (config.oauth.callbackPort), when configured. */
+  callbackPort?: number;
+  /** True when a client secret is configured (confidential client) vs PKCE-only. The
+   *  secret VALUE is never surfaced — only its presence (parity with `mcp xaa show`'s
+   *  "Client secret: (stored in keychain)" vs "(not set — PKCE-only)"). */
+  hasClientSecret: boolean;
+  /** True when a persisted OAuth token file already exists for this server (it has been
+   *  authenticated at least once), parity with `mcp xaa show`'s "Logged in: yes/no". */
+  loggedIn: boolean;
+}
+
 export interface McpServerStatus {
   name: string;
   state: McpClientState | McpServerState;
@@ -653,6 +679,26 @@ export interface McpServerStatus {
    * only one; derived from {@link McpClient.supportsChannelPermissionRelay}.
    */
   channelPermissionRelay?: boolean;
+  /**
+   * The resolved launch command of a stdio server (`config.command`), so a `/mcp`
+   * drill can show the user exactly what process backs the server (Claude-parity
+   * MCPStdioServerMenu "Command:" line, MCPStdioServerMenu.tsx:L115-118). `undefined`
+   * for a remote (http/sse/ws) server, which has a URL rather than a command.
+   */
+  command?: string;
+  /**
+   * The resolved launch arguments of a stdio server (`config.args`), rendered on the
+   * drill's "Args:" line alongside {@link command} (Claude-parity MCPStdioServerMenu
+   * "Args:" line, MCPStdioServerMenu.tsx:L120-123). Absent when the server has no args.
+   */
+  args?: string[];
+  /**
+   * OAuth credential-state introspection for an `oauth`-configured server (resolved
+   * identity + whether its secret/token are in place), the `/mcp` counterpart of
+   * `mcp xaa show`. `undefined` for a server with no `oauth` config. See
+   * {@link McpOAuthCredentialState}.
+   */
+  oauth?: McpOAuthCredentialState;
   error?: string;
 }
 
@@ -2322,6 +2368,7 @@ export class McpManager extends EventEmitter {
         scope: this._serverScopes.get(name),
         sourcePath: this._serverSources.get(name),
         ...this.sourceAgentsField(name),
+        ...this.launchFields(name),
         error: info.error || this.serverErrors.get(name),
       });
     }
@@ -2356,6 +2403,48 @@ export class McpManager extends EventEmitter {
     return agents ? { sourceAgents: agents } : {};
   }
 
+  /**
+   * Launch-command and OAuth-credential introspection fields for `name`, spread into
+   * every {@link McpServerStatus} construction site so the `/mcp` drill can show what
+   * backs a server. A stdio server surfaces its resolved `command`/`args`
+   * (Claude-parity MCPStdioServerMenu); an `oauth`-configured server surfaces its
+   * {@link McpOAuthCredentialState} (Claude-parity `mcp xaa show`). The config is read
+   * from the connected-client config map, falling back to a pending server's stored
+   * config, so a not-yet-connected server still reports its command/args/oauth state.
+   * Returns `{}` for a server with neither a stdio command nor oauth config.
+   */
+  private launchFields(name: string): { command?: string; args?: string[]; oauth?: McpOAuthCredentialState } {
+    const config = this.configs.get(name) ?? this.pendingServers.get(name)?.config;
+    if (!config) return {};
+    const out: { command?: string; args?: string[]; oauth?: McpOAuthCredentialState } = {};
+    // A stdio server (explicit `stdio` or the default when no transport is set) has a
+    // launch command; a remote (http/sse/ws) server is URL-backed and has none.
+    const isStdio = !config.transport || config.transport === 'stdio';
+    if (isStdio && config.command) out.command = config.command;
+    if (isStdio && config.args && config.args.length > 0) out.args = [...config.args];
+    if (config.oauth) {
+      out.oauth = {
+        clientId: config.oauth.clientId,
+        scope: config.oauth.scope,
+        callbackPort: config.oauth.callbackPort,
+        // Presence only — the secret VALUE is never surfaced.
+        hasClientSecret: !!config.oauth.clientSecret,
+        loggedIn: this.hasPersistedOAuthToken(name, config),
+      };
+    }
+    return out;
+  }
+
+  /** Whether a persisted OAuth token file already exists on disk for `name` (it has
+   *  been authenticated at least once). Best-effort: a stat failure reports `false`. */
+  private hasPersistedOAuthToken(name: string, config: McpServerConfig): boolean {
+    try {
+      return fs.existsSync(this.mcpTokenFilePath(name, config));
+    } catch {
+      return false;
+    }
+  }
+
   private getFullServerStatus(name: string): McpServerStatus {
     const client = this.clients.get(name);
     const config = this.configs.get(name);
@@ -2365,6 +2454,7 @@ export class McpManager extends EventEmitter {
         resourceCount: 0, uptime: null, containerBacked: !!config?.containerConfig,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
         ...this.sourceAgentsField(name),
+        ...this.launchFields(name),
       };
     }
     // A server whose connect was short-circuited by the needs-auth skip cache was
@@ -2378,6 +2468,7 @@ export class McpManager extends EventEmitter {
         uptime: client.uptime, containerBacked: !!config?.containerConfig, needsAuth: true,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
         ...this.sourceAgentsField(name),
+        ...this.launchFields(name),
       };
     }
     return {
@@ -2397,6 +2488,7 @@ export class McpManager extends EventEmitter {
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
       ...this.sourceAgentsField(name),
+      ...this.launchFields(name),
       error: this.serverErrors.get(name),
     };
   }
@@ -2801,6 +2893,8 @@ export class McpManager extends EventEmitter {
       ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
+      ...this.sourceAgentsField(name),
+      ...this.launchFields(name),
     };
   }
 
