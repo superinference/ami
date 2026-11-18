@@ -1966,7 +1966,18 @@ export interface EngineConfig {
   skill?: string;
   /** Named output style overlay appended to the system prompt (e.g. 'concise'). */
   outputStyle?: string;
-  /** Managed allowlist of selectable models; non-listed models are blocked. */
+  /** Managed allowlist of selectable models; non-listed models are blocked.
+   *
+   *  UNSET-vs-EMPTY semantics (parity: Claude Code modelAllowlist.ts L103-108):
+   *  - UNSET (`undefined`) ⇒ NO restriction — any model may be selected.
+   *  - DEFINED but EMPTY (`[]`) ⇒ HARD LOCKDOWN — EVERY user-initiated model switch
+   *    (`/model`, `/architect <model>`) is blocked; the admin has disallowed all
+   *    user model selection. This is the opposite of unset and is honored by the
+   *    user-switch gate (`isUserModelSwitchAllowed` / `isManagedModelLockdown`).
+   *  - NON-EMPTY ⇒ only the listed family aliases / version prefixes / full ids are
+   *    selectable (family-aware match via `isModelAllowed`).
+   *  The non-user DEFAULT slots (startup model, fallback/compaction) deliberately
+   *  stay lenient (empty ⇒ off) so they always resolve to some model. */
   enforceAvailableModels?: string[];
   /** Merged project-level configuration (from .ami/config.json). */
   projectConfig?: import('./config').ProjectConfig;
