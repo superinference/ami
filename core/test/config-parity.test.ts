@@ -63,6 +63,9 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       // Persisted one-time preference flags + count-limited notice seen-counts (U010 w87):
       // global-only internal state, declared/validated like skillUsage.
       preferencesShown: { ideAutoConnectDialog: true }, noticeSeenCounts: { welcome: 2 },
+      // Persisted GitHub-repo -> local-clone-path MRU registry (global-only internal state,
+      // declared/validated like skillUsage).
+      githubRepoPaths: { 'acme/widget': ['/home/u/widget'] },
       strictPluginOnlyCustomization: ['skills'],
       // Engine-behavior knobs (U010 w78): read off the merged config by the engine
       // factory, now declared/validated/merged so a config-file value takes effect.

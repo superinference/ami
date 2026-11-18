@@ -346,6 +346,17 @@ export interface ProjectConfig {
    */
   noticeSeenCounts?: Record<string, number>;
   /**
+   * Persistent registry of known LOCAL clone paths for a GitHub repository, keyed by
+   * the lowercased `owner/repo` (parity: Claude Code's global-config `githubRepoPaths`).
+   * Each value is a most-recently-used list of absolute, symlink-resolved, NFC-normalized
+   * clone roots — the clone a repo was most recently used from is kept first. Written via
+   * {@link updateGithubRepoPathMapping}/{@link removePathFromRepo} and read via
+   * {@link getKnownPathsForRepo}; internal, cross-project user STATE (global config only,
+   * like {@link skillUsage}). Lets a repo-scoped feature resolve "where on disk is a clone
+   * of owner/repo?" without re-scanning the filesystem.
+   */
+  githubRepoPaths?: Record<string, string[]>;
+  /**
    * Glob/path patterns for instruction (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md /
    * `*.local.md`) files to EXCLUDE from the auto-loaded memory context (parity:
    * Claude Code's `claudeMdExcludes` setting / `isClaudeMdExcluded`). A user can opt
@@ -1441,6 +1452,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['worktree', 'object'], ['attribution', 'object'],
   ['skillUsage', 'object'],
   ['preferencesShown', 'object'], ['noticeSeenCounts', 'object'],
+  ['githubRepoPaths', 'object'],
   // Engine-behavior knobs (see ProjectConfig) — merged by {@link mergeConfigs} and
   // read by the engine factory; declared here so they are recognized + value-validated.
   ['architectEnabled', 'boolean'], ['architectModel', 'string'],
@@ -1927,6 +1939,18 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     for (const [name, v] of Object.entries(counts)) {
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
         issues.push({ field: `noticeSeenCounts.${name}`, message: `must be a non-negative number (got ${JSON.stringify(v)})`, value: v, tip: getConfigValidationTip(`noticeSeenCounts.${name}`, { kind: 'type', type: 'number' }) });
+      }
+    }
+  }
+  // 4b-bis. Nested `githubRepoPaths` entries must each be a `string[]` (the MRU list of
+  //     known clone paths) when present. Step 1 only guards that the outer value is an
+  //     object; a non-array (or non-string element) would otherwise flow into the MRU
+  //     update/prune logic and corrupt the registry. Skip when the outer type was flagged.
+  if (config.githubRepoPaths !== undefined && !typeInvalid.has('githubRepoPaths')) {
+    const entries = config.githubRepoPaths as Record<string, unknown>;
+    for (const [name, v] of Object.entries(entries)) {
+      if (!matchesConfigFieldType(v, 'string[]')) {
+        issues.push({ field: `githubRepoPaths.${name}`, message: `must be a string[] (got ${describeJsonType(v)})`, value: v, tip: getConfigValidationTip(`githubRepoPaths.${name}`, { kind: 'type', type: 'string[]' }) });
       }
     }
   }

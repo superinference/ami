@@ -256,6 +256,13 @@ export {
 } from './detect-repository';
 export type { ParsedRepository } from './detect-repository';
 export {
+  updateGithubRepoPathMapping,
+  getKnownPathsForRepo,
+  filterExistingPaths,
+  validateRepoAtPath,
+  removePathFromRepo,
+} from './github-repo-path-mapping';
+export {
   expandPath,
   isPathSafe,
   toRelativePath,
