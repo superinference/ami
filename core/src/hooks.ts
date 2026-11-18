@@ -128,6 +128,20 @@ export interface HookContext {
    *  samplings and avoid re-entrant/recursive work (MagicDocs L222-224:
    *  `if (querySource !== 'repl_main_thread') return`). */
   samplingOrigin?: SamplingOrigin;
+  /** The active system prompt in effect for the turn (Claude Code's
+   *  REPLHookContext.systemPrompt). Surfaced to post-sampling / stop hooks (as the
+   *  serialized `system_prompt`) so a hook can judge the model's output against what
+   *  it was actually told. Populated by the engine when it builds the stop /
+   *  post-sampling context; omitted otherwise. */
+  systemPrompt?: string;
+  /** Mutable user-facing key/value context bag (Claude Code's
+   *  REPLHookContext.userContext). Serialized as `user_context` for post-sampling /
+   *  stop hooks so a hook can read session context keys the user/UI attached. */
+  userContext?: Record<string, string>;
+  /** System key/value context bag (Claude Code's REPLHookContext.systemContext),
+   *  serialized as `system_context`. Distinct from {@link userContext}: these keys
+   *  are machine/session metadata rather than user-provided. */
+  systemContext?: Record<string, string>;
 }
 
 /** Allowed {@link HookContext.samplingOrigin} discriminators — the matcher value
@@ -174,6 +188,12 @@ export function hasPendingToolCalls(messages: Message[]): boolean {
 export interface PreToolUseContext extends HookContext {
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** The originating user prompt for the turn that produced this tool call (Claude
+   *  Code's `toolUseContext.requestPrompt`). Serialized as `request_prompt` so a
+   *  PreToolUse guardrail hook can decide against the user's actual request, not
+   *  just the mechanical tool input. Populated by the tool executor when known;
+   *  omitted for synthetic/non-turn calls. */
+  requestPrompt?: string;
 }
 
 export interface PostToolUseContext extends HookContext {
@@ -1429,6 +1449,15 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   // MCP elicitation request params (Claude Code's elicitation payload): the
   // requested JSON-schema and the request correlation id.
   requestedSchema: 'requested_schema', elicitationId: 'elicitation_id',
+  // PreToolUse decision context (Claude Code passes `tool.getToolUseSummary(input)`
+  // and `toolUseContext.requestPrompt` into executePreToolHooks): a human-readable
+  // one-line summary of the pending tool call and the originating user prompt, so a
+  // guardrail hook can decide with the same context the permission UI sees.
+  toolUseSummary: 'tool_use_summary', requestPrompt: 'request_prompt',
+  // REPL hook context (Claude Code's REPLHookContext for post-sampling + stop
+  // hooks): the active system prompt and the mutable user/system key-value context
+  // bags, so a hook can read what the model was told and any session context keys.
+  systemPrompt: 'system_prompt', userContext: 'user_context', systemContext: 'system_context',
 };
 
 /**
@@ -1558,6 +1587,54 @@ export function serializeHookEvent(obj: Record<string, unknown>): string {
     if (camel in obj && !(snake in obj)) out[snake] = obj[camel];
   }
   return JSON.stringify(out) + '\n';
+}
+
+/** Primary-argument keys, in precedence order, used to summarize a tool call.
+ *  Mirrors the fields tools surface a human-readable summary on (a shell command,
+ *  then a file path, then a url/pattern/query/prompt). */
+const TOOL_USE_SUMMARY_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query', 'prompt'] as const;
+
+/** Max characters of a tool-use summary before it is elided (keeps the serialized
+ *  hook payload bounded even for a huge command/prompt argument). */
+const TOOL_USE_SUMMARY_MAX = 120;
+
+/**
+ * Build a concise, human-readable summary of a pending tool call for a PreToolUse
+ * hook's stdin payload — AMI's generic stand-in for Claude Code's per-tool
+ * `tool.getToolUseSummary(input)`. Picks the most salient primary argument (shell
+ * command → file path → url/pattern/query/prompt) and renders `toolName(arg)` on a
+ * single collapsed line, elided to {@link TOOL_USE_SUMMARY_MAX}. Falls back to the
+ * bare tool name when no recognizable primary argument is present. Deterministic
+ * and side-effect free so the summary is stable for a given input.
+ */
+export function buildToolUseSummary(toolName: string, toolInput: Record<string, unknown>): string {
+  for (const key of TOOL_USE_SUMMARY_KEYS) {
+    const value = toolInput[key];
+    if (typeof value === 'string' && value.trim()) {
+      const oneLine = value.replace(/\s+/g, ' ').trim();
+      const arg = oneLine.length > TOOL_USE_SUMMARY_MAX
+        ? oneLine.slice(0, TOOL_USE_SUMMARY_MAX - 3) + '...'
+        : oneLine;
+      return `${toolName}(${arg})`;
+    }
+  }
+  return toolName;
+}
+
+/**
+ * Extract the REPL-hook context fields (Claude Code's REPLHookContext:
+ * systemPrompt + the user/system key-value context bags) from a {@link HookContext}
+ * for the post-sampling / stop hook stdin payload. Each field is included only when
+ * the engine populated it (empty bags omitted), so a hook that doesn't need them
+ * sees an unchanged payload while a context-aware hook can read what the model was
+ * told and any attached session context keys.
+ */
+function replHookContextFields(ctx: HookContext): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (ctx.systemPrompt) out.systemPrompt = ctx.systemPrompt;
+  if (ctx.userContext && Object.keys(ctx.userContext).length > 0) out.userContext = ctx.userContext;
+  if (ctx.systemContext && Object.keys(ctx.systemContext).length > 0) out.systemContext = ctx.systemContext;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -3266,6 +3343,12 @@ export interface HookOutcome {
 
 export class HookManager extends EventEmitter {
   private _engineFactory: EngineFactory | null = null;
+  /** Re-entrancy depth of engine-backed (prompt/agent) hooks currently running on
+   *  this manager. Non-zero means a hook sub-engine is live; {@link
+   *  executeUserPromptSubmit} short-circuits so the sub-engine's own submit cannot
+   *  re-fire UserPromptSubmit hooks and recurse (Claude Code's execPromptHook
+   *  bypasses processUserInput for the same reason). */
+  private _engineHookDepth = 0;
   private _providerConfig: any = null;
   private _cwd: string = process.cwd();
   private _sessionId: string = '';
@@ -4711,7 +4794,16 @@ export class HookManager extends EventEmitter {
           const fn: PreToolUseHookFn = async (ctx) => {
             if (hookConfig.if && !matchesHookIf(hookConfig.if, ctx.toolName, ctx.toolInput)) return { action: 'allow' };
             if (matcher && !matchesPattern(matcher, ctx.toolName)) return { action: 'allow' };
-            const eventData = serializeHookEvent({ event: 'preToolUse', toolName: ctx.toolName, toolInput: ctx.toolInput });
+            const eventData = serializeHookEvent({
+              event: 'preToolUse',
+              toolName: ctx.toolName,
+              toolInput: ctx.toolInput,
+              // A one-line human summary of the pending call + the originating user
+              // prompt give a guardrail hook the same context the permission UI has
+              // (Claude Code's getToolUseSummary + requestPrompt).
+              toolUseSummary: buildToolUseSummary(ctx.toolName, ctx.toolInput),
+              ...(ctx.requestPrompt ? { requestPrompt: ctx.requestPrompt } : {}),
+            });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.preToolUseHooks, fn, 'preToolUse');
             if (result.startsWith('DENY:')) return { action: 'deny', reason: result.slice(5).trim() };
             // ASK: a PreToolUse hook (decision/permissionDecision 'ask') forces an
@@ -4783,7 +4875,12 @@ export class HookManager extends EventEmitter {
         case 'postSampling': {
           const fn: HookFn = async (ctx) => {
             if (!matcherAppliesToCtx('postSampling', matcher, ctx as unknown as Record<string, unknown>)) return;
-            const eventData = serializeHookEvent({ event: 'postSampling', samplingOrigin: ctx.samplingOrigin, isIdle: !hasPendingToolCalls(ctx.messages) });
+            const eventData = serializeHookEvent({
+              event: 'postSampling',
+              samplingOrigin: ctx.samplingOrigin,
+              isIdle: !hasPendingToolCalls(ctx.messages),
+              ...replHookContextFields(ctx),
+            });
             await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.postSamplingHooks, fn, 'postSampling');
           };
           this.onPostSampling(fn);
@@ -4799,6 +4896,7 @@ export class HookManager extends EventEmitter {
               event: 'stop',
               stop_hook_active: ctx.stopHookActive ?? false,
               ...(lastText ? { last_assistant_message: lastText } : {}),
+              ...replHookContextFields(ctx),
             });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.stopHooks, fn, 'stop');
             const blockingError = extractHookBlockingError(result);
@@ -5672,6 +5770,14 @@ export class HookManager extends EventEmitter {
    * Claude Code parity. Returns the aggregated result.
    */
   async executeUserPromptSubmit(ctx: UserPromptContext): Promise<UserPromptSubmitHookResult | void> {
+    // Recursion guard: when an engine-backed (prompt/agent) hook is running, its
+    // sub-engine's submit must NOT re-fire UserPromptSubmit hooks — that would
+    // re-enter runEngineHook and recurse until resources are exhausted (Claude
+    // Code's execPromptHook bypasses processUserInput for exactly this reason).
+    if (this._engineHookDepth > 0) {
+      coreLog('hooks', 'userPromptSubmit skipped: inside an engine-backed hook run (recursion guard)');
+      return;
+    }
     return this.withConcurrencyGate('userPromptSubmit', async (): Promise<UserPromptSubmitHookResult | void> => {
       // Aggregate ALL contributions (Claude Code AggregatedHookResult), not
       // last-wins: every UserPromptSubmit hook's context + block reason is kept.
@@ -6483,6 +6589,12 @@ export class HookManager extends EventEmitter {
     // "Agent hook did not complete within N turns" as its own outcome, so an
     // operator can tell a stop/verify hook gave up on turns vs. on the clock).
     let exitReason: string | undefined;
+    // Recursion guard (Claude Code's execPromptHook builds the user message directly
+    // via createUserMessage "to avoid re-firing UserPromptSubmit hooks and cause
+    // infinite recursion"): mark that an engine-backed hook is running so a sub-engine
+    // sharing this HookManager cannot re-enter the UserPromptSubmit pipeline and
+    // fork-bomb. {@link executeUserPromptSubmit} short-circuits while the depth is > 0.
+    this._engineHookDepth++;
     try {
       for await (const event of engine.submit(fullPrompt)) {
         if (abort.aborted()) break;
@@ -6508,6 +6620,7 @@ export class HookManager extends EventEmitter {
       errored = true;
       coreLog('hooks', `${kind} hook error: ${err}`);
     } finally {
+      this._engineHookDepth--;
       abort.cleanup();
       engine.shutdown?.();
     }
