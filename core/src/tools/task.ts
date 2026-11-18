@@ -25,7 +25,7 @@ import { getCurrentTeam, registerTeamMember, registerTeamMemberInto, setTeamMemb
 import { reviewSubagentHandoff, type HandoffAction } from './handoff-review';
 import { isTeammatesEnabled } from './tool-gates';
 import { SessionManager } from '../session';
-import { PERMISSION_MODES, permissionRuleValueFromString } from '../permissions';
+import { PERMISSION_MODES, permissionRuleValueFromString, type PermissionRule } from '../permissions';
 import { isModelFamilyAlias, resolveModelAlias, getDefaultSubagentModel, getRuntimeMainLoopModel } from '../model-registry';
 import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
@@ -2049,11 +2049,73 @@ export function isAgentTypeAllowed(
 export function parseAllowedTools(
   raw: unknown,
 ): { value: string[] | undefined } | { error: string } {
+  return parseToolSpecArray(
+    raw,
+    'allowed_tools must be an array of strings (the tool names this subagent may use).',
+  );
+}
+
+/**
+ * Shared string[]-shape validator for a per-spawn tool-name list input (the
+ * availability `allowed_tools` AND the auto-approve {@link parseAutoApproveTools}
+ * lists have IDENTICAL shape rules — absent → no restriction, otherwise an array of
+ * strings — so they share one implementation rather than duplicating the check).
+ * Returns `{ value: undefined }` for an absent list, `{ error }` with the
+ * caller-supplied message for a non-array / non-string-element shape.
+ */
+function parseToolSpecArray(
+  raw: unknown,
+  errorMsg: string,
+): { value: string[] | undefined } | { error: string } {
   if (raw === undefined || raw === null) return { value: undefined };
   if (!Array.isArray(raw) || raw.some(t => typeof t !== 'string')) {
-    return { error: 'allowed_tools must be an array of strings (the tool names this subagent may use).' };
+    return { error: errorMsg };
   }
   return { value: raw as string[] };
+}
+
+/**
+ * Normalize a caller-supplied per-spawn `auto_approve_tools` value into a string[]
+ * (or undefined when absent). Mirrors Claude Code's spawn-time `allowedTools`
+ * auto-approve allowlist (`swarm/inProcessRunner.ts:L492-493`, "Tool permissions to
+ * auto-allow for this teammate"), which is DISTINCT from the set of tools that merely
+ * EXIST for the subagent (AMI's availability {@link parseAllowedTools}). An entry
+ * here pre-approves that tool for the spawned agent so it runs WITHOUT a permission
+ * prompt, while any tool NOT listed still exists and is prompted/denied per the
+ * resolved permission mode. Returns `{ error }` for a non-array / non-string-element
+ * shape; `{ value: undefined }` means "no auto-approvals". Entries may be bare names,
+ * aliases, or patterned specs ("Bash(git:*)"), resolved by {@link buildAutoApproveRules}.
+ */
+export function parseAutoApproveTools(
+  raw: unknown,
+): { value: string[] | undefined } | { error: string } {
+  return parseToolSpecArray(
+    raw,
+    'auto_approve_tools must be an array of strings (the tool names to auto-approve for this subagent).',
+  );
+}
+
+/**
+ * Convert a per-spawn `auto_approve_tools` spec list into `allow` {@link PermissionRule}s
+ * appended to the spawned subagent's permission rules — the concrete wiring of Claude
+ * Code's auto-approve `allowedTools` allowlist. Each spec is parsed with the one
+ * canonical {@link permissionRuleValueFromString} (so a bare name → a tool-wide allow,
+ * and a patterned `Bash(git:*)` → an allow scoped to that arg glob), yielding a rule
+ * the engine's permission layer honors under its rule-evaluated modes (ask/acceptEdits):
+ * the listed tool/pattern is auto-approved while every unlisted tool still prompts or
+ * denies per the mode. A matching user DENY rule still wins (deny is unconditional), and
+ * the standard destructive-/code-exec downgrades still force a prompt for a dangerous
+ * command even under one of these allows — so an auto-approval can never silently run an
+ * irreversible or arbitrary-code operation. Returns `[]` for an empty/undefined list.
+ */
+export function buildAutoApproveRules(specs: readonly string[] | undefined): PermissionRule[] {
+  if (!specs || specs.length === 0) return [];
+  return specs.map(spec => {
+    const { toolName, ruleContent } = permissionRuleValueFromString(spec);
+    const rule: PermissionRule = { tool: toolName, action: 'allow' };
+    if (ruleContent) rule.pattern = ruleContent;
+    return rule;
+  });
 }
 
 /**
@@ -2295,6 +2357,11 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'array',
     items: { type: 'string' },
     description: 'Scope this one subagent to exactly these tools (inline, without a named subagent_type). The resolved tool set is intersected with this list. Entries may be bare names ("bash", "file_read"), aliases ("Bash", "Read"), or patterned specs ("Bash(git:*)"). Omit for the full tool set for the chosen mode.',
+  },
+  auto_approve_tools: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Pre-approve (auto-run WITHOUT a permission prompt) exactly these tools for this one subagent — distinct from "allowed_tools", which governs which tools EXIST. A listed tool is auto-allowed; every unlisted tool still exists but is prompted/denied per the resolved permission_mode. Entries may be bare names ("bash", "file_read"), aliases ("Bash", "Read"), or patterned specs ("Bash(git:*)") to scope the approval to matching args. A matching deny rule still wins and destructive/arbitrary-code commands still prompt.',
   },
   model: {
     type: 'string',
@@ -2948,6 +3015,16 @@ export const taskTool: ToolDefinition = {
     }
     const allowedToolsSpec = allowedToolsResult.value;
 
+    // auto_approve_tools: a per-spawn AUTO-APPROVE allowlist (mirrors Claude's
+    // spawn-time `allowedTools` auto-allow list) — DISTINCT from allowed_tools
+    // (availability). Validate the shape here; the named tools become `allow`
+    // permission rules appended to the child's rule set below (buildAutoApproveRules).
+    const autoApproveResult = parseAutoApproveTools(input.auto_approve_tools);
+    if ('error' in autoApproveResult) {
+      return { output: `Error: ${autoApproveResult.error}`, isError: true };
+    }
+    const autoApproveSpec = autoApproveResult.value;
+
     if (subagentType !== undefined && !isAgentTypeAllowed(subagentType, allowedAgentTypes)) {
       const permitted = (allowedAgentTypes as string[]).length
         ? (allowedAgentTypes as string[]).join(', ')
@@ -3350,6 +3427,25 @@ export const taskTool: ToolDefinition = {
       tools = tools.filter(t => allowed.has(t.name));
     }
 
+    // Per-spawn `auto_approve_tools` auto-allow list (mirrors Claude's spawn-time
+    // `allowedTools`): the named tools are pre-approved for this subagent. Validate each
+    // names a real tool (typo-safe, same as allowed_tools) BEFORE building the allow
+    // rules appended to the child's permission set below. Auto-approval is independent of
+    // the availability `allowed_tools` scope (a tool need not appear there to be
+    // pre-approved), but an unknown name is a mistake — reject it with the registry listing.
+    if (autoApproveSpec) {
+      const known = new Set(allTools.getAll().map(t => t.name));
+      const invalid = autoApproveSpec.filter(spec => !known.has(permissionRuleValueFromString(spec).toolName));
+      if (invalid.length > 0) {
+        return {
+          output: `Error: auto_approve_tools names unknown tool(s): ${invalid.join(', ')}. ` +
+            `Available tools: ${[...known].sort().join(', ')}.`,
+          isError: true,
+        };
+      }
+    }
+    const autoApproveRules = buildAutoApproveRules(autoApproveSpec);
+
     // Providers often serialize booleans as the STRING "true"/"false" in tool-call
     // args; parseOptionalBool (strict-parsed above) handles both (a strict `=== true`
     // silently dropped `run_in_background: "true"` to foreground, serializing a batch
@@ -3693,7 +3789,12 @@ export const taskTool: ToolDefinition = {
       tools,
       sessionId: resumeSessionId ?? SessionManager.newId(),
       permissionMode: resolvedPermissionMode,
-      permissionRules: context._parentPermissionRules,
+      // Per-spawn auto-approve rules (from `auto_approve_tools`) are prepended to the
+      // inherited parent rules so this spawn's pre-approvals are in effect, while a
+      // matching parent/user DENY still wins unconditionally in the permission layer.
+      permissionRules: autoApproveRules.length > 0
+        ? [...autoApproveRules, ...(context._parentPermissionRules ?? [])]
+        : context._parentPermissionRules,
       permissionPromptHandler: context._permissionPromptHandler,
       abortController: subAbort,
       maxTurns: agentMaxTurns,
