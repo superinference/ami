@@ -6,6 +6,14 @@ import * as crypto from 'crypto';
 import { parseEnvInt } from '../utils/env';
 import { formatDuration } from '../conversation-summary';
 import type { PermissionMode } from '../permissions';
+import {
+  planWaves,
+  computeUnitSignature,
+  computeRunId,
+  computeResumePlan,
+  type WorkUnit,
+  type PriorRun,
+} from '../task';
 
 /**
  * Opt-in cache of completed agent() results so a re-run/resume of a workflow
@@ -225,6 +233,16 @@ export interface WorkflowBudget {
 
 export type WorkflowResolver = (nameOrRef: string | { scriptPath: string }) => string | null;
 
+/** A work unit for {@link WorkflowContext.wave}: a {@link WorkUnit} plus the
+ *  caller's own fields (passed through untouched to the `run` callback). */
+export type WaveUnit = WorkUnit & Record<string, unknown>;
+
+/** Durable per-run manifest stored in the resume cache for {@link WorkflowContext.wave}. */
+interface WaveManifest extends PriorRun {
+  /** Map of completed unit id → the result the unit produced. */
+  results: Record<string, unknown>;
+}
+
 export interface WorkflowContext {
   agent: AgentHandler;
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>>;
@@ -232,6 +250,19 @@ export interface WorkflowContext {
     items: T[],
     ...stages: Array<(prev: any, item: T, index: number) => Promise<any>>
   ) => Promise<any[]>;
+  /**
+   * Fan out file-disjoint work units wave-by-wave and integrate serially.
+   * Units declaring the files they touch (and optional deps) are partitioned so
+   * each wave is internally file-disjoint and runs in parallel (bounded by the
+   * same concurrency cap as `parallel()`); successive waves run after the prior
+   * one integrates. When a resume cache is configured, the longest unchanged
+   * prefix of a prior run (keyed by a stable run id) is replayed from cache and
+   * only new/edited units are re-run. Resolves to results in the input order.
+   */
+  wave: <T>(
+    units: WaveUnit[],
+    run: (unit: WaveUnit) => Promise<T>,
+  ) => Promise<Array<T | null>>;
   phase: (title: string) => void;
   log: (message: string) => void;
   args: unknown;
@@ -448,6 +479,7 @@ export class WorkflowRuntime extends EventEmitter {
       agent: this.createAgent(),
       parallel: this.createParallel(),
       pipeline: this.createPipeline(),
+      wave: this.createWave(),
       phase: (title: string) => this.setPhase(title),
       log: (message: string) => this.addLog(message),
       args,
@@ -494,13 +526,13 @@ export class WorkflowRuntime extends EventEmitter {
       const childBody = stripMeta(script);
       validateWorkflowScript(childBody);
       const wrappedScript = `
-        return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
+        return (async function(agent, parallel, pipeline, wave, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
           ${childBody}
         })
       `;
       const factory = new Function(wrappedScript)(); // eslint-disable-line no-new-func
       const result = await factory(
-        childCtx.agent, childCtx.parallel, childCtx.pipeline, childCtx.phase,
+        childCtx.agent, childCtx.parallel, childCtx.pipeline, childCtx.wave, childCtx.phase,
         childCtx.log, childCtx.args, childCtx.budget, childCtx.saveCheckpoint,
         childCtx.loadCheckpoint, childCtx.workflow,
       );
@@ -685,6 +717,84 @@ export class WorkflowRuntime extends EventEmitter {
       // retry: abandon the stuck attempt and re-invoke produce() on the next loop.
       this.emit('agent-retry', { label, phase, agentNumber: agentId });
     }
+  }
+
+  /**
+   * Build the `wave()` capability: file-disjoint wave planning + serial
+   * integration + prefix-resume from the configured cache. See
+   * {@link WorkflowContext.wave}.
+   */
+  private createWave(): <T>(units: WaveUnit[], run: (unit: WaveUnit) => Promise<T>) => Promise<Array<T | null>> {
+    const cache = this._cache;
+    const cap = this._maxConcurrent;
+    return async <T>(units: WaveUnit[], run: (unit: WaveUnit) => Promise<T>): Promise<Array<T | null>> => {
+      if (units.length > MAX_PIPELINE_ITEMS) {
+        throw new Error(`wave() limit exceeded: ${units.length} > ${MAX_PIPELINE_ITEMS}`);
+      }
+
+      // Stable per-unit signatures + run id drive the resume comparison.
+      const sigById = new Map<string, string>();
+      for (const u of units) sigById.set(u.id, computeUnitSignature(u));
+      const resumeUnits = units.map((u) => ({ id: u.id, signature: sigById.get(u.id)! }));
+      const runId = computeRunId(units);
+      const manifestKey = `wave:${runId}`;
+
+      // Longest unchanged prefix from a prior run is replayed from cache.
+      const prior = cache ? (cache.get(manifestKey) as WaveManifest | undefined) : undefined;
+      const plan = computeResumePlan(prior ?? null, resumeUnits);
+
+      const resultById = new Map<string, unknown>();
+      const completed: Record<string, string> = {};
+      const results: Record<string, unknown> = {};
+      for (const id of plan.replay) {
+        // plan.replay is non-empty only when `prior` matched this run id.
+        const value = prior!.results[id];
+        resultById.set(id, value);
+        completed[id] = sigById.get(id)!;
+        results[id] = value;
+      }
+      const persist = (): void => {
+        if (cache) cache.set(manifestKey, { runId, completed: { ...completed }, results: { ...results } });
+      };
+
+      const rerunSet = new Set(plan.rerun);
+      const rerunUnits = units.filter((u) => rerunSet.has(u.id));
+      this.emit('wave-start', { runId, total: units.length, replayed: plan.replay.length, rerun: rerunUnits.length });
+      this.addLog(`wave ${runId.slice(0, 8)}: ${units.length} units (${plan.replay.length} replayed, ${rerunUnits.length} to run)`);
+
+      const wavePlan = planWaves(rerunUnits);
+      const byId = new Map(units.map((u) => [u.id, u]));
+
+      let waveIndex = 0;
+      for (const laneIds of wavePlan.waves) {
+        if (this._aborted) throw new Error('Workflow aborted');
+        const lanes = laneIds.map((id) => byId.get(id)!);
+        const settled = await mapWithConcurrency(lanes, cap, async (unit) => {
+          try { return { id: unit.id, ok: true as const, value: await run(unit) }; }
+          catch (error) { return { id: unit.id, ok: false as const, error }; }
+        });
+        const failed: string[] = [];
+        for (const s of settled) {
+          if (s.ok) {
+            resultById.set(s.id, s.value);
+            completed[s.id] = sigById.get(s.id)!;
+            results[s.id] = s.value;
+          } else {
+            failed.push(s.id);
+          }
+        }
+        // Serial integration point: persist progress after each wave so a crash
+        // between waves resumes from exactly here on the next run.
+        persist();
+        this.emit('wave-complete', { runId, wave: waveIndex, lanes: laneIds.length, failed: failed.length });
+        waveIndex++;
+        if (failed.length > 0) {
+          throw new Error(`wave() failed in wave ${waveIndex - 1}: ${failed.join(', ')}`);
+        }
+      }
+
+      return units.map((u) => (resultById.has(u.id) ? (resultById.get(u.id) as T) : null));
+    };
   }
 
   private createParallel(): <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>> {
@@ -1098,7 +1208,7 @@ export async function executeWorkflow(
   const ctx = runtime.createContext(options.args);
 
   const wrappedScript = `
-    return (async function(agent, parallel, pipeline, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
+    return (async function(agent, parallel, pipeline, wave, phase, log, args, budget, saveCheckpoint, loadCheckpoint, workflow) {
       ${scriptBody}
     })
   `;
@@ -1108,6 +1218,7 @@ export async function executeWorkflow(
     ctx.agent,
     ctx.parallel,
     ctx.pipeline,
+    ctx.wave,
     ctx.phase,
     ctx.log,
     ctx.args,

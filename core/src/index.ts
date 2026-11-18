@@ -673,6 +673,11 @@ export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE
 export { cronListTool, isActiveJob, sortJobsForDisplay, CRON_LIST_STATUSES } from './tools/cron-list';
 export type { CronListStatus } from './tools/cron-list';
 
+// --- wave/lane orchestration planner (file-disjoint fan-out + serial integration + prefix-resume) ---
+export { planWaves, computeUnitSignature, computeRunId, computeResumePlan } from './task';
+export type { WorkUnit, WavePlan, ResumeUnit, PriorRun, ResumePlan } from './task';
+export type { WaveUnit } from './tools/workflow-runtime';
+
 // --- scalable fuzzy file-path index (nucleo/fzf-v2 port) ---
 export { FileIndex, fileIndexBuildConfig, yieldToEventLoop as fileIndexYieldToEventLoop } from './file-index';
 export type { SearchResult as FileSearchResult } from './file-index';
