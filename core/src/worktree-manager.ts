@@ -547,11 +547,29 @@ export function getWorktreeFileStatus(
 }
 
 /**
+ * Prefix of the default stash message used when {@link stashToCleanState} is
+ * called with no explicit `message`. Parity with Claude's timestamped auto-stash
+ * default (`Claude Code auto-stash - <ISO>`), re-branded to AMI; exported so a
+ * caller / test can recognise an auto-generated stash entry by prefix.
+ */
+export const AUTO_STASH_MESSAGE_PREFIX = 'AMI auto-stash';
+
+/**
  * Stash a worktree's uncommitted changes (tracked modifications AND untracked
  * files, via `git stash push -u`) to a clean working state, preserving them
  * RECOVERABLY instead of discarding them. Mirrors Claude's `stashToCleanState`
  * (components/TeleportStash.tsx): the non-destructive alternative offered before a
  * git operation that would otherwise clobber a dirty tree.
+ *
+ * `message` is OPTIONAL (parity with Claude's `stashToCleanState(message?)`): when
+ * omitted (or empty), a timestamped default `${AUTO_STASH_MESSAGE_PREFIX} - <ISO>`
+ * is used so an auto-stash always lands with an identifiable, time-ordered label a
+ * user can find later in `git stash list`.
+ *
+ * Untracked-file safety: `git stash push -u` includes untracked files IN the stash,
+ * so they are preserved and recoverable — equivalent protection to Claude's
+ * "stage untracked files before stashing" step, without leaving them staged in the
+ * index after a later `git stash pop`.
  *
  * The stash is written to `refs/stash`, which lives in the repository's SHARED
  * (common) git dir — so a stash created inside a linked worktree survives the
@@ -565,10 +583,13 @@ export function getWorktreeFileStatus(
  * uncommitted work is ever silently lost). Runs through the hardened `gitExec`
  * (no shell, bounded timeout, prompts/hooks disabled).
  */
-export function stashToCleanState(worktreePath: string, message: string): boolean {
+export function stashToCleanState(worktreePath: string, message?: string): boolean {
   try {
     if (isClean(worktreePath)) return false; // nothing to stash
-    gitExec(['stash', 'push', '-u', '-m', message], { cwd: worktreePath, stdio: 'pipe' });
+    const stashMessage = message && message.trim() !== ''
+      ? message
+      : `${AUTO_STASH_MESSAGE_PREFIX} - ${new Date().toISOString()}`;
+    gitExec(['stash', 'push', '-u', '-m', stashMessage], { cwd: worktreePath, stdio: 'pipe' });
     // Confirm the stash actually cleaned the tree (git stash can no-op in edge
     // cases); only report success when the working tree is genuinely clean.
     return isClean(worktreePath);
