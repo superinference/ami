@@ -546,6 +546,60 @@ export interface CommandDefinition {
    * command declares none.
    */
   recommendsPlugin?: PluginRecommendation;
+  /**
+   * The shell a command's embedded `!`-block execution runs in (Claude parity:
+   * parseShellFrontmatter / loadPluginCommands's `shell` passed to
+   * executeShellCommandsInPrompt). A command file declares `shell = "bash"` /
+   * `shell: powershell`; the value is validated to {@link COMMAND_SHELLS} via
+   * {@link parseCommandShell} so an unrecognized value DEGRADES to undefined (the
+   * in-prompt executor then defaults to bash — same graceful-degradation contract
+   * as {@link effort}). The embedded shell runs scoped to this command's
+   * {@link allowedTools} (Claude's `alwaysAllowRules.command` injection). Omitted
+   * when the file declares none or an invalid value.
+   */
+  shell?: CommandShell;
+  /**
+   * Whether this command executes IMMEDIATELY rather than through the normal
+   * deferred/confirm dispatch path (Claude parity: Command.immediate, e.g.
+   * commands/bridge/index.ts's `immediate: true`). A command file opts in with
+   * `immediate = true` (or `is-immediate = true`). Evaluated via
+   * {@link isImmediateCommand}; omitted (treated as deferred) otherwise.
+   */
+  immediate?: boolean;
+}
+
+/**
+ * The shells a command's embedded `!`-block execution may declare (Claude parity:
+ * FrontmatterShell). `bash` is the default a caller falls back to when a command
+ * declares none or an unrecognized value.
+ */
+export const COMMAND_SHELLS = ['bash', 'powershell'] as const;
+export type CommandShell = (typeof COMMAND_SHELLS)[number];
+
+/**
+ * Validate a declared `shell` value to a {@link CommandShell} (Claude parity:
+ * parseShellFrontmatter, frontmatterParser.ts L351-370). Returns the normalized
+ * shell for a recognized value (trimmed + lower-cased so `"PowerShell"` is
+ * accepted), or undefined for an absent / blank / non-string / unrecognized value —
+ * the caller then defaults to bash, matching how `effort` degrades rather than
+ * failing the command load.
+ */
+export function parseCommandShell(value: unknown): CommandShell | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '') return undefined;
+  return (COMMAND_SHELLS as readonly string[]).includes(normalized)
+    ? (normalized as CommandShell)
+    : undefined;
+}
+
+/**
+ * Whether a command runs immediately rather than through the deferred/confirm
+ * dispatch path (Claude parity: Command.immediate, defaulting to false). A command
+ * is deferred unless its file explicitly declared `immediate = true`.
+ */
+export function isImmediateCommand(cmd: Pick<CommandDefinition, 'immediate'>): boolean {
+  return cmd.immediate === true;
 }
 
 /**
@@ -1148,6 +1202,15 @@ function applyCommandKnobs(
   if (aliases) cmd.aliases = aliases;
   const supportsNonInteractive = getBool('supports-non-interactive') ?? getBool('supportsNonInteractive');
   if (supportsNonInteractive !== undefined) cmd.supportsNonInteractive = supportsNonInteractive;
+  // Embedded-shell selector (Claude parity: parseShellFrontmatter) — the shell a
+  // command's `!`-block execution runs in. Validated to COMMAND_SHELLS; an
+  // unrecognized value degrades to undefined (caller defaults to bash).
+  const shell = parseCommandShell(getStr('shell'));
+  if (shell) cmd.shell = shell;
+  // Immediate dispatch (Claude parity: Command.immediate) — run without the
+  // deferred/confirm path. Declarative boolean, read via isImmediateCommand.
+  const immediate = getBool('immediate') ?? getBool('is-immediate');
+  if (immediate !== undefined) cmd.immediate = immediate;
   // Enablement / visibility / sensitivity gates (Claude parity: CommandBase
   // isEnabled/isHidden/isSensitive). Declarative booleans an author sets to ship a
   // command disabled, hidden from the catalog, or with its args redacted from history.
