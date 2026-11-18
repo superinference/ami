@@ -201,3 +201,34 @@ export function matchDomainRule(host: string, pathname: string, entry: string): 
   if (!(h === ruleHost || h.endsWith('.' + ruleHost))) return false;
   return pathname === prefix || pathname.startsWith(prefix + '/');
 }
+
+/**
+ * The raw-markdown passthrough gate for web_fetch: decide whether a fetched
+ * response from a preapproved trusted-docs host should be returned VERBATIM,
+ * skipping the lossy secondary-model summarization pass. Mirrors Claude Code's
+ * WebFetchTool branch (`isPreapprovedUrl(url) && content.length <
+ * MAX_MARKDOWN_LENGTH`): raw passthrough requires BOTH
+ *   - the host (+ path, via {@link isPreapprovedHost}'s segment-boundary rule) is
+ *     on the curated preapproved code/docs allowlist, AND
+ *   - the content is strictly under the markdown length ceiling.
+ *
+ * Owning this decision in the preapproval module (rather than inline in
+ * web-fetch.ts) keeps a single source of truth and makes the gate independently
+ * unit-testable. `isPreapprovedHost` is an O(1) Set lookup, so callers may also
+ * query host-preapproval separately (for the relaxed summary guidelines) without
+ * a meaningful cost.
+ *
+ * ADDITIVE / SUPERSET NOTE: Claude restricts the raw path to `text/markdown`
+ * responses; AMI applies it to any textual content on a preapproved host (HTML is
+ * already converted to markdown before this gate), which better serves the intent
+ * of not lossy-paraphrasing authoritative reference docs. The content-type is
+ * therefore decided by the caller, not re-checked here.
+ */
+export function shouldReturnRawMarkdown(
+  hostname: string,
+  pathname: string,
+  contentLength: number,
+  maxMarkdownLength: number,
+): boolean {
+  return isPreapprovedHost(hostname, pathname) && contentLength < maxMarkdownLength;
+}

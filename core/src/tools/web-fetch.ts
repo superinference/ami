@@ -7,7 +7,7 @@ import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { validateUrlSafety, httpGet, httpGetWithRetry, MAX_HTTP_BODY_BYTES, EgressBlockedError } from './web-utils';
 import type { IncomingHttpHeaders } from 'http';
 import { spillToolText, formatSize, spillErrorReason } from './spill-output';
-import { isPreapprovedHost, matchDomainRule } from './web-preapproved';
+import { isPreapprovedHost, matchDomainRule, shouldReturnRawMarkdown } from './web-preapproved';
 import { isSandboxNetworkAskEnabled, requestSandboxHostAccess } from './sandbox-permission-registry';
 import { parseEnvBool } from '../utils/env';
 import { createCombinedAbortSignal } from '../utils/combined-abort-signal';
@@ -781,7 +781,7 @@ export const webFetchTool: ToolDefinition = {
       // lossy small-model summarization pass, as long as it fits under the markdown
       // ceiling (parity with Claude's isPreapprovedUrl raw-markdown passthrough).
       const preapprovedHost = isPreapprovedHost(host, parsedUrl.pathname);
-      const rawPassthrough = preapprovedHost && totalLength < MAX_MARKDOWN_LENGTH;
+      const rawPassthrough = shouldReturnRawMarkdown(host, parsedUrl.pathname, totalLength, MAX_MARKDOWN_LENGTH);
 
       // Apply prompt to content via LLM summarization (like Claude's applyPromptToMarkdown)
       if (input.prompt && typeof input.prompt === 'string' && context._engineFactory && !rawPassthrough) {
