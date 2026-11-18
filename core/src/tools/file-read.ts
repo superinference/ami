@@ -11,7 +11,7 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths, suggestPathUnderCwd, suggestPathCorrection } from './path-suggest';
 import { formatFileSize } from '../utils/format';
-import { estimateTokensForFileType, charsPerTokenForFileType } from '../utils/tokens';
+import { estimateReadTokensForFileType, sliceToReadTokenBudget } from '../token-estimator';
 import { memoryFreshnessReminder } from '../memory';
 import { getFileReadingLimits, getFileReadPromptFlags, getLineNumberStyle, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
 import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
@@ -1459,10 +1459,12 @@ export const fileReadTool: ToolDefinition = {
         }
 
         let content = parts.join('\n');
-        const estimatedTokens = Math.ceil(content.length / 4);
+        // Byte-aware token budget (see estimateReadTokensForFileType): a notebook
+        // with CJK/multibyte cell content was under-counted by the old chars/4
+        // estimate and could slip the whole payload past the budget.
+        const estimatedTokens = estimateReadTokensForFileType(content, ext);
         if (estimatedTokens > limits.maxTokens) {
-          const truncateChars = limits.maxTokens * 4;
-          content = content.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
+          content = sliceToReadTokenBudget(content, limits.maxTokens, ext) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
         }
         context.filesRead?.add(resolved);
         if (notebookImages.length > 0) {
@@ -1549,9 +1551,9 @@ export const fileReadTool: ToolDefinition = {
       if (range.truncatedByBytes) {
         output += `\n\n[... output clipped at the ${formatFileSize(limits.maxSizeBytes)} byte budget; request fewer tail lines to see them all.]`;
       }
-      const estimatedTokens = estimateTokensForFileType(output, ext);
+      const estimatedTokens = estimateReadTokensForFileType(output, ext);
       if (estimatedTokens > limits.maxTokens) {
-        output = output.slice(0, limits.maxTokens * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Request fewer tail lines.]`;
+        output = sliceToReadTokenBudget(output, limits.maxTokens, ext) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Request fewer tail lines.]`;
       }
       context.filesRead?.add(resolved);
       return { output };
@@ -1611,9 +1613,9 @@ export const fileReadTool: ToolDefinition = {
       // File-type-aware token estimate (dense JSON ≈ 2 chars/token) so an
       // oversized JSON range is not under-counted past the budget; non-JSON
       // reads use the generic ~4 ratio and keep identical behavior.
-      const estimatedTokens = estimateTokensForFileType(output, ext);
+      const estimatedTokens = estimateReadTokensForFileType(output, ext);
       if (estimatedTokens > limits.maxTokens) {
-        output = output.slice(0, limits.maxTokens * charsPerTokenForFileType(ext)) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Narrow offset/limit.]`;
+        output = sliceToReadTokenBudget(output, limits.maxTokens, ext) + `\n\n[... truncated: exceeds ${limits.maxTokens} token budget. Narrow offset/limit.]`;
       }
       // Record the exact window so an identical repeat read on an unchanged file
       // short-circuits above instead of re-streaming it.
@@ -1697,16 +1699,17 @@ export const fileReadTool: ToolDefinition = {
     parts.push(numbered);
 
     let output = parts.join('\n');
-    // Token-budget guard uses a FILE-TYPE-AWARE bytes/token ratio: dense
-    // structured text (.json/.jsonl/.jsonc) is dominated by single-char tokens,
-    // so the generic ~4 chars/token ratio badly UNDER-counts it and would let an
-    // oversized JSON payload slip past the budget. charsPerTokenForFileType()
-    // returns ~2 for JSON and ~4 for everything else, so non-JSON reads keep
-    // identical behavior. Mirrors Claude Code's roughTokenCountEstimationForFileType.
-    const estimatedTokens = estimateTokensForFileType(output, ext);
+    // Token-budget guard uses a BYTE-AWARE, FILE-TYPE-AWARE token estimate
+    // (estimateReadTokensForFileType): dense structured text (.json/.jsonl/.jsonc)
+    // is dominated by single-char tokens (~2 bytes/token) while everything else is
+    // ~4, AND multibyte content is counted by UTF-8 bytes rather than UTF-16 code
+    // units — so a CJK/emoji-dense file (3-4 bytes per code unit) is no longer
+    // under-counted 3-4x and can no longer slip its whole payload past the budget.
+    // Pure ASCII is byte-for-code-unit identical, so ASCII reads are unchanged.
+    // Mirrors Claude Code's byte-based roughTokenCountEstimationForFileType.
+    const estimatedTokens = estimateReadTokensForFileType(output, ext);
     if (estimatedTokens > limits.maxTokens) {
-      const truncateChars = limits.maxTokens * charsPerTokenForFileType(ext);
-      output = output.slice(0, truncateChars) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
+      output = sliceToReadTokenBudget(output, limits.maxTokens, ext) + `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`;
     }
 
     if (output.length > 1000) {

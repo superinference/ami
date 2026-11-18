@@ -1,7 +1,7 @@
 import type { Message } from './types';
 // Single source of truth for the ~4-chars/token heuristic (dedup: audit #16). Re-export
 // it here too so existing importers of estimateTokens from this module keep working.
-import { estimateTokens, estimateTokensForFileType } from './utils/tokens';
+import { estimateTokens, estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
 export { estimateTokens, estimateTokensForFileType, charsPerTokenForFileType } from './utils/tokens';
 
 const OVERHEAD_PER_MESSAGE = 4; // role header, delimiters
@@ -42,6 +42,49 @@ export function estimateTextTokens(text: string, bytesPerToken: number = BYTES_P
   if (text.length === 0) return 0;
   const ratio = bytesPerToken > 0 ? bytesPerToken : BYTES_PER_TOKEN;
   return Math.ceil(utf8ByteLength(text) / ratio);
+}
+
+/**
+ * Byte-aware AND file-type-aware token estimate for a Read-tool payload: combines
+ * {@link estimateTextTokens}'s UTF-8-byte counting with the per-filetype ratio
+ * from {@link charsPerTokenForFileType} (dense JSON ≈ 2 bytes/token, everything
+ * else ≈ 4).
+ *
+ * This closes a limit-bypass in the Read tool's budget guard: the old estimate
+ * counted UTF-16 code units (`length`), so CJK/multibyte-dense content — where one
+ * code unit is 3-4 UTF-8 bytes — was under-counted 3-4x, letting a file that is
+ * really far over the token budget slip its whole payload into the prompt. Byte
+ * counting matches the real tokeniser far better (it is literally Claude's
+ * `bytesPerToken` basis) while staying IDENTICAL to the old estimate for pure
+ * ASCII (byte length == code-unit length), so ASCII reads are unchanged.
+ */
+export function estimateReadTokensForFileType(text: string, fileExtension: string): number {
+  return estimateTextTokens(text, charsPerTokenForFileType(fileExtension));
+}
+
+/**
+ * Longest prefix of `text` whose byte-aware, file-type-aware token estimate stays
+ * within `maxTokens` — the correct companion to {@link estimateReadTokensForFileType}
+ * for truncating an over-budget Read payload. A char-count slice (`maxTokens *
+ * ratio` chars) would keep 3-4x the token budget for CJK/multibyte content (each
+ * kept char being several bytes), re-opening the very bypass the byte-aware
+ * estimate closes; this cuts on the UTF-8 BYTE budget instead, backing off to a
+ * whole-character boundary so no partial multibyte sequence (replacement char /
+ * lone surrogate) is emitted. For pure ASCII the kept length equals the historical
+ * `maxTokens * ratio` slice, so ASCII reads are unchanged.
+ */
+export function sliceToReadTokenBudget(text: string, maxTokens: number, fileExtension: string): string {
+  if (maxTokens <= 0 || text.length === 0) return '';
+  const ratio = charsPerTokenForFileType(fileExtension);
+  const maxBytes = maxTokens * ratio;
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= maxBytes) return text;
+  // `maxBytes` may land in the middle of a multi-byte character. UTF-8
+  // continuation bytes match 0b10xxxxxx; back `end` up to the start of the
+  // character being split so the kept slice ends on a whole-character boundary.
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.toString('utf8', 0, end);
 }
 
 /**
