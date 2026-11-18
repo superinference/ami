@@ -113,6 +113,36 @@ describe('HookManager — plugin-affecting settings snapshot + gated reload (w10
     assert.equal(r.skipped, false);
     assert.equal(r.registered, 1);
   });
+
+  it('primePluginHookSnapshot seeds the baseline so the first unchanged reload SKIPS (w115)', () => {
+    // Plugin present at startup; priming captures that state as the baseline.
+    writePlugin('alpha', 'echo a');
+    const primed = hm.primePluginHookSnapshot(tmp);
+    assert.equal(primed, hm.getPluginAffectingSettingsSnapshot(tmp), 'returns the captured snapshot');
+    // With a seeded baseline and nothing changed, the FIRST gated reload is a skip —
+    // without the seed it would spuriously reload on the first settings change.
+    const first = hm.reloadPluginHooksIfChanged(tmp);
+    assert.equal(first.skipped, true, 'a primed, unchanged snapshot skips the first reload');
+    assert.equal(first.registered, 0);
+  });
+
+  it('primePluginHookSnapshot defaults cwd to the session cwd (w115)', () => {
+    writePlugin('alpha', 'echo a');
+    const primed = hm.primePluginHookSnapshot(); // no arg → uses setCwd(tmp)
+    assert.equal(primed, hm.getPluginAffectingSettingsSnapshot(tmp));
+    assert.equal(hm.reloadPluginHooksIfChanged().skipped, true);
+  });
+
+  it('after priming, a genuine plugin-set change still triggers a reload (w115)', () => {
+    writePlugin('alpha', 'echo a');
+    hm.primePluginHookSnapshot(tmp);
+    assert.equal(hm.reloadPluginHooksIfChanged(tmp).skipped, true);
+    // Add a plugin → the snapshot diverges from the primed baseline → reload runs.
+    writePlugin('beta', 'echo b');
+    const r = hm.reloadPluginHooksIfChanged(tmp);
+    assert.equal(r.skipped, false, 'a real change after priming is not suppressed');
+    assert.equal(hm.getSummary().preToolUse, 2);
+  });
 });
 
 describe('HookManager — internal (system) callback hooks hidden from the user count (w109)', () => {

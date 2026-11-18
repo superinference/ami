@@ -2989,10 +2989,25 @@ function loadConfigFile(configPath: string): ProjectConfig | null {
   return loadConfigFileChecked(configPath).config;
 }
 
+/** Identity key for a diagnostic (`path:kind:message`), used to suppress a repeat
+ *  of the exact same problem reported from an overlapping source. Mirrors Claude's
+ *  seenErrors key `${file}:${path}:${message}` in loadSettingsFromDisk. */
+function configDiagnosticIdentity(d: ConfigDiagnostic): string {
+  return `${d.path}:${d.kind}:${d.message}`;
+}
+
 /**
  * Collect config diagnostics across every config tier under `cwd` (project,
  * local, global). A missing file is not a diagnostic; a corrupt one is, with a
  * pointer to its backup (fresh or most-recent) so the user can recover it.
+ *
+ * Multi-source dedup (parity: Claude's loadSettingsFromDisk seenFiles/seenErrors):
+ * two tiers can resolve to the SAME physical file — most commonly when AMI is run
+ * from the home directory, where the `project` path (`<cwd>/.ami/config.json`) and
+ * the `global` path (`<home>/.ami/config.json`) are one and the same. Each resolved
+ * path is therefore loaded/diagnosed at most ONCE (first tier wins), and an identical
+ * diagnostic arriving from an overlapping source is suppressed by identity — so a
+ * single broken file is never reported twice.
  */
 export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
   const home = process.env.HOME || process.env.USERPROFILE || '';
@@ -3005,10 +3020,23 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
     ...(home ? [{ path: path.join(home, '.ami', 'config.json'), source: 'global' as const }] : []),
   ];
   const diagnostics: ConfigDiagnostic[] = [];
+  // Dedup by RESOLVED absolute path (same file reached via two tiers is parsed once)
+  // and by diagnostic IDENTITY (the exact same problem is never surfaced twice).
+  const seenFiles = new Set<string>();
+  const seenErrors = new Set<string>();
+  const pushUnique = (d: ConfigDiagnostic): void => {
+    const id = configDiagnosticIdentity(d);
+    if (seenErrors.has(id)) return;
+    seenErrors.add(id);
+    diagnostics.push(d);
+  };
   for (const { path: p, source } of paths) {
+    const resolved = path.resolve(p);
+    if (seenFiles.has(resolved)) continue;
+    seenFiles.add(resolved);
     const { diagnostic } = loadConfigFileChecked(p);
     if (diagnostic) {
-      diagnostics.push({ ...diagnostic, source, sourceName: getConfigSourceName(source), backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
+      pushUnique({ ...diagnostic, source, sourceName: getConfigSourceName(source), backupPath: diagnostic.backupPath ?? findMostRecentBackup(p) ?? undefined });
     }
   }
   // Managed/enterprise tier (fail-open VISIBILITY): a broken managed policy fails
@@ -3023,7 +3051,7 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
     loadManagedConfig();
   } catch (err) {
     if (err instanceof ManagedConfigError) {
-      diagnostics.push({ path: getManagedConfigPath(), kind: 'unreadable', message: err.message, source: 'managed', sourceName: getConfigSourceName('managed') });
+      pushUnique({ path: getManagedConfigPath(), kind: 'unreadable', message: err.message, source: 'managed', sourceName: getConfigSourceName('managed') });
     }
   }
   return diagnostics;

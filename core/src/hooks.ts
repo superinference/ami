@@ -4757,6 +4757,21 @@ export class HookManager extends EventEmitter {
   }
 
   /**
+   * Seed the plugin-affecting-settings baseline WITHOUT reloading, so the FIRST
+   * subsequent {@link reloadPluginHooksIfChanged} compares against the real startup
+   * state rather than `undefined` (which always reads as "changed" and forces a
+   * spurious clear+re-register on the first unrelated settings write). Mirrors Claude
+   * Code's setupPluginHookHotReload capturing `lastPluginSettingsSnapshot` at
+   * subscribe time. Idempotent and side-effect-free apart from recording the baseline;
+   * returns the captured snapshot so a caller/test can assert what was primed.
+   */
+  primePluginHookSnapshot(cwd: string = this._cwd): string {
+    const snapshot = this.getPluginAffectingSettingsSnapshot(cwd);
+    this._pluginSettingsSnapshot = snapshot;
+    return snapshot;
+  }
+
+  /**
    * Capture (or re-capture) the startup hook-config snapshot and, on a reload at
    * the SAME cwd, record any hook entries that appeared or were mutated since the
    * baseline. Mirrors Claude Code's captureHooksConfigSnapshot /
