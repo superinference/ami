@@ -395,6 +395,54 @@ export function managedPermissionsPath(): string {
 export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
 export type BashClassification = (typeof BASH_CLASSIFICATIONS)[number];
 
+/**
+ * Context handed to an {@link AutoModeSafetyClassifier} for a tool call the
+ * deterministic engine would otherwise auto-approve in an autonomous mode.
+ * `staticDecision` is always `'allow'` (the classifier is only consulted on the
+ * auto-approve path), carried so a classifier can key off it and so the shape can
+ * grow without a breaking change.
+ */
+export interface AutoModeSafetyContext {
+  toolName: string;
+  input: Record<string, unknown>;
+  /** The autonomous mode that produced the auto-approval. */
+  mode: PermissionMode;
+  /** The deterministic verdict the classifier is being asked to confirm (always `allow`). */
+  staticDecision: 'allow';
+}
+
+/**
+ * A classifier's verdict on a would-be auto-approval. `allow` (or returning
+ * `undefined` from the classifier) leaves the deterministic auto-approval intact;
+ * `ask` downgrades it to an interactive prompt and `deny` blocks the call outright,
+ * each carrying an optional human-readable `reason` recorded against the denial log.
+ */
+export interface AutoModeSafetyVerdict {
+  decision: 'allow' | 'ask' | 'deny';
+  /** Why the classifier downgraded the approval (recorded for the UI / denial log). */
+  reason?: string;
+}
+
+/**
+ * Optional, injectable safety classifier consulted by {@link PermissionManager.check}
+ * on the AUTONOMOUS auto-approve path (`auto-allow` / `bypassPermissions` / inherited
+ * plan-bypass / screened `auto`) BEFORE a tool call is silently allowed. It can
+ * DOWNGRADE an auto-approval to a prompt (`ask`) or a block (`deny`) with a recorded
+ * reason — it can never UPGRADE an `ask`/`deny` to `allow`. Mirrors Claude Code's
+ * transcript/"auto-mode" safety classifier (`classifierApprovals.ts` /
+ * `useCanUseTool` yolo classifier): a model- or rule-backed check that gates
+ * autonomous approvals. The deterministic engine is the floor; this seam only ever
+ * TIGHTENS it. Returning `undefined`, resolving to `allow`, or throwing all FAIL OPEN
+ * to the deterministic auto-approval (the static classifier remains authoritative),
+ * matching Claude's "classifier error → fall back to the static decision" behavior.
+ * The common/engine layer injects a concrete classifier via
+ * {@link PermissionManager.setAutoModeSafetyClassifier}; unset → the seam is inert and
+ * autonomous behavior is byte-for-byte unchanged.
+ */
+export type AutoModeSafetyClassifier = (
+  ctx: AutoModeSafetyContext,
+) => AutoModeSafetyVerdict | undefined | Promise<AutoModeSafetyVerdict | undefined>;
+
 /** Scope for an `allow_session` grant on the agent's own config folder. */
 export const SESSION_GRANT_SCOPES = ['config-folder', 'global-config-folder'] as const;
 export type SessionGrantScope = (typeof SESSION_GRANT_SCOPES)[number];
@@ -4638,6 +4686,18 @@ export class PermissionManager {
    *  inert (gated exactly as before). Set per sub-engine from EngineConfig. */
   private capabilityCeiling?: ToolCapabilityCeiling;
 
+  /** Optional async safety classifier injected by the engine/common layer, consulted by
+   *  {@link check} on the autonomous auto-approve path to DOWNGRADE (never upgrade) a
+   *  would-be auto-approval. Undefined → inert (autonomous behavior unchanged). See
+   *  {@link AutoModeSafetyClassifier} and {@link setAutoModeSafetyClassifier}. */
+  private autoModeSafetyClassifier?: AutoModeSafetyClassifier;
+  /** Transient carry-slot for the reason attached to the MOST RECENT classifier-driven
+   *  allow→ask/deny downgrade in {@link check}, consumed (and cleared) by
+   *  {@link deriveDecisionReason} so {@link checkWithReason} can attribute the verdict to
+   *  the classifier. Scoped to a single check()→deriveDecisionReason() hop (deriveDecisionReason
+   *  runs before any re-entrant per-segment check()), so it never leaks across calls. */
+  private _pendingClassifierReason?: string;
+
   /** Unrecognized top-level keys read from `.ami/permissions.json` by {@link loadRules}
    *  (anything other than `mode`/`rules` — e.g. `hooks`, `env`, or a key a future AMI
    *  version adds). {@link saveRules} spreads these back so a round-trip through this
@@ -4856,6 +4916,67 @@ export class PermissionManager {
   }
 
   /**
+   * Register (or clear, with `undefined`) the autonomous-mode safety classifier
+   * ({@link AutoModeSafetyClassifier}). When set, {@link check} consults it on the
+   * auto-approve path of the autonomous modes and lets it DOWNGRADE a would-be
+   * auto-approval to `ask`/`deny` with a recorded reason. The deterministic engine is
+   * the floor — the classifier can only tighten it, never loosen it — and any
+   * `undefined`/`allow`/throw FAILS OPEN to the deterministic decision. The engine
+   * injects a concrete (e.g. model-backed) classifier here; unset leaves autonomous
+   * behavior byte-for-byte unchanged. Parity: Claude's transcript/yolo classifier gate.
+   */
+  setAutoModeSafetyClassifier(fn: AutoModeSafetyClassifier | undefined): void {
+    this.autoModeSafetyClassifier = fn;
+  }
+
+  /** Whether an autonomous-mode safety classifier is currently installed. */
+  hasAutoModeSafetyClassifier(): boolean {
+    return this.autoModeSafetyClassifier !== undefined;
+  }
+
+  /**
+   * Consult the injected {@link AutoModeSafetyClassifier} for a tool call the
+   * deterministic engine is about to auto-approve in an autonomous mode. Returns the
+   * (possibly downgraded) verdict. No classifier, an allowlisted-safe tool
+   * ({@link isAutoModeSafeTool} — skip the check, mirroring Claude's
+   * SAFE_YOLO_ALLOWLISTED_TOOLS fast-path), an `undefined`/`allow` verdict, or a
+   * thrown error all FAIL OPEN to `allow`. A downgrade to `ask`/`deny` records the
+   * denial (source `'classifier'`) and stashes its reason for
+   * {@link deriveDecisionReason}.
+   */
+  private async applyAutoModeSafetyClassifier(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<'allow' | 'ask' | 'deny'> {
+    const classifier = this.autoModeSafetyClassifier;
+    // Fast path: no classifier, or a tool the auto-mode allowlist already deems safe
+    // (read-only / coordination) — never spend a classifier call on it.
+    if (!classifier || isAutoModeSafeTool(toolName)) return 'allow';
+    let verdict: AutoModeSafetyVerdict | undefined;
+    try {
+      verdict = await classifier({ toolName, input, mode: this.mode, staticDecision: 'allow' });
+    } catch {
+      // Classifier failure must never BLOCK an otherwise-allowed autonomous call:
+      // fall back to the deterministic auto-approval (parity: classifier error →
+      // static decision). The static engine already screened for hardlines/denies.
+      return 'allow';
+    }
+    if (!verdict || verdict.decision === 'allow') return 'allow';
+    // Downgrade. Carry the reason to deriveDecisionReason so the prompt / denial
+    // message can explain WHY the classifier gated this autonomous call.
+    this._pendingClassifierReason = verdict.reason ?? '';
+    // A `deny` is a genuine block → record it (source 'classifier') so it surfaces in
+    // the recent-denials log and feeds the circuit breaker. An `ask` only turns the
+    // silent auto-approval into an interactive prompt (not a denial of intent), so it
+    // is NOT recorded — matching how a mode-driven `ask` does not trip the breaker.
+    if (verdict.decision === 'deny') {
+      const display = typeof input.command === 'string' ? input.command : toolName;
+      this.recordDenial(display, 'classifier', verdict.reason);
+    }
+    return verdict.decision;
+  }
+
+  /**
    * Whether this tool call is destructive: a destructive bash command (keyed off the
    * command classifier) OR any tool the injected {@link setToolDestructiveResolver}
    * resolver flags for this input. Single source of truth for the allow→ask downgrade
@@ -4951,6 +5072,10 @@ export class PermissionManager {
     toolName: string,
     input: Record<string, unknown>,
   ): Promise<'allow' | 'deny' | 'ask'> {
+    // Clear any stale classifier-downgrade reason from a previous call so a verdict
+    // this run that is NOT classifier-driven is never mis-attributed (the slot is set
+    // only by applyAutoModeSafetyClassifier and consumed by deriveDecisionReason).
+    this._pendingClassifierReason = undefined;
     // Hardline safety — unconditional, overrides all modes including auto-allow
     if (toolName === 'bash' && typeof input.command === 'string') {
       const hardline = detectHardlineCommand(input.command);
@@ -5030,7 +5155,7 @@ export class PermissionManager {
       // closes the asymmetry where `cat ~/.ssh/id_rsa` was auto-allowed in yolo
       // even though file_read of the same path is forbidden.
       if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
-      return 'allow';
+      return this.applyAutoModeSafetyClassifier(toolName, input);
     }
     // Screened autonomy: `auto` runs tool calls without a prompt (like auto-allow)
     // but screens EACH call for risk + prompt injection first, blocking the risky
@@ -5044,7 +5169,11 @@ export class PermissionManager {
       if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
       if (this.anyAskMatches(toolName, input)) return 'ask';
       if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
-      return screenAutoModeToolCall(toolName, input).decision;
+      // Static screen first; only when IT allows does the injected classifier get a
+      // chance to tighten the verdict (a screen-blocked call is already `deny`/`ask`).
+      const screened = screenAutoModeToolCall(toolName, input).decision;
+      if (screened !== 'allow') return screened;
+      return this.applyAutoModeSafetyClassifier(toolName, input);
     }
     if (this.mode === 'deny-all') return 'deny';
 
@@ -5059,7 +5188,7 @@ export class PermissionManager {
       // explicit "always confirm this" is never silently overridden by bypass mode.
       if (this.anyAskMatches(toolName, input)) return 'ask';
       if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
-      return 'allow';
+      return this.applyAutoModeSafetyClassifier(toolName, input);
     }
 
     if (this.mode === 'plan') {
@@ -5073,7 +5202,7 @@ export class PermissionManager {
         if (this.anyDenyMatches(toolName, input)) return 'deny';
         if (this.anyAskMatches(toolName, input)) return 'ask';
         if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
-        return 'allow';
+        return this.applyAutoModeSafetyClassifier(toolName, input);
       }
       const readOnlyTools = new Set(['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols', 'tool_search', 'task_tracker', 'task_list', 'task_output', 'todo_read']);
       if (readOnlyTools.has(toolName)) return 'allow';
@@ -5330,6 +5459,16 @@ export class PermissionManager {
     input: Record<string, unknown>,
     decision: 'deny' | 'ask',
   ): PermissionDecisionReason {
+    // The verdict came from the injected auto-mode safety classifier (check() set the
+    // carry-slot on its downgrade): attribute it to the classifier so the prompt /
+    // denial message explains WHY, and consume the slot so it never leaks to a later
+    // non-classifier verdict. Only set on a classifier-driven downgrade, so its mere
+    // presence is authoritative here.
+    const classifierReason = this._pendingClassifierReason;
+    this._pendingClassifierReason = undefined;
+    if (classifierReason !== undefined) {
+      return { type: 'classifier', ...(classifierReason ? { reason: classifierReason } : {}) };
+    }
     const command = typeof input.command === 'string' ? input.command : undefined;
     if (toolName === 'bash' && command) {
       const hardline = detectHardlineCommand(command);

@@ -62,6 +62,7 @@ export { classifyMcpToolForCollapse, normalizeCollapseToolName } from './mcp/cla
 export type { McpCollapseClass } from './mcp/classify-collapse';
 export type { McpLogSinkOptions, McpErrorLogRecord, McpDebugLogRecord } from './mcp/log-sink';
 export type { PermissionMode, PermissionRule, BashClassification, PermissionPromptHandler, PermissionPromptResult, DenyCheckResult, PermissionModeChange, PermissionModeChangeListener } from './permissions';
+export type { AutoModeSafetyClassifier, AutoModeSafetyContext, AutoModeSafetyVerdict } from './permissions';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, classifySafetyCheckFailure } from './error-classifier';
 export type { ClassifiedError, ErrorCategory, SafetyClassifierFailure } from './error-classifier';
 export { FAULT_INJECTION_ENV, FAULT_DEFAULT_STATUS, parseFaultInjection, resetFaultInjection, faultInjectionActive, injectFault, consumeFault, makeInjectedError, maybeThrowFault } from './fault-injection';

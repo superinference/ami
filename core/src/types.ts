@@ -1933,6 +1933,13 @@ export interface EngineConfig {
    *  Typed as `unknown` (cast at the common/engine.ts call site) to avoid a
    *  types.ts -> provider.ts import cycle. */
   _streamChatImpl?: unknown;
+  /** @internal Override the auto-mode safety-classifier RUNNER (for testing). Lets a
+   *  test drive the full engine→classifier→permission path with a deterministic
+   *  verdict instead of a live model call. Defaults to the model-backed runner built
+   *  from {@link autoMode} + the provider. Typed `unknown` (cast at the engine call
+   *  site) to avoid a types.ts -> common import. Only consulted when {@link autoMode}
+   *  is set. */
+  _autoModeClassifierRunner?: unknown;
 
   // -------------------------------------------------------------------------
   // Parity config knobs (Claude Code settings.json / CLI flags). All optional;
