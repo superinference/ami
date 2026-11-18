@@ -20,6 +20,7 @@
 import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseEnvBool } from '../utils/env';
 
 export type FetchLike = (url: string, init?: {
   method?: string;
@@ -1090,13 +1091,6 @@ export const ID_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id_token';
  */
 export const MCP_ENABLE_XAA_ENV = 'MCP_ENABLE_XAA';
 
-/** Truthy values accepted by {@link isXaaEnabled} (parity with Claude's env-truthy check). */
-function isEnvTruthy(v: string | undefined): boolean {
-  if (!v) return false;
-  const s = v.trim().toLowerCase();
-  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
-}
-
 /**
  * Whether the browserless Cross-App Access flow is enabled for this process
  * ({@link MCP_ENABLE_XAA_ENV} is set to a truthy value). A session configured with
@@ -1104,7 +1098,7 @@ function isEnvTruthy(v: string | undefined): boolean {
  * enterprise flow never activates for a normal user who merely has stale config.
  */
 export function isXaaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isEnvTruthy(env[MCP_ENABLE_XAA_ENV]);
+  return parseEnvBool(env[MCP_ENABLE_XAA_ENV]);
 }
 
 /**
