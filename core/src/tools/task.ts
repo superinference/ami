@@ -2214,6 +2214,10 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
     type: 'boolean',
     description: 'Whether this subagent may show interactive permission prompts for tools outside its granted scope. Default (false) auto-DENIES such calls so a detached/teammate run never blocks on a prompt no one will answer; set true to route unlisted-tool calls to the interactive "ask" handler. An explicit permission_mode overrides this.',
   },
+  share_abort_controller: {
+    type: 'boolean',
+    description: 'Whether a parent-turn abort (ESC / interrupt) cascades to this subagent. Default (true) links the child to the parent so interrupting the parent also stops the child — AMI\'s safe default that never orphans a detached agent. Set false to give the child an INDEPENDENT abort controller (parity: Claude Code\'s SubagentContextOverrides.shareAbortController=false) so a long-lived background delegation keeps running after the spawning turn is interrupted; you then stop it explicitly with task_kill.',
+  },
   plan_mode_required: {
     type: 'boolean',
     description: 'Require this subagent to PLAN before implementing: run it read-only (explore + return an implementation plan; edits/writes/mutating bash are denied) so you can review the plan before any code is written. Overrides the resolved permission mode down to "plan" (a stricter deny-all is kept). Defaults to the AMI_SUBAGENT_PLAN_REQUIRED / CLAUDE_CODE_PLAN_MODE_REQUIRED env knob when omitted.',
@@ -2762,6 +2766,19 @@ export const taskTool: ToolDefinition = {
       return { output: `Error: ${ribParsed.error}`, isError: true };
     }
 
+    // Per-spawn `share_abort_controller` knob (parity: Claude Code's
+    // SubagentContextOverrides.shareAbortController). AMI's default (true) cascades a
+    // parent-turn abort to the child — the safe default that never orphans a detached
+    // agent. An explicit `false` opts the child OUT of the cascade (independent
+    // controller) so a long-lived background delegation survives the spawning turn's
+    // interrupt and is stopped explicitly via task_kill. Strict-parsed so a malformed
+    // value is rejected rather than silently treated as opt-out.
+    const sacParsed = parseOptionalBool(input.share_abort_controller, 'share_abort_controller', true);
+    if ('error' in sacParsed) {
+      return { output: `Error: ${sacParsed.error}`, isError: true };
+    }
+    const shareAbortController = sacParsed.value;
+
     // Background tasks can be globally disabled by CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.
     // The flag is already omitted from the advertised schema when disabled; a stale /
     // replayed call that still sets it is rejected here so it cannot silently spawn a
@@ -3180,7 +3197,12 @@ export const taskTool: ToolDefinition = {
     // explicit task_kill, the stall timeout, or engine shutdown when the spawning turn
     // aborted. unlinkParentAbort is invoked on foreground teardown and inside the
     // background drain's finally so a completed agent never leaks its listener.
-    const unlinkParentAbort = linkChildAbortToParent(context.abortSignal, subAbort);
+    // When the caller opts OUT via `share_abort_controller: false` the cascade is
+    // skipped entirely (independent child controller) — the unlink is then a no-op so
+    // every teardown path stays uniform.
+    const unlinkParentAbort = shareAbortController
+      ? linkChildAbortToParent(context.abortSignal, subAbort)
+      : () => {};
 
     // An explicit per-call `isolation` wins; otherwise fall back to the agent
     // definition's `isolation` default (parity: Claude's agent isolation field).
