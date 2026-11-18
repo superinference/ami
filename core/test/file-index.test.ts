@@ -117,8 +117,36 @@ describe('FileIndex.search ranking', () => {
     const res = idx.search('foo', 5);
     const srcScore = res.find(r => r.path === 'foo.ts')!.score;
     const testScore = res.find(r => r.path === 'foo.test.ts')!.score;
-    assert.ok(testScore >= srcScore, `${testScore} >= ${srcScore}`);
-    assert.ok(testScore <= 1.0);
+    // foo.ts (shorter) outranks foo.test.ts, so their raw position scores are
+    // 0 and 1/2 = 0.5. The 1.05x penalty multiplies ONLY the test path's score,
+    // yielding 0.525 — strictly worse than the unpenalized 0.5. Asserting the
+    // exact penalized value makes this a red-green reproducer: reverting the
+    // `* 1.05` leaves testScore at 0.5 and this test fails.
+    assert.equal(srcScore, 0);
+    assert.ok(
+      Math.abs(testScore - 0.525) < 1e-9,
+      `expected penalized 0.525, got ${testScore}`,
+    );
+    assert.ok(testScore > 0.5, 'penalty must push the test path strictly worse');
+  });
+
+  it('caps the penalized test-path score at 1.0 for the worst-ranked match', () => {
+    // 21 short source matches rank ahead of one long, heavily-gapped test path,
+    // so the test path lands last: raw position score 21/22 ≈ 0.9545. Multiplying
+    // by 1.05 gives ≈ 1.0023, which the cap clamps to exactly 1.0 (scores are
+    // normalized to <= 1.0). Reverting the `Math.min(..., 1.0)` cap would leave
+    // it above 1.0, so this discriminates the cap branch.
+    const idx = new FileIndex();
+    const paths: string[] = [];
+    for (let i = 0; i < 21; i++) paths.push(`ab${i}.ts`);
+    paths.push('a_very_long_dir/nested/zzzz_b_test.ts');
+    idx.loadFromFileList(paths);
+    const res = idx.search('ab', 50);
+    const testEntry = res.find(r => r.path.includes('test'))!;
+    assert.equal(res.indexOf(testEntry), res.length - 1, 'test path ranks last');
+    const uncapped = (res.length - 1) / res.length * 1.05;
+    assert.ok(uncapped > 1.0, `scenario must exceed cap, got ${uncapped}`);
+    assert.equal(testEntry.score, 1.0);
   });
 
   it('honors the top-k limit, keeping the best matches', () => {
