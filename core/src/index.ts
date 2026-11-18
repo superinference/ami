@@ -653,3 +653,6 @@ export {
   resolveJetBrainsConfigDirectories,
 } from './ide';
 export type { JetBrainsIdeType, IdeDirectoryContext } from './ide';
+
+// --- Canonical UUID boundary validator (parity: Claude's validateUuid) ---
+export { validateUuid } from './ids';
