@@ -4,6 +4,7 @@ import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
+import { addFileGlobRuleToGitignore } from './utils/git';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
@@ -7343,6 +7344,16 @@ export class PermissionManager {
       // world-readable. Mirrors Claude's writeFileSyncAndFlush_DEPRECATED + 0o600.
       atomicWriteFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
       this.traceMutation(`Persisting ${rules.length} rule(s) to destination '${destination}': ${filePath}`);
+      // The project-LOCAL destination is advertised to the user as "gitignored —
+      // not shared with collaborators" (permission-save-destinations.ts). Make good
+      // on that promise by actually adding the local file to the global gitignore,
+      // exactly as Claude Code does on a `localSettings` write (settings.ts L508-514).
+      // Best-effort + swallowed inside the helper: a gitignore write must never turn
+      // a successful rule-persist into a failure.
+      if (destination === 'localSettings') {
+        const added = addFileGlobRuleToGitignore(path.basename(filePath), cwd);
+        if (added) this.traceMutation(`Added **/${path.basename(filePath)} to the global gitignore for the project-local permissions file`);
+      }
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

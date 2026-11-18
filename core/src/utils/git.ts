@@ -1,6 +1,7 @@
 import { execSync, spawnSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { parseGitConfigValue } from '../git-config-parser';
@@ -78,6 +79,78 @@ function runGit(cwd: string, args: string[]): { code: number; stdout: string } |
 export function isPathGitignored(filePath: string, cwd: string): boolean {
   const res = runGit(cwd, ['--no-optional-locks', 'check-ignore', '--quiet', '--', filePath]);
   return res?.code === 0;
+}
+
+/**
+ * Resolve git's GLOBAL ignore file (`core.excludesFile`): `$XDG_CONFIG_HOME/git/ignore`
+ * when `XDG_CONFIG_HOME` is set, else `~/.config/git/ignore`. Pure (home dir + env
+ * injected) so the resolution is unit-testable without touching the real `$HOME`.
+ * Parity with Claude Code's `getGlobalGitignorePath()` (`utils/git/gitignore.ts`),
+ * extended with the XDG_CONFIG_HOME precedence git itself honours. This is the ONE
+ * canonical resolver: the `@`-file picker (common/src/autocomplete-provider.ts)
+ * re-exports it rather than defining its own, so the global-ignore WRITE path
+ * ({@link addFileGlobRuleToGitignore}) and the picker's READ path agree on the file.
+ */
+export function getGlobalGitignorePath(
+  homeDir: string = os.homedir(),
+  xdgConfigHome: string | undefined = process.env.XDG_CONFIG_HOME,
+): string {
+  const base = xdgConfigHome && xdgConfigHome.trim() !== ''
+    ? xdgConfigHome
+    : path.join(homeDir, '.config');
+  return path.join(base, 'git', 'ignore');
+}
+
+/**
+ * Add a recursive glob rule (`**` + `/` + filename) to the user's GLOBAL
+ * gitignore so a locally-generated, never-shared file (e.g.
+ * `.ami/permissions.local.json`) is
+ * actually kept out of version control — making good on the "gitignored" promise
+ * AMI's project-local save destination already advertises. Mirrors Claude Code's
+ * `addFileGlobRuleToGitignore` (`utils/git/gitignore.ts` L53-99), SYNC to fit
+ * AMI's synchronous git helpers and the synchronous permission-save path:
+ *   1. no-op outside a git repo — nothing to ignore ({@link isGitRepo});
+ *   2. directory patterns (trailing `/`) are probed with a synthetic child path
+ *      because `git check-ignore` on a bare directory pattern behaves differently;
+ *   3. two-layer dedup — first ask git whether the pattern is ALREADY covered by
+ *      any gitignore source ({@link isPathGitignored}, local OR global), then
+ *      re-check the global file's own text before appending;
+ *   4. ENOENT → create `~/.config/git/` (recursive) and write the file fresh;
+ *   5. every failure is swallowed (best-effort) — a gitignore write must never
+ *      break the operation that triggered it.
+ * Returns `true` only when it actually wrote the entry (appended or created),
+ * `false` otherwise (not a repo / already ignored / already present / error) so a
+ * caller can trace the side effect.
+ */
+export function addFileGlobRuleToGitignore(filename: string, cwd: string): boolean {
+  try {
+    if (!isGitRepo(cwd)) return false;
+
+    const gitignoreEntry = `**/${filename}`;
+    // A bare directory pattern (trailing `/`) is probed via a synthetic child file
+    // because `git check-ignore` on a directory pattern alone behaves differently.
+    const testPath = filename.endsWith('/') ? `${filename}sample-file.txt` : filename;
+    if (isPathGitignored(testPath, cwd)) return false;
+
+    const globalGitignorePath = getGlobalGitignorePath();
+    fs.mkdirSync(path.dirname(globalGitignorePath), { recursive: true });
+
+    let content: string;
+    try {
+      content = fs.readFileSync(globalGitignorePath, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        fs.writeFileSync(globalGitignorePath, `${gitignoreEntry}\n`, 'utf-8');
+        return true;
+      }
+      throw e;
+    }
+    if (content.includes(gitignoreEntry)) return false;
+    fs.appendFileSync(globalGitignorePath, `\n${gitignoreEntry}\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `127.0.0.1` / `::1` / `localhost` (optionally with a `:port` suffix). */
