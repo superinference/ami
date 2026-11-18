@@ -4,6 +4,7 @@ import { isAbsolute, resolve as resolvePath } from 'path';
 import { wildcardMatch } from '../permissions';
 import type { SandboxPolicy } from '../types';
 import { getGrantedSandboxHosts, isSandboxHostGranted } from './sandbox-permission-registry';
+import { isHostSandboxDisabled, isSandboxDefaultDeny } from './tool-gates';
 
 export interface SandboxConfig {
   allowNetwork: boolean;
@@ -815,6 +816,54 @@ export function shouldUseSandbox(command: string, options?: SandboxExemptionOpti
     if (SANDBOX_TRIGGER_PATTERNS.some(p => p.test(stripped))) return true;
   }
   return false;
+}
+
+/** Inputs that decide whether a command WILL actually be wrapped by the HOST
+ *  (unshare) auto-sandbox. Mirrors the host-path gating in `bashTool` so the
+ *  decision has a SINGLE canonical home (consumed by both `bash.ts` and the
+ *  permission layer's `autoAllowBashIfSandboxed` host-mode fallback). */
+export interface HostSandboxEligibilityOptions {
+  /** Operator `sandboxExcludedCommands` carve-outs (threaded from the tool context). */
+  excludedCommands?: string[];
+  /** `SandboxPolicy.enabledPlatforms` — restrict host sandboxing to given platforms. */
+  enabledPlatforms?: string[];
+  /** `SandboxPolicy.enabled` — exactly `false` is the config-level host off-switch. */
+  enabled?: boolean;
+  /** Env (for the `AMI_DISABLE_SANDBOX`/default-deny gates). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Platform override for tests. Defaults to `process.platform`. */
+  platform?: string;
+  /** Injectable `shouldUseSandbox` impl so callers that already expose a test seam
+   *  (e.g. `bash.ts`'s `_bashHooks.shouldUseSandbox`) keep driving one decision. */
+  shouldUseSandboxImpl?: typeof shouldUseSandbox;
+}
+
+/**
+ * Canonical decision: will `command` actually be wrapped by the lightweight HOST
+ * (unshare) auto-sandbox? True ONLY when the platform allows host sandboxing, the
+ * host sandbox is not globally disabled (env knob or `enabled === false`), AND the
+ * command is a sandbox trigger / default-deny target that is not exempt. This is
+ * the SINGLE source of the host-sandbox gating used by `bashTool` (to decide
+ * wrapping) and by the permission layer's `autoAllowBashIfSandboxed` host-mode
+ * path, which auto-allows exactly the commands that WILL be sandboxed and lets
+ * sandbox-incompatible commands fall through to a regular permission prompt
+ * (parity: Claude Code's "auto-allow" sandbox mode — try sandboxed, otherwise
+ * regular permissions). Does NOT account for `dangerouslyDisableSandbox` (a
+ * per-call input the caller handles separately). Pure.
+ */
+export function commandWillBeHostSandboxed(
+  command: string,
+  options: HostSandboxEligibilityOptions = {},
+): boolean {
+  const env = options.env ?? process.env;
+  if (!isSandboxPlatformEnabled(options.enabledPlatforms, options.platform ?? process.platform)) return false;
+  if (isHostSandboxDisabled(env) || options.enabled === false) return false;
+  const exemptionOptions: SandboxExemptionOptions = {
+    ...(options.excludedCommands ? { excludedCommands: options.excludedCommands } : {}),
+    ...(isSandboxDefaultDeny(env) ? { defaultSandbox: true } : {}),
+  };
+  const impl = options.shouldUseSandboxImpl ?? shouldUseSandbox;
+  return impl(command, exemptionOptions);
 }
 
 /**

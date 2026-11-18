@@ -657,12 +657,19 @@ export interface SandboxPolicy {
   /** Custom seccomp syscall-filter profile for the container backend. */
   seccomp?: SandboxSeccompConfig;
   /** OPT-IN: auto-approve the bash tool (skip the permission prompt) in the
-   *  prompt-driven modes (ask/acceptEdits) when `mode === 'container'`, because the
-   *  container — not the prompt — is the safety boundary (the host filesystem is not
-   *  mounted). Honored by {@link import('./permissions').PermissionManager} only when
-   *  set to exactly `true`; default (unset/false) keeps the normal bash prompt
-   *  (Claude-parity: enterprise `sandbox.autoAllowBashIfSandboxed`). Hardline blocks,
-   *  `dangerouslyDisableSandbox`, and explicit deny rules still win. */
+   *  prompt-driven modes (ask/acceptEdits) for commands protected by the sandbox.
+   *  Two arms, both honored by {@link import('./permissions').PermissionManager}
+   *  only when set to exactly `true` (default unset/false keeps the normal bash
+   *  prompt): in CONTAINER mode (`mode === 'container'`) EVERY command is
+   *  auto-allowed because the container — not the prompt — is the safety boundary
+   *  (the host filesystem is not mounted); in HOST (non-container) mode only the
+   *  commands that WILL actually be wrapped by the host (unshare) auto-sandbox are
+   *  auto-allowed (per {@link import('./tools/bash-sandbox').commandWillBeHostSandboxed}),
+   *  while sandbox-incompatible commands fall through to a regular permission prompt —
+   *  Claude Code's "auto-allow" sandbox mode (try sandboxed, else regular
+   *  permissions). Parity: enterprise `sandbox.autoAllowBashIfSandboxed`. Hardline
+   *  blocks, `dangerouslyDisableSandbox`, explicit deny rules, and (in host mode)
+   *  sensitive-path reads/writes still prompt. */
   autoAllowBashIfSandboxed?: boolean;
   /** Hard gate on the `dangerouslyDisableSandbox` escape hatch. When false, the
    *  parameter is ignored entirely and EVERY command must run sandboxed. Default: true. */

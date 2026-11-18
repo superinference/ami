@@ -357,7 +357,8 @@ export type {
   PwshRuntime,
   PwshSpawnResult,
 } from './powershell-parser';
-export { shouldUseSandbox, wrapWithSandbox, getSandboxStatus, checkSandboxDependencies, resetSandboxCache } from './bash-sandbox';
+export { shouldUseSandbox, wrapWithSandbox, getSandboxStatus, checkSandboxDependencies, resetSandboxCache, commandWillBeHostSandboxed } from './bash-sandbox';
+export type { HostSandboxEligibilityOptions } from './bash-sandbox';
 export type { SandboxDependencyCheck } from './bash-sandbox';
 export type { SandboxConfig } from './bash-sandbox';
 export { teamCreateTool, teamDeleteTool, getCurrentTeam, resetTeam, getSelfIdentity, getSelfPlanModeRequired, getSelfParentSessionId } from './team';

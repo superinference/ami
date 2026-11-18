@@ -9,7 +9,7 @@ import { execCommand, resolveTmpBase, SPAWN_FAILURE_EXIT_CODE } from '../utils/s
 import { windowsPathToPosixPath } from '../utils/windows-paths';
 import { coerceBool, coerceNumber, parseOptionalBool } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
-import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, sandboxBashDisplayName, type SandboxExemptionOptions } from './bash-sandbox';
+import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, sandboxBashDisplayName, commandWillBeHostSandboxed } from './bash-sandbox';
 import { validateBoundedIntEnvVar } from '../config';
 import {
   getDockerAvailability,
@@ -23,7 +23,7 @@ import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-l
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { classifyBashAccess, describeToolActivity } from './tool-activity-class';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
-import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isHostSandboxDisabled, isSandboxDefaultDeny, isSandboxEscapeDisabled } from './tool-gates';
+import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isSandboxEscapeDisabled } from './tool-gates';
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
 import { applySimulatedSedEdit } from './bash-sed-parser';
 
@@ -1887,17 +1887,17 @@ export const bashTool: ToolDefinition = {
       const disableSandbox = sandboxEscapeLocked ? false : coerceBool(input.dangerouslyDisableSandbox);
       // Global host-sandbox off-switch (parity: isSandboxingEnabled): the env knob
       // or `sandbox.enabled === false` disables the lightweight auto-wrap entirely,
-      // so a trigger-pattern match no longer forces the unshare backend on.
-      const hostSandboxDisabled = isHostSandboxDisabled() || context.sandbox?.enabled === false;
-      // PARITY (default-deny coverage): the AMI_SANDBOX_DEFAULT_DENY gate flips the
-      // host auto-sandbox from AMI's narrow trigger allowlist to Claude Code's
-      // default-deny model (sandbox every non-exempt command). Threaded alongside
-      // the operator exemption list so excludedCommands still carve out exemptions.
-      const sandboxExemptionOptions: SandboxExemptionOptions = {
-        ...(context.sandboxExcludedCommands ? { excludedCommands: context.sandboxExcludedCommands } : {}),
-        ...(isSandboxDefaultDeny() ? { defaultSandbox: true } : {}),
-      };
-      const useSandbox = platformSandboxEnabled && !disableSandbox && !hostSandboxDisabled && _bashHooks.shouldUseSandbox(command, sandboxExemptionOptions);
+      // so a trigger-pattern match no longer forces the unshare backend on. The
+      // platform/off-switch/default-deny/exemption gating lives in the SINGLE
+      // canonical `commandWillBeHostSandboxed` (shared with the permission layer's
+      // autoAllowBashIfSandboxed host-mode path), so the "will this be sandboxed"
+      // decision has one home. `disableSandbox` (a per-call input) is handled here.
+      const useSandbox = !disableSandbox && commandWillBeHostSandboxed(command, {
+        excludedCommands: context.sandboxExcludedCommands,
+        enabledPlatforms: context.sandbox?.enabledPlatforms,
+        enabled: context.sandbox?.enabled,
+        shouldUseSandboxImpl: _bashHooks.shouldUseSandbox,
+      });
       // PARITY (failIfUnavailable / allowUnsandboxedFallback): if the command must
       // be sandboxed but the host backend cannot actually start, a hard gate
       // (`failIfUnavailable`, or `allowUnsandboxedFallback === false`) REFUSES the

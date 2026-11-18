@@ -5050,6 +5050,15 @@ export class PermissionManager {
    *  boundary, so the opt-in knob lets `check()` skip the prompt. Undefined → the
    *  feature is inert and bash is gated exactly as before. */
   private sandboxPolicy?: SandboxPolicy;
+  /** Resolver injected by the engine that reports whether a bash `command` WILL be
+   *  wrapped by the HOST (unshare) auto-sandbox (core's `commandWillBeHostSandboxed`).
+   *  Backs the HOST-mode arm of `autoAllowBashIfSandboxed`: when the opt-in knob is on
+   *  in a non-container policy, exactly the commands that WILL be sandboxed are
+   *  auto-allowed and sandbox-incompatible ones fall through to a regular permission
+   *  prompt (parity: Claude Code's "auto-allow" sandbox mode — try sandboxed, else
+   *  regular permissions). Undefined → host-mode auto-allow is inert (container-mode
+   *  behavior unchanged). */
+  private sandboxEligibilityResolver?: (command: string) => boolean;
   /** Resolver injected by the engine that reports whether a NON-bash tool call is
    *  irreversible for this input (parity: Claude's generic `Tool.isDestructive(input)`).
    *  Lets {@link check} apply the destructive allow-rule downgrade to ANY tool, not
@@ -5324,6 +5333,18 @@ export class PermissionManager {
   }
 
   /**
+   * Inject the host-sandbox eligibility resolver (core's `commandWillBeHostSandboxed`,
+   * pre-bound by the engine with the active exemption/platform options). Enables the
+   * HOST-mode arm of {@link SandboxPolicy.autoAllowBashIfSandboxed}: a command that
+   * WILL be host-sandboxed is auto-allowed, while a sandbox-incompatible command falls
+   * through to a regular permission prompt. Passing `undefined` makes host-mode
+   * auto-allow inert (container-mode behavior is unchanged).
+   */
+  setSandboxEligibilityResolver(resolver: ((command: string) => boolean) | undefined): void {
+    this.sandboxEligibilityResolver = resolver;
+  }
+
+  /**
    * Install a least-privilege {@link ToolCapabilityCeiling} for this manager's
    * engine (parity: Claude's forked-agent `canUseTool`). The ceiling is a HARD cap
    * enforced ahead of every mode: it can only deny (never grant), so a forked skill
@@ -5532,25 +5553,29 @@ export class PermissionManager {
   }
 
   /**
-   * Whether a bash command would be auto-approved by the
-   * `autoAllowBashIfSandboxed` knob: the policy runs every command in a container
-   * (`mode === 'container'`) AND the opt-in knob is explicitly enabled. This is an
-   * OPT-IN parity knob (Claude's enterprise `sandbox.autoAllowBashIfSandboxed`): it
-   * is OFF unless set to exactly `true`, so the default bash prompt is unchanged.
-   * The container is the safety boundary (the host FS is not mounted), so a prompt
-   * adds no protection — only friction — once the operator opts in.
+   * Whether a bash command would be auto-approved by the `autoAllowBashIfSandboxed`
+   * knob (OPT-IN; OFF unless set to exactly `true`, so the default bash prompt is
+   * unchanged). Two arms, both requiring the sandbox to be the safety boundary:
+   *   - CONTAINER mode: EVERY command runs in a container (host FS not mounted), so
+   *     every command is auto-allowed.
+   *   - HOST mode (non-container): auto-allow ONLY the commands that WILL actually be
+   *     wrapped by the host (unshare) auto-sandbox — reported by the injected
+   *     {@link sandboxEligibilityResolver}. A sandbox-incompatible command returns
+   *     false here and falls through to a regular permission prompt (parity: Claude
+   *     Code's "auto-allow" sandbox mode — try sandboxed, else regular permissions).
+   * Claude's enterprise `sandbox.autoAllowBashIfSandboxed`.
    */
   private bashAutoAllowedBySandbox(toolName: string, input: Record<string, unknown>): boolean {
-    return (
-      toolName === 'bash' &&
-      typeof input.command === 'string' &&
-      this.sandboxPolicy?.mode === 'container' &&
-      this.sandboxPolicy.autoAllowBashIfSandboxed === true &&
-      // dangerouslyDisableSandbox cannot override enforced container mode, but if the
-      // model asked for it we still prompt (handled earlier in check); the escape
-      // hatch never silently auto-allows here.
-      input.dangerouslyDisableSandbox !== true
-    );
+    if (toolName !== 'bash' || typeof input.command !== 'string') return false;
+    if (this.sandboxPolicy?.autoAllowBashIfSandboxed !== true) return false;
+    // dangerouslyDisableSandbox cannot override the sandbox, but if the model asked for
+    // it we still prompt (handled earlier in check); never silently auto-allow here.
+    if (input.dangerouslyDisableSandbox === true) return false;
+    // Container mode: the container is the boundary → every command is auto-allowed.
+    if (this.sandboxPolicy.mode === 'container') return true;
+    // Host mode: auto-allow only the commands that WILL be host-sandboxed; others
+    // fall through to the normal prompt.
+    return this.sandboxEligibilityResolver?.(input.command) === true;
   }
 
   // -------------------------------------------------------------------------
@@ -5659,13 +5684,20 @@ export class PermissionManager {
     // bash command inside a container, the container — not the prompt — is the
     // safety boundary (the host filesystem is not mounted), so an operator who set
     // sandbox.autoAllowBashIfSandboxed=true wants bash to run without a prompt in
-    // the normally prompt-driven modes (ask / acceptEdits). Hardline blocks and
-    // dangerouslyDisableSandbox (both above) and explicit user deny rules still win;
-    // deny-all/plan keep denying and auto-allow/bypass already allow, so this only
-    // changes behavior in ask/acceptEdits.
+    // the normally prompt-driven modes (ask / acceptEdits). In HOST mode only the
+    // commands that WILL be host-sandboxed take this path; sandbox-incompatible ones
+    // fall through to the normal prompt. Hardline blocks and dangerouslyDisableSandbox
+    // (both above) and explicit user deny rules still win; deny-all/plan keep denying
+    // and auto-allow/bypass already allow, so this only changes behavior in
+    // ask/acceptEdits.
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
         this.bashAutoAllowedBySandbox(toolName, input) &&
-        !this.anyDenyMatches(toolName, input)) {
+        !this.anyDenyMatches(toolName, input) &&
+        // HOST mode still prompts for sensitive-path reads/writes: the host filesystem
+        // IS reachable under the unshare sandbox (unlike container mode where it is not
+        // mounted), so a credential read / system-dir write must not silently bypass the
+        // prompt. Container mode keeps the full no-prompt behavior (FS not mounted).
+        (this.sandboxPolicy?.mode === 'container' || !this.sensitivePathRequiresPrompt(toolName, input))) {
       return 'allow';
     }
 
