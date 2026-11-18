@@ -82,6 +82,36 @@ export const THEMES = [
 export type Theme = (typeof THEMES)[number];
 
 /**
+ * Human-readable labels for each {@link Theme} value — the descriptive text a
+ * frontend shows beside the bare machine name in a theme picker/listing (parity:
+ * Claude Code's `ThemePicker` option labels, e.g. `auto` → "Auto (match terminal)",
+ * `dark-daltonized` → "Dark mode (colorblind-friendly)"). The machine value stays
+ * the selection key; the label is purely descriptive, so the `/theme` listing can
+ * tell a user what each option DOES ("match terminal", "colorblind-friendly",
+ * "ANSI colors only") instead of exposing only the terse id. Keyed by every member
+ * of {@link THEMES} so the map and the enum can never drift.
+ */
+export const THEME_LABELS: Record<Theme, string> = {
+  'default': 'Default (match terminal)',
+  'auto': 'Auto (match terminal)',
+  'dark': 'Dark mode',
+  'light': 'Light mode',
+  'dark-daltonized': 'Dark mode (colorblind-friendly)',
+  'light-daltonized': 'Light mode (colorblind-friendly)',
+  'dark-ansi': 'Dark mode (ANSI colors only)',
+  'light-ansi': 'Light mode (ANSI colors only)',
+};
+
+/**
+ * The descriptive label for a theme name. A recognized {@link Theme} resolves to
+ * its {@link THEME_LABELS} entry; any unknown string passes through unchanged so a
+ * caller can label an arbitrary/custom value without a lookup miss.
+ */
+export function describeTheme(theme: string): string {
+  return (THEME_LABELS as Record<string, string>)[theme] ?? theme;
+}
+
+/**
  * Terminal notification channels for turn-completion alerts, selectable per
  * terminal family (parity: Claude's NOTIFICATION_CHANNELS). `auto` picks the best
  * mechanism for the detected terminal; `notifications_disabled` turns alerts off.
@@ -1563,7 +1593,15 @@ export type EngineEvent =
    *  shape (the TUI↔CLI parity invariant). Parity: Claude Code's `system/init`
    *  snapshot message (utils/messages/systemInit.ts `buildSystemInitMessage`). */
   | { type: 'session_init'; sessionId: string; cwd: string; model: string; permissionMode: string; tools: string[]; mcpServers: { name: string; status: string }[]; version: string }
-  | { type: 'memory_warning'; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
+  /** Progressive memory-pressure warning. `level` is the escalation tier the live
+   *  RSS reading entered — `1` (high / soft warning), `2` (critical), `3` (severe —
+   *  the warning×2 escalation ceiling OR the independent absolute CRITICAL ceiling).
+   *  The tier lets a frontend surface DISTINCT severity wording ('High' vs 'Critical'
+   *  vs 'Severe') and escalate the notification kind at the top tier, rather than a
+   *  single flat "high memory" message. Parity: Claude Code's `useMemoryUsage`
+   *  high/critical status drives distinct notification severity. Always `>= 1` because
+   *  the event is only emitted when the tier rises above 0. */
+  | { type: 'memory_warning'; level: 1 | 2 | 3; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
   | { type: 'plan_mode_changed'; enabled: boolean }
   | { type: 'task_updated'; taskId: number; status: string; subject: string }
   | { type: 'skill_activated'; skill: string; description: string; hasMcpServers: boolean; source: 'model' | 'user' }
