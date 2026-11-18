@@ -16,6 +16,12 @@ import { log as coreLog, logForDiagnosticsNoPII } from './logger';
 import { redactCredentials } from './credential-guard';
 import { isEnvTruthy } from './analytics';
 import { abbreviateHome, isPathWithin } from './utils/path';
+import {
+  formatRelativeTime,
+  formatRelativeTimeAgo,
+  type RelativeTimeStyle,
+  type RelativeTimeOptions,
+} from './utils/format';
 import { scanForSecrets } from './tools/tool-utils';
 import { resolveConfiguredMemoryExcludes, resolveConfiguredExternalMemoryImports, resolveTeamMemoryLoadingEnabled } from './config';
 import { sequential } from './utils/sequential';
@@ -1343,114 +1349,15 @@ function memoryFreshness(ageDays: number): string {
   return `${Math.floor(ageDays / 30)} months ago`;
 }
 
-/** Rendering style for {@link formatRelativeTime}. `narrow` uses AMI's compact
- *  custom units (`3d ago`, `in 2h`); `short`/`long` defer to the localized
- *  `Intl.RelativeTimeFormat` for full-word output (`3 days ago`). */
-export type RelativeTimeStyle = 'narrow' | 'short' | 'long';
-
-/** Options for {@link formatRelativeTime} / {@link formatRelativeTimeAgo}
- *  (parity with Claude Code's `RelativeTimeOptions`, utils/format.ts). */
-export interface RelativeTimeOptions {
-  /** @default 'narrow' */
-  style?: RelativeTimeStyle;
-  /** Whether the localized formatter always emits a number or may say
-   *  "yesterday"/"now". @default 'always' */
-  numeric?: 'always' | 'auto';
-}
-
-/** Interval table (largest → smallest) driving the unit selection in
- *  {@link formatRelativeTime}. Each row carries the full unit (for the localized
- *  `Intl.RelativeTimeFormat`) and the compact `narrow` suffix. */
-const RELATIVE_TIME_INTERVALS = [
-  { unit: 'year', seconds: 31536000, shortUnit: 'y' },
-  { unit: 'month', seconds: 2592000, shortUnit: 'mo' },
-  { unit: 'week', seconds: 604800, shortUnit: 'w' },
-  { unit: 'day', seconds: 86400, shortUnit: 'd' },
-  { unit: 'hour', seconds: 3600, shortUnit: 'h' },
-  { unit: 'minute', seconds: 60, shortUnit: 'm' },
-  { unit: 'second', seconds: 1, shortUnit: 's' },
-] as const;
-
-/** Memoized `Intl.RelativeTimeFormat` instances — constructing one per call is
- *  measurably expensive, and the (style, numeric) space is tiny. Parity with
- *  Claude Code's cached `getRelativeTimeFormat` (utils/intl.ts). */
-const relativeTimeFormatCache = new Map<string, Intl.RelativeTimeFormat>();
-function getRelativeTimeFormat(
-  style: 'short' | 'long' | 'narrow',
-  numeric: 'always' | 'auto',
-): Intl.RelativeTimeFormat {
-  const key = `${style}\u0000${numeric}`;
-  let fmt = relativeTimeFormatCache.get(key);
-  if (fmt === undefined) {
-    fmt = new Intl.RelativeTimeFormat('en-US', { style, numeric });
-    relativeTimeFormatCache.set(key, fmt);
-  }
-  return fmt;
-}
-
-/**
- * Format `date` relative to `now` (default: the current time) using an
- * interval-table algorithm. Parity with Claude Code's `formatRelativeTime`
- * (utils/format.ts) + its localized `Intl.RelativeTimeFormat` wrapper
- * (utils/intl.ts): the largest interval whose magnitude the gap meets or exceeds
- * selects the unit (truncating toward zero), so a 90-minute gap renders as the
- * hour unit, not 90 minutes.
- *
- * `narrow` (the default) emits AMI's compact `${value}${shortUnit} ago` / `in
- * ${value}${shortUnit}` form; `short`/`long` defer to the memoized localized
- * `Intl.RelativeTimeFormat` for full-word, locale-aware output. A matched
- * interval ≥ 1 day always renders with the long localized form regardless of
- * `style` (matching the reference), and a sub-second gap degrades to `0s ago` /
- * `in 0s` (narrow) or the localized zero-second string.
- */
-export function formatRelativeTime(
-  date: Date,
-  options: RelativeTimeOptions & { now?: Date } = {},
-): string {
-  const { style = 'narrow', numeric = 'always', now = new Date() } = options;
-  const diffInMs = date.getTime() - now.getTime();
-  // Truncate toward zero so a 1.9s future gap is 1s (not rounded up to 2s) and a
-  // past gap is handled symmetrically.
-  const diffInSeconds = Math.trunc(diffInMs / 1000);
-
-  for (const { unit, seconds, shortUnit } of RELATIVE_TIME_INTERVALS) {
-    if (Math.abs(diffInSeconds) >= seconds) {
-      const value = Math.trunc(diffInSeconds / seconds);
-      if (style === 'narrow') {
-        return diffInSeconds < 0
-          ? `${Math.abs(value)}${shortUnit} ago`
-          : `in ${value}${shortUnit}`;
-      }
-      // Days-and-longer always read best in the long localized form.
-      return getRelativeTimeFormat('long', numeric).format(value, unit);
-    }
-  }
-
-  // Less than one second in either direction.
-  if (style === 'narrow') {
-    return diffInSeconds <= 0 ? '0s ago' : 'in 0s';
-  }
-  return getRelativeTimeFormat(style, numeric).format(0, 'second');
-}
-
-/**
- * {@link formatRelativeTime} specialized for a PAST timestamp: forces
- * `numeric: 'always'` for past dates so the output is a definite "X units ago"
- * rather than a localized "yesterday", while a future date falls through to the
- * caller's options unchanged. Parity with Claude Code's `formatRelativeTimeAgo`
- * (utils/format.ts). Used by {@link MemoryManager.buildMemoryDiagnostics} to
- * stamp each health warning with how recently the offending file changed.
- */
-export function formatRelativeTimeAgo(
-  date: Date,
-  options: RelativeTimeOptions & { now?: Date } = {},
-): string {
-  const { now = new Date(), ...rest } = options;
-  if (date > now) {
-    return formatRelativeTime(date, { ...rest, now });
-  }
-  return formatRelativeTime(date, { ...rest, numeric: 'always', now });
-}
+// Relative-time formatting (`formatRelativeTime` / `formatRelativeTimeAgo`) is a
+// pure, leaf-safe display helper, so its canonical home is `utils/format` next to
+// `formatFileSize` / `formatLogMetadata` that compose it (mirroring the
+// reference's single `utils/format.ts`). It is re-exported here — rather than
+// defined twice — because {@link MemoryManager.buildMemoryDiagnostics} stamps each
+// health warning with how recently the offending file changed, and the
+// superinference memory-gate dates its last-consolidation line the same way.
+export { formatRelativeTime, formatRelativeTimeAgo };
+export type { RelativeTimeStyle, RelativeTimeOptions };
 
 /**
  * Parse YAML-like frontmatter from a markdown string.
