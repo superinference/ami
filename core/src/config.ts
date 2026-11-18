@@ -1417,13 +1417,39 @@ export function loadManagedConfig(): ProjectConfig | null {
   // self) before its policy is honored. The override also owns its drop-in dir, so those
   // layers are relocatable too.
   const relocatable = !!process.env.SUPERINFERENCE_MANAGED_CONFIG;
-  const configPath = candidates.find(p => fsHooks.existsSync(p)) ?? candidates[candidates.length - 1]!;
-  let merged: ProjectConfig | null = fsHooks.existsSync(configPath) ? parseManagedFile(configPath, relocatable) : null;
+  // Select the ACTIVE base source: the first candidate that exists AND parses to a
+  // NON-EMPTY policy. A present-but-EMPTY (key-less `{}`) higher-priority source does
+  // NOT shadow a populated lower-priority one — it transparently falls through to the
+  // next candidate. When every present source is empty, the highest-priority present
+  // one is kept as the base (so its own `config.d/` drop-ins still apply); when none
+  // exist, the device default is the base (merged stays null). Parity: Claude Code's
+  // consumeRawReadResult first-non-empty-source-wins chain (an empty higher source
+  // falls through to a populated lower one) layered on top of getMacOSPlistPaths'
+  // highest-priority-first ordering.
+  let configPath = candidates[candidates.length - 1]!;
+  let merged: ProjectConfig | null = null;
+  let haveEmptyFallback = false;
+  for (const candidate of candidates) {
+    if (!fsHooks.existsSync(candidate)) continue;
+    const parsed = parseManagedFile(candidate, relocatable);
+    if (Object.keys(parsed).length > 0) {
+      configPath = candidate;
+      merged = parsed;
+      break;
+    }
+    // A present-but-empty source: remember the FIRST one as the fallback base (so a
+    // chain of only-empty sources still resolves a base + its drop-in dir), but keep
+    // scanning for a populated lower-priority source that should win outright.
+    if (!haveEmptyFallback) {
+      configPath = candidate;
+      merged = parsed;
+      haveEmptyFallback = true;
+    }
+  }
 
-  // Layer `<activeBase>/config.d/*.json` drop-ins alphabetically (last file
-  // wins) over the base. A broken drop-in fails closed, like the base file. The
-  // drop-in dir is resolved from the ACTIVE source's directory (not the fixed
-  // default) so a per-user managed source carries its own drop-ins.
+  // Layer `<activeBase>/config.d/*.json` drop-ins alphabetically (last file wins)
+  // over the base. The drop-in dir is resolved from the ACTIVE source's directory
+  // (not the fixed default) so a per-user managed source carries its own drop-ins.
   const dropInDir = path.join(path.dirname(configPath), 'config.d');
   let entries: string[] = [];
   try {
@@ -1434,7 +1460,20 @@ export function loadManagedConfig(): ProjectConfig | null {
     entries = [];
   }
   for (const name of entries) {
-    const dropIn = parseManagedFile(path.join(dropInDir, name), relocatable);
+    const dropInPath = path.join(dropInDir, name);
+    let dropIn: ProjectConfig;
+    try {
+      dropIn = parseManagedFile(dropInPath, relocatable);
+    } catch (err) {
+      // Per-file fault isolation for the drop-in DIRECTORY only: one malformed,
+      // unreadable, or untrusted `config.d/*.json` entry is SKIPPED (logged) so it
+      // cannot take down the whole managed policy — the authoritative base file and
+      // the remaining well-formed drop-ins still apply. The BASE managed file above
+      // still fails closed (it IS the policy; a broken one must not be silently
+      // ignored). Parity: Claude Code's managed-settings.d per-file try/catch skip.
+      coreLog('config', `skipping invalid managed drop-in ${dropInPath}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
     merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
   }
   // OS-NATIVE managed policy (macOS configuration profile / Windows Group Policy) is
@@ -3220,6 +3259,14 @@ export class ConfigService {
     const changed = JSON.stringify(prev) !== JSON.stringify(next);
     if (changed) {
       this.config = next;
+      // Positive introspection breadcrumb: announce that the PROJECT tier changed and
+      // is being re-applied, naming the source tier — matching the `source: 'project'`
+      // label fanned out to onConfigChange below and the global/managed tiers' own
+      // "changed; notifying listeners" lines. Without this the project reload was the
+      // only tier with no change-time log, so an operator tailing the debug log could
+      // see a global/managed reapply but never a project one. Parity: Claude Code's
+      // `logForDebugging('Settings changed from <source>, updating app state')`.
+      coreLog('config', `project config ${this.configPath} changed; reapplying (source: project)`);
       // Take-effect-immediately: re-apply the watched project config's `env`
       // block to the process environment so a mid-session edit (a changed tuning
       // knob / model-name default) applies without a restart, instead of being
