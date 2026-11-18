@@ -1117,7 +1117,92 @@ function isDotnetSafe(args: string[]): boolean {
   return args.every(a => DOTNET_READ_ONLY_FLAGS.has(a.toLowerCase()));
 }
 
-const SAFE_COMMAND_FLAGS: Record<string, { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; dangerousArgs?: (args: string[]) => boolean; respectsDoubleDash?: boolean }> = {
+/**
+ * Flag policy for a {@link SAFE_COMMANDS} entry (U003 fail-closed model).
+ *  - `allowed`/`blocked` — the read-only / never-safe flag sets.
+ *  - `strict` — reject any flag outside `allowed` (fall through to a prompt).
+ *  - `argTypes` — getopt-accurate per-flag value typing (see {@link validateTypedCommandFlags}).
+ *  - `dangerousArgs` — custom per-command danger predicate.
+ *  - `respectsDoubleDash` — whether POSIX `--` ends option scanning (default true).
+ *  - `allowAllFlags` — the command's ENTIRE flag surface is read-only, so every flag
+ *    except those in `blocked` is accepted. This is the EXPLICIT opt-in that Claude's
+ *    CommandConfig model requires (readOnlyValidation.ts L39-56): a SAFE command must
+ *    now declare its flag policy, and a command with no entry is positional-only
+ *    (fail-closed), rather than the old fail-OPEN where a missing entry waved every
+ *    flag through. Marks genuinely all-flags-safe read utilities (ls/cat/df/…) so the
+ *    inverted default never regresses them.
+ */
+type SafeCommandFlagDef = {
+  allowed: Set<string>;
+  blocked: Set<string>;
+  strict?: boolean;
+  argTypes?: Record<string, FlagArgType>;
+  dangerousArgs?: (args: string[]) => boolean;
+  respectsDoubleDash?: boolean;
+  allowAllFlags?: boolean;
+};
+
+const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
+  // ── All-flags-safe read-only utilities (U003 allowAllFlags opt-in) ────────────
+  // Each command's entire flag surface only reads/formats/inspects — no flag writes
+  // or executes. An explicit entry is REQUIRED under the fail-closed default below;
+  // allowAllFlags makes that entry accept any flag so inverting the default never
+  // regresses these. Commands with a WRITE-capable flag surface (hostname below) get
+  // a restrictive allowlist instead.
+  ls: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  cat: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  head: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  tail: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  wc: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  echo: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  pwd: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  whoami: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  uname: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  cd: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  id: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  df: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  du: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  stat: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  readlink: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  basename: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  dirname: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  uniq: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  diff: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  tr: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  cut: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  less: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  more: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  test: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  true: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  false: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  type: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  seq: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  expr: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  printf: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  comm: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  cmp: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  numfmt: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  getconf: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  tsort: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  pr: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  fmt: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  // `dotnet`: accept its flag SHAPE here (so a read-only query is not rejected by the
+  // fail-closed default); the real restriction to read-only SDK queries is enforced
+  // by the isDotnetSafe positional/flag check in classifyBashCommand.
+  dotnet: { allowed: new Set([]), blocked: new Set([]), allowAllFlags: true },
+  // `hostname`: identification flags (-f/-i/-s/-d/…) are read-only, but `-b`/`--boot`
+  // SET the hostname from boot config and `-F`/`--file` SET it from a file — writes
+  // that must prompt. Strict allowlist (U003): any flag outside the read set (notably
+  // the set flags) falls through to a prompt instead of the old fail-OPEN auto-allow.
+  hostname: {
+    allowed: new Set([
+      '-a', '--alias', '-A', '--all-fqdns', '-d', '--domain',
+      '-f', '--fqdn', '--long', '-i', '--ip-address', '-I', '--all-ip-addresses',
+      '-s', '--short', '-y', '--yp', '--nis', '-h', '--help', '-V', '--version',
+    ]),
+    blocked: new Set(['-b', '--boot', '-F', '--file']),
+    strict: true,
+  },
   jq: {
     allowed: new Set(['-r', '-e', '-c', '-S', '-s', '--raw-output', '--exit-status', '--compact-output', '--sort-keys', '--arg', '--argjson', '--null-input', '-n']),
     blocked: new Set(['-f', '--from-file', '--rawfile', '--slurpfile', '-L', '--library-path']),
@@ -1349,7 +1434,15 @@ const XARGS_SAFE_TARGETS = new Set([
 
 export function validateCommandFlags(cmd: string, args: string[]): boolean {
   const flagDef = SAFE_COMMAND_FLAGS[cmd];
-  if (!flagDef) return true;
+  // U003 fail-closed default: a SAFE command with NO declared flag policy is
+  // positional-only — any flag-shaped token falls through to a prompt instead of
+  // being silently auto-approved. This inverts the old fail-OPEN (`return true`),
+  // where a missing flag table waved every flag through, and mirrors Claude's
+  // CommandConfig model (readOnlyValidation.ts L39-56) where a command with empty/
+  // missing safeFlags rejects all flags unless it explicitly opts in via
+  // `allowAllFlags`. Every current SAFE command declares a policy (an allow/block
+  // table, argTypes, or allowAllFlags), so this guards future additions.
+  if (!flagDef) return !args.some(a => FLAG_PATTERN.test(a));
   // Custom per-command danger predicate (e.g. ps's BSD `e` environment modifier,
   // a dash-less token the flag scan below never inspects). Runs first so it
   // catches shapes the generic allow/block scan structurally cannot.
@@ -1365,6 +1458,9 @@ export function validateCommandFlags(cmd: string, args: string[]): boolean {
       const flag = arg.replace(/^--?/, '').split('=')[0];
       const dashedFlag = arg.split('=')[0];
       if (flagDef.blocked.has(arg) || flagDef.blocked.has(flag) || flagDef.blocked.has(dashedFlag)) return false;
+      // allowAllFlags: the command's whole flag surface is read-only, so any flag
+      // that survived the blocked check above is accepted (U003 explicit opt-in).
+      if (flagDef.allowAllFlags) continue;
       // strict allowlist: any flag not explicitly allowed is treated as unsafe
       // (falls through to a prompt) rather than silently auto-safe.
       if (flagDef.strict && !flagDef.allowed.has(dashedFlag)) return false;
@@ -1385,7 +1481,7 @@ export function validateCommandFlags(cmd: string, args: string[]): boolean {
  * Blocked flags always win. Unknown flags fall back to the allowed/strict rules.
  */
 function validateTypedCommandFlags(
-  flagDef: { allowed: Set<string>; blocked: Set<string>; strict?: boolean; argTypes?: Record<string, FlagArgType>; respectsDoubleDash?: boolean },
+  flagDef: SafeCommandFlagDef,
   args: string[],
 ): boolean {
   const argTypes = flagDef.argTypes!;
