@@ -2504,6 +2504,15 @@ export interface RuntimeHookMeta {
   sessionId?: string;
   /** Stable id (function hooks) for id-based removal. */
   id?: string;
+  /**
+   * Marks a SYSTEM-registered in-process callback (Claude Code's HookCallback
+   * `internal:true` — e.g. the session-file-access guard). An internal hook runs
+   * exactly like any other callback but is hidden from the user-facing hook count
+   * ({@link getSummary} `callbackHooks`) so an operator's `/hooks` view reflects
+   * only the hooks they configured, not AMI's own built-ins. The built-in count is
+   * still surfaced separately as `internalCallbackHooks` for full introspection.
+   */
+  internal?: boolean;
 }
 
 /**
@@ -3421,6 +3430,14 @@ export class HookManager extends EventEmitter {
    *  surfaced via {@link getHiddenHookModifications}. */
   private _hiddenHookModifications: HookDescriptor[] = [];
 
+  /** Fingerprint of the plugin-affecting settings the last plugin-hook reload ran
+   *  against (sources + the managed/trust/kill-switch policy that gate them). Lets
+   *  {@link reloadPluginHooksIfChanged} skip a redundant clear+re-register when
+   *  nothing that affects plugin hooks actually changed (Claude Code's
+   *  getPluginAffectingSettingsSnapshot + "skipping reload, plugin-affecting
+   *  settings unchanged" debug log). `undefined` until the first gated reload. */
+  private _pluginSettingsSnapshot?: string;
+
   /** Settings/hooks/config files that failed to parse during the last
    *  {@link loadFromFile}. Reset at the start of each load so it reflects the
    *  current on-disk state. Surfaced via {@link getConfigErrors} + the
@@ -3647,7 +3664,7 @@ export class HookManager extends EventEmitter {
     event: string,
     callback: FunctionHookCallback,
     errorMessage: string,
-    options?: { timeout?: number; id?: string; matcher?: string; skillRoot?: string; sessionId?: string; statusMessage?: string },
+    options?: { timeout?: number; id?: string; matcher?: string; skillRoot?: string; sessionId?: string; statusMessage?: string; internal?: boolean },
   ): string {
     // Build the canonical FunctionHook record (Claude Code's sessionHooks.ts
     // shape) so its id/timeout defaults and schema fields live in one place.
@@ -3672,6 +3689,7 @@ export class HookManager extends EventEmitter {
       ...(options?.matcher !== undefined ? { matcher: options.matcher } : {}),
       ...(options?.skillRoot !== undefined ? { skillRoot: options.skillRoot } : {}),
       ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options?.internal ? { internal: true } : {}),
     });
     this._functionHooks.set(id, { event, callback: wrapper });
     return id;
@@ -3699,13 +3717,14 @@ export class HookManager extends EventEmitter {
     sessionId: string,
     event: string,
     callback: HookCallback,
-    opts?: { matcher?: string; skillRoot?: string; isAgent?: boolean; timeoutMs?: number },
+    opts?: { matcher?: string; skillRoot?: string; isAgent?: boolean; timeoutMs?: number; internal?: boolean },
   ): () => void {
     const targetEvent = opts?.isAgent && event === 'stop' ? 'subagentStop' : event;
     return this.registerCallback(targetEvent, callback, opts?.timeoutMs, {
       sessionId,
       ...(opts?.matcher !== undefined ? { matcher: opts.matcher } : {}),
       ...(opts?.skillRoot !== undefined ? { skillRoot: opts.skillRoot } : {}),
+      ...(opts?.internal ? { internal: true } : {}),
     });
   }
 
@@ -4604,6 +4623,65 @@ export class HookManager extends EventEmitter {
     }
     coreLog('hooks', `reloadPluginHooks: cleared ${cleared}, registered ${registered} plugin hook(s)`);
     return { cleared, registered };
+  }
+
+  /**
+   * Deterministic, key-sorted fingerprint of every input that affects which plugin
+   * hooks load: the discovered plugin hook sources (which plugins contribute hooks,
+   * each tagged by source tier + plugin name + path) and the policy knobs that gate
+   * them ({@link isAllowManagedHooksOnly}, {@link isAllHooksDisabled}, workspace
+   * trust). Mirrors Claude Code's `getPluginAffectingSettingsSnapshot` — a stable
+   * multi-field snapshot whose purpose is to decide whether a settings change
+   * actually touches plugin hooks before paying for a clear+re-register. The
+   * top-level keys AND the `sources` list are sorted so the string is
+   * order-independent (two identical configs always produce the same fingerprint).
+   */
+  getPluginAffectingSettingsSnapshot(cwd: string = this._cwd): string {
+    const sources = this.discoverPluginHookSources(cwd)
+      .map((s) => {
+        // Fold the file's mtime into the fingerprint so EDITING a plugin's hooks.json
+        // in place (same path, changed content) also changes the snapshot — not just
+        // adding/removing a plugin. An unreadable source contributes mtime 0.
+        let mtimeMs = 0;
+        try { mtimeMs = fs.statSync(s.path).mtimeMs; } catch { /* unreadable → 0 */ }
+        return `${s.source}:${s.pluginName ?? ''}:${s.path}:${mtimeMs}`;
+      })
+      .sort();
+    const snap: Record<string, unknown> = {
+      allowManagedHooksOnly: this._allowManagedHooksOnly,
+      disableAllHooks: this.isAllHooksDisabled(),
+      sources,
+      workspaceTrusted: this._workspaceTrusted,
+    };
+    // Key-sorted serialization (the replacer fixes top-level key order); `sources`
+    // is pre-sorted above, so the whole string is deterministic.
+    return JSON.stringify(snap, Object.keys(snap).sort());
+  }
+
+  /**
+   * Reload plugin hooks ONLY when the plugin-affecting settings actually changed
+   * since the last gated reload — the automatic settings-change path (Claude Code's
+   * loadPluginHooks subscriber). Takes the current
+   * {@link getPluginAffectingSettingsSnapshot}; if it matches the stored one, logs
+   * `Plugin hooks: skipping reload, plugin-affecting settings unchanged` and returns
+   * `{cleared:0, registered:0, skipped:true}` (no clear+re-register churn). Otherwise
+   * logs that it is reloading, runs {@link reloadPluginHooks}, stores the fresh
+   * snapshot, and returns the counts with `skipped:false`. Unlike the unconditional
+   * {@link reloadPluginHooks} (the explicit `/reload-plugins` force path), this is the
+   * cheap "pick up an external settings edit" path safe to call on every refresh.
+   */
+  reloadPluginHooksIfChanged(cwd: string = this._cwd): { cleared: number; registered: number; skipped: boolean } {
+    const snapshot = this.getPluginAffectingSettingsSnapshot(cwd);
+    if (this._pluginSettingsSnapshot === snapshot) {
+      coreLog('hooks', 'Plugin hooks: skipping reload, plugin-affecting settings unchanged');
+      return { cleared: 0, registered: 0, skipped: true };
+    }
+    coreLog('hooks', 'Plugin hooks: reloading, plugin-affecting settings changed');
+    const { cleared, registered } = this.reloadPluginHooks(cwd);
+    // Re-snapshot AFTER the reload so a reload that itself changes the source set
+    // (new plugin dir discovered) is reflected and does not re-trigger next time.
+    this._pluginSettingsSnapshot = this.getPluginAffectingSettingsSnapshot(cwd);
+    return { cleared, registered, skipped: false };
   }
 
   /**
@@ -6044,6 +6122,19 @@ export class HookManager extends EventEmitter {
     });
   }
 
+  /** Count registered runtime callbacks, partitioned by whether they are system
+   *  ({@link RuntimeHookMeta.internal}) hooks. `wantInternal=false` counts the
+   *  user-configured callbacks; `true` counts the hidden built-ins. */
+  private countCallbackHooks(wantInternal: boolean): number {
+    let n = 0;
+    for (const hooks of this._callbackHooks.values()) {
+      for (const cb of hooks) {
+        if ((this._callbackMeta.get(cb)?.internal ?? false) === wantInternal) n++;
+      }
+    }
+    return n;
+  }
+
   getSummary(): Record<string, number> {
     return {
       preToolUse: this.preToolUseHooks.length,
@@ -6076,7 +6167,12 @@ export class HookManager extends EventEmitter {
       elicitation: this.elicitationHooks.length,
       elicitationResult: this.elicitationResultHooks.length,
       stopFailure: this.stopFailureHooks.length,
-      callbackHooks: Array.from(this._callbackHooks.values()).reduce((a, b) => a + b.length, 0),
+      // User-facing runtime callback count EXCLUDES system-registered (`internal`)
+      // hooks, so the `/hooks` view reflects only what the operator configured
+      // (Claude Code hides `internal:true` callbacks). The hidden built-ins are
+      // reported separately as `internalCallbackHooks` for full introspection.
+      callbackHooks: this.countCallbackHooks(false),
+      internalCallbackHooks: this.countCallbackHooks(true),
       functionHooks: this._functionHooks.size,
       pendingHookEvents: this._pendingHookEvents.length,
       // Interactive prompt-elicitation resolver presence (1 = command hooks may
@@ -6143,7 +6239,7 @@ export class HookManager extends EventEmitter {
     }
     const out: HookEventDescription[] = [];
     for (const [event, count] of Object.entries(summary)) {
-      if (!count || event === 'callbackHooks') continue;
+      if (!count || event === 'callbackHooks' || event === 'internalCallbackHooks') continue;
       const meta = getHookEventMetadata(event, opts);
       const descs = byEvent.get(event) ?? [];
       const matcherMap = new Map<string, HookDescriptor[]>();
