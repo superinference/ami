@@ -481,18 +481,23 @@ export function buildCommitEnv(): NodeJS.ProcessEnv {
  *  1. The merged config's `attribution.commit` (parity: Claude Code's
  *     `attribution.commit` setting): a non-empty string REPLACES the default AMI
  *     trailer; the empty string `""` suppresses it (→ `null`). When explicitly set
- *     it takes PRECEDENCE over the deprecated binary env opt-out below — matching
- *     Claude Code, whose `attribution` setting overrides the legacy
- *     `includeCoAuthoredBy` toggle.
- *  2. `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` — the deprecated binary opt-out:
+ *     it takes PRECEDENCE over the master toggle and the deprecated binary env
+ *     opt-out below — matching Claude Code, whose `attribution` setting overrides
+ *     the legacy `includeCoAuthoredBy` toggle.
+ *  2. The merged config's `attribution.enabled === false` — the settings-driven
+ *     MASTER disable toggle (parity: Claude Code's deprecated
+ *     `includeCoAuthoredBy: false`): suppress the trailer (→ `null`) via
+ *     settings.json alone, with no env var, unless a per-surface `commit` override
+ *     (step 1) already decided it.
+ *  3. `SUPERINFERENCE_DISABLE_CO_AUTHOR=1` — the deprecated binary env opt-out:
  *     suppress the trailer (→ `null`) only when no explicit config override exists.
- *  3. Absent → the default AMI trailer.
+ *  4. Absent → the default AMI trailer.
  * All config layers participate via {@link mergeConfigs} (managed > cli > … > global),
  * so an enterprise/global/project policy can set the custom trailer. A broken config
  * never blocks a commit — it falls back to the env opt-out / default AMI trailer.
  */
 export function resolveCommitAttribution(cwd: string): string | null {
-  let attribution: { commit?: string; auto?: boolean; ownRemotes?: string[] } | undefined;
+  let attribution: { commit?: string; auto?: boolean; ownRemotes?: string[]; enabled?: boolean } | undefined;
   try {
     const merged = mergeConfigs(
       {}, {},
@@ -511,6 +516,10 @@ export function resolveCommitAttribution(cwd: string): string | null {
     const trimmed = custom.trim();
     return trimmed.length === 0 ? null : trimmed;
   }
+  // Settings-driven MASTER disable toggle (parity: Claude Code's deprecated
+  // includeCoAuthoredBy=false). Suppresses the trailer via settings.json alone,
+  // no env var — but a per-surface `commit` override (above) still wins.
+  if (attribution?.enabled === false) return null;
   // FUNCTIONAL CHANGE (additive): tolerant parse so `=true`/`yes`/`on` (not only
   // the strict `'1'`) suppress the co-author trailer, matching the shared convention.
   if (parseEnvBool(process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR)) return null;

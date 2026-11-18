@@ -330,8 +330,17 @@ export interface ProjectConfig {
    * external/unknown/no-remote repo the trailer is suppressed (fail-safe-ON — the
    * strict side wins unless ownership is confirmed). `ownRemotes` holds normalized
    * remote substrings (e.g. `"github.com/myorg/"`) that mark a repo as owned.
+   *
+   * `enabled` is the settings-driven MASTER disable toggle (parity: Claude Code's
+   * deprecated `includeCoAuthoredBy: false`, which zeroed both the commit and PR
+   * attribution texts): setting `enabled: false` suppresses BOTH the commit trailer
+   * AND the PR-body attribution line via settings.json alone — no env var required.
+   * An explicit per-surface `commit`/`pr` string override still wins over it (the
+   * most-specific setting takes precedence, matching Claude Code where the
+   * `attribution` object overrides the deprecated boolean). `enabled: true` (or
+   * absent) leaves normal resolution unchanged — it is not a force-on override.
    */
-  attribution?: { commit?: string; pr?: string; auto?: boolean; ownRemotes?: string[] };
+  attribution?: { commit?: string; pr?: string; auto?: boolean; ownRemotes?: string[]; enabled?: boolean };
   /**
    * Persisted preferred RESPONSE language (parity: Claude Code's `LanguagePicker`
    * settings knob). The English language NAME ("japanese", "french", …) the model
