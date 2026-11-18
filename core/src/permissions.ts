@@ -336,6 +336,30 @@ export function describeRule(rule: PermissionRule): string {
 }
 
 /**
+ * The SINGLE canonical "is this an overly-broad bash allow?" predicate (shared by
+ * core {@link PermissionManager}'s load-time strip and cli config-resolver's
+ * warning/opt-in strip — no second definition, cf. No-Duplication Rule). True when
+ * a bash (or all-tools `*`) `allow` rule has NO content restriction and therefore
+ * auto-approves EVERY bash command — the YOLO / bypass-permissions equivalent:
+ * `rule.pattern ? … : true` in {@link PermissionManager.check} matches a
+ * pattern-less rule against every command, as does an empty or `*` pattern, and a
+ * `*`-tool allow spans bash too. A param-scoped rule is NOT broad (it still
+ * constrains the input), nor is any deny / non-bash-and-non-`*` rule. Mirrors
+ * Claude's `isOverlyBroadBashAllowRule` (utils/permissions/permissionSetup.ts
+ * L349-355 — `Bash`, `Bash(*)`, `Bash()` all parse to a Bash allow with no
+ * ruleContent). Interpreter-prefix forms (`python:*`, `node*`) are a SEPARATE,
+ * broader hazard class handled by the cli detector on top of this predicate.
+ */
+export function isOverlyBroadBashAllowRule(rule: PermissionRule): boolean {
+  if (rule.action !== 'allow') return false;
+  if (rule.paramPattern && Object.keys(rule.paramPattern).length > 0) return false;
+  const targetsBash = normalizeToolName(rule.tool) === 'bash' || rule.tool === '*';
+  if (!targetsBash) return false;
+  const p = rule.pattern;
+  return p === undefined || p === '' || p.trim() === '*';
+}
+
+/**
  * How a higher-priority rule makes a lower one unreachable:
  *  - `deny` — the allow is COMPLETELY blocked (a tool-wide deny always wins); the
  *    more severe case.
@@ -4896,6 +4920,14 @@ export class PermissionManager {
    * `ToolPermissionContext.strippedDangerousRules`.
    */
   private strippedDangerousRules: PermissionRule[] = [];
+  /**
+   * Overly-broad bash `allow` rules ({@link isOverlyBroadBashAllowRule}: pattern-less
+   * / `*` bash or all-tools allow) that were stripped from an untrusted shared tier
+   * at load / settings-sync time. Retained for reporting (diagnostics / introspection)
+   * via {@link getStrippedOverlyBroadBashRules}. Parity: the rules dropped by Claude's
+   * `removeDangerousPermissions(findOverlyBroadBashPermissions(...))`.
+   */
+  private strippedOverlyBroadBashRules: PermissionRule[] = [];
   private deniedCommands: Set<string> = new Set();
   private _disableBypass = false;
   /** Whether bypass-permissions mode was AVAILABLE when this session started
@@ -6983,6 +7015,59 @@ export class PermissionManager {
     return [...this.strippedDangerousRules];
   }
 
+  /**
+   * Introspection: active `allow` rules that auto-approve EVERY bash command (a
+   * pattern-less / `*` bash allow, or an all-tools `*` allow — the YOLO
+   * equivalent). Lets a diagnostic / `/doctor` surface report WHICH rules silently
+   * blanket-approve bash. Mirrors Claude's `findOverlyBroadBashPermissions`
+   * (utils/permissions/permissionSetup.ts L378-412). Uses the single canonical
+   * {@link isOverlyBroadBashAllowRule} detector (shared with cli config-resolver).
+   */
+  findOverlyBroadBashAllowRules(): PermissionRule[] {
+    return this.rules.filter(r => isOverlyBroadBashAllowRule(r));
+  }
+
+  /**
+   * Strip overly-broad bash `allow` rules that originate from an UNTRUSTED,
+   * shared/committable settings tier ({@link isSharedSettingSource} minus the
+   * admin-owned `policySettings`), recording them in
+   * {@link strippedOverlyBroadBashRules}. A committed `.ami/permissions.json` (or a
+   * slash-command's frontmatter) is attacker-PR-able, so a blanket `Bash` / `Bash(*)`
+   * allow it carries must never silently grant the whole team YOLO bash auto-approval
+   * — a hostile project rule of that breadth should not exist at all. Personal tiers
+   * (user/local/cliArg/session) and an untagged rule are the user's own explicit
+   * grant and are left intact. Returns the newly stripped rules. Parity: Claude's
+   * `removeDangerousPermissions(findOverlyBroadBashPermissions(...))` re-run after a
+   * settings sync (utils/settings/applySettingsChange.ts L50-59).
+   */
+  private stripOverlyBroadBashAllowRules(): PermissionRule[] {
+    const stripped: PermissionRule[] = [];
+    this.rules = this.rules.filter(r => {
+      const untrustedShared = isSharedSettingSource(r.source) && !isManagedPermissionSource(r.source);
+      if (untrustedShared && isOverlyBroadBashAllowRule(r)) {
+        stripped.push(r);
+        return false;
+      }
+      return true;
+    });
+    if (stripped.length > 0) {
+      this.strippedOverlyBroadBashRules.push(...stripped);
+      for (const r of stripped) {
+        this.traceMutation(`Stripped overly-broad bash allow rule from an untrusted source: ${describeRule(r)}`);
+      }
+    }
+    return stripped;
+  }
+
+  /**
+   * Introspection: overly-broad bash allow rules stripped from untrusted shared
+   * settings tiers at load / settings-sync time ({@link stripOverlyBroadBashAllowRules}).
+   * Lets a diagnostic / UI report WHICH committable blanket-bash grants were refused.
+   */
+  getStrippedOverlyBroadBashRules(): PermissionRule[] {
+    return [...this.strippedOverlyBroadBashRules];
+  }
+
   /** All named-param globs in a rule's paramPattern must match the tool input. */
   private paramMatches(paramPattern: Record<string, string>, input: Record<string, unknown>): boolean {
     for (const [key, glob] of Object.entries(paramPattern)) {
@@ -7502,6 +7587,12 @@ export class PermissionManager {
         for (const r of this.stripDangerousRulesFromUntrustedSources()) {
           warnings.push(`Stripped dangerous code-execution allow rule from untrusted project settings: ${describeRule(r)}`);
         }
+        // Defense-in-depth: a committed/untrusted project rule cannot smuggle a
+        // blanket `Bash` / `Bash(*)` allow that would auto-approve EVERY bash
+        // command (YOLO-equivalent) for the whole team.
+        for (const r of this.stripOverlyBroadBashAllowRules()) {
+          warnings.push(`Stripped overly-broad bash allow rule from untrusted project settings: ${describeRule(r)}`);
+        }
       }
     } catch {
       warnings.push('permissions.json could not be parsed and was ignored');
@@ -7585,6 +7676,14 @@ export class PermissionManager {
       } catch {
         warnings.push(`${tier}: settings file could not be parsed and was ignored`);
       }
+    }
+    // Re-screen the merged tiers for dangerous breadth so a disk edit (a committed
+    // project file, a settings-change re-sync via syncRulesFromDisk) cannot silently
+    // (re-)grant a blanket `Bash` / `Bash(*)` allow into the live context. Mirrors
+    // Claude's applySettingsChange re-running removeDangerousPermissions after every
+    // disk sync (applySettingsChange.ts L50-59).
+    for (const r of this.stripOverlyBroadBashAllowRules()) {
+      warnings.push(`Stripped overly-broad bash allow rule from untrusted settings: ${describeRule(r)}`);
     }
     return warnings;
   }

@@ -218,7 +218,9 @@ describe('PermissionManager — persistence', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       rules: [
-        { tool: 'bash', action: 'allow' },
+        // Narrow valid rule — a pattern-less bash allow would now be stripped from
+        // an untrusted project tier as overly-broad (U003/w110 YOLO-grant screening).
+        { tool: 'bash', pattern: 'ls', action: 'allow' },
         { tool: 'x', action: 'invalid' },
         { action: 'allow' },
       ],

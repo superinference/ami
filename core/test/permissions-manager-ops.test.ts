@@ -93,7 +93,9 @@ test('loadRules surfaces warnings for dropped/malformed rules', () => {
   fs.writeFileSync(path.join(dir, '.ami', 'permissions.json'), JSON.stringify({
     mode: 'not-a-mode',
     rules: [
-      { tool: 'bash', action: 'allow' },
+      // A NARROW valid rule (a pattern-less bash allow would now be stripped from
+      // an untrusted project tier as overly-broad — U003/w110 YOLO-grant screening).
+      { tool: 'bash', pattern: 'ls', action: 'allow' },
       { tool: 'bash', action: 'bogus' },
       { tool: 'bash', action: 'allow', paramPattern: { model: 123 } },
     ],
