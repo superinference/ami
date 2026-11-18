@@ -2797,6 +2797,43 @@ export function parseFrontmatterHooks(value: unknown): HookConfigEntry[] {
   return normalizeMapKeyedHooks(value);
 }
 
+/**
+ * Scan a hook's RAW stdout for the FIRST line that is a self-contained JSON object
+ * (its trimmed text starts with `{` and `JSON.parse`s to a plain object) whose
+ * object does NOT carry an `async` key, returning that parsed object — or
+ * `undefined` when no such line exists.
+ *
+ * Parity with Claude Code's `checkForAsyncHookResponses` stdout line-scan
+ * (utils/hooks/AsyncHookRegistry.ts L183-212): a command hook may interleave
+ * ordinary log/diagnostic lines with its single JSON decision line, so a
+ * whole-blob `JSON.parse(stdout)` fails even though a valid decision IS present
+ * (e.g. a wrapper that prints `[hook] starting` before echoing its decision).
+ * Scanning line-by-line for the first non-`async` JSON object recovers the
+ * decision instead of silently dropping it and treating everything as plain text.
+ * The `async` carve-out skips the `{ async: true, asyncTimeout }` background-mode
+ * marker, which is the opt-in detach signal, not the synchronous decision. Pure;
+ * never throws.
+ */
+export function firstHookJsonLine(stdout: string): Record<string, unknown> | undefined {
+  if (!stdout) return undefined;
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line[0] !== '{') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue; // not a complete JSON object on this line — keep scanning
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    // Skip the background-mode marker ({ async: true, asyncTimeout }); it is the
+    // detach opt-in, NOT the synchronous decision Claude's line-scan looks for.
+    if ('async' in (parsed as Record<string, unknown>)) continue;
+    return parsed as Record<string, unknown>;
+  }
+  return undefined;
+}
+
 export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown> }>; shutdown?(): void };
 
 // ---------------------------------------------------------------------------
@@ -6012,8 +6049,30 @@ export class HookManager extends EventEmitter {
             return msg ? `SYSTEM:${msg}` : '';
           }
           const trimmed = stdout.trim();
+          let rawParsed: unknown;
+          let haveDecision = false;
           try {
-            const rawParsed = JSON.parse(trimmed);
+            rawParsed = JSON.parse(trimmed);
+            haveDecision = true;
+          } catch (parseErr) {
+            // Whole-blob parse failed. A command hook may interleave ordinary log
+            // lines with its single JSON decision line, so scan line-by-line for
+            // the first non-async JSON object (Claude Code's
+            // checkForAsyncHookResponses stdout line-scan) before giving up —
+            // otherwise a real decision buried under log output is silently
+            // dropped and the whole stdout is mistaken for opaque plain text.
+            const scanned = firstHookJsonLine(stdout);
+            if (scanned !== undefined) {
+              rawParsed = scanned;
+              haveDecision = true;
+            } else if (trimmed.startsWith('{')) {
+              // The output LOOKED like a single JSON object but was malformed, and
+              // no embedded JSON decision line was found — surface it as a
+              // validation error (Claude Code parseHookOutput), NOT opaque text.
+              return `SYSTEM:${sanitizeHookOutput(formatHookValidationError(trimmed, parseErr))}`;
+            }
+          }
+          if (haveDecision) {
             const firedEvent: string | undefined =
               (() => { try { return JSON.parse(eventData).hook_event_name; } catch { return undefined; } })();
             // hookEventName spoof check: a hook whose hookSpecificOutput names a
@@ -6050,16 +6109,10 @@ export class HookManager extends EventEmitter {
             // (otherwise decision-less) JSON back as a system message. Explicit
             // decision/systemMessage results above take precedence (Claude Code).
             if (parsed.suppressOutput) return '';
-          } catch (parseErr) {
-            // A hook that emitted text starting with `{` intended to return a
-            // JSON decision; a parse failure is malformed output surfaced to the
-            // user as a validation error (Claude Code parseHookOutput), NOT
-            // silently treated as opaque plain text. Non-`{` output (plain text /
-            // DENY:/SYSTEM: prefixes) still falls through below.
-            if (trimmed.startsWith('{')) {
-              return `SYSTEM:${sanitizeHookOutput(formatHookValidationError(trimmed, parseErr))}`;
-            }
           }
+          // No JSON decision (plain-text / DENY:/SYSTEM: prefixes, or a decision-less
+          // JSON object): surface the sanitized output verbatim. Malformed single-
+          // object output already returned a validation error from the catch above.
           return sanitizeHookOutput(trimmed);
         } catch (err: unknown) {
           // A thrown command (timeout / spawn failure) is not a successful run.
