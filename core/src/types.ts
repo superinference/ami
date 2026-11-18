@@ -1276,7 +1276,7 @@ export const ENGINE_EVENT_TYPES = [
   'subagent_start', 'subagent_progress', 'subagent_result', 'todo_update',
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
   'external_import_blocked', 'peer_message', 'background_task_complete',
-  'hook_response', 'done',
+  'hook_response', 'max_turns_reached', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1605,6 +1605,15 @@ export type EngineEvent =
    *  `finalizeHook`/`emitHookResponse` structured async-hook response
    *  (utils/hooks/AsyncHookRegistry.ts). */
   | { type: 'hook_response'; event: string; outcome: 'success' | 'error' | 'cancelled'; exitCode?: number; stdout?: string; stderr?: string; pluginName?: string; pluginId?: string }
+  /** The engine reached its per-submit turn cap (`maxTurns`) without the model
+   *  signaling completion. This is a NORMAL, expected stop BOUNDARY — not a failure —
+   *  so it is surfaced as its own informational event (carrying the configured
+   *  `maxTurns` and the `turnCount` actually run) instead of a generic `error`, letting
+   *  a frontend render the limit neutrally rather than as a stream/engine failure. The
+   *  terminal `done` event still carries `exitReason: 'max_turns'` for exit-code
+   *  mapping. Parity: Claude Code's `max_turns_reached` informational attachment
+   *  (query.ts) — an expected boundary the UI renders neutrally, distinct from an error. */
+  | { type: 'max_turns_reached'; maxTurns: number; turnCount: number }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
 
 /**
