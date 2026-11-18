@@ -5021,7 +5021,11 @@ export class PermissionManager {
     if (!p || typeof p !== 'string') return;
     try {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
-      const norm = path.normalize(abs);
+      // NFC-canonicalize the key so a root granted in a decomposed (NFD) Unicode
+      // spelling byte-matches the NFC-normalized candidate path from
+      // resolveForCheck (realpathNFC). Mirrors Claude's state.ts setProjectRoot /
+      // setCwdState `.normalize('NFC')` on every stored root path.
+      const norm = path.normalize(abs).normalize('NFC');
       const prior = this.allowedReadRoots.get(norm);
       this.allowedReadRoots.set(norm, source);
       // Only trace a real widening of the read boundary (idempotent re-grants of the
@@ -5044,7 +5048,9 @@ export class PermissionManager {
     if (!p || typeof p !== 'string') return false;
     try {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
-      const norm = path.normalize(abs);
+      // Match registerAllowedRoot's NFC canonicalization so a root granted in one
+      // Unicode form can be revoked by the other (NFD vs NFC spelling).
+      const norm = path.normalize(abs).normalize('NFC');
       const removed = this.allowedReadRoots.delete(norm);
       // (parity: Claude's removeDirectories set-filter — a removed dir is dropped
       //  from the persisted `additionalDirectories` on the next saveRules too.)
@@ -6394,7 +6400,10 @@ export class PermissionManager {
     // `/users/foo/project/file`) names the same file and must count as contained;
     // a raw case-sensitive prefix test would wrongly treat it as outside. On Linux
     // this is a no-op (distinct casings = distinct files).
-    const strip = (p: string) => normalizeCaseForComparison(p.replace(/[/\\]+$/, '') || p);
+    // NFC-normalize before case-folding so an NFD-spelled cwd/root compares equal
+    // to the NFC-canonicalized `resolved` candidate (resolveForCheck -> realpathNFC);
+    // keeps the containment boundary Unicode-canonical on both sides.
+    const strip = (p: string) => normalizeCaseForComparison((p.replace(/[/\\]+$/, '') || p).normalize('NFC'));
     const r = strip(resolved);
     const ncwd = strip(path.normalize(cwd));
     if (r === ncwd || r.startsWith(ncwd + path.sep)) return true;
