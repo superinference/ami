@@ -568,6 +568,11 @@ export interface UserPromptSubmitHookResult {
   blockingError?: string;
   preventContinuation?: boolean;
   stopReason?: string;
+  /** USER-facing warning text a hook emitted via `systemMessage` (Claude Code's
+   *  user-shown warning channel, distinct from model-facing `additionalContext`).
+   *  Aggregated across every UserPromptSubmit hook and surfaced to the human by the
+   *  engine as a `hook_warning` event — never injected into the model's context. */
+  systemMessage?: string;
 }
 export type UserPromptHookFn = (context: UserPromptContext) => Promise<UserPromptSubmitHookResult | void>;
 export type NotificationHookFn = (context: NotificationContext) => Promise<void>;
@@ -1762,6 +1767,29 @@ export function extractAdditionalContexts(result: string): string[] {
     if (typeof obj.systemMessage === 'string' && obj.systemMessage) out.push(obj.systemMessage);
   } else if (typeof result === 'string' && result.startsWith('SYSTEM:')) {
     const text = result.slice(7).trim();
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+/** Collect ONLY the USER-facing `systemMessage` string(s) a hook contributed —
+ *  the human-facing WARNING channel (Claude Code's `systemMessage`, described as
+ *  "Warning message shown to the user" and yielded as a distinct
+ *  `hook_system_message` attachment, NOT model-facing `additionalContext`).
+ *  Accepts the JSON `systemMessage` field or the flattened `SYSTEM:<text>`
+ *  sentinel that the command-hook path emits. Distinct from
+ *  {@link extractAdditionalContexts} (which routes the same text INTO the model's
+ *  context for the SubagentStart/SessionStart consumers): this is the channel a
+ *  consumer uses to WARN the human ("this edit touches a protected file") without
+ *  injecting it into the model prompt. Returns `[]` when the hook produced no
+ *  user-facing warning. */
+export function extractSystemMessages(result: string): string[] {
+  const out: string[] = [];
+  const obj = tryParseHookJson(result);
+  if (obj) {
+    if (typeof obj.systemMessage === 'string' && obj.systemMessage.trim()) out.push(obj.systemMessage.trim());
+  } else if (typeof result === 'string' && result.startsWith('SYSTEM:')) {
+    const text = result.slice('SYSTEM:'.length).trim();
     if (text) out.push(text);
   }
   return out;
@@ -4750,7 +4778,13 @@ export class HookManager extends EventEmitter {
               const out: UserPromptSubmitHookResult = {};
               if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
               if (parsed.continue === false) { out.preventContinuation = true; if (typeof parsed.stopReason === 'string') out.stopReason = parsed.stopReason; }
-              if (out.additionalContext || out.preventContinuation) return out;
+              // A UserPromptSubmit hook can ALSO warn the human via `systemMessage`
+              // (Claude Code's user-facing warning channel) — carried separately so
+              // the engine surfaces it to the user WITHOUT injecting it into model
+              // context the way `additionalContext` is.
+              const sysMsgs = extractSystemMessages(result);
+              if (sysMsgs.length > 0) out.systemMessage = sysMsgs.join('\n\n');
+              if (out.additionalContext || out.preventContinuation || out.systemMessage) return out;
             }
             return undefined;
           };
@@ -5401,6 +5435,7 @@ export class HookManager extends EventEmitter {
       // Aggregate ALL contributions (Claude Code AggregatedHookResult), not
       // last-wins: every UserPromptSubmit hook's context + block reason is kept.
       const additionalContexts: string[] = [];
+      const systemMessages: string[] = [];
       const blockingErrors: string[] = [];
       let preventContinuation = false;
       let stopReason: string | undefined;
@@ -5408,18 +5443,23 @@ export class HookManager extends EventEmitter {
         try {
           const result = await hook(ctx);
           if (result?.additionalContext) additionalContexts.push(result.additionalContext);
+          if (result?.systemMessage) systemMessages.push(result.systemMessage);
           if (result?.blockingError) blockingErrors.push(result.blockingError);
           if (result?.preventContinuation) { preventContinuation = true; if (result.stopReason) stopReason = result.stopReason; }
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
       const additionalContext = additionalContexts.length ? additionalContexts.join('\n\n') : undefined;
+      // User-facing warnings are aggregated like additionalContext (Claude Code
+      // AggregatedHookResult) but routed to the human, not the model.
+      const systemMessage = systemMessages.length ? systemMessages.join('\n\n') : undefined;
       const blockingError = blockingErrors.length ? blockingErrors.join('\n') : undefined;
-      if (additionalContext || blockingError || preventContinuation) {
+      if (additionalContext || systemMessage || blockingError || preventContinuation) {
         // Bound hook-contributed context so a UserPromptSubmit hook that emits a
         // huge blob cannot blow out the context window (Claude Code's
         // MAX_HOOK_OUTPUT_LENGTH truncation with a marker).
         return {
           additionalContext: additionalContext !== undefined ? truncateHookOutput(additionalContext) : undefined,
+          systemMessage: systemMessage !== undefined ? truncateHookOutput(systemMessage) : undefined,
           blockingError,
           preventContinuation: preventContinuation || undefined,
           stopReason,
