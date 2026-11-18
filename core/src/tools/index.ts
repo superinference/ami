@@ -49,6 +49,7 @@ import { advisorTool } from './advisor';
 import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
 import { replTool } from './repl-tool';
+import { testingPermissionTool } from './testing-permission';
 
 /** Sources whose tools form the cache-stable BUILT-IN prefix partition. Everything
  *  else (MCP, installed plugins, user tools) sorts into the suffix partition. */
@@ -216,6 +217,12 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     // is advertised and the primitive tools it wraps are hidden from direct
     // tool-calling by the advertise-time filter (see common/src/tool-pool.ts).
     replTool,
+    // PARITY (additive): env-gated synthetic permission-flow test fixture. Gated by
+    // its own isEnabled() => isTestingPermissionEnabled() (opt-in via
+    // AMI_TESTING_PERMISSION), so it is dropped at registration in production and the
+    // default pool is unchanged. When enabled it is advertised and the centralized
+    // permission guard forces an unconditional ask (see permissions.ts).
+    testingPermissionTool,
   ];
 
   // PARITY (additive): apply the operator-configurable AMI_DENY_TOOLS blocklist so a
@@ -387,6 +394,7 @@ export {
 } from './advisor';
 export { scoutTool } from './scout';
 export { endConversationTool, resetEndedConversations, isConversationEnded, countPendingWork } from './end-conversation';
+export { testingPermissionTool, isTestingPermissionEnabled, TESTING_PERMISSION_TOOL_NAME, TESTING_PERMISSION_ENV } from './testing-permission';
 export {
   replTool,
   runReplCode,

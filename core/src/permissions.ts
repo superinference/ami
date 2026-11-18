@@ -16,6 +16,7 @@ import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
+import { TESTING_PERMISSION_TOOL_NAME } from './tools/testing-permission';
 import { isCaseInsensitiveFs } from './tools/tool-utils';
 import { log as logDebug } from './logger';
 import {
@@ -5779,6 +5780,21 @@ export class PermissionManager {
     // this run that is NOT classifier-driven is never mis-attributed (the slot is set
     // only by applyAutoModeSafetyClassifier and consumed by deriveDecisionReason).
     this._pendingClassifierReason = undefined;
+
+    // PARITY (additive): the env-gated synthetic permission-flow test fixture
+    // (testing_permission) UNCONDITIONALLY triggers the permission prompt in every
+    // mode — mirroring Claude Code's TestingPermissionTool.checkPermissions(), which
+    // always returns {behavior:'ask'}. It is a side-effect-free, test-only tool whose
+    // sole purpose is to drive the ask → allow/deny path deterministically. Hard stops
+    // still win: deny-all (there is no interactive prompt to answer) denies, and an
+    // explicit user deny rule denies; otherwise every mode asks (no standing allow rule
+    // can silently auto-approve it). Placed first so no mode fast-path can bypass it.
+    if (toolName === TESTING_PERMISSION_TOOL_NAME) {
+      if (this.mode === 'deny-all') return 'deny';
+      if (this.anyDenyMatches(toolName, input)) return 'deny';
+      return 'ask';
+    }
+
     // Hardline safety — unconditional, overrides all modes including auto-allow
     if (toolName === 'bash' && typeof input.command === 'string') {
       const hardline = detectHardlineCommand(input.command);
