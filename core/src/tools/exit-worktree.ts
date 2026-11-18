@@ -107,6 +107,14 @@ export const exitWorktreeTool: ToolDefinition = {
     required: ['action', 'originalCwd', 'worktreePath', 'message'],
   },
   isReadOnly: false,
+  // Human-friendly display name for renderers / discovery surfaces (parity: Claude's
+  // ExitWorktreeTool `userFacingName() => 'Exiting worktree'`, UI.tsx L7-9). The snake_case
+  // tool id `exit_worktree` is otherwise what a reader sees; this relabels it to the readable
+  // activity phrase the model's turn is performing. Surfaced end-to-end via `ami --introspect`
+  // (the feature-discovery manifest maps `ToolDefinition.userFacingName` → the tool entry), so
+  // the affordance is discoverable without reading source. Static (input-independent), matching
+  // the reference. [FUNCTIONAL CHANGE: additive affordance metadata, no behavior change.]
+  userFacingName: () => 'Exiting worktree',
   // Per-input irreversible-operation classification (parity: Claude's
   // ExitWorktreeTool.isDestructive(input) — `input.action === 'remove'`). Only
   // `remove` destroys work (deletes the worktree AND its branch WITHOUT merging);
