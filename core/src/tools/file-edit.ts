@@ -1149,6 +1149,20 @@ export const fileEditTool: ToolDefinition = {
     },
   },
   isReadOnly: false,
+  // Data-minimization projection for the auto-mode safety classifier (parity: Claude's
+  // per-tool `Tool.toAutoClassifierInput`). The security-relevant signal of an edit is
+  // WHICH file is being written and in what mode — NOT the (potentially large / secret)
+  // content. Expose only the path + write-vs-replace + any octal mode bits; never ship
+  // `content`/`old_string`/`new_string` to the secondary reviewer. Resolved uniformly
+  // via {@link import('./auto-classifier-projection').resolveAutoClassifierInput}.
+  toAutoClassifierInput: (input) => {
+    const filePath = (input.file_path ?? input.path);
+    if (typeof filePath !== 'string' || filePath.trim().length === 0) return '';
+    const hasOldString = typeof input.old_string === 'string' && input.old_string.length > 0;
+    const action = hasOldString || Array.isArray(input.edits) ? 'edit' : 'write';
+    const mode = typeof input.mode === 'string' && input.mode.length > 0 ? ` mode=${input.mode}` : '';
+    return `${action} ${filePath}${mode}`;
+  },
 
   async execute(
     input: Record<string, unknown>,

@@ -335,6 +335,8 @@ export type { AnsiColor, AnsiSpan, AnsiSpanLine, AnsiToken } from './utils/ansi-
 export { ansiToSvg, DEFAULT_SVG_BACKGROUND } from './utils/ansi-to-svg';
 export type { AnsiToSvgOptions } from './utils/ansi-to-svg';
 export { isReadOnlyBashCommand, BashResultCache } from './tools/bash-cache';
+export { resolveAutoClassifierInput } from './tools/auto-classifier-projection';
+export type { AutoClassifierProjection } from './tools/auto-classifier-projection';
 export { FILE_IMAGES_KINDS } from './tools/file-read';
 export { MCP_AUTH_STATUS, MCP_AUTH_ERROR_KINDS, redactAuthUrl, classifyMcpAuthError } from './tools/mcp-auth';
 export type { McpAuthStatus, McpAuthErrorKind, McpAuthServerConfig } from './tools/mcp-auth';
