@@ -27,10 +27,27 @@
  * session-scoped grant set and its mutators.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type { PermissionPromptHandler } from '../permissions';
+import { resolveConfigDir } from '../reference-journal';
+import { atomicWriteFileSync } from '../utils/fs-atomic';
 
-/** Session-scoped set of network hosts the leader has approved for sandbox egress. */
-const grantedSandboxHosts = new Set<string>();
+/**
+ * Session-scoped set of network hosts approved for sandbox egress THIS run only
+ * (an `allow_once` / `allow_session` verdict, or a leader delegation). Dropped on
+ * `/clear` and when the process exits.
+ */
+const sessionGrantedHosts = new Set<string>();
+
+/**
+ * Durably-REMEMBERED egress hosts, lazily hydrated from {@link sandboxHostsPath}
+ * on first membership check. These come from the "allow and don't ask again"
+ * verdict ({@link persistSandboxHostGrant}) and survive `/clear` and restarts —
+ * the parity analog of Claude's `persistToSettings:true` network-egress response.
+ * `undefined` until loaded so a config-dir change (test isolation) re-reads.
+ */
+let persistedGrantedHosts: Set<string> | undefined;
 
 /** Normalize a host for stable membership: trim + lowercase (DNS is case-insensitive). */
 function normalizeHost(host: string): string {
@@ -38,22 +55,96 @@ function normalizeHost(host: string): string {
 }
 
 /**
+ * The durable store for "remembered" sandbox-egress hosts, co-located with the rest
+ * of AMI's persistent state under the resolved data dir (`~/.ami`, or the
+ * `SUPERINFERENCE_DATA_DIR`/`CLAUDE_CONFIG_DIR` override — so tests isolate it).
+ */
+function sandboxHostsPath(): string {
+  return path.join(resolveConfigDir(), 'sandbox-hosts.json');
+}
+
+/**
+ * Hydrate (once) the remembered-hosts set from disk. A missing/unreadable/corrupt
+ * file, or a non-string/empty entry, is treated as "nothing remembered" (fail-soft:
+ * a broken store never blocks egress decisions, it just forgets). Each entry is
+ * re-normalized so the on-disk form can never smuggle a case/whitespace variant past
+ * a later membership check.
+ */
+function ensurePersistedLoaded(): Set<string> {
+  if (persistedGrantedHosts) return persistedGrantedHosts;
+  const loaded = new Set<string>();
+  try {
+    const raw = fs.readFileSync(sandboxHostsPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    const hosts = (parsed as { hosts?: unknown })?.hosts;
+    if (Array.isArray(hosts)) {
+      for (const entry of hosts) {
+        if (typeof entry === 'string') {
+          const h = normalizeHost(entry);
+          if (h.length > 0) loaded.add(h);
+        }
+      }
+    }
+  } catch {
+    /* no store yet / unreadable / corrupt → nothing remembered */
+  }
+  persistedGrantedHosts = loaded;
+  return loaded;
+}
+
+/**
  * Record a leader-approved egress host so the worker's subsequent sandboxed
- * commands can reach it. Idempotent; ignores empty input.
+ * commands can reach it — for THIS session only. Idempotent; ignores empty input.
  */
 export function recordSandboxHostGrant(host: string): void {
   const h = normalizeHost(host);
-  if (h.length > 0) grantedSandboxHosts.add(h);
+  if (h.length > 0) sessionGrantedHosts.add(h);
 }
 
-/** True if `host` has been granted sandbox egress for this session. */
+/**
+ * Remember an egress host DURABLY ("allow and don't ask again"): record the session
+ * grant AND append it to the on-disk {@link sandboxHostsPath} store so it is never
+ * re-prompted in future sessions. This is the parity analog of Claude's
+ * `persistToSettings:true` on a per-host network-egress response (allow-and-remember,
+ * as opposed to allow-once). Idempotent; ignores empty input. The disk write is
+ * crash-safe (atomic rename, owner-only) and fail-soft — a write error still leaves
+ * the session grant in place, so the host is reachable this run even if persistence
+ * fails.
+ */
+export function persistSandboxHostGrant(host: string): void {
+  const h = normalizeHost(host);
+  if (h.length === 0) return;
+  sessionGrantedHosts.add(h);
+  const persisted = ensurePersistedLoaded();
+  if (persisted.has(h)) return; // already remembered — no rewrite
+  persisted.add(h);
+  try {
+    atomicWriteFileSync(
+      sandboxHostsPath(),
+      JSON.stringify({ hosts: [...persisted].sort() }, null, 2) + '\n',
+    );
+  } catch {
+    /* fail-soft: the session grant above still makes the host reachable this run */
+  }
+}
+
+/**
+ * True if `host` has been granted sandbox egress — either for this session or as a
+ * durably-remembered host ({@link persistSandboxHostGrant}).
+ */
 export function isSandboxHostGranted(host: string): boolean {
-  return grantedSandboxHosts.has(normalizeHost(host));
+  const h = normalizeHost(host);
+  return sessionGrantedHosts.has(h) || ensurePersistedLoaded().has(h);
 }
 
-/** The granted egress hosts (sorted copy) — for the `/sandbox` surface and tests. */
+/**
+ * The granted egress hosts (sorted, de-duplicated) — the union of this session's
+ * grants and the durably-remembered hosts. Folded into the effective sandbox
+ * outbound allowlist by both the container ({@link wrapWithDocker}) and host
+ * (`wrapWithUnshare`) backends, so a remembered host is reachable across restarts.
+ */
 export function getGrantedSandboxHosts(): string[] {
-  return [...grantedSandboxHosts].sort();
+  return [...new Set([...sessionGrantedHosts, ...ensurePersistedLoaded()])].sort();
 }
 
 /**
@@ -136,6 +227,14 @@ export type SandboxAskCallback = (hostPattern: NetworkHostPattern) => Promise<bo
  * A handler that throws is caught and treated as a deny (fail-closed). This is the
  * single canonical approval entry point reused by every egress site (no parallel
  * approval path).
+ *
+ * ALLOW-ONCE vs ALLOW-AND-REMEMBER (parity with Claude's `{ allow, persistToSettings }`
+ * network-egress response): the handler's verdict distinguishes a one-shot allow from
+ * a "don't ask again" grant. An `allow_pattern` verdict (the prompt's "always allow
+ * this host" option) is DURABLY remembered ({@link persistSandboxHostGrant}) so the
+ * host is never re-prompted in future sessions; a plain `allow_once` / `allow_session`
+ * verdict grants only for this run ({@link recordSandboxHostGrant}). Both reach the
+ * host now; only the former survives a restart.
  */
 export async function requestSandboxHostAccess(
   host: string,
@@ -152,7 +251,13 @@ export async function requestSandboxHostAccess(
   } catch {
     return false;
   }
+  if (verdict.action === 'allow_pattern') {
+    // "Always allow this host" → remember across sessions (persistToSettings:true).
+    persistSandboxHostGrant(h);
+    return true;
+  }
   if (verdict.action.startsWith('allow')) {
+    // "Allow once" / session grant (persistToSettings:false).
     recordSandboxHostGrant(h);
     return true;
   }
@@ -174,12 +279,19 @@ export function createSandboxAskCallback(
 }
 
 /**
- * Clear ALL sandbox-host grants. Called from the `/clear` session reset alongside
- * the rest of the session-cache eviction so stale cross-agent approval state never
- * leaks into a fresh conversation (parity with Claude's `clearAllPendingCallbacks`,
- * which clears the sandbox registry together with the tool-permission registry on
- * `/clear`).
+ * Clear this session's sandbox-host grants. Called from the `/clear` session reset
+ * alongside the rest of the session-cache eviction so stale cross-agent approval
+ * state never leaks into a fresh conversation (parity with Claude's
+ * `clearAllPendingCallbacks`, which clears the sandbox registry together with the
+ * tool-permission registry on `/clear`).
+ *
+ * DURABLY-REMEMBERED hosts ({@link persistSandboxHostGrant}, "don't ask again") are
+ * deliberately KEPT — they are the user's persistent allowlist, equivalent to Claude's
+ * `persistToSettings:true` hosts, which `/clear` must not forget. The lazy-load flag
+ * is reset so the next membership check re-reads the on-disk store (which also lets a
+ * test that points {@link sandboxHostsPath} at a fresh dir pick up the new store).
  */
 export function clearSandboxPermissionGrants(): void {
-  grantedSandboxHosts.clear();
+  sessionGrantedHosts.clear();
+  persistedGrantedHosts = undefined;
 }
