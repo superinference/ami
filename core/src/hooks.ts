@@ -2361,7 +2361,15 @@ export interface HookDecisionOutput {
   decisionClassification?: HookDecisionClassification;
 }
 
-export type HookCallback = (event: string, data: unknown) => Promise<HookDecisionOutput | string | void>;
+/**
+ * In-process ('callback') hook. Receives the firing `event`, its `data`, and an
+ * optional `abort` AbortSignal (Claude Code's `HookCallback` `abort: AbortSignal
+ * | undefined`) so a long-running callback can observe a user interrupt / turn
+ * abort and bail early via cooperative cancellation. The signal is threaded by
+ * {@link HookManager.executeCallbacks}; a callback that ignores it still works
+ * (the caller stops awaiting it on abort regardless — see {@link raceAbort}).
+ */
+export type HookCallback = (event: string, data: unknown, abort?: AbortSignal) => Promise<HookDecisionOutput | string | void>;
 
 /**
  * Function-hook callback (Claude Code's {@link FunctionHookCallback}): an
@@ -2940,7 +2948,7 @@ export function firstHookJsonLine(stdout: string): Record<string, unknown> | und
   return undefined;
 }
 
-export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown> }>; shutdown?(): void };
+export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown>; exitReason?: string }>; shutdown?(): void };
 
 // ---------------------------------------------------------------------------
 // Hook-driven prompt-elicitation protocol (Claude Code parity:
@@ -3635,8 +3643,14 @@ export class HookManager extends EventEmitter {
    * When `matchValue` is supplied, a callback registered with a non-empty `matcher`
    * fires ONLY if the matcher applies to it (Claude Code's SessionHookMatcher
    * gating; an empty/absent matcher is the `''` wildcard that always fires).
+   *
+   * An optional `signal` (the turn/abort signal) is threaded into each callback
+   * for cooperative cancellation (Claude Code's `HookCallback` `abort` arg): a
+   * callback can observe it to bail early, the caller stops awaiting a hung
+   * callback the instant it aborts ({@link raceAbort}), and once aborted the
+   * remaining callbacks are skipped rather than run against a cancelled turn.
    */
-  async executeCallbacks(event: string, data: unknown, matchValue?: string): Promise<HookDecisionOutput | void> {
+  async executeCallbacks(event: string, data: unknown, matchValue?: string, signal?: AbortSignal): Promise<HookDecisionOutput | void> {
     const all = this._callbackHooks.get(event);
     if (!all || all.length === 0) return;
     // Snapshot + matcher-filter so a hook removed mid-dispatch or gated out by its
@@ -3649,12 +3663,19 @@ export class HookManager extends EventEmitter {
     if (hooks.length === 0) return;
     return this.withConcurrencyGate(`cb:${event}`, async () => {
       for (const cb of hooks) {
+        // Stop consulting callbacks once the turn is aborted (user interrupt):
+        // a cancelled event runs no further in-process hooks (parity with
+        // Claude's abort-aware runHooks loop; the Pre/PostToolUse arm-hook paths
+        // already short-circuit on abort the same way).
+        if (signal?.aborted) break;
         try {
           // Bound each in-process callback by its per-callback timeout (or the
-          // default) so a stuck function hook cannot hang the event.
+          // default) so a stuck function hook cannot hang the event, AND race it
+          // against the abort signal so a user interrupt stops the await early.
           const timeoutMs = this._callbackTimeouts.get(cb) ?? DEFAULT_CALLBACK_HOOK_TIMEOUT_MS;
-          const result = await runWithTimeout(
-            Promise.resolve(cb(event, data)), timeoutMs, `Callback hook "${event}"`,
+          const result = await raceAbort(
+            runWithTimeout(Promise.resolve(cb(event, data, signal)), timeoutMs, `Callback hook "${event}"`),
+            signal,
           );
           if (result && typeof result === 'object') return result as HookDecisionOutput;
         } catch (err) {
@@ -6428,6 +6449,13 @@ export class HookManager extends EventEmitter {
     // execPromptHook/execAgentHook return a 'cancelled'/non_blocking_error
     // outcome on abort/error, not the partial text).
     let errored = false;
+    // Capture how the hook sub-engine terminated so a run that exhausted the
+    // MAX_AGENT_TURNS cap (a multi-turn agent hook that never converged on a
+    // verdict) gets a DISTINCT diagnostic — separate from a timeout/abort/error
+    // or a conforming/non-conforming reply (Claude Code's execAgentHook logs
+    // "Agent hook did not complete within N turns" as its own outcome, so an
+    // operator can tell a stop/verify hook gave up on turns vs. on the clock).
+    let exitReason: string | undefined;
     try {
       for await (const event of engine.submit(fullPrompt)) {
         if (abort.aborted()) break;
@@ -6438,6 +6466,7 @@ export class HookManager extends EventEmitter {
           const v = parseVerificationToolInput(event.input);
           if (v) toolVerdict = v;
         }
+        if (event.type === 'done') exitReason = event.exitReason;
         if (event.type === 'error') { error = event.error || 'hook engine error'; errored = true; break; }
       }
     } catch (err) {
@@ -6449,6 +6478,23 @@ export class HookManager extends EventEmitter {
       engine.shutdown?.();
     }
     if (abort.timedOut()) coreLog('hooks', `${kind} hook hard-timeout after ${timeoutMs}ms`);
+    // Turn-budget exhaustion diagnostic, distinct from a timeout: an agent hook
+    // that ran out the MAX_AGENT_TURNS cap without converging on a verdict is a
+    // different operator signal than a wall-clock timeout (Claude Code's "Agent
+    // hook did not complete within N turns"). Only agent (multi-turn) hooks carry
+    // the cap, so this is reported for `agent` kind only, and only when the run
+    // produced no structured verdict (a hook that already answered via the
+    // verification tool completed regardless of the engine's exit reason).
+    // Surfaced on the observable `hookError` channel (engine → debug log +
+    // analytics), never fed to the model, so the give-up is introspectable.
+    if (
+      kind === 'agent' && !toolVerdict && !abort.timedOut() && !abort.aborted() &&
+      (exitReason === 'max_turns' || exitReason === 'max_steps')
+    ) {
+      const msg = `Agent hook did not complete within ${MAX_AGENT_TURNS} turns (exitReason: ${exitReason})`;
+      coreLog('hooks', msg);
+      this.emit('hookError', { hookType: 'agent', hook: 'agent hook', error: msg });
+    }
     // Introspection debug trace (Claude Code's "Model response: …"): the raw
     // reply the hook produced, logged before any decision is derived from it.
     coreLog('hooks', `${kind} hook model reply: ${result}`);
