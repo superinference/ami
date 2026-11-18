@@ -422,6 +422,17 @@ export interface CommandDefinition {
   description: string;
   prompt: string;
   filePath: string;
+  /**
+   * Whether {@link description} was EXPLICITLY authored (TOML `description` /
+   * markdown-frontmatter `description`) versus auto-derived from the prompt/body's
+   * first line via {@link deriveCommandDescription} (Claude parity:
+   * Command.hasUserSpecifiedDescription). A derived description is a usable
+   * affordance for the USER, but the model-facing listing of plugin/MCP commands
+   * requires an author-specified one (see {@link isCommandModelListable}) so an
+   * un-described plugin command is not silently advertised to the model. `true`
+   * only when the file carried a non-empty description; omitted otherwise.
+   */
+  hasUserSpecifiedDescription?: boolean;
   /** Hint text for the argument string (e.g. "<file-path>"). */
   argumentHint?: string;
   /** Tool allowlist this command's prompt may use. */
@@ -747,6 +758,27 @@ export function isCommandEnabled(cmd: Pick<CommandDefinition, 'isEnabled'>): boo
  */
 export function isCommandHidden(cmd: Pick<CommandDefinition, 'isHidden'>): boolean {
   return cmd.isHidden === true;
+}
+
+/**
+ * Whether a plugin/MCP-contributed command should surface in the MODEL-facing
+ * command listing (Claude parity: getSkillToolCommands, commands.ts L563-581 — the
+ * `hasUserSpecifiedDescription || whenToUse` gate). Skills / bundled / legacy
+ * commands always list because an auto-derived first-line description is acceptable
+ * for them; a plugin- or MCP-sourced command instead requires an EXPLICIT,
+ * author-specified description (or a `whenToUse` trigger) before it is advertised to
+ * the model — an auto-derived description is not enough, so an un-described plugin
+ * command is kept user-invocable but hidden from the model listing. Every command in
+ * AMI's plugin command registry is plugin-contributed, so this is the gate its
+ * model-facing listing applies.
+ */
+export function isCommandModelListable(
+  cmd: Pick<CommandDefinition, 'hasUserSpecifiedDescription' | 'whenToUse'>,
+): boolean {
+  return (
+    cmd.hasUserSpecifiedDescription === true ||
+    (typeof cmd.whenToUse === 'string' && cmd.whenToUse.trim() !== '')
+  );
 }
 
 /**
@@ -1151,8 +1183,12 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
   // generically.
   if (!prompt) return undefined;
   // A command FILE injects its body/prompt, so it is a `'prompt'` command (Claude
-  // parity: Command.type) unless the file explicitly declares another type.
+  // parity: Command.type) unless the file explicitly declares another type. Record
+  // whether the description was author-specified (Claude parity:
+  // hasUserSpecifiedDescription) so the model-facing listing can require an explicit
+  // one for plugin/MCP commands (see {@link isCommandModelListable}).
   const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
+  if (desc) cmd.hasUserSpecifiedDescription = true;
   applyCommandKnobs(
     cmd,
     key => parseTomlString(content, key),
@@ -1176,6 +1212,7 @@ function parseMarkdownCommandFile(content: string, filePath: string, name: strin
   if (!prompt) return undefined; // a command with no body does nothing — skip
   const desc = frontmatter.description?.trim();
   const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
+  if (desc) cmd.hasUserSpecifiedDescription = true; // explicit vs derived (Claude parity)
   applyCommandKnobs(
     cmd,
     key => { const v = frontmatter[key]; return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined; },
@@ -1402,7 +1439,13 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
  * a blank override never blanks out the command's own value.
  */
 function applyCommandMetadataOverride(cmd: CommandDefinition, meta: CommandMetadata): void {
-  if (typeof meta.description === 'string' && meta.description.trim() !== '') cmd.description = meta.description;
+  // A manifest-declared `description` is author-specified (Claude parity:
+  // hasUserSpecifiedDescription), so it also flips the explicit-description flag the
+  // model-listing gate consults.
+  if (typeof meta.description === 'string' && meta.description.trim() !== '') {
+    cmd.description = meta.description;
+    cmd.hasUserSpecifiedDescription = true;
+  }
   if (typeof meta.argumentHint === 'string' && meta.argumentHint.trim() !== '') cmd.argumentHint = meta.argumentHint;
   if (typeof meta.model === 'string' && meta.model.trim() !== '') cmd.model = meta.model;
   if (Array.isArray(meta.allowedTools) && meta.allowedTools.length > 0) cmd.allowedTools = meta.allowedTools;
