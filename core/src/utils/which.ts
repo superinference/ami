@@ -88,6 +88,19 @@ function fastPathLookup(command: string): string | null {
   return findOnPath(command, process.env);
 }
 
+/**
+ * Native `Bun.which` when running under the Bun runtime, else null. Parity with
+ * Claude Code's `bunWhich` capability switch (utils/which.ts): `Bun.which` is an
+ * in-process, no-spawn PATH lookup, so when it exists it is the fastest and most
+ * runtime-faithful resolver — preferred over both the manual PATH scan and the
+ * subprocess fallback. Detected at call time (not bound once at module load) so
+ * the branch is reachable/testable under Node, where `globalThis.Bun` is absent.
+ */
+function bunWhich(): ((command: string) => string | null) | null {
+  const fn = (globalThis as { Bun?: { which?: unknown } }).Bun?.which;
+  return typeof fn === 'function' ? (fn as (command: string) => string | null) : null;
+}
+
 /** Subprocess fallback mirroring the platform-native probe: `where.exe` on
  *  win32, `command -v` on POSIX. The command name is passed as an ARGUMENT
  *  (never interpolated into a shell string) so it cannot inject shell
@@ -118,14 +131,19 @@ function spawnLookup(command: string): string | null {
 
 /**
  * Synchronously resolve the full path to an executable, cross-platform.
- * Tries a no-spawn PATH scan first, then falls back to the platform-native
- * probe (`where.exe` / `command -v`).
+ * Under Bun, routes through the native in-process `Bun.which` fast path (no
+ * child-process spawn); otherwise tries a no-spawn PATH scan first, then falls
+ * back to the platform-native probe (`where.exe` / `command -v`).
  *
  * @param command - the command name (or path) to resolve
  * @returns the resolved executable path, or null if not found
  */
 export function whichSync(command: string): string | null {
   if (!command) return null;
+  // Bun fast path: a native, in-process resolver — no subprocess. When present
+  // it is authoritative (parity with Claude Code's `whichSync = bunWhich ?? …`).
+  const bun = bunWhich();
+  if (bun) return bun(command) ?? null;
   return fastPathLookup(command) ?? spawnLookup(command);
 }
 

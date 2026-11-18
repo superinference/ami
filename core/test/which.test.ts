@@ -147,6 +147,76 @@ describe('whichSync', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// whichSync — Bun.which native fast path (no process spawn). Under Bun the
+// lookup routes through the in-process `Bun.which` resolver and never scans PATH
+// or spawns `where.exe`/`command -v`. Exercised by installing a fake `Bun`
+// global (absent under Node). Parity with Claude Code's `bunWhich` switch.
+// ---------------------------------------------------------------------------
+describe('whichSync — Bun fast path', () => {
+  const g = globalThis as { Bun?: unknown };
+  const savedBun = Object.prototype.hasOwnProperty.call(g, 'Bun')
+    ? { present: true, value: g.Bun }
+    : { present: false, value: undefined };
+
+  afterEach(() => {
+    if (savedBun.present) g.Bun = savedBun.value;
+    else delete g.Bun;
+  });
+
+  it('routes through Bun.which when present, without scanning PATH or spawning', () => {
+    const calls: string[] = [];
+    g.Bun = {
+      which: (cmd: string) => {
+        calls.push(cmd);
+        return `/bun/resolved/${cmd}`;
+      },
+    };
+    // PATH is empty, so a PATH scan / spawn fallback would return null — only the
+    // Bun fast path can produce a hit here.
+    process.env.PATH = '';
+    assert.equal(whichSync('node'), '/bun/resolved/node');
+    assert.deepEqual(calls, ['node']);
+  });
+
+  it('returns null (no Node fallback) when Bun.which misses', () => {
+    // Even though the binary IS on PATH, under Bun the Node PATH-scan fallback is
+    // never consulted — Bun.which is authoritative (matches Claude: `bunWhich ?? …`
+    // binds the function, so whichNodeSync never runs under Bun).
+    const exe = makeExe('ontool');
+    process.env.PATH = dir;
+    g.Bun = { which: () => null };
+    assert.equal(whichSync('ontool'), null);
+    // Sanity: without Bun the same lookup resolves via the Node fast path.
+    delete g.Bun;
+    assert.equal(whichSync('ontool'), exe);
+  });
+
+  it('normalizes a Bun.which undefined result to null', () => {
+    g.Bun = { which: () => undefined as unknown as string | null };
+    assert.equal(whichSync('anything'), null);
+  });
+
+  it('falls back to the Node implementation when Bun exists but which is not a function', () => {
+    const exe = makeExe('nodepath');
+    process.env.PATH = dir;
+    g.Bun = { which: 'not-a-function' };
+    assert.equal(whichSync('nodepath'), exe);
+  });
+
+  it('short-circuits an empty command before consulting Bun.which', () => {
+    let called = false;
+    g.Bun = {
+      which: () => {
+        called = true;
+        return '/should/not/happen';
+      },
+    };
+    assert.equal(whichSync(''), null);
+    assert.equal(called, false);
+  });
+});
+
 describe('findOnPath — no-spawn lookup with injectable env', () => {
   it('returns null for an empty command', () => {
     assert.equal(findOnPath('', { PATH: dir }), null);
