@@ -205,6 +205,16 @@ export function recordConsolidation(
   }
 }
 
+/**
+ * Hours elapsed since the last consolidation. `Infinity` when none has ever run
+ * (`lastConsolidatedAt === 0`), so the time-gate always opens on a first run.
+ * Single source of the elapsed-hours math shared by {@link isConsolidationDue}
+ * and {@link createConsolidationScheduler} so the two can never drift.
+ */
+function hoursSinceConsolidation(lastConsolidatedAt: number, now: number): number {
+  return lastConsolidatedAt === 0 ? Infinity : (now - lastConsolidatedAt) / MS_PER_HOUR;
+}
+
 /** Result of a {@link isConsolidationDue} scheduling evaluation. */
 export interface ConsolidationGate {
   /** True only when BOTH the time-gate and session-gate pass. */
@@ -232,10 +242,124 @@ export function isConsolidationDue(opts: {
   const config = resolveAutoDreamConfig(opts.rawConfig);
   const now = opts.now ?? Date.now();
   const lastConsolidatedAt = readLastConsolidatedAt(opts.lockDir);
-  const hoursSince = lastConsolidatedAt === 0 ? Infinity : (now - lastConsolidatedAt) / MS_PER_HOUR;
+  const hoursSince = hoursSinceConsolidation(lastConsolidatedAt, now);
   const timeGate = hoursSince >= config.minHours;
   const sessionGate = opts.sessionCount >= config.minSessions;
   return { due: timeGate && sessionGate, hoursSince, lastConsolidatedAt, config };
+}
+
+/**
+ * How often the (more expensive) per-turn SESSION scan may run while the cheap
+ * time-gate keeps passing. Mirrors Claude Code's `SESSION_SCAN_INTERVAL_MS`
+ * (10 min). Rationale: the lock's mtime only advances once a consolidation
+ * actually fires, so when the time-gate opens but the session-gate does NOT, the
+ * time-gate keeps opening on EVERY subsequent turn — and without a throttle the
+ * scheduler would re-scan the transcript directory each turn. This same interval
+ * doubles as the retry backoff after a failed launch (the lock mtime is rewound,
+ * the time-gate re-opens, but the scan won't re-run until the interval lapses).
+ */
+export const SESSION_SCAN_INTERVAL_MS = 10 * 60 * 1000;
+
+/** Why a {@link ConsolidationScheduler.evaluate} turn did (or did not) fire. */
+export type ConsolidationScheduleReason = 'time-gate' | 'scan-throttled' | 'session-gate' | 'due';
+
+/** Outcome of one {@link ConsolidationScheduler.evaluate} turn. */
+export interface ConsolidationScheduleDecision {
+  /** True only on the `'due'` reason — both gates passed and the throttle allowed a scan. */
+  fire: boolean;
+  /** Which gate decided the turn (introspection / diagnostics). */
+  reason: ConsolidationScheduleReason;
+  /** Hours since the last consolidation (`Infinity` when never consolidated). */
+  hoursSince: number;
+  /** Last-consolidated timestamp (ms since epoch), `0` if never. */
+  lastConsolidatedAt: number;
+  /**
+   * Sessions counted by the scan, or `null` when the scan was SKIPPED (the
+   * time-gate was closed or the scan throttle suppressed it) — the whole point of
+   * the throttle is that `scanSessions` is not invoked on a skipped turn.
+   */
+  sessionCount: number | null;
+  /** The resolved (validated) config that drove the decision. */
+  config: AutoDreamConfig;
+}
+
+/** A stateful scan-throttled consolidation scheduler (see {@link createConsolidationScheduler}). */
+export interface ConsolidationScheduler {
+  /** Evaluate whether a consolidation should fire now, applying the scan throttle. */
+  evaluate(opts: {
+    lockDir: string;
+    /** Invoked ONLY after the time-gate opens AND the scan throttle allows a scan. */
+    scanSessions: () => number;
+    rawConfig?: unknown;
+    now?: number;
+  }): ConsolidationScheduleDecision;
+  /** Epoch ms of the last session scan (`0` until one runs) — introspection. */
+  lastSessionScanAt(): number;
+}
+
+/**
+ * Create a stateful consolidation scheduler that guards the expensive session
+ * scan behind a throttle/backoff (parity: Claude Code's `autoDream` runner, whose
+ * closure-scoped `lastSessionScanAt` + `SESSION_SCAN_INTERVAL_MS` stop it from
+ * re-scanning the transcript directory on every turn once the time-gate is
+ * perpetually open).
+ *
+ * Gate order (cheapest first), matching the reference:
+ *   1. **Time gate** — `hoursSince >= minHours`; else `'time-gate'` (no scan).
+ *   2. **Scan throttle** — if the last scan was under `SESSION_SCAN_INTERVAL_MS`
+ *      ago, bail with `'scan-throttled'` WITHOUT calling `scanSessions` (this is
+ *      both the per-turn de-bounce AND the post-failure backoff).
+ *   3. **Session gate** — run `scanSessions()` (now stamping `lastSessionScanAt`);
+ *      if the count is below `minSessions`, bail with `'session-gate'`.
+ *   4. Otherwise `'due'` → `fire: true`. The caller then acquires the lock
+ *      ({@link beginConsolidationRun}) and launches the run.
+ *
+ * The scan timestamp advances ONLY after the time-gate opens and the throttle
+ * passes — so a turn blocked at the time-gate never consumes the throttle window.
+ * State is closure-scoped (not module-level) so each `createConsolidationScheduler()`
+ * is independent and tests get a fresh throttle per instance.
+ */
+export function createConsolidationScheduler(opts: {
+  scanIntervalMs?: number;
+  debug?: ConsolidationDebug;
+} = {}): ConsolidationScheduler {
+  const interval = opts.scanIntervalMs ?? SESSION_SCAN_INTERVAL_MS;
+  const debug = opts.debug ?? defaultDebug;
+  let lastScanAt = 0;
+
+  return {
+    lastSessionScanAt: () => lastScanAt,
+    evaluate(e) {
+      const config = resolveAutoDreamConfig(e.rawConfig);
+      const now = e.now ?? Date.now();
+      const lastConsolidatedAt = readLastConsolidatedAt(e.lockDir);
+      const hoursSince = hoursSinceConsolidation(lastConsolidatedAt, now);
+
+      // 1. Time gate — cheapest (one stat already done above).
+      if (hoursSince < config.minHours) {
+        return { fire: false, reason: 'time-gate', hoursSince, lastConsolidatedAt, sessionCount: null, config };
+      }
+
+      // 2. Scan throttle — the time-gate is open; don't re-scan every turn.
+      const sinceScan = now - lastScanAt;
+      if (sinceScan < interval) {
+        debug(`scan throttle — time-gate passed but last scan was ${Math.round(sinceScan / 1000)}s ago`);
+        return { fire: false, reason: 'scan-throttled', hoursSince, lastConsolidatedAt, sessionCount: null, config };
+      }
+      lastScanAt = now;
+
+      // 3. Session gate — only now do we pay for the (expensive) scan.
+      const sessionCount = Math.max(0, Math.trunc(e.scanSessions()));
+      if (sessionCount < config.minSessions) {
+        debug(`skip — ${sessionCount} sessions since last consolidation, need ${config.minSessions}`);
+        return { fire: false, reason: 'session-gate', hoursSince, lastConsolidatedAt, sessionCount, config };
+      }
+
+      // 4. Due.
+      debug(`due — ${hoursSince === Infinity ? 'never' : `${hoursSince.toFixed(1)}h`} since last, ${sessionCount} sessions to review`);
+      return { fire: true, reason: 'due', hoursSince, lastConsolidatedAt, sessionCount, config };
+    },
+  };
 }
 
 /**

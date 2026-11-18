@@ -1658,7 +1658,32 @@ function resolveNonClobberingPath(dir: string, filename: string, incomingName: s
 export function computeIndexAppend(existing: string, entry: string): string | null {
   const clamped = clampIndexEntry(entry);
   if (existing.includes(clamped)) return null;
+  // Near-duplicate guard (parity: Claude's consolidation prompt resolves drift by
+  // "merging new signal into existing topic files rather than creating
+  // near-duplicates"). The index is one pointer PER topic file: if a row already
+  // points at the same target file — even under a different title or hook — adding
+  // a second row would fragment that topic across near-duplicate pointers. So we
+  // skip the append and let the content merge happen at the topic file instead of
+  // the index. (Exact-substring dedup above handles the identical-entry case.)
+  const target = indexEntryTarget(clamped);
+  if (target !== null) {
+    for (const line of existing.split('\n')) {
+      if (indexEntryTarget(line) === target) return null;
+    }
+  }
   return existing.trimEnd() + '\n' + clamped + '\n';
+}
+
+/**
+ * Extract the markdown link TARGET from a one-line MEMORY.md index pointer
+ * (`- [Title](target.md) — hook` → `target.md`), or `null` when the line carries
+ * no `](…)` link. Used by {@link computeIndexAppend} to detect near-duplicate
+ * pointers to the same topic file (per-line parse, never a loose substring match
+ * that a hook mentioning a filename could spoof).
+ */
+export function indexEntryTarget(entry: string): string | null {
+  const m = /\]\(([^)]+)\)/.exec(entry);
+  return m ? m[1].trim() : null;
 }
 
 /**
