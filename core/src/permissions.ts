@@ -5,7 +5,7 @@ import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, WRAPPER_VALUE_FLAGS } from './tools/bash-security';
-import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, ACCEPT_EDITS_PS_WRITE_CMDLETS } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { unwrapWrapperChain } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
@@ -2780,14 +2780,14 @@ export function getAutoAllowedCommands(mode: PermissionMode): readonly string[] 
  * permission {@link PermissionMode} auto-approves without a prompt, SORTED for
  * stable display — the PowerShell counterpart of {@link getAutoAllowedCommands}
  * (which lists only bash base-commands). Only `acceptEdits` auto-allows a fixed
- * set (the SAME canonical {@link ACCEPT_EDITS_PS_WRITE_CMDLETS} the runtime
+ * set (the SAME canonical {@link POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS} the runtime
  * {@link isAcceptEditsPowerShellWrite} gate uses — no duplicate table); every
  * other mode returns an empty list. Surfaced through
  * {@link getDefaultPermissionPatterns} (→ `/permissions defaults`) so a user can
  * see the PowerShell cmdlets acceptEdits waves through, alongside the bash set.
  */
 export function getAutoAllowedPowerShellCmdlets(mode: PermissionMode): readonly string[] {
-  return mode === 'acceptEdits' ? [...ACCEPT_EDITS_PS_WRITE_CMDLETS].sort() : [];
+  return mode === 'acceptEdits' ? [...POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS].sort() : [];
 }
 
 /**
