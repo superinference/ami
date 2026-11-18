@@ -15,6 +15,33 @@ export const MAX_MEMORY_BODY_LINES = 200;
 export const MAX_MEMORY_BODY_BYTES = 25_000;
 
 /**
+ * Warm, varied one-line acknowledgements appended to a successful memory save.
+ * Mirrors Claude Code's UserMemoryInputMessage (components/messages/
+ * UserMemoryInputMessage.tsx L8-10), which samples a friendly saving line from
+ * this exact set and renders it dimmed below the memory so a save feels human
+ * rather than mechanical. AMI surfaces it as the tail of the write_memory tool
+ * result (which both the TUI and the detached runner render), so the warmth
+ * reaches the model/user identically in both modes — unlike Claude's TUI-only
+ * affordance. Exported so the picker stays single-sourced and testable.
+ */
+export const SAVE_ACKNOWLEDGEMENTS = ['Got it.', 'Good to know.', 'Noted.'] as const;
+
+/**
+ * Pick one warm acknowledgement at random (parity with Claude's lodash `sample`).
+ * `rng` is an injectable [0,1) source — defaulting to {@link Math.random} in
+ * production — so a test can pin the selection deterministically without mutating
+ * the global RNG. Clamped so an rng returning exactly 1 still maps to a valid
+ * index.
+ */
+export function pickSaveAcknowledgement(rng: () => number = Math.random): string {
+  const idx = Math.min(
+    SAVE_ACKNOWLEDGEMENTS.length - 1,
+    Math.max(0, Math.floor(rng() * SAVE_ACKNOWLEDGEMENTS.length)),
+  );
+  return SAVE_ACKNOWLEDGEMENTS[idx];
+}
+
+/**
  * Map a Node filesystem error to an actionable, human-readable hint instead of
  * leaking a raw errno string. Mirrors Claude Code's FileWriteTool typed error
  * classes (perms/space/path-is-a-dir) so the model gets a result it can act on.
@@ -192,7 +219,8 @@ export const writeMemoryTool: ToolDefinition = {
     return {
       output:
         `${verb} memory "${name}" (${meta}) to ${savedPath}${indexNote}. ` +
-        `You now have ${countParts.join(' and ')}. View with /memory.`,
+        `You now have ${countParts.join(' and ')}. View with /memory. ` +
+        pickSaveAcknowledgement(),
     };
   },
 };
