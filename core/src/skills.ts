@@ -343,10 +343,15 @@ export interface AgentDefinition {
    *  (which tints the agent-type badge) — parity with Claude's AgentProgressLine
    *  `descriptionColor`. Normalized/validated via {@link parseAgentColor}. */
   descriptionColor?: AgentColorName;
-  /** Drop the project CLAUDE.md/AGENTS.md context from this subagent's prompt to
-   *  save tokens (parity with Claude's agent `omitClaudeMd`, e.g. the read-only
-   *  Plan agent which can still Read it on demand). An invalid (non-boolean) value
-   *  surfaces a load warning via {@link validateAgentDefinition}. */
+  /** Project-context knob (parity with Claude's agent `omitClaudeMd`). AMI subagents
+   *  run on a REPLACED lean/identity prompt that already carries NEITHER the project
+   *  CLAUDE.md/AGENTS.md NOR the session-start git status — a token-saving superset
+   *  perk, stronger than Claude Code's per-agent `omitClaudeMd` (which only lets
+   *  read-only agents DROP a context they otherwise get). So AMI inverts the knob into
+   *  an OPT-IN: an explicit `omit-claude-md: false` requests the project instruction
+   *  context back (consumed by the task tool's {@link resolveAgentProjectContext});
+   *  absent/`true` keeps the lean default. An invalid (non-boolean) value surfaces a
+   *  load warning via {@link validateAgentDefinition}. */
   omitClaudeMd?: boolean;
   /** Require plan-mode approval before this delegated agent may implement/mutate
    *  (parity with Claude's swarm teammate `planModeRequired`). An invalid

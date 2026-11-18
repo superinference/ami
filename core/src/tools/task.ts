@@ -31,7 +31,7 @@ import type { ProviderConfig } from '../types';
 import { validateBoundedIntEnvVar } from '../config';
 import { buildPreloadedSkillsBlock, resolveSkillName, SYSTEM_PROMPT_MODES, type SystemPromptMode, parseAgentColor, AGENT_COLORS, type AgentColorName, isBuiltInAgent, agentPluginRoot, requiredMcpServerReadiness, BUBBLE_PERMISSION_MODE } from '../skills';
 import { withFrontmatterHookPluginRoot } from '../hooks';
-import { buildAgentMemoryPrompt, isAutoMemoryEnabled } from '../memory';
+import { buildAgentMemoryPrompt, isAutoMemoryEnabled, MemoryManager } from '../memory';
 import { log } from '../logger';
 
 /**
@@ -878,6 +878,30 @@ export function buildCoordinatorWorkerContext(mcpServerNames: string[] = []): st
     content += `\n\nWorkers also have access to MCP tools from these connected MCP servers: ${mcpServerNames.join(', ')}.`;
   }
   return content;
+}
+
+/**
+ * Resolve the project-instruction (CLAUDE.md/AGENTS.md) context a NAMED subagent
+ * OPTS INTO via its `omitClaudeMd` knob (parity with Claude's agent `omitClaudeMd`,
+ * inverted — see {@link AgentDefinition.omitClaudeMd}). AMI's default subagent prompt
+ * is deliberately lean: it carries NEITHER the project CLAUDE.md/AGENTS.md NOR the
+ * session-start git status (a token-saving superset perk). This knob lets an agent
+ * definition request the project instruction context back:
+ *   - `omitClaudeMd === false` → return the project instructions (opt-in);
+ *   - `undefined` / `true`     → return `''` (keep the lean default).
+ * Returns `''` whenever omission stays in effect, there are no instruction files, or
+ * the read throws, so the caller never has to guard. Reads via {@link MemoryManager}'s
+ * {@link MemoryManager.loadProjectInstructions} — the SAME source the full system
+ * prompt uses — so there is no second instruction-discovery path.
+ */
+export function resolveAgentProjectContext(cwd: string, omitClaudeMd: boolean | undefined): string {
+  if (omitClaudeMd !== false) return '';
+  try {
+    const instructions = new MemoryManager(cwd).loadProjectInstructions();
+    return instructions ? `# Project Instructions\n\n${instructions.trim()}` : '';
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -2886,6 +2910,16 @@ export const taskTool: ToolDefinition = {
       // usual modeOnly fallback below.
       if ((agentDef.systemPromptMode as SystemPromptMode | undefined) === 'append' && agentDef.systemPrompt) {
         agentSystemPrompt = `${SUBAGENT_SYSTEM_PROMPT}\n\n${agentDef.systemPrompt}`;
+      }
+      // Per-agent project-context OPT-IN (parity: Claude's agent `omitClaudeMd`,
+      // inverted for AMI's lean-subagent perk — see resolveAgentProjectContext).
+      // AMI subagents normally omit the project CLAUDE.md/AGENTS.md entirely; an agent
+      // that declares `omit-claude-md: false` gets those instructions appended to its
+      // identity prompt so it can honor project conventions. No-op (empty) for the
+      // lean default, so existing agents are untouched.
+      const agentProjectContext = resolveAgentProjectContext(context.cwd, agentDef.omitClaudeMd);
+      if (agentProjectContext) {
+        agentSystemPrompt = `${agentSystemPrompt}\n\n${agentProjectContext}`;
       }
       agentModel = agentDef.model;
       agentMaxTurns = agentDef.maxTurns;
