@@ -21,6 +21,7 @@ import { log as logDebug } from './logger';
 import {
   SpeculativeClassifierCache,
   DEFAULT_SPECULATIVE_GRACE_MS,
+  PendingPromptLatch,
   type SpeculativeBashClassifier,
 } from './speculative-classifier';
 import type { SandboxPolicy } from './types';
@@ -5156,6 +5157,28 @@ export class PermissionManager {
   ): Promise<string | null> {
     if (!this.speculativeClassifierCache) return null;
     return this.speculativeClassifierCache.resolveApproval(command, graceMs);
+  }
+
+  /**
+   * The WHILE-OPEN counterpart of {@link resolveSpeculativeBashApproval}: once the
+   * grace race has missed and the interactive prompt is ALREADY on screen, the primed
+   * check keeps running; this awaits it to completion and auto-approves the open prompt
+   * iff it is a high-confidence match AND the caller's {@link PendingPromptLatch} still
+   * permits it (the user has not interacted and nothing else resolved the dialog).
+   * Returns the matched description (auto-approve — the UI tears down the dialog and
+   * allows the command) or `null` (leave the prompt for the user). No-op (`null`) when
+   * no classifier is installed or the command was never primed. The frontend feeds the
+   * latch user interactions ({@link PendingPromptLatch.onUserInteraction}) and terminal
+   * answers ({@link PendingPromptLatch.claimManualResolve}) so a pressed key can never
+   * race-lose to an in-flight auto-approval. Mirrors Claude's background
+   * `executeAsyncClassifierCheck` on an open permission dialog (`interactiveHandler.ts`).
+   */
+  async resolveSpeculativeBashApprovalWhileOpen(
+    command: string,
+    latch: PendingPromptLatch,
+  ): Promise<string | null> {
+    if (!this.speculativeClassifierCache) return null;
+    return this.speculativeClassifierCache.resolveWhileOpen(command, latch);
   }
 
   /** Drop every cached speculative check (e.g. on session reset). No-op when no

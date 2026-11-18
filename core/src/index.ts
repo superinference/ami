@@ -69,6 +69,8 @@ export {
   isHighConfidenceMatch,
   DEFAULT_SPECULATIVE_GRACE_MS,
   DEFAULT_SPECULATIVE_TTL_MS,
+  PendingPromptLatch,
+  DEFAULT_PROMPT_INTERACTION_GRACE_MS,
 } from './speculative-classifier';
 export type {
   SpeculativeBashClassifier,
@@ -76,6 +78,7 @@ export type {
   SpeculativeConfidence,
   SpeculativeClassifierCacheOptions,
   GraceRaceOutcome,
+  PendingPromptLatchOptions,
 } from './speculative-classifier';
 export { classifyError, friendlyErrorMessage, isGatewayRejection, ERROR_CATEGORIES, sanitizeMessageHTML, extractNestedErrorMessage, normalizeErrorMessage, parsePromptTooLongTokenCounts, getPromptTooLongTokenGap, parseMaxTokensContextOverflow, AbortError, makeAbortError, isAbort, API_ERROR_MESSAGE_PREFIX, startsWithApiErrorPrefix, isPromptTooLongMessage, classifySafetyCheckFailure } from './error-classifier';
 export type { ClassifiedError, ErrorCategory, SafetyClassifierFailure } from './error-classifier';

@@ -204,11 +204,177 @@ export class SpeculativeClassifierCache {
     return outcome.result.matchedDescription ?? '';
   }
 
+  /**
+   * The WHILE-OPEN variant of {@link resolveApproval}: a primed check that MISSED
+   * the pre-prompt grace window keeps running in the background while the permission
+   * dialog is on screen. This awaits it to COMPLETION (no grace cutoff — the prompt
+   * is already shown, so the goal is to dismiss it the moment the check confirms
+   * safety, not to avoid a perceived stall) and auto-approves the OPEN prompt ONLY
+   * when (a) the result is a high-confidence match AND (b) the {@link latch} still
+   * permits an auto-resolution — i.e. the user has not interacted with the dialog
+   * and nothing else (a manual answer, abort, or auto-dismiss) has resolved it.
+   *
+   * On a win it claims the latch (resolve-once), consumes the entry, and returns the
+   * matched description (empty string for a match with no description) so the caller
+   * can tear down the dialog and allow the call. Returns `null` — leaving the prompt
+   * for the user — when there is no primed check, the classifier missed / was
+   * low-confidence / rejected, the user latched the dialog open, or the prompt was
+   * already resolved. Mirrors Claude's `executeAsyncClassifierCheck` `onAllow`
+   * (`interactiveHandler.ts`): `shouldContinue: () => !isResolved() && !userInteracted`.
+   */
+  async resolveWhileOpen(
+    command: string,
+    latch: PendingPromptLatch,
+  ): Promise<string | null> {
+    const pending = this.peek(command);
+    if (!pending) return null;
+    // Cheap pre-await guard: if the user already latched the dialog open (or it was
+    // resolved) there is nothing to race for.
+    if (!latch.canAutoResolve()) return null;
+    let result: SpeculativeClassifierResult;
+    try {
+      result = await pending;
+    } catch {
+      // Classifier rejected — treat as a miss, leave the prompt for the user.
+      return null;
+    }
+    // Re-check AFTER the await: the user may have interacted, or the prompt may have
+    // been answered/aborted, while the classifier was still running.
+    if (!latch.canAutoResolve()) return null;
+    if (!isHighConfidenceMatch(result)) return null;
+    const description = result.matchedDescription ?? '';
+    // claimAutoApprove is the resolve-once gate: it can still lose to a
+    // simultaneous manual answer that flipped `resolved` between the guard above
+    // and here, in which case we must NOT consume/approve.
+    if (!latch.claimAutoApprove(description)) return null;
+    this.consume(command);
+    return description;
+  }
+
   /** Drop entries whose TTL has elapsed. */
   private purgeExpired(): void {
     const t = this.now();
     for (const [command, entry] of this.entries) {
       if (entry.expiresAt <= t) this.entries.delete(command);
     }
+  }
+}
+
+/** Default grace window (ms) during which keypresses do NOT latch an open prompt,
+ *  so an accidental keystroke the instant the dialog appears cannot cancel an
+ *  in-flight auto-approval. Mirrors Claude's `GRACE_PERIOD_MS` (interactiveHandler). */
+export const DEFAULT_PROMPT_INTERACTION_GRACE_MS = 200;
+
+/** Construction options for a {@link PendingPromptLatch}. */
+export interface PendingPromptLatchOptions {
+  /** Grace window (ms) before a user interaction latches the prompt open
+   *  (default {@link DEFAULT_PROMPT_INTERACTION_GRACE_MS}). */
+  gracePeriodMs?: number;
+  /** Injectable clock (ms) — for deterministic tests. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * Resolve-once + user-interaction latch for an interactive permission dialog whose
+ * primed speculative check is still racing in the background WHILE the dialog is on
+ * screen (see {@link SpeculativeClassifierCache.resolveWhileOpen}).
+ *
+ * PARITY: Claude Code's `interactiveHandler.ts` — the `createResolveOnce` guard plus
+ * the `userInteracted` flag and `GRACE_PERIOD_MS` in `onUserInteraction`. Three
+ * actors race to resolve one open dialog:
+ *
+ *  1. the BACKGROUND classifier (via {@link claimAutoApprove}) — may auto-approve and
+ *     dismiss the dialog, but ONLY while {@link canAutoResolve} (no interaction, not
+ *     yet resolved);
+ *  2. the USER (via {@link claimManualResolve}) — a pressed answer, which also
+ *     {@link onUserInteraction}-latches the dialog so an in-flight classifier can no
+ *     longer race-dismiss a prompt the user is actively engaging with;
+ *  3. a terminal teardown — abort / auto-dismiss (also via {@link claimManualResolve}).
+ *
+ * Exactly one claim wins (resolve-once). The three `classifier*` getters mirror the
+ * fields Claude's `ToolUseConfirm` carries (`classifierCheckInProgress`,
+ * `classifierAutoApproved`, `classifierMatchedRule`) so a UI can dim the options and
+ * show the auto-approved ✓ transition. This is a pure state machine with an
+ * injectable clock — no timers, no I/O — so the race is fully unit-testable.
+ */
+export class PendingPromptLatch {
+  private readonly graceMs: number;
+  private readonly clock: () => number;
+  private readonly startedAt: number;
+  private _userInteracted = false;
+  private _resolved = false;
+  private _classifierCheckInProgress: boolean;
+  private _classifierAutoApproved = false;
+  private _classifierMatchedRule: string | undefined;
+
+  constructor(options: PendingPromptLatchOptions = {}) {
+    this.graceMs = Math.max(0, options.gracePeriodMs ?? DEFAULT_PROMPT_INTERACTION_GRACE_MS);
+    this.clock = options.now ?? Date.now;
+    this.startedAt = this.clock();
+    // A dialog opens with its background check still running (the pre-prompt grace
+    // window already elapsed without a decision, else no prompt would be shown).
+    this._classifierCheckInProgress = true;
+  }
+
+  /** Whether the user has latched the dialog open by interacting with it. */
+  get userInteracted(): boolean { return this._userInteracted; }
+  /** Whether the dialog has been resolved by any actor (resolve-once latch). */
+  get resolved(): boolean { return this._resolved; }
+  /** Whether a background classifier check is still eligible to auto-approve. */
+  get classifierCheckInProgress(): boolean { return this._classifierCheckInProgress; }
+  /** Whether the dialog was auto-approved by the background classifier. */
+  get classifierAutoApproved(): boolean { return this._classifierAutoApproved; }
+  /** The rule/description the auto-approval matched (for the ✓ transition line). */
+  get classifierMatchedRule(): string | undefined { return this._classifierMatchedRule; }
+
+  /**
+   * Record a user interaction (arrow keys / tab / typing). Ignored within the grace
+   * period so an accidental keypress the instant the dialog renders cannot cancel the
+   * in-flight auto-approval (Claude's `GRACE_PERIOD_MS`). Past the grace period it
+   * LATCHES the dialog open — a background auto-approval can no longer race-dismiss it
+   * — and clears the "classifier running" indicator. A no-op once the dialog is
+   * already resolved or already latched. Returns true iff this call latched.
+   */
+  onUserInteraction(): boolean {
+    if (this._resolved || this._userInteracted) return false;
+    if (this.clock() - this.startedAt < this.graceMs) return false;
+    this._userInteracted = true;
+    this._classifierCheckInProgress = false;
+    return true;
+  }
+
+  /** The background classifier may still auto-resolve: not resolved AND not latched. */
+  canAutoResolve(): boolean {
+    return !this._resolved && !this._userInteracted;
+  }
+
+  /**
+   * Claim the dialog for a background-classifier auto-approval. Succeeds (resolve-once)
+   * only while {@link canAutoResolve}; records the auto-approved transition + matched
+   * rule and clears the in-progress indicator. Returns false if the user already
+   * interacted or the dialog was already resolved (the classifier lost the race).
+   */
+  claimAutoApprove(matchedRule?: string): boolean {
+    if (!this.canAutoResolve()) return false;
+    this._resolved = true;
+    this._classifierAutoApproved = true;
+    this._classifierMatchedRule = matchedRule;
+    this._classifierCheckInProgress = false;
+    return true;
+  }
+
+  /**
+   * Claim the dialog for a terminal NON-classifier resolution — the user answered, the
+   * turn aborted, or an auto-dismiss fired. Resolve-once; also latches out any pending
+   * auto-approval and clears the in-progress indicator. Returns false if the dialog was
+   * already resolved (e.g. the classifier auto-approved first), so the caller knows its
+   * answer lost the race and must not double-resolve.
+   */
+  claimManualResolve(): boolean {
+    if (this._resolved) return false;
+    this._resolved = true;
+    this._userInteracted = true;
+    this._classifierCheckInProgress = false;
+    return true;
   }
 }
