@@ -29,7 +29,7 @@ import * as path from 'path';
 import { log } from './logger';
 import { resolveConfigDir } from './reference-journal';
 import { assertPathWithin } from './path-safety';
-import { getErrnoCode } from './tools/tool-utils';
+import { isENOENT } from './utils/errno';
 
 /**
  * DI seam for the host platform so the Windows-unsupported branch is testable on
@@ -154,7 +154,7 @@ export async function clearCwdEnvFiles(sessionId: string | undefined, env: NodeJ
         .map((f) => writeFile(path.join(dir, f), '')),
     );
   } catch (e: unknown) {
-    if (getErrnoCode(e) !== 'ENOENT') {
+    if (!isENOENT(e)) {
       log('session-env', `Failed to clear cwd env files: ${errText(e)}`);
     }
   }
@@ -201,7 +201,7 @@ export async function getSessionEnvironmentScript(
         log('session-env', `Session environment loaded from env file: ${envFile} (${envScript.length} chars)`);
       }
     } catch (e: unknown) {
-      if (getErrnoCode(e) !== 'ENOENT') {
+      if (!isENOENT(e)) {
         log('session-env', `Failed to read session env file: ${errText(e)}`);
       }
     }
@@ -219,7 +219,7 @@ export async function getSessionEnvironmentScript(
           scripts.push(content);
         }
       } catch (e: unknown) {
-        if (getErrnoCode(e) !== 'ENOENT') {
+        if (!isENOENT(e)) {
           log('session-env', `Failed to read hook env file ${filePath}: ${errText(e)}`);
         }
       }
@@ -228,7 +228,7 @@ export async function getSessionEnvironmentScript(
       log('session-env', `Session environment loaded from ${files.length} hook file(s)`);
     }
   } catch (e: unknown) {
-    if (getErrnoCode(e) !== 'ENOENT') {
+    if (!isENOENT(e)) {
       log('session-env', `Failed to load session environment from hooks: ${errText(e)}`);
     }
   }

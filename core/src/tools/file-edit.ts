@@ -4,7 +4,8 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, DiffHunk, GitDiffSummary } from '../types';
 import { fuzzyFindAndReplace, findClosestLines, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { areFileEditsEquivalent } from './file-edit-equivalence';
-import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, getErrnoCode, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countCharsAdded, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { detectLineEnding, normalizeToLf, convertToLineEnding, resolveFilePath, scanAddedSecrets, secretWarning, detectFileEncoding, encodeText, decodeBuffer, isBlockedPath, isNonUtfEncoding, validateFilePath, validateFileWritePath, sanitizePathForDisplay, writeFileAtomicSync, buildUnifiedDiff, buildStructuredPatch, countLinesChanged, countCharsAdded, countContentLines, stripTrailingWhitespace, isMarkdownPath, parseFileMode, FILE_NOT_FOUND_CWD_NOTE } from './tool-utils';
+import { getErrnoCode, getErrnoPath, isENOENT, isFsInaccessible } from '../utils/errno';
 import { recordAgentFileContribution } from './attribution-store';
 import type { FileEncoding } from './tool-utils';
 import { suggestPathUnderCwd, suggestSimilarPaths, suggestPathCorrection } from './path-suggest';
@@ -532,7 +533,7 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
         // populates the target OUTSIDE the workspace. Resolve the link's DECLARED
         // destination and block it when it escapes, instead of silently falling
         // through to the "nonexistent, nothing to escape" path.
-        if (getErrnoCode(realErr) === 'ENOENT') {
+        if (isENOENT(realErr)) {
           const linkDest = path.resolve(path.dirname(resolved), fs.readlinkSync(resolved));
           if (!linkDest.startsWith(cwdAbs + path.sep) && linkDest !== cwdAbs) {
             return `Error: "${resolved}" is a dangling symlink pointing to "${linkDest}" outside the workspace — write blocked (symlink-escape).`;
@@ -552,7 +553,7 @@ export function verifyWriteTarget(resolved: string, cwd: string): string | undef
     // A thrown error from the dangling-symlink branch above must propagate as a block,
     // not be swallowed as "nonexistent". Only a genuinely-absent path (lstat ENOENT)
     // means there is no symlink to escape through.
-    if (getErrnoCode(err) !== 'ENOENT') {
+    if (!isENOENT(err)) {
       return `Error: cannot verify write target "${resolved}": ${err instanceof Error ? err.message : String(err)}`;
     }
   }
@@ -665,11 +666,19 @@ export async function writeEntireFile(
     // Only a genuinely-absent file (ENOENT) means "new file, nothing to lose".
     // Any OTHER errno (EACCES/EIO/ELOOP/ENOTDIR…) means the file may exist but
     // could not be read — silently treating it as new and overwriting would
-    // clobber unreadable content, so surface an actionable error instead.
-    const code = getErrnoCode(err);
-    if (code && code !== 'ENOENT') {
+    // clobber unreadable content, so surface an actionable error instead. Name
+    // the kernel-reported offending path (getErrnoPath) when it differs from the
+    // target (a parent component / symlink target), and flag a grouped
+    // inaccessible code distinctly from a transient IO error.
+    if (!isENOENT(err)) {
+      const code = getErrnoCode(err);
+      const offending = getErrnoPath(err);
+      const where = offending && offending !== resolved ? ` (at "${offending}")` : '';
+      const hint = isFsInaccessible(err)
+        ? 'the path is missing, inaccessible, or unreachable — fix the permissions/path'
+        : 'resolve the access/IO problem';
       readErrResult = {
-        output: `Error: cannot read existing file "${resolved}" to prepare the overwrite (${code}): ${err instanceof Error ? err.message : String(err)}. Resolve the access/IO problem before writing.`,
+        output: `Error: cannot read existing file "${resolved}"${where} to prepare the overwrite (${code}): ${err instanceof Error ? err.message : String(err)}. ${hint} before writing.`,
         isError: true,
       };
     }
@@ -1271,7 +1280,7 @@ export const fileEditTool: ToolDefinition = {
       }
       rawContent = decodeBuffer(rawBuf).text;
     } catch (err: unknown) {
-      if (getErrnoCode(err) === 'ENOENT') {
+      if (isENOENT(err)) {
         let suggestions = '';
         // Canonical "did you mean" recovery, reusing the ONE shared path-suggestion
         // helper (the same one file_read uses) instead of a crude 3-char-prefix
@@ -1299,6 +1308,18 @@ export const fileEditTool: ToolDefinition = {
         // Working-directory note so the model can resolve relative-vs-absolute
         // path confusion from the boundary context it was operating in.
         return { output: `Error: File not found: ${resolved}${suggestions}\n${FILE_NOT_FOUND_CWD_NOTE} ${context.cwd}`, isError: true };
+      }
+      // Grouped fs-inaccessible errno (EACCES/EPERM/ENOTDIR/ELOOP — ENOENT already
+      // handled above): the file is present but cannot be read, which is a
+      // different, more actionable failure than a transient IO error. Name the
+      // kernel-reported offending path when it differs from the target.
+      if (isFsInaccessible(err)) {
+        const offending = getErrnoPath(err);
+        const where = offending && offending !== resolved ? ` (at "${offending}")` : '';
+        return {
+          output: `Error: "${resolved}"${where} cannot be read (${getErrnoCode(err)}): the path is missing, inaccessible, or unreachable. Fix the permissions/path and retry.`,
+          isError: true,
+        };
       }
       const message = err instanceof Error ? err.message : String(err);
       return {

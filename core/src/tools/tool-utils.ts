@@ -4,6 +4,11 @@ import type { ToolResult, DiffHunk } from '../types';
 import { isCredentialPath } from './bash-security';
 import { validatePathExpansionSafety, normalizeCaseForComparison, expandPath } from '../utils/path';
 import { isSpecialFileStat } from '../path-safety';
+// Re-export the canonical errno-code accessor (now owned by ../utils/errno, the
+// single home for typed errno helpers) so tool-utils' own uses and existing
+// importers keep resolving it from here without a parallel implementation.
+import { getErrnoCode } from '../utils/errno';
+export { getErrnoCode };
 
 /**
  * Dependency seam so tests can drive branches that are otherwise shadowed by
@@ -1428,17 +1433,6 @@ export function stripTrailingWhitespace(text: string): string {
  */
 export function isMarkdownPath(filePath: string): boolean {
   return /\.(md|mdx)$/i.test(filePath);
-}
-
-/**
- * Extract a Node.js errno string (e.g. 'ENOENT', 'EACCES', 'ELOOP', 'EIO') from
- * an unknown thrown value, or undefined when none is present. Single source for
- * classifying filesystem errors so call sites can distinguish "absent" (ENOENT)
- * from "could-not-be-checked" without re-implementing the `err.code` cast.
- */
-export function getErrnoCode(err: unknown): string | undefined {
-  const code = (err as { code?: unknown })?.code;
-  return typeof code === 'string' ? code : undefined;
 }
 
 /** Lines of unchanged context shown around a changed region in a unified diff. */
