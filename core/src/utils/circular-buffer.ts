@@ -66,6 +66,18 @@ export class CircularBuffer<T> {
     return this;
   }
 
+  /**
+   * Append every item in `items` (oldest→newest), evicting as needed — parity
+   * with the reference's `addAll`. Equivalent to calling {@link add} per item;
+   * when `items.length` exceeds {@link capacity} only the trailing `capacity`
+   * survive, exactly as sequential adds would.
+   * @returns `this` for chaining.
+   */
+  addAll(items: Iterable<T>): this {
+    for (const item of items) this.add(item);
+    return this;
+  }
+
   /** Items in oldest→newest order (a fresh array; safe to mutate/sort in place). */
   toArray(): T[] {
     const out: T[] = new Array<T>(this._size);

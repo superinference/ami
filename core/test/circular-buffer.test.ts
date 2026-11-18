@@ -67,6 +67,32 @@ test('CircularBuffer: clear resets size/head but preserves capacity', () => {
   assert.deepEqual(b.toArray(), [9, 8]);
 });
 
+test('CircularBuffer: addAll appends items oldest->newest and chains', () => {
+  const b = new CircularBuffer<number>(5);
+  const ret = b.addAll([1, 2, 3]);
+  assert.equal(ret, b, 'addAll returns this for chaining');
+  assert.deepEqual(b.toArray(), [1, 2, 3]);
+  b.addAll([4, 5]).add(6); // overflows capacity 5, evicts 1
+  assert.deepEqual(b.toArray(), [2, 3, 4, 5, 6]);
+});
+
+test('CircularBuffer: addAll with more items than capacity keeps the trailing N', () => {
+  const b = new CircularBuffer<number>(3);
+  b.addAll([1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(b.size, 3);
+  assert.deepEqual(b.toArray(), [5, 6, 7]);
+  assert.equal(b.last, 7);
+});
+
+test('CircularBuffer: addAll accepts any iterable and an empty source is a no-op', () => {
+  const b = new CircularBuffer<string>(4);
+  b.add('x');
+  b.addAll([]); // empty is a no-op
+  assert.deepEqual(b.toArray(), ['x']);
+  b.addAll(new Set(['a', 'b'])); // non-array iterable
+  assert.deepEqual(b.toArray(), ['x', 'a', 'b']);
+});
+
 test('CircularBuffer: rejects a non-positive / non-integer capacity', () => {
   assert.throws(() => new CircularBuffer<number>(0), RangeError);
   assert.throws(() => new CircularBuffer<number>(-3), RangeError);
