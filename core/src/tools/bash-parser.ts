@@ -242,6 +242,27 @@ export interface ParseBudget {
   maxNodes?: number;
 }
 
+/**
+ * Caller-supplied environment used to resolve a `$VAR` used as a COMMAND NAME
+ * during extraction. Either a plain name→value map, or a resolver function
+ * `(key) => value | undefined`. Mirrors Claude Code's `tryParseShellCommand(cmd,
+ * env?)` second parameter (utils/bash/shellQuote.ts L24-L45), which accepts a
+ * `Record<string,string|undefined>` OR a `(key)=>string|undefined` resolver and
+ * forwards it to shell-quote so the caller controls `$VAR` expansion during
+ * tokenization. AMI applies it where it matters for the security model: an
+ * indirect command name (`$EDITOR file` with `EDITOR=nc` in the supplied env)
+ * resolves to the real executable so the AST command blocklist sees it.
+ */
+export type ParseEnv =
+  | Record<string, string | undefined>
+  | ((key: string) => string | undefined);
+
+/** Look up `key` in a {@link ParseEnv} (map or resolver), or `undefined`. */
+function resolveEnvValue(env: ParseEnv | undefined, key: string): string | undefined {
+  if (!env) return undefined;
+  return typeof env === 'function' ? env(key) : env[key];
+}
+
 interface ParseState {
   nodeCount: number;
   maxNodes: number;
@@ -721,7 +742,7 @@ function parseVariableReference(token: string): string | null {
   return m ? m[1] : null;
 }
 
-export function extractCommands(node: CommandNode): string[] {
+export function extractCommands(node: CommandNode, env?: ParseEnv): string[] {
   const commands: string[] = [];
 
   // `scope` is a static map of variable name → assigned value, tracked so a
@@ -736,9 +757,18 @@ export function extractCommands(node: CommandNode): string[] {
         for (const [k, v] of Object.entries(n.assignments)) scope.set(k, v);
       }
       const varName = parseVariableReference(n.command);
-      const resolved = varName !== null && scope.has(varName)
-        ? scope.get(varName) as string
-        : n.command;
+      // Resolve a `$VAR` command name: the in-command static scope WINS (a value
+      // assigned within the command is what the shell runs); otherwise fall back
+      // to the caller-supplied env so env-pinned command indirection surfaces.
+      let resolved = n.command;
+      if (varName !== null) {
+        if (scope.has(varName)) {
+          resolved = scope.get(varName) as string;
+        } else {
+          const fromEnv = resolveEnvValue(env, varName);
+          if (fromEnv !== undefined) resolved = fromEnv;
+        }
+      }
       commands.push(resolved);
       // When a simple node leads with a shell keyword, the real command is hidden
       // behind it (control-flow body or brace command group). Surface it so
@@ -813,13 +843,17 @@ export function extractDeclaredAssignments(node: CommandNode): DeclaredAssignmen
   return out;
 }
 
-export function extractCommandsFromString(input: string, budget?: ParseBudget): string[] {
+export function extractCommandsFromString(
+  input: string,
+  budget?: ParseBudget,
+  env?: ParseEnv,
+): string[] {
   const ast = parseBashAST(input, budget);
   // No AST (empty/over-length) OR an aborted parse → nothing statically
   // extractable. The abort case is surfaced as a hard block by the security
   // gate (validateCompoundCommand), not here, so extraction stays total.
   if (!ast || ast === PARSE_ABORTED) return [];
-  return extractCommands(ast);
+  return extractCommands(ast, env);
 }
 
 /**
