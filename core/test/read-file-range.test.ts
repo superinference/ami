@@ -7,6 +7,8 @@ import {
   readFileInRange,
   FileTooLargeError,
   FAST_PATH_MAX_SIZE,
+  readFileRange,
+  tailFile,
 } from '../src/tools/read-file-range';
 
 let tmpDir: string;
@@ -256,5 +258,88 @@ describe('readFileInRange — streaming path (large files)', () => {
       assert.equal(r.truncatedByBytes, true);
       assert.ok(!r.content.includes('LAST'));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Byte-oriented bounded readers: readFileRange / tailFile
+// ---------------------------------------------------------------------------
+describe('readFileRange — byte-offset partial read', () => {
+  it('reads up to maxBytes from the given byte offset and reports bytesTotal', async () => {
+    const p = write('bytes.txt', '0123456789');
+    const r = await readFileRange(p, 3, 4);
+    assert.ok(r);
+    assert.equal(r!.content, '3456');
+    assert.equal(r!.bytesRead, 4);
+    assert.equal(r!.bytesTotal, 10);
+  });
+
+  it('clamps bytesToRead to what remains after the offset (maxBytes larger than the rest)', async () => {
+    const p = write('clamp.txt', '0123456789');
+    const r = await readFileRange(p, 7, 1000);
+    assert.ok(r);
+    assert.equal(r!.content, '789');
+    assert.equal(r!.bytesRead, 3);
+    assert.equal(r!.bytesTotal, 10);
+  });
+
+  it('returns null when the file is smaller than or equal to the offset', async () => {
+    const p = write('short.txt', 'abc');
+    assert.equal(await readFileRange(p, 3, 10), null); // size === offset
+    assert.equal(await readFileRange(p, 100, 10), null); // size < offset
+  });
+
+  it('reads from offset 0 like a bounded head read', async () => {
+    const p = write('head.txt', 'hello world');
+    const r = await readFileRange(p, 0, 5);
+    assert.ok(r);
+    assert.equal(r!.content, 'hello');
+    assert.equal(r!.bytesRead, 5);
+    assert.equal(r!.bytesTotal, 11);
+  });
+
+  it('decodes an aligned multi-byte UTF-8 range without corruption', async () => {
+    // 'é' is 2 bytes (0xC3 0xA9); read exactly those two bytes from offset 1.
+    const p = write('utf8.txt', Buffer.from('aé', 'utf8')); // bytes: 61 C3 A9
+    const r = await readFileRange(p, 1, 2);
+    assert.ok(r);
+    assert.equal(r!.content, 'é');
+    assert.equal(r!.bytesRead, 2);
+    assert.equal(r!.bytesTotal, 3);
+  });
+});
+
+describe('tailFile — last-maxBytes read', () => {
+  it('reads only the last maxBytes of a file', async () => {
+    const p = write('tail.txt', '0123456789');
+    const r = await tailFile(p, 4);
+    assert.equal(r.content, '6789');
+    assert.equal(r.bytesRead, 4);
+    assert.equal(r.bytesTotal, 10);
+  });
+
+  it('returns the whole file when it is smaller than maxBytes', async () => {
+    const p = write('tail-small.txt', 'abc');
+    const r = await tailFile(p, 1000);
+    assert.equal(r.content, 'abc');
+    assert.equal(r.bytesRead, 3);
+    assert.equal(r.bytesTotal, 3);
+  });
+
+  it('returns an empty result for a 0-byte file', async () => {
+    const p = write('empty.txt', '');
+    const r = await tailFile(p, 100);
+    assert.equal(r.content, '');
+    assert.equal(r.bytesRead, 0);
+    assert.equal(r.bytesTotal, 0);
+  });
+
+  it('tails a large file without loading the whole thing (bounded content)', async () => {
+    const big = 'x'.repeat(5_000_000) + 'TAILMARKER';
+    const p = write('big.log', big);
+    const r = await tailFile(p, 16);
+    assert.equal(r.content, 'xxxxxxTAILMARKER');
+    assert.equal(r.bytesRead, 16);
+    assert.equal(r.bytesTotal, big.length);
   });
 });

@@ -14,7 +14,7 @@ import { formatFileSize } from '../utils/format';
 import { estimateReadTokensForFileType, sliceToReadTokenBudget, fileReadTokenBudgetMessage } from '../token-estimator';
 import { memoryFreshnessReminder } from '../memory';
 import { getFileReadingLimits, getFileReadPromptFlags, getLineNumberStyle, getFileReadErrorOnBudget, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
-import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
+import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE, readFileRange, tailFile } from './read-file-range';
 import { log } from '../logger';
 
 const DEFAULT_LIMIT = 2000;
@@ -1788,22 +1788,22 @@ async function loadSuiteLog(resolved: string, size: number, ext: string): Promis
   }
   const content = size <= SUITE_LOG_MAX_BYTES
     ? await fs.promises.readFile(resolved, 'utf-8')
-    : await readSuiteHeadAndTail(resolved, size);
+    : await readSuiteHeadAndTail(resolved);
   if (!looksLikeSuiteLog(content)) return null;
   return `File: ${resolved}\nPassing tests were omitted so this suite log does not enter the prompt.\n\n${compactTestLog(content)}`;
 }
 
-async function readSuiteHeadAndTail(resolved: string, size: number): Promise<string> {
-  const fh = await fs.promises.open(resolved, 'r');
-  try {
-    const head = Buffer.alloc(6_000_000);
-    const tail = Buffer.alloc(1_000_000);
-    await fh.read(head, 0, head.length, 0);
-    await fh.read(tail, 0, tail.length, Math.max(0, size - tail.length));
-    return `${head.toString('utf-8')}\n${tail.toString('utf-8')}`;
-  } finally {
-    await fh.close();
-  }
+/**
+ * For an oversize suite log, keep only the first 6 MB and the last 1 MB via the
+ * shared byte-bounded readers ({@link readFileRange} / {@link tailFile}) so the
+ * whole (possibly 32 MB) file is never loaded into memory. Both readers decode
+ * exactly the bytes they read (no trailing-NUL padding from an over-allocated
+ * buffer) and loop across short reads.
+ */
+async function readSuiteHeadAndTail(resolved: string): Promise<string> {
+  const head = await readFileRange(resolved, 0, 6_000_000);
+  const tail = await tailFile(resolved, 1_000_000);
+  return `${head?.content ?? ''}\n${tail.content}`;
 }
 
 export function parsePageRange(pages: string): { start: number; end: number; error?: string; openEnded?: boolean } {

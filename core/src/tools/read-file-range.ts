@@ -28,7 +28,7 @@
  * bounded-memory single-line discard, accurate totalLines/totalBytes/readBytes).
  */
 import { createReadStream } from 'fs';
-import { stat as fsStat, readFile } from 'fs/promises';
+import { stat as fsStat, readFile, open } from 'fs/promises';
 import { formatFileSize } from '../utils/format';
 
 /** Regular files below this size use the in-memory fast path; larger ones stream. */
@@ -303,4 +303,93 @@ function readFileInRangeStreaming(
 
     stream.once('error', reject);
   });
+}
+
+/**
+ * Result of a BYTE-oriented bounded read ({@link readFileRange} / {@link tailFile}).
+ * `content` is a flat UTF-8 string decoded from an owned buffer (no sliced-parent
+ * retention), `bytesRead` is how many bytes were actually decoded, and `bytesTotal`
+ * is the file's full size at read time. Distinct from {@link ReadFileRangeResult},
+ * which is line-oriented. Mirrors Claude Code's ByteRange read result
+ * (utils/fsOperations.ts readFileRange/tailFile).
+ */
+export interface ByteRangeResult {
+  /** Decoded UTF-8 string of the bytes that were read. */
+  content: string;
+  /** Number of bytes actually read (<= requested maxBytes). */
+  bytesRead: number;
+  /** Total size of the file in bytes at read time. */
+  bytesTotal: number;
+}
+
+/**
+ * Drain exactly `length` bytes from `fh` starting at file `position` into `buffer`,
+ * looping across short reads (a single `read()` may return fewer bytes than asked)
+ * and stopping early on EOF (`bytesRead === 0`). Returns the number of bytes landed
+ * in `buffer`. Shared by {@link readFileRange} and {@link tailFile} so the
+ * short-read loop exists in ONE place. Mirrors Claude Code's read-loop in
+ * fsOperations.ts.
+ */
+async function drainExact(
+  fh: Awaited<ReturnType<typeof open>>,
+  buffer: Buffer,
+  length: number,
+  position: number,
+): Promise<number> {
+  let totalRead = 0;
+  while (totalRead < length) {
+    const { bytesRead } = await fh.read(buffer, totalRead, length - totalRead, position + totalRead);
+    if (bytesRead === 0) break;
+    totalRead += bytesRead;
+  }
+  return totalRead;
+}
+
+/**
+ * Read up to `maxBytes` bytes from `filePath` starting at byte `offset`, WITHOUT
+ * loading the whole file. Returns a {@link ByteRangeResult} whose `content` is a
+ * flat UTF-8 string copied out of an owned buffer (so no reference to a larger
+ * parent is retained), or `null` when the file is smaller than or equal to the
+ * requested `offset` (nothing to read there). Uses a short-read loop so a partial
+ * `read()` still fills the buffer. Mirrors Claude Code's readFileRange
+ * (utils/fsOperations.ts).
+ */
+export async function readFileRange(
+  filePath: string,
+  offset: number,
+  maxBytes: number,
+): Promise<ByteRangeResult | null> {
+  const fh = await open(filePath, 'r');
+  try {
+    const size = (await fh.stat()).size;
+    if (size <= offset) return null;
+    const bytesToRead = Math.min(size - offset, maxBytes);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const totalRead = await drainExact(fh, buffer, bytesToRead, offset);
+    return { content: buffer.toString('utf8', 0, totalRead), bytesRead: totalRead, bytesTotal: size };
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Read only the LAST `maxBytes` bytes of `filePath` (offset = max(0, size-maxBytes)),
+ * so viewing the end of a huge log/journal never loads the whole file. Returns the
+ * entire file when it is smaller than `maxBytes`, and an empty result for a 0-byte
+ * file. Uses the same short-read loop as {@link readFileRange}. Mirrors Claude
+ * Code's tailFile (utils/fsOperations.ts).
+ */
+export async function tailFile(filePath: string, maxBytes: number): Promise<ByteRangeResult> {
+  const fh = await open(filePath, 'r');
+  try {
+    const size = (await fh.stat()).size;
+    if (size === 0) return { content: '', bytesRead: 0, bytesTotal: 0 };
+    const offset = Math.max(0, size - maxBytes);
+    const bytesToRead = size - offset;
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const totalRead = await drainExact(fh, buffer, bytesToRead, offset);
+    return { content: buffer.toString('utf8', 0, totalRead), bytesRead: totalRead, bytesTotal: size };
+  } finally {
+    await fh.close();
+  }
 }

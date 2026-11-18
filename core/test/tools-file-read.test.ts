@@ -369,6 +369,37 @@ describe('fileReadTool – suite logs', () => {
     assert.equal(paged.output.includes('TestOk0'), false);
     assert.match(paged.output, /TestBLPModel/);
   });
+
+  it('compacts an oversize (>8MB) suite log via the bounded head+tail reader without loading it whole or padding NULs', async () => {
+    // Build a go-test JSON log larger than SUITE_LOG_MAX_BYTES (8MB) so the
+    // reader takes the head+tail branch (readSuiteHeadAndTail → readFileRange/tailFile).
+    const file = path.join(tmpDir, 'huge-go-results.json');
+    const pad = 'p'.repeat(200);
+    const lines: string[] = [];
+    // A failing test early (lands in the 6MB head) so compaction surfaces it.
+    lines.push('{"Action":"output","Test":"TestEarlyFail","Output":"panic: boom"}');
+    lines.push('{"Action":"fail","Test":"TestEarlyFail"}');
+    let bytes = 0;
+    let i = 0;
+    while (bytes < 8_400_000) {
+      const line = `{"Action":"pass","Test":"TestOk${i}","Elapsed":0.01,"Output":"${pad}"}`;
+      lines.push(line);
+      bytes += line.length + 1;
+      i++;
+    }
+    fs.writeFileSync(file, lines.join('\n'));
+    assert.ok(fs.statSync(file).size > 8_000_000, 'file must exceed the 8MB whole-read threshold');
+
+    const res = await fileReadTool.execute({ file_path: file }, ctx());
+    assert.equal(res.isError, undefined);
+    assert.match(res.output, /does not enter the prompt/);
+    assert.match(res.output, /TestEarlyFail/);
+    // Passing tests are omitted, not paged into the prompt.
+    assert.equal(res.output.includes('"Action":"pass"'), false);
+    // Exact-byte decoding (no over-allocated buffer) means no NUL padding leaks in.
+    assert.equal(res.output.includes('\u0000'), false);
+    assert.ok(res.output.length < 50_000, `output length ${res.output.length}`);
+  });
 });
 
 describe('image attachment helpers', () => {
