@@ -616,18 +616,64 @@ export function getRuleBehaviorDescription(behavior: string): string {
   }
 }
 
-/** Build a human-readable explanation from a structured decision reason. */
-export function createPermissionRequestMessage(reason: PermissionDecisionReason): string {
+/**
+ * The CATEGORY of a tool for permission-prompt phrasing, mirroring Claude's
+ * PermissionRuleExplanation `toolType` (`'tool' | 'command' | 'edit' | 'read'`):
+ * it shapes the NOUN in a confirmation/denial message ("…for this command" vs
+ * "…for this edit"/"…for this read") so the prompt reads naturally for the tool
+ * being gated instead of always saying "command"/"action". Distinct from the
+ * tool-search {@link getToolCategory} taxonomy, which classifies tools for
+ * discovery and takes a full tool object — this one keys off the tool NAME alone
+ * so it is usable anywhere a permission decision is narrated.
+ */
+export type PermissionPromptToolType = 'command' | 'edit' | 'read' | 'tool';
+
+/**
+ * Classify a tool by name into its {@link PermissionPromptToolType} for prompt
+ * wording. Reuses the permission engine's own read/mutating tool-name sets (no
+ * parallel list, cf. No-Duplication Rule): bash → `'command'`, an editing/writing
+ * tool → `'edit'`, a read-only tool → `'read'`, anything else → a generic
+ * `'tool'`. Mirrors Claude's per-category phrasing in PermissionRuleExplanation.
+ */
+export function permissionPromptToolType(toolName: string): PermissionPromptToolType {
+  const tool = normalizeToolName(toolName);
+  if (tool === 'bash') return 'command';
+  if (MUTATING_RISK_TOOLS.has(tool)) return 'edit';
+  if (READ_ONLY_RISK_TOOLS.has(tool)) return 'read';
+  return 'tool';
+}
+
+/** The noun a permission message uses for a {@link PermissionPromptToolType}
+ *  (`'tool'` → "tool call", every other category verbatim). */
+function permissionPromptToolNoun(toolType: PermissionPromptToolType): string {
+  return toolType === 'tool' ? 'tool call' : toolType;
+}
+
+/**
+ * Build a human-readable explanation from a structured decision reason. When a
+ * {@link PermissionPromptToolType} is supplied, the generic noun is phrased per
+ * tool category ("for this edit" / "for this read" / "for this tool call") —
+ * parity with Claude's PermissionRuleExplanation, which interpolates the tool
+ * category into every message. Omitting it preserves the default "command"
+ * (rule) / "action" (mode/hook/other) wording for callers that have no tool
+ * context.
+ */
+export function createPermissionRequestMessage(
+  reason: PermissionDecisionReason,
+  toolType?: PermissionPromptToolType,
+): string {
+  const ruleNoun = toolType ? permissionPromptToolNoun(toolType) : 'command';
+  const genericNoun = toolType ? permissionPromptToolNoun(toolType) : 'action';
   switch (reason.type) {
     case 'hardline':
       return `Blocked: ${reason.description}`;
     case 'rule': {
       const from = reason.source ? ` from ${reason.source}` : '';
       const which = reason.ruleValue ? ` "${reason.ruleValue}"` : '';
-      return `Permission rule${which}${from} requires ${reason.action === 'deny' ? 'denial' : 'approval'} for this command`;
+      return `Permission rule${which}${from} requires ${reason.action === 'deny' ? 'denial' : 'approval'} for this ${ruleNoun}`;
     }
     case 'mode':
-      return `Current permission mode (${reason.mode}) requires approval for this action`;
+      return `Current permission mode (${reason.mode}) requires approval for this ${genericNoun}`;
     case 'safetyCheck':
       return reason.message;
     case 'classifier':
@@ -636,12 +682,12 @@ export function createPermissionRequestMessage(reason: PermissionDecisionReason)
       return reason.reason;
     case 'hook': {
       const verb = reason.behavior ? getRuleBehaviorDescription(reason.behavior) : 'requires approval for';
-      return `Hook "${reason.hookName}" ${verb} this action${reason.reason ? `: ${reason.reason}` : ''}`;
+      return `Hook "${reason.hookName}" ${verb} this ${genericNoun}${reason.reason ? `: ${reason.reason}` : ''}`;
     }
     case 'sandboxOverride':
       return 'This action requires permission to bypass the sandbox';
     case 'other':
-      return reason.message ?? 'This action requires approval';
+      return reason.message ?? `This ${genericNoun} requires approval`;
   }
 }
 
@@ -6003,7 +6049,7 @@ export class PermissionManager {
     return {
       decision,
       reason,
-      message: createPermissionRequestMessage(reason),
+      message: createPermissionRequestMessage(reason, permissionPromptToolType(toolName)),
       ...(suggestions.length > 0 ? { suggestions } : {}),
       ...(decision === 'deny' && reason.type === 'hardline' ? { interrupt: true } : {}),
       ...(subcommandResults ? { subcommandResults } : {}),
