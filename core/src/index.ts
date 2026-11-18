@@ -244,7 +244,7 @@ export { formatFileSize, formatRelativeTime, formatRelativeTimeAgo, formatLogMet
 export type { RelativeTimeStyle, RelativeTimeOptions, LogMetadata } from './utils/format';
 export { PERMISSION_MODES, BASH_CLASSIFICATIONS, PERMISSION_UPDATE_DESTINATIONS, PERMISSION_RULE_SOURCES, coercePermissionRuleSource, isManagedPermissionSource, managedPermissionsPath, SESSION_GRANT_SCOPES, SAFETY_CHECK_KINDS } from './permissions';
 export type { PermissionRuleSource } from './permissions';
-export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelMetadata, getAgentModelOptions, getAgentModelDisplay, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, LEGACY_MODEL_REMAP_OPT_OUT_ENV, resolveOverriddenModel, MODEL_ENV_TOGGLES, getBuiltinModelStrings, MODEL_OVERRIDES_AFFORDANCE } from './model-registry';
+export { detectProvider, listModels, validateModel, MODEL_ALIASES, MODEL_FAMILY_ALIASES, MODEL_SHORT_KEYS, isModelAlias, isModelFamilyAlias, isModelShortKey, resolveModelAlias, getModelDisplayName, getModelDescription, getModelDescriptionForModel, getModelMetadata, getAgentModelOptions, getAgentModelDisplay, getNewerVersionHint, suggestFamilyVersionFallback, isLegacyModelRemapDisabled, LEGACY_MODEL_REMAP_OPT_OUT_ENV, resolveOverriddenModel, MODEL_ENV_TOGGLES, getBuiltinModelStrings, MODEL_OVERRIDES_AFFORDANCE } from './model-registry';
 export type { ModelOverridesAffordance } from './model-registry';
 export type { ProviderModelString } from './model-registry';
 export type { AgentModelOption } from './model-registry';

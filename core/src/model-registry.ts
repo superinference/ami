@@ -1359,6 +1359,23 @@ const MODEL_FAMILY_DESCRIPTION = {
 type ModelFamily = keyof typeof MODEL_FAMILY_DESCRIPTION;
 
 /**
+ * Family tier → a longer, MODEL-FACING description: the capability/cost guidance an
+ * agent reads when it programmatically chooses a model (e.g. the `model` override for
+ * a subagent / Task). DISTINCT from {@link MODEL_FAMILY_DESCRIPTION}, which is the
+ * terse one-line copy shown to the HUMAN in the picker — this copy names the
+ * capability/cost trade-off explicitly so the model can reason over it when selecting
+ * a model for a sub-task. Mirrors Claude Code's dual-audience
+ * `ModelOption.descriptionForModel` (utils/model/modelOptions.ts:L38-L43).
+ */
+const MODEL_FAMILY_DESCRIPTION_FOR_MODEL: Record<ModelFamily, string> = {
+  opus: 'Most capable — best for complex, multi-step work and hard reasoning. Higher cost; prefer it only when a task is genuinely difficult.',
+  sonnet: 'Balanced — best for everyday tasks. Generally recommended for most coding tasks.',
+  haiku: 'Fastest for quick answers. Lower cost but less capable than Sonnet — use for simple, well-scoped tasks.',
+  gpt: 'OpenAI frontier model — general-purpose capability for coding and reasoning.',
+  gemini: 'Google Gemini model — general-purpose capability for coding and reasoning.',
+};
+
+/**
  * Ordered display-name patterns, most-specific (versioned) first so a precise
  * version wins over the bare family. Each entry also carries the family tier its
  * description comes from.
@@ -1459,6 +1476,21 @@ export function getModelDescription(modelId: string): string | undefined {
 }
 
 /**
+ * A longer, MODEL-FACING description for a model id — the capability/cost guidance an
+ * agent reads when it programmatically selects a model (e.g. the `model` override for a
+ * subagent / Task), as opposed to the terse human picker copy from
+ * {@link getModelDescription}. Resolves the family the SAME way (through the `[1m]`
+ * suffix, gateway prefixes, and dated snapshots), and returns undefined for an
+ * unknown/custom id (no canned copy). Mirrors Claude Code's dual-audience
+ * `ModelOption.descriptionForModel` (utils/model/modelOptions.ts:L38-L43).
+ */
+export function getModelDescriptionForModel(modelId: string): string | undefined {
+  const { base } = splitOneMillionSuffix((modelId ?? '').trim());
+  const hit = matchModelPattern(base);
+  return hit ? MODEL_FAMILY_DESCRIPTION_FOR_MODEL[hit.family] : undefined;
+}
+
+/**
  * The current (newest) concrete model id per Claude family. A pinned model whose
  * display name differs from its family's current model is an OLDER version, so the
  * picker can surface a "newer version available" upgrade affordance. Mirrors Claude
@@ -1528,8 +1560,12 @@ export interface AgentModelOption {
   value: string;
   /** Friendly display label ("Opus 4.6") for the row. */
   label: string;
-  /** Optional one-line description shown under the label. */
+  /** Optional one-line description shown under the label (human-facing). */
   description?: string;
+  /** Optional longer, MODEL-FACING description (capability/cost guidance) an agent
+   *  reads when it programmatically picks a model for a sub-task. Distinct from the
+   *  human `description`. Mirrors Claude's ModelOption.descriptionForModel. */
+  descriptionForModel?: string;
 }
 
 /**
@@ -1550,8 +1586,13 @@ export function getAgentModelOptions(currentModel?: string): AgentModelOption[] 
   const base: AgentModelOption[] = MODEL_ALIASES.map((alias) => {
     const canonical = resolveModelAlias(alias) ?? alias;
     const description = getModelDescription(canonical);
+    const descriptionForModel = getModelDescriptionForModel(canonical);
     const row: AgentModelOption = { value: alias, label: getModelDisplayName(canonical) };
     if (description) row.description = description;
+    // Attach the model-facing capability/cost blurb so a programmatic model choice
+    // (the config tool's model section, which the agent reads) has guidance beyond
+    // the raw id + human label.
+    if (descriptionForModel) row.descriptionForModel = descriptionForModel;
     return row;
   });
   const current = (currentModel ?? '').trim();

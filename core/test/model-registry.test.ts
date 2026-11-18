@@ -376,7 +376,7 @@ describe('formatModelList — additional coverage', () => {
 // Concurrent callers for the same endpoint must share ONE /models request; a
 // later call (after the first settled) must re-fetch.
 // ---------------------------------------------------------------------------
-import { listModelsDiagnostic, getAgentModelOptions, MODEL_ALIASES } from '../src/model-registry';
+import { listModelsDiagnostic, getAgentModelOptions, MODEL_ALIASES, getModelDescriptionForModel } from '../src/model-registry';
 
 describe('listModels — in-flight coalescing', () => {
   let server: http.Server;
@@ -452,6 +452,45 @@ describe('getAgentModelOptions', () => {
   it('ignores an empty / whitespace current model', () => {
     assert.deepEqual(getAgentModelOptions('   ').map(o => o.value), [...MODEL_ALIASES]);
     assert.deepEqual(getAgentModelOptions().map(o => o.value), [...MODEL_ALIASES]);
+  });
+
+  it('carries a model-facing descriptionForModel on every family-alias row', () => {
+    const opts = getAgentModelOptions();
+    const opus = opts.find(o => o.value === 'opus');
+    const sonnet = opts.find(o => o.value === 'sonnet');
+    const haiku = opts.find(o => o.value === 'haiku');
+    // The model-facing blurb is distinct from the terse human picker copy and
+    // names the capability/cost trade-off an agent reasons over when it picks a
+    // model for a sub-task.
+    assert.ok(opus!.descriptionForModel && opus!.descriptionForModel.length > 0);
+    assert.notEqual(opus!.descriptionForModel, opus!.description);
+    assert.match(sonnet!.descriptionForModel!, /everyday/i);
+    assert.match(haiku!.descriptionForModel!, /less capable/i);
+  });
+
+  it('omits descriptionForModel on a custom id with no canned copy', () => {
+    const opts = getAgentModelOptions('my-org/custom-llm-v9');
+    assert.equal(opts[0].descriptionForModel, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getModelDescriptionForModel — longer MODEL-FACING capability/cost copy, distinct
+// from the terse human picker copy (parity: Claude's ModelOption.descriptionForModel).
+// ---------------------------------------------------------------------------
+describe('getModelDescriptionForModel', () => {
+  it('resolves a family-level model-facing description for a known id', () => {
+    assert.match(getModelDescriptionForModel('claude-opus-4-6')!, /most capable/i);
+    assert.match(getModelDescriptionForModel('claude-sonnet-4-5-20251022')!, /everyday/i);
+    assert.match(getModelDescriptionForModel('haiku')!, /fastest/i);
+  });
+  it('resolves through the [1m] long-context suffix and gateway prefixes', () => {
+    assert.ok(getModelDescriptionForModel('openrouter/anthropic/claude-sonnet-4.6[1m]'));
+  });
+  it('returns undefined for an unknown / custom id', () => {
+    assert.equal(getModelDescriptionForModel('my-org/private-llm'), undefined);
+    assert.equal(getModelDescriptionForModel(''), undefined);
+    assert.equal(getModelDescriptionForModel('  '), undefined);
   });
 });
 

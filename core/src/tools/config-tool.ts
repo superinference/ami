@@ -334,7 +334,11 @@ export function generateModelSection(
     // picker does — one source, no hand-maintained copy.
     const aliasLines = getAgentModelOptions().map((o) => {
       const target = resolveModelAlias(o.value);
-      return target ? `${o.value} -> ${target} (${o.label})` : `${o.value} (${o.label})`;
+      const head = target ? `${o.value} -> ${target} (${o.label})` : `${o.value} (${o.label})`;
+      // Append the model-facing capability/cost guidance so the agent, when it sets
+      // the `model` key for a sub-task, can reason over the trade-off instead of
+      // choosing blind from a bare id + label (parity: ModelOption.descriptionForModel).
+      return o.descriptionForModel ? `${head}: ${o.descriptionForModel}` : head;
     });
     return (
       '\n\n## Model\n' +

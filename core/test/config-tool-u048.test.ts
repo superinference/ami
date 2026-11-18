@@ -48,6 +48,15 @@ describe('configTool U048 parity additions', () => {
       assert.ok(d.includes('opus'), 'should surface at least one alias');
     });
 
+    it('surfaces the model-facing capability/cost guidance for each alias', () => {
+      const d = configTool.description;
+      // The agent reads this tool description when it sets the `model` key for a
+      // sub-task, so the model-facing descriptionForModel blurb must be present —
+      // not just the terse human label.
+      assert.ok(/everyday/i.test(d), 'should surface the sonnet model-facing blurb');
+      assert.ok(/less capable/i.test(d), 'should surface the haiku model-facing blurb');
+    });
+
     it('degrades to a static fallback when the model lister throws', () => {
       const thrower = () => { throw new Error('registry blew up'); };
       const section = generateModelSection(thrower);
