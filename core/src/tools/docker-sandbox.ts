@@ -27,6 +27,7 @@ import {
 } from './bash-sandbox';
 import { sandboxViolationStore, wrapSandboxViolations } from './sandbox-violations';
 import { isSandboxHostGranted, getGrantedSandboxHosts } from './sandbox-permission-registry';
+import { persistPositiveCapability } from '../reference-journal';
 
 // The project's own agent sandbox image, built from the core submodule's
 // Dockerfile (core/Dockerfile → `openshell-ami`) and published by
@@ -283,6 +284,11 @@ export function getDockerAvailability(opts: DockerProbeOptions = {}): DockerAvai
     _dockerAvailable = true;
     _dockerCause = undefined;
     _dockerDetail = undefined;
+    // Record the POSITIVE detection in the shared global config (asymmetric cache —
+    // never a negative) so a diagnostic / startup path can learn this machine has a
+    // reachable daemon without re-probing. Runs at most once per process (the
+    // `_dockerAvailable === true` fast-path above short-circuits every later call).
+    persistPositiveCapability('dockerAvailable', true);
     return { available: true };
   } catch (e) {
     _dockerAvailable = false;

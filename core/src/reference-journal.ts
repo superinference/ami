@@ -243,6 +243,63 @@ export function isDirOnPath(
 }
 
 /**
+ * Read a previously-cached machine-local capability-detection boolean from the
+ * GLOBAL config, or `undefined` when it was never cached. Pure read — no probe, no
+ * write — so a startup-critical path can consult a prior POSITIVE detection without
+ * shelling out. The map lives under the single `cachedCapabilities` config key.
+ * Best-effort: a missing / corrupt / non-boolean value yields `undefined`.
+ */
+export function readCachedCapability(
+  key: string,
+  configPath: string | null = getGlobalConfigPath(),
+): boolean | undefined {
+  if (!configPath) return undefined;
+  const caps = loadConfigFileChecked(configPath).config?.cachedCapabilities;
+  if (caps && typeof caps === 'object' && typeof (caps as Record<string, unknown>)[key] === 'boolean') {
+    return (caps as Record<string, boolean>)[key];
+  }
+  return undefined;
+}
+
+/**
+ * Asymmetric capability cache — persist ONLY a POSITIVE machine-local capability
+ * detection into the shared GLOBAL config, NEVER a negative (parity: Claude Code's
+ * `isChromeExtensionInstalled_CACHED_MAY_BE_STALE`, which writes only a positive
+ * `cachedChromeExtensionInstalled`).
+ *
+ * A `~/.ami/config.json` can be shared across machines (synced home, remote-dev
+ * bridge, a baked CI image), so caching a stale `false` from a machine that lacks
+ * the capability — no local Docker daemon, no browser — would permanently poison
+ * the detection for every session on every machine that reads that config. A stale
+ * `true` costs at most one wasted live attempt, so we deliberately write `true` and
+ * drop `false`. The write stores a boolean under `cachedCapabilities[key]` via the
+ * canonical crash-safe, lock-guarded {@link updateConfigFile} (temp+rename, no
+ * lost-update). Idempotent: a no-op when the value is already `true`. Best-effort —
+ * a write failure is logged, never thrown (this is a cache, not durable state).
+ * Returns true only when a write actually happened.
+ */
+export function persistPositiveCapability(
+  key: string,
+  detected: boolean,
+  configPath: string | null = getGlobalConfigPath(),
+): boolean {
+  // Asymmetric by design: a negative detection is never persisted so it can never
+  // poison a config shared across machines — a `false` is a deliberate no-op.
+  if (!detected || !configPath) return false;
+  try {
+    const res = updateConfigFile(configPath, current => {
+      const caps = (current.cachedCapabilities ?? {}) as Record<string, boolean>;
+      if (caps[key] === true) return current; // already cached positive — idempotent no-op
+      return { ...current, cachedCapabilities: { ...caps, [key]: true } };
+    });
+    return res.written;
+  } catch (err) {
+    logError('persist-capability', `failed to persist capability "${key}"`, { error: String(err) });
+    return false;
+  }
+}
+
+/**
  * One-time, idempotent migration of durable config from the pre-rename `~/.superinference` into
  * `~/.ami` (issue #21 defect 1): the .superinference→.ami rename moved every plugin/skill/
  * marketplace ROOT but no on-disk data, orphaning plugins installed by a pre-rename binary. We

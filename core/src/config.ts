@@ -429,6 +429,15 @@ export interface ProjectConfig {
    *  high-water mark, instead of only logging (parity: Claude's heapDumpService auto-1.5GB). */
   heapDumpOnMemoryWarning?: boolean;
   /**
+   * Asymmetric positive-only cache of machine-local capability detections keyed by
+   * name (e.g. `dockerAvailable`). Only `true` values are ever persisted — a
+   * negative is never written, so a config shared across machines can't be poisoned
+   * by a machine that lacks the capability (parity: Claude Code's
+   * `cachedChromeExtensionInstalled`). Written/read via reference-journal's
+   * `persistPositiveCapability` / `readCachedCapability`.
+   */
+  cachedCapabilities?: Record<string, boolean>;
+  /**
    * Named capability feature-flags keyed by feature name (parity: Claude Code's
    * `features` map / `feature()`): a `false` value disables a named feature, `true`
    * force-enables it, overriding the per-feature default. Env flags
@@ -1547,7 +1556,8 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['embeddedSearchTools', 'boolean'], ['teammateExecutionMode', 'string'],
   ['unattendedRetry', 'boolean'], ['fileCheckpointingEnabled', 'boolean'],
   ['heapDumpOnMemoryWarning', 'boolean'],
-  ['features', 'object'], ['max529RetriesBeforeFallback', 'number'],
+  ['features', 'object'], ['cachedCapabilities', 'object'],
+  ['max529RetriesBeforeFallback', 'number'],
   ['openrouterZdr', 'boolean'], ['strictMcpConfig', 'boolean'],
   ['mcpRequireApproval', 'boolean'], ['maxUsageLimitWaitMs', 'number'],
   ['sessionMemoryInterval', 'number'], ['alwaysLoadMcpServers', 'string[]'],
