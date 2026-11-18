@@ -17,6 +17,7 @@ import { getManagedConfigPath } from './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
+import { analyzeCommandStructure } from './tools/bash-parser';
 import { TESTING_PERMISSION_TOOL_NAME } from './tools/testing-permission';
 import { isCaseInsensitiveFs } from './tools/tool-utils';
 import { log as logDebug } from './logger';
@@ -3732,6 +3733,27 @@ export function normalizeLineContinuations(cmd: string): string {
   return out;
 }
 
+/**
+ * Prepare a raw command for compound-splitting / rule-matching in the SECURITY
+ * ordering Claude Code relies on: extract (strip) heredoc BODIES *before* joining
+ * `\<newline>` line-continuations, then join. Order matters for correctness AND
+ * security — joining continuations first can shift a heredoc's closing delimiter
+ * (`x\<newline>DELIM` → `xDELIM`) so that a real post-heredoc statement such as
+ * `> /etc/passwd` gets swallowed INTO the heredoc body and never reaches the
+ * sub-command matcher, letting an `allow` rule auto-approve a command whose
+ * dangerous tail it never saw. {@link stripHeredocBodies} removes those bodies up
+ * front (matching Claude's `extractHeredocs`-before-join invariant in
+ * utils/bash/commands.ts L642-683), so the continuation-join and the subsequent
+ * {@link splitCompoundCommand} only ever operate on the real COMMAND text.
+ *
+ * This is the single canonical "normalize a command for matching" entry point —
+ * every permission-matching/compound-split consumer (rule matching, arg-leak
+ * scanning) uses it so the heredoc-before-join guarantee holds uniformly.
+ */
+function normalizeCommandForMatching(command: string): string {
+  return normalizeLineContinuations(stripHeredocBodies(command));
+}
+
 const COMPOUND_SPLIT_RE = /\s*(?:\|\||&&|[;|])\s*/;
 
 /**
@@ -5423,7 +5445,11 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
 }
 
 function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
-  const normalized = normalizeLineContinuations(command);
+  // Heredoc bodies are stripped BEFORE line-continuation joining (see
+  // {@link normalizeCommandForMatching}) so a continuation inside a heredoc body
+  // can never shift the closing delimiter and hide a real post-heredoc statement
+  // from the sub-command matcher — the ordering guarantee an `allow` rule relies on.
+  const normalized = normalizeCommandForMatching(command);
   const subCommands = splitCompoundCommand(normalized);
 
   // Fail-closed on compound-command fanout above the cap: an allow rule must NOT
@@ -5543,7 +5569,10 @@ function collectSafeLoopVars(command: string): Set<string> {
  * are handled separately by the deny/ask substitution-decomposition path.
  */
 export function bashCommandArgLeaksValue(command: string): boolean {
-  const normalized = normalizeLineContinuations(command);
+  // Same heredoc-before-join ordering as {@link matchBashPattern} so a `$SECRET`
+  // reference buried past a heredoc body (or a continuation inside one) is split
+  // into the correct arg tokens and not masked by delimiter-shift.
+  const normalized = normalizeCommandForMatching(command);
   const vettedLoopVars = collectSafeLoopVars(normalized);
   for (const sub of splitCompoundCommand(normalized)) {
     const stripped = stripSingleQuotedSpans(sub).trim();
@@ -6885,6 +6914,21 @@ export class PermissionManager {
     // `cat ~/.ssh/id_rsa` — must never be auto-'safe'; elevate to a prompt.
     // Never downgrade a stronger verdict (destructive/unsafe) here.
     if (result === 'safe' && commandTargetsCredentialPath(command.trim())) return 'unsafe';
+    // Unsafe-compound forced-ask: a subshell `( … )` or brace command group
+    // `{ …; }` groups statements whose runtime execution context (a child shell
+    // / an inline group) the flat classifier cannot soundly reason about — a
+    // benign-looking inner command can still carry a redirection, cd-desync, or
+    // side effect at the group boundary that per-command classification misses.
+    // Claude Code forces behavior:'ask' with NO rule suggestions in exactly this
+    // case (bashToolCheckCommandOperatorPermissions via
+    // getTreeSitterAnalysis().compoundStructure.hasSubshell || hasCommandGroup),
+    // because such a grouping can never be safely auto-allowed. AMI mirrors that
+    // by never letting a grouped command stay auto-'safe' — it is elevated to a
+    // prompt. A stronger verdict (unsafe/destructive) is never downgraded.
+    if (result === 'safe') {
+      const compound = analyzeCommandStructure(command).compoundStructure;
+      if (compound.hasSubshell || compound.hasCommandGroup) return 'unsafe';
+    }
     return result;
   }
 
