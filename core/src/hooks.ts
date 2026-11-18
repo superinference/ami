@@ -4961,6 +4961,17 @@ export class HookManager extends EventEmitter {
   onNotification(fn: NotificationHookFn): void { this.notificationHooks.push(fn); }
   onSetup(fn: SessionHookFn): void { this.setupHooks.push(fn); }
   onConfigChange(fn: ConfigChangeHookFn): void { this.configChangeHooks.push(fn); }
+  /**
+   * Whether any ConfigChange hook is registered. A consumer that applies a detected
+   * settings/config change to the live session uses this to decide between the cheap
+   * synchronous direct-apply path (no hooks → nothing can veto) and the blocking
+   * pre-apply veto path (run {@link executeConfigChange} first and skip applying the
+   * change when it returns `blockingErrors`, mirroring Claude Code's
+   * `hasBlockingResult` gate). Keeping the no-hook path synchronous preserves the
+   * in-band re-enforcement (killswitch / permission re-sync) every existing caller
+   * relies on. Introspection surface for the veto wiring.
+   */
+  hasConfigChangeHooks(): boolean { return this.configChangeHooks.length > 0; }
   onInstructionsLoaded(fn: InstructionsHookFn): void { this.instructionsLoadedHooks.push(fn); }
   onWorktreeCreate(fn: WorktreeCreateHookFn): void { this.worktreeCreateHooks.push(fn); }
   onWorktreeRemove(fn: WorktreeHookFn): void { this.worktreeRemoveHooks.push(fn); }
