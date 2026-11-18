@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { resolveBashTimeout, interpretExitCode, diagnoseError } from '../src/tools/bash';
+import { resolveBashTimeout, interpretExitCode, diagnoseError, bashTool } from '../src/tools/bash';
 
 // Unit U030 — parity gaps against Claude Code's BashTool / commandSemantics /
 // timeouts behaviour. Each describe block maps to one confirmed gap.
@@ -98,5 +98,44 @@ describe('U030 diagnoseError — gh auth-scope / permission remediation hint', (
     const hint = diagnoseError('HTTP 403: Resource not accessible by integration');
     assert.ok(hint);
     assert.match(hint!, /gh auth refresh/);
+  });
+});
+
+describe('U030 bashTool.getProgressBudgetMs — resolved timeout budget surfaced for live progress', () => {
+  const save = { d: process.env.BASH_DEFAULT_TIMEOUT_MS, m: process.env.BASH_MAX_TIMEOUT_MS };
+  const restore = () => {
+    if (save.d === undefined) delete process.env.BASH_DEFAULT_TIMEOUT_MS; else process.env.BASH_DEFAULT_TIMEOUT_MS = save.d;
+    if (save.m === undefined) delete process.env.BASH_MAX_TIMEOUT_MS; else process.env.BASH_MAX_TIMEOUT_MS = save.m;
+  };
+
+  it('is exposed as a tool capability', () => {
+    assert.equal(typeof bashTool.getProgressBudgetMs, 'function');
+  });
+
+  it('returns the same resolved timeout execute() will enforce (per-call timeout wins, clamped)', () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '100';
+    process.env.BASH_MAX_TIMEOUT_MS = '500';
+    try {
+      // per-call within bounds → honored
+      assert.equal(bashTool.getProgressBudgetMs!({ command: 'x', timeout: 300 }), 300);
+      assert.equal(bashTool.getProgressBudgetMs!({ command: 'x', timeout: 300 }), resolveBashTimeout(300));
+      // per-call above max → clamped to max
+      assert.equal(bashTool.getProgressBudgetMs!({ command: 'x', timeout: 99999 }), 500);
+      // no per-call timeout → default
+      assert.equal(bashTool.getProgressBudgetMs!({ command: 'x' }), 100);
+    } finally { restore(); }
+  });
+
+  it('coerces a numeric-string timeout (provider serialization parity)', () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = '100';
+    process.env.BASH_MAX_TIMEOUT_MS = '5000';
+    try {
+      assert.equal(bashTool.getProgressBudgetMs!({ command: 'x', timeout: '2500' }), 2500);
+    } finally { restore(); }
+  });
+
+  it('tolerates a missing input object', () => {
+    // Called with an empty object: no throw, resolves to the configured default.
+    assert.equal(typeof bashTool.getProgressBudgetMs!({}), 'number');
   });
 });

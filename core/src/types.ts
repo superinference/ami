@@ -933,6 +933,13 @@ export interface ToolDefinition {
   /** Fine-grained per-invocation read/search/list classification driving transcript
    *  summaries. Parity: Claude's `Tool.isSearchOrReadCommand(input)`. */
   isSearchOrReadCommand?: (input: Record<string, unknown>) => ToolAccessClassification;
+  /** The wall-clock timeout budget (ms) this invocation will be killed at, resolved from
+   *  the input (and any env/default knobs). Lets the executor surface a "N/budget elapsed"
+   *  affordance on a long-running call so the user can see how close it is to its timeout
+   *  boundary. Return `undefined` when the tool has no bounded budget. Parity: Claude's
+   *  `timeoutMs` threaded through ShellProgressMessage / BashToolResultMessage
+   *  (tools/BashTool/UI.tsx, tools/PowerShellTool/UI.tsx). */
+  getProgressBudgetMs?: (input: Record<string, unknown>) => number | undefined;
   /** Compact representation of this tool use fed to an auto-mode security classifier
    *  (`''` = skip). Parity: Claude's `Tool.toAutoClassifierInput(input)`. */
   toAutoClassifierInput?: (input: Record<string, unknown>) => string;

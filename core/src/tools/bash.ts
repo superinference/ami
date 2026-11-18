@@ -1521,6 +1521,14 @@ export const bashTool: ToolDefinition = {
   isSearchOrReadCommand(input: Record<string, unknown>) {
     return classifyBashAccess(typeof input?.command === 'string' ? input.command : '');
   },
+  // The resolved timeout this foreground command will be killed at (parity: Claude's
+  // timeoutMs threaded into shell progress/result UI). Surfaced by the executor on a
+  // long-running call's live progress so the user can see how close the command is to
+  // its timeout boundary. Honors the per-call `timeout` plus BASH_DEFAULT_TIMEOUT_MS /
+  // BASH_MAX_TIMEOUT_MS exactly as execute() does, via the shared resolveBashTimeout.
+  getProgressBudgetMs(input: Record<string, unknown>): number | undefined {
+    return resolveBashTimeout(input?.timeout);
+  },
 
   async execute(
     input: Record<string, unknown>,
