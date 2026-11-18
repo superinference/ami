@@ -1725,6 +1725,44 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
+   * FUNCTIONAL (parity: Claude Code's clearConversation task teardown,
+   * commands/clear/conversation.ts:L146-166): on a conversation CLEAR, kill every
+   * RUNNING task whose id is NOT in {@link preservedIds} and evict its on-disk
+   * output, so background shells / MCP monitors / non-preserved agents spawned in
+   * the just-cleared conversation stop consuming resources instead of being
+   * orphaned across the session-id regeneration (where they would keep executing /
+   * completing commands the user believes were discarded). Explicitly preserved
+   * background agents — the alive teammates the caller partitioned out — are left
+   * running with their output intact. Each kill+evict is wrapped in its OWN
+   * try/catch error boundary so one failing teardown never aborts the clear
+   * (parity: Claude's per-task try/catch + logError). Returns the snapshots of the
+   * tasks it stopped (empty when nothing non-preserved was running).
+   */
+  killForClear(preservedIds: ReadonlySet<string> = new Set()): BackgroundProcess[] {
+    const stopped: BackgroundProcess[] = [];
+    for (const taskId of Array.from(this.processes.keys())) {
+      if (preservedIds.has(taskId)) continue;
+      const entry = this.processes.get(taskId);
+      if (!entry || entry.status !== 'running') continue;
+      // Snapshot BEFORE removeTask drops the entry so the caller/introspection can
+      // still report what was torn down.
+      const snapshot = this.get(taskId);
+      try {
+        // `suppressCompletion` keeps a wiped conversation from re-surfacing an
+        // exit-137 completion note for a task the user already discarded; `reason`
+        // distinguishes a clear-driven teardown from an ESC/timeout in the trace.
+        this.kill(taskId, { suppressCompletion: true, reason: 'conversation cleared' });
+        // Evict the killed task's output file + drop its table row (parity: Claude
+        // evicting the task's disk output on clear). kill() has already transitioned
+        // it to 'killed', so removeTask (which refuses a running task) accepts it.
+        this.removeTask(taskId);
+      } catch { /* error boundary: a failing teardown must not abort the clear */ }
+      if (snapshot) stopped.push(snapshot);
+    }
+    return stopped;
+  }
+
+  /**
    * FUNCTIONAL (parity): pause a RUNNING task's elapsed-time clock. Idempotent — a
    * second pause() before a resume() is a no-op (returns false). Used by the stall
    * watchdog so a task blocked on an interactive prompt doesn't inflate its
