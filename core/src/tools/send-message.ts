@@ -2195,6 +2195,27 @@ export const sendMessageTool: ToolDefinition = {
           isError: true,
         };
       }
+      // Composite-liveness boundary (parity with Claude Code's InProcessBackend
+      // isActive, surfaced by ProcessManager.isActive): a TRACKED agent may still
+      // read `running` while it is actively SHUTTING DOWN — it was signalled to
+      // abort (its AbortSignal fired) but its status has not flipped to killed/failed
+      // yet. The coarse terminal check above misses that window, so a message would
+      // queue into a mailbox the aborting engine will never drain — a silent orphan
+      // and an invisible coordination failure for the sender. When the manager
+      // exposes the composite isActive() query, refuse a running-but-inactive target
+      // too. Scoped to a currently-`running` tracked task: an UNTRACKED name
+      // (undefined) is left to the unreachable-warning path (it may be coming online),
+      // and a `pending` task is still allowed to queue (it is about to start).
+      if (
+        status === 'running' &&
+        typeof context.processManager.isActive === 'function' &&
+        !context.processManager.isActive(targetTaskId)
+      ) {
+        return {
+          output: `Error: cannot send to "${toRaw}" — that agent is shutting down (abort in progress) and is no longer accepting messages.`,
+          isError: true,
+        };
+      }
     }
 
     // --- Structured control messages -------------------------------------
