@@ -2233,6 +2233,36 @@ export class McpManager extends EventEmitter {
   }
 
   /**
+   * Discard a server's cached OAuth credential so the next (re)connect cannot
+   * short-circuit on a still-valid token and MUST re-run the consent flow.
+   *
+   * FUNCTIONAL ADD (parity, U103): AMI previously re-authenticated only reactively
+   * on a 401 — there was no way to proactively drop a cached token that is locally
+   * still valid but was revoked server-side. This mirrors Claude Code's
+   * `mcp xaa login --force` (xaaIdpCommand.ts:L158-L196), which clears the cached
+   * id_token before re-login. Used by the `authenticate` tool's `force` option.
+   *
+   * Removes the PERSISTED token file (the live provider rebuilds a fresh
+   * {@link FileOAuthTokenStore} from disk on the ensuing restart, so a cleared file
+   * forces consent) and drops the needs-auth skip cache so the forced re-auth
+   * re-probes. No-op for a non-OAuth / stdio server (nothing is cached). Returns
+   * whether a persisted credential was actually present and cleared.
+   */
+  forgetOAuthToken(name: string): boolean {
+    const config = this.configs.get(name) ?? this.pendingServers.get(name)?.config;
+    if (!config?.oauth || !config.url || (config.transport !== 'http' && config.transport !== 'sse')) {
+      return false;
+    }
+    const filePath = this.mcpTokenFilePath(name, config);
+    let existed = false;
+    try { existed = fs.existsSync(filePath); } catch { existed = false; }
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort purge */ }
+    // A forced re-auth must re-probe, so drop any cached guaranteed-401 marker too.
+    this.clearNeedsAuthCache(name);
+    return existed;
+  }
+
+  /**
    * Non-blocking, model-driven OAuth entry point for the `authenticate` tool.
    *
    * FUNCTIONAL FIX (parity, U102): unlike {@link reconnect} — which BLOCKS until

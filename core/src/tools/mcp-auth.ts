@@ -116,15 +116,30 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       `opens for consent (with a manual callback-URL paste fallback for headless shells); ` +
       `once complete the server's tools become available. In a detached/headless run ` +
       `where no browser is available, this returns the authorization URL in its result ` +
-      `(status "auth_url") so you can share it with the user to complete consent out of band.`,
-    inputSchema: { type: 'object', properties: {} },
+      `(status "auth_url") so you can share it with the user to complete consent out of band. ` +
+      `Pass {"force": true} to discard a still-valid cached credential and force a fresh ` +
+      `login — use this after the server revoked the session on its side.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: {
+          type: 'boolean',
+          description:
+            'Discard any cached/valid OAuth credential before re-authenticating, forcing a ' +
+            'fresh consent flow (e.g. after a server-side token revocation). Without it, an ' +
+            'already-authenticated server is reported as a no-op rather than re-prompting.',
+        },
+      },
+    },
     isReadOnly: false,
     isConcurrencySafe: false,
     isMcp: true,
-    async execute(_input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+      const force = input?.force === true;
       const mcpManager = (context as unknown as { _mcpManager?: {
         reconnect?: (name: string) => Promise<void>;
         startAuth?: (name: string, opts?: { signal?: AbortSignal }) => Promise<{ authUrl?: string }>;
+        forgetOAuthToken?: (name: string) => boolean;
         getServerConfig?: (name: string) => McpAuthServerConfig | undefined;
         getServerStatus?: (name: string) => { state: string } | null;
         getPendingAuthUrl?: (name: string) => string | undefined;
@@ -141,6 +156,12 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
           metadata: { status: 'unsupported' satisfies McpAuthStatus, transport },
         };
       }
+
+      // Force re-login: drop any cached/valid credential FIRST so the ensuing
+      // (re)connect cannot short-circuit on a still-valid token and must re-run the
+      // consent flow — parity with Claude Code's `mcp xaa login --force`. A no-op
+      // for a server with no persisted credential (never authenticated / stdio).
+      if (force) mcpManager.forgetOAuthToken?.(serverName);
 
       const before = mcpManager.getServerStatus?.(serverName)?.state;
       // Active, model-driven OAuth: when the manager exposes the non-blocking
@@ -183,7 +204,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         return {
           output: `Authentication failed for "${serverName}": ${reason}.${kindHint}${urlLine}`,
           isError: true,
-          metadata: { status: 'error' satisfies McpAuthStatus, error_kind: errorKind, transport, ...(authUrl ? { auth_url: authUrl } : {}) },
+          metadata: { status: 'error' satisfies McpAuthStatus, error_kind: errorKind, transport, ...(authUrl ? { auth_url: authUrl } : {}), ...(force ? { forced: true } : {}) },
         };
       }
       // Active non-blocking flow surfaced a consent URL before the background
@@ -194,7 +215,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         const authUrl = redactAuthUrl(activeAuthUrl);
         return {
           output: `Authorization required for "${serverName}". Open this URL in a browser to complete consent, then re-run authenticate (or ${MCP_COMMAND_HINT}):\n${authUrl}`,
-          metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl },
+          metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl, ...(force ? { forced: true } : {}) },
         };
       }
       // Tri-state post-reconnect reporting (connected / needs-auth / failed):
@@ -211,18 +232,22 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
         if (authUrl) {
           return {
             output: `Authorization required for "${serverName}". Open this URL in a browser to complete consent, then re-run authenticate (or ${MCP_COMMAND_HINT}):\n${authUrl}`,
-            metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl },
+            metadata: { status: 'auth_url' satisfies McpAuthStatus, transport, auth_url: authUrl, ...(force ? { forced: true } : {}) },
           };
         }
       }
       const reconnected = after === 'ready' && before !== 'ready';
-      // Distinct completion messages for a URL-less silent (cached-token) auth
-      // vs the already-connected no-op, so the model can tell them apart.
+      // Distinct completion messages for a fresh (re)auth, a forced re-login that
+      // discarded a cached credential, and the already-connected no-op, so the
+      // model can tell them apart.
+      const output = reconnected
+        ? `Authentication completed for "${serverName}"; its tools are now available.`
+        : force
+          ? `Re-authentication completed for "${serverName}"; the cached credential was discarded and a fresh one is now in use.`
+          : `"${serverName}" is already connected — no re-authentication was needed. Pass {"force": true} to discard the cached credential and force a fresh login (e.g. after a server-side revocation).`;
       return {
-        output: reconnected
-          ? `Authentication completed for "${serverName}"; its tools are now available.`
-          : `"${serverName}" is already connected — no re-authentication was needed.`,
-        metadata: { status: 'ok' satisfies McpAuthStatus, transport, reconnected },
+        output,
+        metadata: { status: 'ok' satisfies McpAuthStatus, transport, reconnected, ...(force ? { forced: true } : {}) },
       };
     },
   };
