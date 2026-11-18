@@ -270,6 +270,22 @@ export {
 } from './utils/fs-atomic';
 export type { AtomicWriteOptions } from './utils/fs-atomic';
 export { getGitBranch, isPathGitignored, getGlobalGitignorePath, addFileGlobRuleToGitignore } from './utils/git';
+export {
+  captureUntrackedFiles,
+  UNTRACKED_MAX_FILE_SIZE_BYTES,
+  UNTRACKED_MAX_TOTAL_SIZE_BYTES,
+  UNTRACKED_MAX_FILE_COUNT,
+  UNTRACKED_SNIFF_BUFFER_SIZE,
+} from './utils/git';
+export type { CapturedUntrackedFile, CaptureUntrackedOptions } from './utils/git';
+export {
+  isBinaryContent,
+  isBinaryByExtension,
+  hasBinaryExtension,
+  checkBinaryContent,
+  KNOWN_BINARY_EXTENSIONS,
+  BINARY_CHECK_BYTES,
+} from './utils/binary';
 export { parseGitConfigValue, parseConfigString } from './git-config-parser';
 export {
   detectCurrentRepository,

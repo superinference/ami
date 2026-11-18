@@ -5,6 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { parseGitConfigValue } from '../git-config-parser';
+import { logForDiagnosticsNoPII } from '../logger';
+import { hasBinaryExtension, isBinaryContent } from './binary';
 
 /** Hard ceiling so a wedged git invocation can never hang a caller. */
 const GIT_BRANCH_TIMEOUT_MS = 2_000;
@@ -23,6 +25,12 @@ const GIT_NO_PROMPT_ENV = {
  * "HEAD", which is not a branch name).
  */
 export function getGitBranch(cwd: string): string | undefined {
+  // PII-free timing+outcome diagnostic around the git-discovery probe (parity with
+  // Claude Code's find_git_root_* / is_git_check_* instrumentation): lets a caller
+  // introspect "why is branch detection slow / did it find a branch" via the
+  // AMI_DIAGNOSTICS_FILE channel without ever logging the branch name itself.
+  const startTime = Date.now();
+  logForDiagnosticsNoPII('info', 'get_git_branch_started');
   try {
     const out = execSync('git rev-parse --abbrev-ref HEAD', {
       cwd,
@@ -31,9 +39,17 @@ export function getGitBranch(cwd: string): string | undefined {
       stdio: ['ignore', 'pipe', 'ignore'],
       env: { ...process.env, ...GIT_NO_PROMPT_ENV },
     }).trim();
-    if (!out || out === 'HEAD') return undefined;
-    return out;
+    const branch = !out || out === 'HEAD' ? undefined : out;
+    logForDiagnosticsNoPII('info', 'get_git_branch_completed', {
+      duration_ms: Date.now() - startTime,
+      found: branch !== undefined,
+    });
+    return branch;
   } catch {
+    logForDiagnosticsNoPII('info', 'get_git_branch_completed', {
+      duration_ms: Date.now() - startTime,
+      found: false,
+    });
     return undefined;
   }
 }
@@ -518,8 +534,18 @@ export function findRemoteBase(
  * `/batch`). Shared helper so worktree-dependent callers don't each re-spawn git.
  */
 export function isGitRepo(cwd: string): boolean {
+  // PII-free timing+outcome diagnostic (parity with Claude Code's
+  // is_git_check_started / is_git_check_completed): records how long the repo probe
+  // took and whether `cwd` is a work tree, with no path/identity data.
+  const startTime = Date.now();
+  logForDiagnosticsNoPII('info', 'is_git_check_started');
   const res = runGit(cwd, ['rev-parse', '--is-inside-work-tree']);
-  return !!res && res.code === 0 && res.stdout === 'true';
+  const isGit = !!res && res.code === 0 && res.stdout === 'true';
+  logForDiagnosticsNoPII('info', 'is_git_check_completed', {
+    duration_ms: Date.now() - startTime,
+    is_git: isGit,
+  });
+  return isGit;
 }
 
 /**
@@ -633,4 +659,138 @@ export function computeDefaultBranch(cwd: string, exec: GitRefExec): string {
     } catch { /* try the next candidate */ }
   }
   return 'main';
+}
+
+/**
+ * Upper bound on a SINGLE untracked file that {@link captureUntrackedFiles} will
+ * read (500 MB). A larger file is skipped — never slurped into memory. Parity with
+ * Claude Code's `MAX_FILE_SIZE_BYTES` (utils/git.ts).
+ */
+export const UNTRACKED_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
+
+/**
+ * Aggregate ceiling across all captured files (5 GB). Once adding the next file
+ * would cross this, the scan stops. Parity with Claude Code's
+ * `MAX_TOTAL_SIZE_BYTES`.
+ */
+export const UNTRACKED_MAX_TOTAL_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
+
+/**
+ * Hard cap on how many untracked files are captured (20000), so a pathological
+ * working tree can never produce an unbounded result. Parity with Claude Code's
+ * `MAX_FILE_COUNT`.
+ */
+export const UNTRACKED_MAX_FILE_COUNT = 20000;
+
+/**
+ * Initial read buffer for binary detection + content reuse (64 KB). Covers most
+ * source files in a single read; {@link isBinaryContent} scans only its first 8 KB
+ * for the binary heuristic, so the extra bytes exist purely to avoid a second read
+ * when the file turns out to be text. Parity with Claude Code's `SNIFF_BUFFER_SIZE`.
+ */
+export const UNTRACKED_SNIFF_BUFFER_SIZE = 64 * 1024;
+
+/** One captured untracked file: its working-tree-relative path + decoded text. */
+export interface CapturedUntrackedFile {
+  path: string;
+  content: string;
+}
+
+/**
+ * Tunable bounds for {@link captureUntrackedFiles}. Every field defaults to the
+ * exported `UNTRACKED_*` constant (Claude-parity defaults); a caller that needs a
+ * tighter budget (e.g. a bug-report attachment) can override any of them.
+ */
+export interface CaptureUntrackedOptions {
+  maxFileSizeBytes?: number;
+  maxTotalSizeBytes?: number;
+  maxFileCount?: number;
+  sniffBufferSize?: number;
+}
+
+/**
+ * Capture the content of every untracked file in `cwd` (`git ls-files --others
+ * --exclude-standard`) as a bounded, binary-safe, memory-safe snapshot — a reusable
+ * building block for checkpoint / share-state / issue-replay capture. Parity with
+ * Claude Code's `captureUntrackedFiles` (utils/git.ts L616-713), tuned identically:
+ *
+ *  - zero-I/O skip by {@link hasBinaryExtension binary extension};
+ *  - per-file ({@link UNTRACKED_MAX_FILE_SIZE_BYTES}), total
+ *    ({@link UNTRACKED_MAX_TOTAL_SIZE_BYTES}), and count
+ *    ({@link UNTRACKED_MAX_FILE_COUNT}) gates;
+ *  - a single {@link UNTRACKED_SNIFF_BUFFER_SIZE}-byte read used BOTH for the
+ *    {@link isBinaryContent} sniff AND, when the file fits in the buffer, reused as
+ *    the content (no second read); a larger text file falls back to an
+ *    encoding-aware `readFile` so the runtime decodes straight to a string without
+ *    a full-size Buffer living alongside it (avoids doubling peak memory);
+ *  - an empty-file fast path (no open at all).
+ *
+ * Binary files and files that cannot be read are silently skipped. Returns `[]`
+ * when `cwd` is not a git repo, there are no untracked files, or git is
+ * unavailable.
+ */
+export async function captureUntrackedFiles(
+  cwd: string,
+  opts: CaptureUntrackedOptions = {},
+): Promise<CapturedUntrackedFile[]> {
+  const maxFileSize = opts.maxFileSizeBytes ?? UNTRACKED_MAX_FILE_SIZE_BYTES;
+  const maxTotalSize = opts.maxTotalSizeBytes ?? UNTRACKED_MAX_TOTAL_SIZE_BYTES;
+  const maxFileCount = opts.maxFileCount ?? UNTRACKED_MAX_FILE_COUNT;
+  const sniffBufferSize = opts.sniffBufferSize ?? UNTRACKED_SNIFF_BUFFER_SIZE;
+
+  const listed = runGit(cwd, ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard']);
+  if (!listed || listed.code !== 0 || !listed.stdout) return [];
+
+  const files = listed.stdout.split('\n').filter(Boolean);
+  const result: CapturedUntrackedFile[] = [];
+  let totalSize = 0;
+
+  for (const relPath of files) {
+    // File-count gate.
+    if (result.length >= maxFileCount) break;
+
+    // Zero-I/O skip by extension.
+    if (hasBinaryExtension(relPath)) continue;
+
+    const absPath = path.resolve(cwd, relPath);
+    try {
+      const stats = await fs.promises.stat(absPath);
+      if (!stats.isFile()) continue;
+      const fileSize = stats.size;
+
+      // Per-file size gate.
+      if (fileSize > maxFileSize) continue;
+      // Aggregate size gate — stop once the next file would cross the ceiling.
+      if (totalSize + fileSize > maxTotalSize) break;
+
+      // Empty-file fast path — nothing to open.
+      if (fileSize === 0) {
+        result.push({ path: relPath, content: '' });
+        continue;
+      }
+
+      const sniffSize = Math.min(sniffBufferSize, fileSize);
+      const fd = await fs.promises.open(absPath, 'r');
+      try {
+        const sniffBuf = Buffer.alloc(sniffSize);
+        const { bytesRead } = await fd.read(sniffBuf, 0, sniffSize, 0);
+        const sniff = sniffBuf.subarray(0, bytesRead);
+        if (isBinaryContent(sniff)) continue;
+
+        // Reuse the sniff bytes as content when they cover the whole file; otherwise
+        // decode the full file directly to a string (no full-size Buffer alongside).
+        const content = fileSize <= sniffSize
+          ? sniff.toString('utf-8')
+          : await fs.promises.readFile(absPath, 'utf-8');
+        result.push({ path: relPath, content });
+        totalSize += fileSize;
+      } finally {
+        await fd.close();
+      }
+    } catch {
+      // Skip files we can't stat/read.
+    }
+  }
+
+  return result;
 }

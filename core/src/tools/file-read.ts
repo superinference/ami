@@ -16,9 +16,9 @@ import { memoryFreshnessReminder } from '../memory';
 import { getFileReadingLimits, getFileReadPromptFlags, getLineNumberStyle, getFileReadErrorOnBudget, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
 import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE, readFileRange, tailFile } from './read-file-range';
 import { log } from '../logger';
+import { KNOWN_BINARY_EXTENSIONS, isBinaryByExtension, checkBinaryContent } from '../utils/binary';
 
 const DEFAULT_LIMIT = 2000;
-const BINARY_CHECK_BYTES = 8192;
 /**
  * Hard OOM backstop for a FULL (un-ranged) text read, even when `allow_large`
  * bypasses the 256KB partial-view cap. A read above this is rejected with a
@@ -214,42 +214,10 @@ export function validateImageFile(filePath: string): { valid: boolean; error?: s
   return { valid: true };
 }
 
-export const KNOWN_BINARY_EXTENSIONS = new Set([
-  // Executables & shared libraries
-  '.exe', '.dll', '.so', '.dylib', '.o', '.obj', '.a', '.lib', '.bin', '.app',
-  '.wasm', '.class', '.pyc', '.pyo', '.dex', '.rlib',
-  // Archives & compressed
-  '.zip', '.gz', '.tar', '.tgz', '.bz2', '.xz', '.z', '.7z', '.rar', '.lz4', '.zst',
-  '.jar', '.war', '.ear', '.iso', '.img', '.dmg',
-  // Databases
-  '.dat', '.data', '.db', '.sqlite', '.sqlite3', '.mdb', '.idx',
-  // Office / documents (binary formats)
-  '.xlsm', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt',
-  '.odt', '.ods', '.odp',
-  // Data serialisation
-  '.parquet', '.avro', '.orc', '.feather', '.arrow',
-  '.protobuf', '.pb', '.msgpack',
-  // Media — audio
-  '.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a', '.opus', '.wma', '.aiff',
-  // Media — video
-  '.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v', '.mpeg', '.mpg',
-  // Media — image (non-viewable; viewable images handled separately)
-  '.heic', '.heif', '.tiff', '.tif',
-  // E-books
-  '.epub', '.mobi',
-  // Fonts
-  '.ttf', '.otf', '.woff', '.woff2', '.eot',
-  // Design & 3D assets
-  '.psd', '.ai', '.eps', '.sketch', '.fig', '.xd', '.blend', '.fbx', '.3ds', '.max', '.stl', '.glb',
-  // Flash
-  '.swf', '.fla',
-  // OS installers & packages
-  '.msi', '.deb', '.rpm', '.apk', '.pkg', '.cab', '.appimage',
-  // Lock / profiling data
-  '.lockb',
-  // Native addons
-  '.node',
-]);
+// Binary-detection primitives live in the dependency-free `utils/binary` leaf so a
+// low-level util (git untracked-file capture) can reuse the SAME heuristic without
+// importing this heavy tool module. Re-exported here to preserve file-read's API.
+export { KNOWN_BINARY_EXTENSIONS, isBinaryByExtension, checkBinaryContent };
 
 
 /**
@@ -1842,10 +1810,6 @@ export function parsePageRange(pages: string): { start: number; end: number; err
   return { start, end };
 }
 
-export function isBinaryByExtension(ext: string): boolean {
-  return KNOWN_BINARY_EXTENSIONS.has(ext.toLowerCase());
-}
-
 /**
  * Validate and coerce a model-supplied `offset`/`limit` line parameter. Accepts a
  * real number or a numeric string (several providers serialize numbers as strings)
@@ -1940,28 +1904,6 @@ export function classifyPdfError(message: string): string {
   }
 }
 
-export async function checkBinaryContent(filePath: string): Promise<boolean> {
-  const fd = await fs.promises.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(BINARY_CHECK_BYTES);
-    const { bytesRead } = await fd.read(buffer, 0, BINARY_CHECK_BYTES, 0);
-    if (bytesRead === 0) return false;
-    // Two-part heuristic (mirrors Claude Code's isBinaryContent):
-    //  (a) any NUL byte → binary immediately;
-    //  (b) non-printable control-character DENSITY — count control bytes (<32)
-    //      other than tab(9)/LF(10)/CR(13); if >10% of the sampled bytes are
-    //      non-printable control chars the content is binary. Catches binaries
-    //      (compiled objects, compressed blobs, UTF-16-without-BOM) that are
-    //      sparse on NULs but dense in other control bytes.
-    let nonPrintable = 0;
-    for (let i = 0; i < bytesRead; i++) {
-      const b = buffer[i];
-      if (b === 0) return true;
-      if (b < 32 && b !== 9 && b !== 10 && b !== 13) nonPrintable++;
-    }
-    return nonPrintable / bytesRead > 0.1;
-  } finally {
-    await fd.close();
-  }
-}
+// checkBinaryContent now lives in `utils/binary` (canonical heuristic) and is
+// re-exported above.
 
