@@ -179,6 +179,83 @@ function formatReferencesResult(result: unknown): string {
   return lines.join('\n');
 }
 
+/**
+ * Recursively total the symbols in a hierarchical `DocumentSymbol[]`, descending
+ * into every `children` array — so a class with five nested methods counts as six,
+ * not one. Parity with Claude Code's `countSymbols` (LSPTool.ts L515-526): the flat
+ * `SymbolInformation[]` shape has no nesting, so its count is just `.length` and is
+ * handled by the caller's shape discrimination rather than here.
+ */
+export function countSymbols(symbols: DocumentSymbol[]): number {
+  let count = symbols.length;
+  for (const symbol of symbols) {
+    if (symbol.children && symbol.children.length > 0) {
+      count += countSymbols(symbol.children);
+    }
+  }
+  return count;
+}
+
+/** Distinct file count from a set of URIs, ignoring missing/empty entries. */
+function countUniqueFiles(uris: Array<string | undefined>): number {
+  return new Set(uris.filter((u): u is string => !!u)).size;
+}
+
+/**
+ * Structured `{ resultCount, fileCount }` for an LSP operation's (post-filter,
+ * post-call-hierarchy-expansion) result, carried as tool-result metadata so a
+ * programmatic caller reads the hit count without re-parsing the formatted text.
+ * Parity with Claude Code's `formatResult` return (`{ formatted, resultCount,
+ * fileCount }`, LSPTool.ts L638-828): `documentSymbol` uses the recursive
+ * `countSymbols` for the hierarchical shape (and flat `.length` for
+ * `SymbolInformation[]`), every location-bearing op counts valid hits + distinct
+ * files, and `hover` is 1/0 by presence.
+ */
+export function computeLspCounts(op: LspOperation, result: unknown): { resultCount: number; fileCount: number } {
+  switch (op) {
+    case 'goToDefinition':
+    case 'goToImplementation': {
+      const arr = (Array.isArray(result) ? result : result == null ? [] : [result]) as Array<Location | LocationLink>;
+      const valid = arr.map(toLocation).filter((l) => l && l.uri);
+      return { resultCount: valid.length, fileCount: countUniqueFiles(valid.map((l) => l.uri)) };
+    }
+    case 'findReferences': {
+      const arr = (Array.isArray(result) ? result : []) as Location[];
+      const valid = arr.filter((l) => l && l.uri);
+      return { resultCount: valid.length, fileCount: countUniqueFiles(valid.map((l) => l.uri)) };
+    }
+    case 'hover':
+      return { resultCount: result ? 1 : 0, fileCount: result ? 1 : 0 };
+    case 'documentSymbol': {
+      if (!Array.isArray(result)) return { resultCount: 0, fileCount: 0 };
+      const arr = (result as unknown[]).filter((x): x is DocumentSymbol | SymbolInformation => x != null && typeof x === 'object');
+      if (arr.length === 0) return { resultCount: 0, fileCount: 0 };
+      // Hierarchical DocumentSymbol[] (has `range`) → recursive total; flat
+      // SymbolInformation[] (has `location`) → length.
+      const isFlat = 'location' in arr[0];
+      const count = isFlat ? arr.length : countSymbols(arr as DocumentSymbol[]);
+      return { resultCount: count, fileCount: 1 };
+    }
+    case 'workspaceSymbol': {
+      const arr = (Array.isArray(result) ? result : []) as SymbolInformation[];
+      const valid = arr.filter((s) => s && s.location && s.location.uri);
+      return { resultCount: valid.length, fileCount: countUniqueFiles(valid.map((s) => s.location.uri)) };
+    }
+    case 'prepareCallHierarchy': {
+      const arr = (Array.isArray(result) ? result : []) as CallHierarchyItem[];
+      return { resultCount: arr.length, fileCount: countUniqueFiles(arr.map((i) => i?.uri)) };
+    }
+    case 'incomingCalls':
+    case 'outgoingCalls': {
+      const arr = (Array.isArray(result) ? result : []) as Array<IncomingCall | OutgoingCall>;
+      const itemOf = (c: IncomingCall | OutgoingCall) =>
+        op === 'incomingCalls' ? (c as IncomingCall).from : (c as OutgoingCall).to;
+      const valid = arr.filter((c) => itemOf(c));
+      return { resultCount: valid.length, fileCount: countUniqueFiles(valid.map((c) => itemOf(c)?.uri)) };
+    }
+  }
+}
+
 /** Recursively render a DocumentSymbol node with 2-space-per-level indent. */
 function formatDocumentSymbolNode(symbol: DocumentSymbol, indent = 0): string[] {
   const prefix = '  '.repeat(indent);
@@ -428,7 +505,13 @@ export const lspTool: ToolDefinition = {
 
       result = await filterIgnoredResult(operation, result, context.cwd);
 
-      return { output: formatResult(operation, result) };
+      // PARITY (additive): surface Claude Code's structured `{ resultCount,
+      // fileCount }` as result metadata — recursive nested-symbol total for a
+      // hierarchical documentSymbol — so a programmatic caller reads the hit
+      // count without re-parsing the formatted text. The rendered `output` is
+      // unchanged.
+      const { resultCount, fileCount } = computeLspCounts(operation, result);
+      return { output: formatResult(operation, result), metadata: { resultCount, fileCount } };
     } catch (e) {
       return { output: `Error performing ${operation}: ${e instanceof Error ? e.message : String(e)}`, isError: true };
     }

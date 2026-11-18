@@ -422,7 +422,16 @@ export interface ToolResult {
    *    in AMI (the permission layer is allow/deny, with no in-prompt diff editor);
    *    emitted to match Claude's output contract.
    *  - `gitDiff`: {@link GitDiffSummary} — change counts + unified patch (omitted on
-   *    the diff-cost-capped success paths, where no per-line diff is computed). */
+   *    the diff-cost-capped success paths, where no per-line diff is computed).
+   *
+   *  Keys the lsp tool sets on a successful query (parity with Claude Code's LSPTool
+   *  `formatResult` structured return), so a programmatic caller reads the hit count
+   *  without re-parsing the formatted text:
+   *  - `resultCount`: `number` — total hits for the operation. For a hierarchical
+   *    `documentSymbol` result this is the RECURSIVE nested-symbol total (a class
+   *    plus its methods), matching Claude's `countSymbols`; for other ops it is the
+   *    count of valid locations/symbols/calls (1/0 for `hover`).
+   *  - `fileCount`: `number` — number of DISTINCT files the hits span. */
   metadata?: Record<string, unknown>;
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
    *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
