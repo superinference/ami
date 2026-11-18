@@ -43,6 +43,7 @@ import { resolveBedrockModelId, getBedrockInferenceProfiles } from './bedrock';
 import { assertValidStsEnvCredentials, readAwsIniCredentials } from './utils/aws';
 import { isEnvTruthy } from './analytics';
 import { log, logError, recordDiagnostic } from './logger';
+import { buildRequestDumpEntries, getOrCreateDumpState } from './dump-prompts';
 import { partitionAndSortTools } from './tools/tool-utils';
 import { memoizeToolSchema } from './tools/tool-schema-cache';
 
@@ -1187,11 +1188,19 @@ export function withPromptDump(
       const body = init.body;
       const ts = timestamp;
       // Defer the parse+serialize (body carries the system prompt + every tool
-      // schema — can be MBs) so it never blocks the live request.
+      // schema — can be MBs) so it never blocks the live request. The per-session
+      // DumpState deduplicates: the (multi-MB) system/tools blob is emitted ONCE
+      // as `init`, then only as `system_update` when it actually drifts, and each
+      // turn adds just the new user `message` — not the whole body again.
       defer(() => {
         try {
-          const data: unknown = JSON.parse(body);
-          safeWrite(JSON.stringify({ type: 'request', timestamp: ts, data }));
+          const parsed: unknown = JSON.parse(body);
+          if (parsed !== null && typeof parsed === 'object') {
+            const state = getOrCreateDumpState(sessionId);
+            for (const line of buildRequestDumpEntries(state, parsed as Record<string, unknown>, ts)) {
+              safeWrite(line);
+            }
+          }
         } catch { /* ignore non-JSON / malformed body */ }
       });
     }

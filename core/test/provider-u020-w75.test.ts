@@ -147,16 +147,22 @@ describe('withPromptDump — request + response capture', () => {
     const cap = makeCapture();
     const base = (async () => jsonResponse({ id: 'resp-1', choices: [] })) as unknown as typeof globalThis.fetch;
     const wrapped = withPromptDump(base, {
-      enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), now: () => 'TS',
+      enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), now: () => 'TS', sessionId: 'cap-json',
     });
 
     const body = JSON.stringify({ model: 'm', system: 'be concise', messages: [{ role: 'user', content: 'hi' }] });
     const res = await wrapped('http://api/v1/chat' as unknown as string, { method: 'POST', body });
 
     // Request is captured synchronously (defer=fn()) BEFORE the response resolves.
-    const reqEntry = cap.parsed().find((e) => e.type === 'request');
-    assert.ok(reqEntry, 'request entry written');
-    assert.deepEqual((reqEntry!.data as { model: string }).model, 'm');
+    // The first request of a session emits a deduplicated `init` entry (system +
+    // model + tools, messages stripped) plus one `message` entry per new user turn.
+    const initEntry = cap.parsed().find((e) => e.type === 'init');
+    assert.ok(initEntry, 'init entry written');
+    assert.deepEqual((initEntry!.data as { model: string }).model, 'm');
+    assert.equal((initEntry!.data as { messages?: unknown }).messages, undefined, 'messages stripped from init');
+    const msgEntry = cap.parsed().find((e) => e.type === 'message');
+    assert.ok(msgEntry, 'user message entry written');
+    assert.deepEqual((msgEntry!.data as { content: string }).content, 'hi');
 
     // Response capture is fire-and-forget — wait for it.
     await waitUntil(() => cap.parsed().some((e) => e.type === 'response'));
@@ -167,11 +173,33 @@ describe('withPromptDump — request + response capture', () => {
     assert.deepEqual(await res.json(), { id: 'resp-1', choices: [] });
   });
 
+  it('deduplicates per session: emits init ONCE, then system_update only on drift, with per-turn message entries', async () => {
+    const cap = makeCapture();
+    const base = (async () => jsonResponse({ ok: true })) as unknown as typeof globalThis.fetch;
+    const wrapped = withPromptDump(base, {
+      enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), now: () => 'TS', sessionId: 'dedup-session',
+    });
+    const post = (b: unknown) => wrapped('http://api' as unknown as string, { method: 'POST', body: JSON.stringify(b) });
+
+    // Turn 1: first request → init + the first user message.
+    await post({ model: 'm', system: 'sys-A', tools: [{ name: 't1' }], messages: [{ role: 'user', content: 'u1' }] });
+    // Turn 2: SAME system/tools, one new user message → NO init/system_update, just the new message.
+    await post({ model: 'm', system: 'sys-A', tools: [{ name: 't1' }], messages: [{ role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }] });
+    // Turn 3: system changed → a system_update (not another init), no new user message.
+    await post({ model: 'm', system: 'sys-B-longer', tools: [{ name: 't1' }], messages: [{ role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }] });
+
+    const types = cap.parsed().map((e) => e.type);
+    assert.equal(types.filter((t) => t === 'init').length, 1, 'init emitted exactly once');
+    assert.equal(types.filter((t) => t === 'system_update').length, 1, 'system_update on drift');
+    const messages = cap.parsed().filter((e) => e.type === 'message').map((e) => (e.data as { content: string }).content);
+    assert.deepEqual(messages, ['u1', 'u2'], 'only NEW user messages, assistant turns skipped');
+  });
+
   it('parses an SSE response into decoded data chunks', async () => {
     const cap = makeCapture();
     const chunks = [{ delta: 'a' }, { delta: 'b' }];
     const base = (async () => sseResponse(chunks)) as unknown as typeof globalThis.fetch;
-    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn() });
+    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), sessionId: 'cap-sse' });
 
     const res = await wrapped('http://api' as unknown as string, { method: 'POST', body: '{"model":"m"}' });
     await waitUntil(() => cap.parsed().some((e) => e.type === 'response'));
@@ -205,29 +233,29 @@ describe('withPromptDump — request + response capture', () => {
   it('does NOT capture the response body on a non-ok response', async () => {
     const cap = makeCapture();
     const base = (async () => jsonResponse({ error: 'boom' }, { status: 500 })) as unknown as typeof globalThis.fetch;
-    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn() });
+    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), sessionId: 'cap-nonok' });
     await wrapped('http://api' as unknown as string, { method: 'POST', body: '{"model":"m"}' });
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
     // Only the request is recorded; the error response is not dumped.
     assert.equal(cap.parsed().filter((e) => e.type === 'response').length, 0);
-    assert.equal(cap.parsed().filter((e) => e.type === 'request').length, 1);
+    assert.equal(cap.parsed().filter((e) => e.type === 'init').length, 1);
   });
 
   it('swallows a malformed (non-JSON) request body without throwing', async () => {
     const cap = makeCapture();
     const base = (async () => jsonResponse({ ok: true })) as unknown as typeof globalThis.fetch;
-    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn() });
+    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: cap.write, defer: (fn) => fn(), sessionId: 'cap-malformed' });
     const res = await wrapped('http://api' as unknown as string, { method: 'POST', body: 'not-json{' });
     await new Promise((r) => setImmediate(r));
-    assert.equal(cap.parsed().some((e) => e.type === 'request'), false); // malformed -> skipped
+    assert.equal(cap.parsed().some((e) => e.type === 'init'), false); // malformed -> skipped
     assert.equal(res.ok, true); // live call unaffected
   });
 
   it('swallows writer errors — the live request always returns', async () => {
     const throwingWrite = () => { throw new Error('disk full'); };
     const base = (async () => jsonResponse({ id: 'x' })) as unknown as typeof globalThis.fetch;
-    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: throwingWrite, defer: (fn) => fn() });
+    const wrapped = withPromptDump(base, { enabled: true, dir: '/ignored', write: throwingWrite, defer: (fn) => fn(), sessionId: 'cap-writer' });
     const res = await wrapped('http://api' as unknown as string, { method: 'POST', body: '{"model":"m"}' });
     await new Promise((r) => setImmediate(r));
     assert.equal(res.ok, true);
@@ -256,9 +284,11 @@ describe('withPromptDump — writes JSONL to disk (default writer)', () => {
     await waitUntil(() => fs.existsSync(file) && fs.readFileSync(file, 'utf-8').includes('"type":"response"'));
 
     const entries = fs.readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
-    const req = entries.find((e) => e.type === 'request');
+    const init = entries.find((e) => e.type === 'init');
+    const msg = entries.find((e) => e.type === 'message');
     const resp = entries.find((e) => e.type === 'response');
-    assert.equal(req.data.model, 'm');
+    assert.equal(init.data.model, 'm');
+    assert.equal(msg.data.content, 'hi');
     assert.equal(resp.data.id, 'disk-resp');
   });
 });
@@ -318,11 +348,14 @@ describe('AMI_DUMP_PROMPTS — end-to-end through streamChatCompletion', () => {
     await waitUntil(() => fs.existsSync(file) && fs.readFileSync(file, 'utf-8').includes('"type":"response"'));
 
     const entries = fs.readFileSync(file, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
-    const req = entries.find((e) => e.type === 'request');
+    const init = entries.find((e) => e.type === 'init');
+    const msg = entries.find((e) => e.type === 'message');
     const resp = entries.find((e) => e.type === 'response');
-    assert.ok(req, 'request captured through the real fetch chain');
-    assert.equal(req.data.model, 'test-model');
-    assert.ok(Array.isArray(req.data.messages));
+    assert.ok(init, 'init captured through the real fetch chain');
+    assert.equal(init.data.model, 'test-model');
+    assert.equal(init.data.messages, undefined, 'messages stripped from the init blob');
+    assert.ok(msg, 'user message captured as its own entry');
+    assert.equal(msg.data.role, 'user');
     assert.ok(resp, 'streaming response captured');
     assert.equal((resp.data as { stream: boolean }).stream, true);
     assert.ok(Array.isArray((resp.data as { chunks: unknown[] }).chunks));
