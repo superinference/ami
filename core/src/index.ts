@@ -111,8 +111,9 @@ export {
   permissionRuleValueToString, escapeRuleContent, unescapeRuleContent, normalizeToolName,
   resolveFileOperationType, resolveConfigFolderScope,
   isPermissivePermissionMode, dynamicAllowPatternToken,
+  TOOL_PATTERN_CLASS, TOOL_PATTERN_CLASSES, toolPatternClass, isFilePatternTool, isBashPrefixTool,
 } from './permissions';
-export type { PermissionRuleValue, FileOperationType, ConfigFolderScope } from './permissions';
+export type { PermissionRuleValue, FileOperationType, ConfigFolderScope, ToolPatternClass } from './permissions';
 export { verdictRank, holdsOver } from './permissions';
 // Delegated permission-prompt tool result parsing (parity: --permission-prompt-tool).
 // Wired through common/tool-executor; re-exported here so the building block is part of
@@ -666,7 +667,7 @@ export { mapChildToSubagentEvent, summarizeToolInput, createSubagentRelay, build
 export type { SubagentRelay, SubagentState, RelayMessage, RelaySendResult, RelayRejectReason, RelayCompletion, RelayIdle, InvocationKind, InvocationEdge, AgentInvocationLedger } from './tools/subagent-relay';
 export { parseEnvInt, parseEnvFloat, parseEnvBool, isEnvDefinedFalsy, resolveEnvVar, parseDotenv, loadDotenv, validateBoundedEnvInt, collectEnvLimitDiagnostics, AMI_ENV_INT_LIMITS } from './utils/env';
 export type { DotenvParseOptions, LoadDotenvOptions, EnvIntBounds, EnvIntStatus, BoundedEnvIntResult, EnvLimitSpec, EnvLimitDiagnostic } from './utils/env';
-export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode } from './permissions';
+export { normalizePermissionMode, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, cyclePermissionMode, permissionModeSchema, externalPermissionModeSchema } from './permissions';
 
 // --- batch #11 additive parity exports ---
 export { cronListTool, isActiveJob, sortJobsForDisplay, CRON_LIST_STATUSES } from './tools/cron-list';

