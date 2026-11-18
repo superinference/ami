@@ -541,6 +541,28 @@ export class FileCache {
   }
 
   /**
+   * Dedup-busting isolated snapshot: {@link clone} this cache into a new, fully
+   * independent instance, then FORGET a single `path` in the copy so a subsequent
+   * read of that path through the clone cannot be short-circuited by a stale
+   * "unchanged"/cached entry — it is forced to return the file's real current
+   * content. The live cache is left completely untouched (the deletion happens only
+   * in the copy), so a probe/re-read can be run in isolation without polluting the
+   * session's read-before-edit state.
+   *
+   * Mirrors Claude Code's `updateMagicDoc` dedup-bust: it `cloneFileStateCache(x)`
+   * then `clonedReadFileState.delete(docPath)` so `FileReadTool` returns the actual
+   * doc content (not a `file_unchanged` stub) to re-detect the header, while keeping
+   * the clone isolated from the main session's cache. This is the ONE canonical
+   * "clone + per-path invalidation" primitive — callers must not re-chain
+   * `clone()` + `delete()` by hand.
+   */
+  cloneForFreshRead(path: string): FileCache {
+    const copy = this.clone();
+    copy.delete(path);
+    return copy;
+  }
+
+  /**
    * Reconcile another cache INTO this one with timestamp-wins semantics: for each
    * path the other cache knows, adopt its entry ONLY when this cache has no entry
    * for that path OR the other's entry is strictly NEWER (larger `mtime`). An
