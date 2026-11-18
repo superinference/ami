@@ -201,7 +201,179 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
       isOptional: true,
     },
   },
+  // Interpreters. These declare the structured per-argument attributes Claude's
+  // fig specs carry (`isModule` on `python -m <module>`, `isCommand`+`isDangerous`
+  // on an inline-code flag like `python -c <code>` / `node -e <code>`, and an
+  // `isScript` positional) so the prefix extractor ({@link buildSpecPrefix}) can
+  // FOLD a module name into a canonical prefix (`python -m http.server`) while
+  // STOPPING at inline code — the code must never become part of a grantable
+  // prefix. Mirrors Claude Code's python `-c` break + `-m`/isModule inclusion
+  // (src/utils/shell/specPrefix.ts L103-119, L229-236).
+  {
+    name: 'python',
+    description: 'Python interpreter',
+    options: [
+      { name: '-m', description: 'Run a library module as a script', args: { name: 'module', isModule: true } },
+      { name: '-c', description: 'Run inline code passed as a string', args: { name: 'cmd', isCommand: true, isDangerous: true } },
+    ],
+    args: { name: 'script', description: 'Script file to run', isScript: true, isOptional: true },
+  },
+  {
+    name: 'python3',
+    description: 'Python 3 interpreter',
+    options: [
+      { name: '-m', description: 'Run a library module as a script', args: { name: 'module', isModule: true } },
+      { name: '-c', description: 'Run inline code passed as a string', args: { name: 'cmd', isCommand: true, isDangerous: true } },
+    ],
+    args: { name: 'script', description: 'Script file to run', isScript: true, isOptional: true },
+  },
+  {
+    name: 'node',
+    description: 'Node.js interpreter',
+    options: [
+      { name: ['-e', '--eval'], description: 'Evaluate inline code', args: { name: 'script', isCommand: true, isDangerous: true } },
+      { name: ['-p', '--print'], description: 'Evaluate inline code and print the result', args: { name: 'script', isCommand: true, isDangerous: true } },
+    ],
+    args: { name: 'script', description: 'Script file to run', isScript: true, isVariadic: true, isOptional: true },
+  },
+  {
+    name: 'ruby',
+    description: 'Ruby interpreter',
+    options: [
+      { name: '-e', description: 'Evaluate inline code', args: { name: 'code', isCommand: true, isDangerous: true } },
+    ],
+    args: { name: 'script', description: 'Script file to run', isScript: true, isOptional: true },
+  },
+  {
+    name: 'perl',
+    description: 'Perl interpreter',
+    options: [
+      { name: '-e', description: 'Evaluate inline code', args: { name: 'code', isCommand: true, isDangerous: true } },
+    ],
+    args: { name: 'script', description: 'Script file to run', isScript: true, isOptional: true },
+  },
 ];
+
+const URL_PROTOCOLS = ['http://', 'https://', 'ftp://'];
+
+const toArray = <T>(v: T | T[]): T[] => (Array.isArray(v) ? v : [v]);
+
+/** The option in `spec` whose flag spellings include `flag`, or undefined. */
+function findSpecOption(spec: CommandSpec, flag: string): CommandSpecOption | undefined {
+  return spec.options?.find((o) => optionNames(o).includes(flag));
+}
+
+/** The declared value operands of an option (empty when it takes none). */
+function specOptionArgs(opt: CommandSpecOption | undefined): CommandSpecArgument[] {
+  return opt?.args ? toArray(opt.args) : [];
+}
+
+/**
+ * How many words a scoped prefix extends to for a command, DRIVEN BY the
+ * structured per-argument attributes its spec declares — the parity analogue of
+ * Claude Code's `calculateDepth` (src/utils/shell/specPrefix.ts L139-209), minus
+ * the fig/DEPTH_RULES table (AMI's subcommand-CLI depth lives in permissions.ts's
+ * `BASH_COMMAND_SPECS`; this consumes the attribute model those CLIs lack).
+ *
+ * - an option arg marked `isCommand`/`isModule` (a nested command/module, e.g.
+ *   `python -m <module>`) ⇒ depth 3 (the prefix extends past the flag + operand);
+ * - a positional `isCommand` ⇒ depth to that positional (bounded at 3);
+ * - a `isVariadic` leading positional ⇒ depth 1 (the first word is the whole
+ *   meaningful prefix — e.g. `node a.js b.js`);
+ * - a REQUIRED (`!isOptional`) leading positional ⇒ depth 2;
+ * - an `isDangerous` positional ⇒ depth 3; otherwise depth 2.
+ */
+export function calculateSpecDepth(args: string[], spec: CommandSpec): number {
+  if (spec.options && args.some((a) => a.startsWith('-'))) {
+    for (const a of args) {
+      if (!a.startsWith('-')) continue;
+      const opt = findSpecOption(spec, a);
+      if (opt && specOptionArgs(opt).some((x) => x.isCommand || x.isModule)) return 3;
+    }
+  }
+  if (spec.args) {
+    const arr = toArray(spec.args);
+    if (arr.some((a) => a.isCommand)) {
+      return !Array.isArray(spec.args) && spec.args.isCommand
+        ? 2
+        : Math.min(2 + arr.findIndex((a) => a.isCommand), 3);
+    }
+    if (!spec.subcommands?.length) {
+      if (arr.some((a) => a.isVariadic)) return 1;
+      if (arr[0] && !arr[0].isOptional) return 2;
+    }
+  }
+  return spec.args && toArray(spec.args).some((a) => a.isDangerous) ? 3 : 2;
+}
+
+/**
+ * Whether prefix extraction should STOP at a bare positional `arg`. A path- or
+ * URL-shaped token ends the prefix (a filename / URL must never leak into a
+ * grantable rule) EXCEPT a module name that immediately follows a module flag
+ * (`python -m http.server` — the dotted module looks file-shaped but belongs in
+ * the prefix). Mirrors Claude's `shouldStopAtArg` (specPrefix.ts L211-241).
+ */
+function shouldStopAtSpecArg(arg: string, priorArgs: string[], spec: CommandSpec): boolean {
+  if (arg.startsWith('-')) return true;
+  const dot = arg.lastIndexOf('.');
+  const hasExt = dot > 0 && dot < arg.length - 1 && !arg.substring(dot + 1).includes(':');
+  const hasFile = arg.includes('/') || hasExt;
+  const hasUrl = URL_PROTOCOLS.some((p) => arg.startsWith(p));
+  if (!hasFile && !hasUrl) return false;
+  const prev = priorArgs[priorArgs.length - 1];
+  if (prev) {
+    const opt = findSpecOption(spec, prev);
+    if (opt && specOptionArgs(opt).some((a) => a.isModule)) return false; // module name
+  }
+  return true;
+}
+
+/**
+ * Build a scoped permission prefix for `command` + its `args` from the command's
+ * structured spec. Folds a module flag and its module name into the prefix
+ * (`python -m http.server`), STOPS at an inline-code flag so the code is never
+ * part of a grantable prefix (`python -c '<code>'` → `python`), and stops at a
+ * file/URL operand. Depth is bounded by {@link calculateSpecDepth}. Pure over
+ * `(string, string[], CommandSpec)`. Mirrors Claude's `buildPrefix`
+ * (src/utils/shell/specPrefix.ts L88-137).
+ */
+export function buildSpecPrefix(command: string, args: string[], spec: CommandSpec): string {
+  const maxDepth = calculateSpecDepth(args, spec);
+  const parts = [command];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg || parts.length >= maxDepth) break;
+    if (arg.startsWith('-')) {
+      const oArgs = specOptionArgs(findSpecOption(spec, arg));
+      // Inline-code flag (python -c, node -e): stop — the code after it must never
+      // be folded into a grantable prefix.
+      if (oArgs.some((a) => a.isCommand && a.isDangerous)) break;
+      // Module flag (python -m): fold the flag in; the module name follows.
+      if (oArgs.some((a) => a.isModule)) { parts.push(arg); continue; }
+      break; // any other flag ends the prefix
+    }
+    if (shouldStopAtSpecArg(arg, args.slice(0, i), spec)) break;
+    parts.push(arg);
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Whether `prefix` is a scoped interpreter MODULE-exec form (`python -m
+ * http.server`) — an interpreter root followed by one of its module flags and a
+ * module-shaped name. Such a prefix is a narrow, safe grant (it runs one named
+ * module, not arbitrary code) even though the interpreter root would otherwise be
+ * refused as a bare-shell prefix. Used by the suggestion layer to let the module
+ * form through the bare-shell guard.
+ */
+export function isScopedModulePrefix(prefix: string): boolean {
+  const words = prefix.split(' ');
+  if (words.length !== 3) return false;
+  const spec = getCommandSpec(words[0]!.toLowerCase());
+  if (!spec) return false;
+  const opt = findSpecOption(spec, words[1]!);
+  return !!opt && specOptionArgs(opt).some((a) => a.isModule);
+}
 
 const SPEC_BY_NAME: ReadonlyMap<string, CommandSpec> = new Map(
   COMMAND_SPECS.map((spec) => [spec.name, spec]),

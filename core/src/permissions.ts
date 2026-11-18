@@ -10,6 +10,7 @@ import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystem
 import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS, canonicalizePowerShellCommandName } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
+import { getCommandSpec as getArgCommandSpec, buildSpecPrefix, isScopedModulePrefix } from './tools/bash-command-specs';
 import { unwrapWrapperChain, isBareSubcommandAwareRoot } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
@@ -4026,6 +4027,20 @@ export const SUBCOMMAND_AWARE_ROOTS = new Set([
 ]);
 
 /**
+ * Interpreters whose scoped prefix is driven by the structured per-argument spec
+ * ({@link buildSpecPrefix}) rather than the generic subcommand-shape walk: a
+ * module run (`python -m <module>`) folds the module into the prefix while an
+ * inline-code run (`python -c`, `node -e`) stops at the interpreter. Every name
+ * here is also a {@link BARE_SHELL_PREFIXES} entry (so the suggestion layer still
+ * refuses a bare interpreter prefix); the ONLY form that survives is the scoped
+ * module invocation (see {@link isScopedModulePrefix}). Mirrors Claude's
+ * interpreter `-c`/`-m` special-casing in prefix extraction (specPrefix.ts).
+ */
+const INTERPRETER_SPEC_NAMES: ReadonlySet<string> = new Set([
+  'python', 'python3', 'node', 'ruby', 'perl',
+]);
+
+/**
  * Minimal command-spec model for prefix extraction. For a subcommand-aware CLI
  * it declares the global option flags that CONSUME the following token as their
  * value (so `git -C /repo status` / `kubectl -n kube-system get pods` skip the
@@ -4152,6 +4167,19 @@ export function getSimpleCommandPrefix(command: string): string | null {
   }
   const cmd = tokens[i];
   if (!cmd) return null;
+  // Interpreter module/inline-code prefix: `python -m <module>` folds the module
+  // into a scoped prefix; `python -c <code>` / `node -e <code>` stop at the
+  // interpreter (→ 1 word → null → no scoped rule). Driven by the structured
+  // isModule/isCommand/isDangerous attributes on the command spec, not the generic
+  // subcommand-shape walk below (a module name like `http.server` is not
+  // subcommand-shaped). Mirrors Claude's buildPrefix (utils/shell/specPrefix.ts).
+  if (INTERPRETER_SPEC_NAMES.has(cmd.toLowerCase())) {
+    const aspec = getArgCommandSpec(cmd.toLowerCase());
+    if (aspec) {
+      const p = buildSpecPrefix(cmd, tokens.slice(i + 1), aspec);
+      return p.split(' ').length >= 2 ? p : null;
+    }
+  }
   const spec = bashSpecFor(cmd);
   // Skip leading global flags (and any value they consume) to reach the subcommand.
   i = skipGlobalFlags(tokens, i + 1, spec);
@@ -4323,6 +4351,10 @@ export function suggestAllowPrefix(command: string): string | null {
   // through the shell (Claude's DANGEROUS_SHELL_PREFIXES applied to extraction).
   if (two) {
     const root = two.split(' ')[0]!;
+    // A scoped interpreter MODULE-exec form (`python -m http.server`) runs one
+    // named module, not arbitrary code — a narrow, safe grant to offer even though
+    // the interpreter root is itself a bare-shell prefix. Let it through the guard.
+    if (isScopedModulePrefix(two)) return two;
     return isBareShellPrefix(root) || isPowerShellNeverSuggest(root) ? null : two;
   }
   const one = getFirstWordPrefix(cleaned);
