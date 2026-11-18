@@ -4,7 +4,7 @@ import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types';
 import { execCommand } from '../utils/shell';
 import { generateTempFilePath } from '../utils/tempfile';
-import { detectGitTransientState, classifyRepoRemote } from '../utils/git';
+import { detectGitTransientState, classifyRepoRemote, getStagedDiffSize, isFileStagedForDeletion } from '../utils/git';
 import { parseEnvBool } from '../utils/env';
 import { scanForSecrets } from './tool-utils';
 import { getSessionFileAttribution, getSessionPromptCount, buildAttributionData, normalizeAttributionPath, type AttributionData } from './attribution-store';
@@ -183,6 +183,10 @@ export interface CommitFileContribution {
   totalChars: number;
   /** Fraction (0..1) of the file's current character size the agent authored. */
   ratio: number;
+  /** Present and `true` only when this path is staged for DELETION — its content no
+   *  longer exists on disk, so `totalChars`/`ratio` are naturally 0. Parity:
+   *  Claude Code's `isFileDeleted` gate ({@link isFileStagedForDeletion}). */
+  deleted?: boolean;
 }
 
 /** Structured per-commit attribution introspection record. */
@@ -199,6 +203,12 @@ export interface CommitAttributionNote {
   files: string[];
   /** Count of files in the commit. */
   fileCount: number;
+  /** Approximate character volume of the staged changes this commit recorded,
+   *  from `git diff --cached --stat` via the chars-per-line heuristic
+   *  ({@link getStagedDiffSize}) — a cheap, MEASURED "how much changed" proxy that
+   *  also counts human/untracked-staged edits the per-file agent store misses.
+   *  Omitted when zero. Parity: Claude Code's `getGitDiffSize`. */
+  stagedChangeChars?: number;
   /** Per-file agent character contribution for committed files that the agent
    *  authored this session (omitted when none was tracked). */
   fileContributions?: CommitFileContribution[];
@@ -336,6 +346,7 @@ export function buildAttributionNote(
     promptCount?: number;
     memoriesRecalled?: number;
     attributionData?: AttributionData;
+    stagedChangeChars?: number;
   },
   now: Date = new Date(),
 ): CommitAttributionNote {
@@ -357,6 +368,8 @@ export function buildAttributionNote(
   if (contributionPercent > 0) note.contributionPercent = contributionPercent;
   if (promptCount > 0) note.promptCount = promptCount;
   if (memoriesRecalled > 0) note.memoriesRecalled = memoriesRecalled;
+  const stagedChangeChars = params.stagedChangeChars ?? 0;
+  if (stagedChangeChars > 0) note.stagedChangeChars = stagedChangeChars;
   const byline = formatContributionByline({
     contributionPercent,
     promptCount,
@@ -392,12 +405,16 @@ export function collectCommitFileContributions(
     if (!state) continue;
     let totalChars = 0;
     try { totalChars = _gitCommitFs.readFileSync(abs, { encoding: 'utf-8' }).length; } catch { totalChars = 0; }
-    out.push({
+    const entry: CommitFileContribution = {
       path: rel,
       agentContribution: state.agentContribution,
       totalChars,
       ratio: agentContributionRatio(state, totalChars),
-    });
+    };
+    // Honestly flag a file staged for deletion (its content is gone on disk, so
+    // the 0 totalChars/ratio above are expected, not an unreadable-file error).
+    if (isFileStagedForDeletion(cwd, rel)) entry.deleted = true;
+    out.push(entry);
   }
   return out;
 }
@@ -680,6 +697,18 @@ export const gitCommitTool: ToolDefinition = {
       return { output: `Warning: Potential secrets detected in commit message: ${secrets.map(s => s.label).join(', ')}. Remove secrets before committing.`, isError: true };
     }
 
+    // Gather the staged-state-dependent attribution signals BEFORE committing —
+    // once the commit lands the index matches HEAD, so `git diff --cached` is
+    // empty (staged change volume reads 0) and a staged deletion is no longer
+    // reported by `--name-status`. These MEASURED figures can only be read now.
+    // Computed solely for the opt-in attribution-note introspection surface, so a
+    // commit without it enabled pays no extra git calls.
+    const notesEnabled = attributionNotesEnabled(env);
+    const stagedChangeChars = notesEnabled ? getStagedDiffSize(context.cwd) : 0;
+    const fileContributions = notesEnabled
+      ? collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths)
+      : [];
+
     // Build the final commit message with trailer (config/env-aware attribution).
     const trailer = resolveCommitAttribution(context.cwd);
     const finalMessage = buildFinalMessage(message, trailer);
@@ -724,15 +753,16 @@ export const gitCommitTool: ToolDefinition = {
       // downstream tooling can inspect agent authorship via
       // `git notes --ref=ami-attribution show <sha>`. Best-effort: a notes
       // failure must never fail a successful commit.
-      if (attributionNotesEnabled(env)) {
+      if (notesEnabled) {
         try {
           // rev-parse HEAD always resolves right after a successful commit.
           const sha = (await execCommand('git rev-parse HEAD', execOpts)).stdout.trim();
-          const fileContributions = collectCommitFileContributions(context.sessionId, context.cwd, stagedPaths);
           const clientSurface = resolveClientSurface(env);
           // Versioned, structured authorship payload (per-file agent/human chars,
           // surface breakdown, excluded generated files) — attached only when
           // something was tracked this session. Parity: Claude Code's AttributionData.
+          // Uses the PRE-COMMIT fileContributions captured above (post-commit the
+          // index matches HEAD, so staged-state signals would read empty).
           const attributionData =
             fileContributions.length > 0
               ? buildAttributionData({
@@ -757,6 +787,10 @@ export const gitCommitTool: ToolDefinition = {
             contributionPercent: aggregateAgentContributionPercent(fileContributions),
             promptCount: getSessionPromptCount(context.sessionId),
             memoriesRecalled: countMemoriesRecalled(context.cwd, context.filesRead),
+            // MEASURED staged change volume (incl. human/untracked-staged edits the
+            // per-file agent store misses), captured pre-commit via the
+            // chars-per-line heuristic.
+            stagedChangeChars,
           });
           await writeCommitAttributionNote(sha, note, execOpts);
         } catch { /* best-effort introspection — never fail the commit */ }

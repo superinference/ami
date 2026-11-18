@@ -546,6 +546,61 @@ export function getIsClean(cwd: string, options?: { ignoreUntracked?: boolean })
 }
 
 /**
+ * Average characters per changed line — the heuristic used to turn a
+ * `git diff --stat` line count into an approximate character volume. Parity with
+ * Claude Code's `getGitDiffSize` (utils/commitAttribution.ts), which multiplies
+ * `insertions + deletions` by this constant as a cheap proxy for change size.
+ */
+export const AVG_CHARS_PER_DIFF_LINE = 40;
+
+/**
+ * Approximate the character volume of the STAGED changes in `cwd` (optionally
+ * restricted to `filePath`) from the summary line of `git diff --cached --stat`,
+ * using the {@link AVG_CHARS_PER_DIFF_LINE} chars-per-line heuristic:
+ * `(insertions + deletions) * 40`. A cheap "how much changed" proxy that never
+ * reads a single hunk. Returns `0` when there are no staged changes, the path has
+ * none, or git is unavailable. Parity with Claude Code's `getGitDiffSize`.
+ *
+ * Read-only: uses the shared no-shell {@link runGit} runner with
+ * `--no-optional-locks` so it never disturbs a concurrent index lock.
+ */
+export function getStagedDiffSize(cwd: string, filePath?: string): number {
+  const args = ['--no-optional-locks', 'diff', '--cached', '--stat'];
+  if (filePath !== undefined) args.push('--', filePath);
+  const res = runGit(cwd, args);
+  if (!res || res.code !== 0 || !res.stdout) return 0;
+  let total = 0;
+  for (const line of res.stdout.split('\n')) {
+    // Only the trailing summary line ("N file(s) changed, …") carries the
+    // insertion/deletion counts; per-file rows ("file | 5 ++---") are skipped.
+    if (!line.includes('file changed') && !line.includes('files changed')) continue;
+    const insertMatch = line.match(/(\d+) insertions?/);
+    const deleteMatch = line.match(/(\d+) deletions?/);
+    const insertions = insertMatch ? parseInt(insertMatch[1], 10) : 0;
+    const deletions = deleteMatch ? parseInt(deleteMatch[1], 10) : 0;
+    total += (insertions + deletions) * AVG_CHARS_PER_DIFF_LINE;
+  }
+  return total;
+}
+
+/**
+ * Return `true` when `filePath` is staged for DELETION in `cwd` — the staged
+ * `git diff --cached --name-status` reports a `D` status for it — and `false`
+ * otherwise (modified/added, no staged change, or git unavailable). Parity with
+ * Claude Code's `isFileDeleted` (utils/commitAttribution.ts): lets attribution /
+ * change-size logic honestly flag a file whose content no longer exists on disk.
+ *
+ * Read-only: uses the shared no-shell {@link runGit} runner with
+ * `--no-optional-locks` so it never disturbs a concurrent index lock.
+ */
+export function isFileStagedForDeletion(cwd: string, filePath: string): boolean {
+  const res = runGit(cwd, ['--no-optional-locks', 'diff', '--cached', '--name-status', '--', filePath]);
+  if (!res || res.code !== 0 || !res.stdout) return false;
+  // Format: "D\t<path>" for a staged deletion.
+  return res.stdout.trim().startsWith('D\t');
+}
+
+/**
  * Injectable no-shell git runner for {@link computeDefaultBranch}: takes an argv
  * array, returns trimmed stdout, and THROWS when the invocation fails. The seam
  * lets each call site supply its own runner (e.g. the mockable `enter_worktree`
