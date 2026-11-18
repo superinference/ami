@@ -589,6 +589,28 @@ export interface ProjectConfig {
    */
   worktreeToolsEnabled?: boolean;
   /**
+   * Off-switch for the next-prompt SPECULATION feature (parity: Claude Code's
+   * `speculationEnabled` global-config knob + `isSpeculationEnabled()` gate). Speculation
+   * defaults ON; an explicit `false` disables it. Resolved per workspace by
+   * {@link resolveSpeculationEnabled} across the full config waterfall and fed to the
+   * cli `resolvePromptSuggestionEnabled` waterfall (env override > non-interactive >
+   * this setting) and the `isSpeculationEnabled({ enabled })` gate. Unset keeps the
+   * default-on behavior, so the knob is a pure superset off-switch.
+   */
+  speculationEnabled?: boolean;
+  /**
+   * Opt-OUT of enabling model-default thinking at session start (parity: Claude Code's
+   * `alwaysThinkingEnabled` setting consulted by `shouldEnableThinkingByDefault()`).
+   * AMI already auto-adopts a reasoning model's default thinking level unless the user
+   * pins one ({@link import('../../../common/src/model-thinking').deriveModelDefaultThinking}).
+   * Setting this to `false` SUPPRESSES that auto-on so a reasoning model starts with no
+   * thinking budget (the user can still turn it on per-session with `/thinking`). The
+   * `MAX_THINKING_TOKENS` env var still wins (a positive value forces default-on, `0`
+   * forces off). Unset/`true` keeps AMI's default (auto-on for reasoning models).
+   * Resolved by {@link shouldEnableThinkingByDefault} across the full config waterfall.
+   */
+  alwaysThinkingEnabled?: boolean;
+  /**
    * Persisted auto-connect-to-IDE toggle (parity: Claude Code's `autoConnectIde`
    * settings key / the `addIde` waterfall in useIDEIntegration.ts). ONE enabling
    * input to the engine's IDE auto-connect waterfall ({@link import('./mcp').shouldAutoConnectIde});
@@ -1528,6 +1550,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['sessionMemoryEnabled', 'boolean'], ['teamMemoryEnabled', 'boolean'],
   ['enableTitleGeneration', 'boolean'],
   ['worktreeToolsEnabled', 'boolean'], ['terminalProgressBarEnabled', 'boolean'],
+  ['speculationEnabled', 'boolean'], ['alwaysThinkingEnabled', 'boolean'],
   ['showTurnDuration', 'boolean'], ['autoConnectIde', 'boolean'],
   // Cosmetic / output-detail startup knobs (see ProjectConfig) bridged to their existing
   // cli env knobs by {@link applyConfigStartupKnobs} — declared here so they are
@@ -3217,6 +3240,8 @@ export function mergeConfigs(
     if (layer.teamMemoryEnabled !== undefined) merged.teamMemoryEnabled = layer.teamMemoryEnabled;
     if (layer.enableTitleGeneration !== undefined) merged.enableTitleGeneration = layer.enableTitleGeneration;
     if (layer.worktreeToolsEnabled !== undefined) merged.worktreeToolsEnabled = layer.worktreeToolsEnabled;
+    if (layer.speculationEnabled !== undefined) merged.speculationEnabled = layer.speculationEnabled;
+    if (layer.alwaysThinkingEnabled !== undefined) merged.alwaysThinkingEnabled = layer.alwaysThinkingEnabled;
     if (layer.autoConnectIde !== undefined) merged.autoConnectIde = layer.autoConnectIde;
     if (layer.terminalProgressBarEnabled !== undefined) merged.terminalProgressBarEnabled = layer.terminalProgressBarEnabled;
     if (layer.showTurnDuration !== undefined) merged.showTurnDuration = layer.showTurnDuration;
@@ -3400,6 +3425,66 @@ export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
     managed,
   );
   return merged.teamMemoryEnabled ?? true;
+}
+
+/**
+ * The persisted {@link ProjectConfig.speculationEnabled} flag for `cwd`, merged across
+ * the full config waterfall (managed > global > project > local). Returns the raw
+ * tri-state (`true` / `false` / `undefined` when unset) so a caller can distinguish an
+ * explicit opt-out from the default — the cli `resolvePromptSuggestionEnabled` waterfall
+ * treats `undefined` as the default-on case, and only an explicit `false` disables
+ * next-prompt speculation. A broken/untrusted managed policy fails closed and is treated
+ * as absent so a speculation lookup never aborts startup. Parity: Claude Code reading the
+ * `speculationEnabled` global-config knob for `isSpeculationEnabled()`.
+ */
+export function resolveSpeculationEnabled(cwd: string): boolean | undefined {
+  let managed: ProjectConfig | null = null;
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return merged.speculationEnabled;
+}
+
+/**
+ * Whether thinking should be ENABLED BY DEFAULT at session start (parity: Claude Code's
+ * `shouldEnableThinkingByDefault()` in utils/thinking.ts). Ordered gate:
+ *   1. the `MAX_THINKING_TOKENS` env var, when set to a finite number, wins — a positive
+ *      value forces default-on, `0` (or negative) forces off (matches the cli's
+ *      `MAX_THINKING_TOKENS` handling and Claude's `parseInt(...) > 0`);
+ *   2. an explicit {@link ProjectConfig.alwaysThinkingEnabled} `=== false` opts OUT;
+ *   3. otherwise default ON.
+ * Consumed by {@link import('../../../common/src/model-thinking').deriveModelDefaultThinking}
+ * so a reasoning model's auto-adopted default thinking level is suppressed when the user
+ * has opted out, without changing an explicitly-pinned level. `cwd` selects the config
+ * waterfall (managed > global > project > local); a broken managed policy fails closed
+ * and is treated as absent so the lookup never aborts a model switch.
+ */
+export function shouldEnableThinkingByDefault(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const maxThinkingTokens = env.MAX_THINKING_TOKENS;
+  if (maxThinkingTokens !== undefined && maxThinkingTokens.trim() !== '') {
+    const n = Number(maxThinkingTokens);
+    if (Number.isFinite(n)) return n > 0;
+  }
+  let managed: ProjectConfig | null = null;
+  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const merged = mergeConfigs(
+    {},
+    {},
+    loadProjectConfig(cwd),
+    loadGlobalConfig(),
+    loadLocalConfig(cwd),
+    managed,
+  );
+  return merged.alwaysThinkingEnabled !== false;
 }
 
 /**
