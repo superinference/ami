@@ -256,7 +256,19 @@ describe('session lock diagnostics (getSessionLockInfo / getAllLockInfo)', () =>
 
   it('reports a dead holder as inactive (reclaimable)', () => {
     const dir = mkdir();
-    acquireSessionLock(dir); // real file on disk
+    // Reuse-aware contract: a self-held PID is always live, so simulate a DEAD,
+    // non-self holder. Identity present (processStartTimeMs) engages the
+    // fail-closed probe; an absent PID (isPidAlive -> false) resolves to 'exited'
+    // => provably gone => reclaimable => active:false.
+    fs.writeFileSync(
+      path.join(dir, '.session.lock'),
+      JSON.stringify({
+        pid: process.pid + 1,
+        startedAt: Date.now(),
+        execPath: process.execPath,
+        processStartTimeMs: 1,
+      }),
+    );
     const info = getSessionLockInfo(dir, { isPidAlive: () => false });
     assert.ok(info);
     assert.equal(info!.active, false);

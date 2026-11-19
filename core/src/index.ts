@@ -810,3 +810,10 @@ export type {
   HangWatchdogDetectionLoop,
   HangWatchdogDetectionLoopConfig,
 } from './hang-detector';
+// --- Fleet attention policy (pure liveness/attention reducer; wired by common/src/status-reconcile.ts + event-processor.ts) ---
+export * from './attention-policy';
+// --- Autonomy safety breakers (crash-loop respawn throttle + process-growth/fork-bomb breaker; wired by common/src/tool-guardrails.ts) ---
+export * from './respawn-throttle';
+export * from './process-growth';
+// --- Tool-output bounding (paging/truncation primitives; wired by common/src/stream/backpressure.ts + tool results) ---
+export * from './tool-output-limits';
