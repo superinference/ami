@@ -160,9 +160,158 @@ export function processSandboxPermissionResponse(params: {
   host: string;
   allow: boolean;
 }): boolean {
+  // The in-flight request for this host is now resolved (either way): drop the
+  // worker-side pending marker if it matches, and splice any leader-side queue
+  // entry so a stale request never lingers after a decision.
+  if (pendingSandboxRequest && pendingSandboxRequest.requestId === params.requestId.trim()) {
+    pendingSandboxRequest = null;
+  }
+  resolveWorkerSandboxRequest(params.requestId);
   if (!params.allow) return false;
   recordSandboxHostGrant(params.host);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// In-flight per-host egress approval requests — the leader-side reviewable QUEUE
+// and the worker-side pending marker. PARITY: Claude's AppState
+// `workerSandboxPermissions.queue` + `pendingSandboxRequest`
+// (state/AppStateStore.ts L362-384). The grant store above records the OUTCOME of
+// an approval; this models the REQUESTS still awaiting a leader decision — the
+// piece the grant store alone lacks. A sandboxed WORKER that hits a
+// non-allowlisted host escalates a request (`pendingSandboxRequest` on its side)
+// to the leader, whose queue holds every such request with a selected index for
+// review/navigation; the leader's allow/deny dequeues it and the worker's grant is
+// applied by {@link processSandboxPermissionResponse}.
+// ---------------------------------------------------------------------------
+
+/**
+ * One in-flight per-host egress approval request, as held in the leader-side
+ * queue. Mirrors Claude's `workerSandboxPermissions.queue` entry shape.
+ */
+export interface WorkerSandboxRequest {
+  requestId: string;
+  workerId: string;
+  workerName: string;
+  workerColor?: string;
+  /** The network host the worker needs egress to (DNS, case-insensitive). */
+  host: string;
+  /** Epoch ms the request entered the queue (ordering / staleness display). */
+  createdAt: number;
+}
+
+/** Leader-side queue of worker egress requests awaiting a decision. */
+const workerSandboxRequestQueue: WorkerSandboxRequest[] = [];
+/** The currently-selected queue entry index (for leader review UI navigation). */
+let selectedSandboxRequestIndex = 0;
+/** Worker-side pending request shown while waiting for the leader's decision. */
+let pendingSandboxRequest: { requestId: string; host: string } | null = null;
+
+/** The selected index, made safe for the current queue length (0 when empty). */
+function safeSelectedSandboxIndex(): number {
+  const len = workerSandboxRequestQueue.length;
+  return len === 0 ? 0 : Math.min(Math.max(selectedSandboxRequestIndex, 0), len - 1);
+}
+
+/**
+ * LEADER SIDE: enqueue a worker's per-host egress request. De-duplicated by
+ * `requestId` (a re-sent request never double-queues). An empty `requestId` or
+ * `host` is rejected (fail-closed — an unidentifiable request can never be
+ * approved). `createdAt` defaults to now when omitted. Returns `true` when a new
+ * entry was queued, `false` when rejected or a duplicate. Mirrors Claude pushing
+ * onto `workerSandboxPermissions.queue`.
+ */
+export function enqueueWorkerSandboxRequest(
+  request: Omit<WorkerSandboxRequest, 'createdAt'> & { createdAt?: number },
+): boolean {
+  const requestId = request.requestId?.trim() ?? '';
+  const host = normalizeHost(request.host ?? '');
+  if (requestId.length === 0 || host.length === 0) return false;
+  if (workerSandboxRequestQueue.some((e) => e.requestId === requestId)) return false;
+  workerSandboxRequestQueue.push({
+    requestId,
+    workerId: request.workerId,
+    workerName: request.workerName,
+    workerColor: request.workerColor,
+    host,
+    createdAt: request.createdAt ?? Date.now(),
+  });
+  return true;
+}
+
+/** LEADER SIDE: a snapshot (copy) of the pending-request queue, in arrival order. */
+export function getWorkerSandboxRequestQueue(): WorkerSandboxRequest[] {
+  return workerSandboxRequestQueue.map((e) => ({ ...e }));
+}
+
+/** The currently-selected queue entry (for leader review), or `null` when empty. */
+export function getSelectedWorkerSandboxRequest(): WorkerSandboxRequest | null {
+  if (workerSandboxRequestQueue.length === 0) return null;
+  return { ...workerSandboxRequestQueue[safeSelectedSandboxIndex()]! };
+}
+
+/** The selected index, clamped into range (0 when the queue is empty). */
+export function getSelectedSandboxRequestIndex(): number {
+  return safeSelectedSandboxIndex();
+}
+
+/**
+ * Move the leader's review cursor by `delta` (e.g. +1 / -1 for next/prev),
+ * wrapping around the queue so navigation never gets stuck at an end. No-op on an
+ * empty queue. Returns the newly-selected entry (or `null`).
+ */
+export function moveSelectedSandboxRequest(delta: number): WorkerSandboxRequest | null {
+  const len = workerSandboxRequestQueue.length;
+  if (len === 0) {
+    selectedSandboxRequestIndex = 0;
+    return null;
+  }
+  // Euclidean modulo so a negative delta wraps correctly; start from the safe index.
+  selectedSandboxRequestIndex = ((safeSelectedSandboxIndex() + delta) % len + len) % len;
+  return { ...workerSandboxRequestQueue[selectedSandboxRequestIndex]! };
+}
+
+/**
+ * LEADER SIDE: remove (resolve) the queued request `requestId` once a decision has
+ * been made, keeping the selected index valid (shifted left if the removed entry
+ * was at/before the cursor). Returns the removed entry, or `undefined` if no such
+ * request was queued. Mirrors Claude splicing the entry out of
+ * `workerSandboxPermissions.queue` after an allow/deny.
+ */
+export function resolveWorkerSandboxRequest(requestId: string): WorkerSandboxRequest | undefined {
+  const id = requestId?.trim() ?? '';
+  const idx = workerSandboxRequestQueue.findIndex((e) => e.requestId === id);
+  if (idx === -1) return undefined;
+  const [removed] = workerSandboxRequestQueue.splice(idx, 1);
+  // Shift the cursor left when the removed entry was at/before it, then re-clamp to
+  // the shrunken queue so the selection always points at a live entry.
+  if (idx <= selectedSandboxRequestIndex && selectedSandboxRequestIndex > 0) {
+    selectedSandboxRequestIndex--;
+  }
+  selectedSandboxRequestIndex = safeSelectedSandboxIndex();
+  return removed;
+}
+
+/**
+ * WORKER SIDE: record that this worker is blocked waiting on the leader to approve
+ * egress to `host` (request `requestId`). Shown as the worker's "pending sandbox
+ * request" affordance while it waits. An empty requestId/host clears any pending
+ * marker (fail-closed). Mirrors Claude setting `pendingSandboxRequest`.
+ */
+export function setPendingSandboxRequest(requestId: string, host: string): void {
+  const id = requestId?.trim() ?? '';
+  const h = normalizeHost(host ?? '');
+  pendingSandboxRequest = id.length > 0 && h.length > 0 ? { requestId: id, host: h } : null;
+}
+
+/** WORKER SIDE: the pending egress request awaiting leader approval, or `null`. */
+export function getPendingSandboxRequest(): { requestId: string; host: string } | null {
+  return pendingSandboxRequest ? { ...pendingSandboxRequest } : null;
+}
+
+/** WORKER SIDE: clear the pending egress marker (decision arrived / abandoned). */
+export function clearPendingSandboxRequest(): void {
+  pendingSandboxRequest = null;
 }
 
 /**
@@ -294,4 +443,10 @@ export function createSandboxAskCallback(
 export function clearSandboxPermissionGrants(): void {
   sessionGrantedHosts.clear();
   persistedGrantedHosts = undefined;
+  // Drop every in-flight approval request too — a half-reviewed leader queue or a
+  // worker's pending marker from the prior conversation must not leak into a fresh
+  // one (parity: `clearAllPendingCallbacks` clears the sandbox registry on /clear).
+  workerSandboxRequestQueue.length = 0;
+  selectedSandboxRequestIndex = 0;
+  pendingSandboxRequest = null;
 }

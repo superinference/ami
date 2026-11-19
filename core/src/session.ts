@@ -3610,11 +3610,42 @@ function makeAcquiredHandle(
   return { acquired: true, fresh: true, release };
 }
 
+/**
+ * Build the user-facing lock-conflict message naming the holder PID.
+ *
+ * When a session is already locked by a live OTHER process, callers must be able
+ * to tell the user *which* process holds it so the conflict is actionable
+ * (resume the session there, or wait for / terminate that PID) instead of an
+ * opaque "could not start" failure. This is the single canonical wording so every
+ * surface (acquire result, a `/doctor`-style diagnostic, the resume flow) reads
+ * identically. Mirrors Claude Code's pidLock conflict log — `Cannot acquire lock
+ * for <name> - held by PID <pid>` (utils/nativeInstaller/pidLock.ts L248-254) —
+ * adapted to a session (the lock "name" is the session directory's basename).
+ */
+export function formatSessionLockConflict(sessionDir: string, pid: number): string {
+  const name = path.basename(sessionDir.replace(/[/\\]+$/, '')) || sessionDir;
+  return `Session "${name}" is already in use by another process (PID ${pid}). ` +
+    `Resume it in that process, or wait for PID ${pid} to exit before retrying.`;
+}
+
+/** Attach the {@link formatSessionLockConflict} message to a blocked acquire
+ *  result so the holder PID is surfaced to the user by every caller, not just
+ *  silently returned. A successful (or holder-less) result is returned unchanged. */
+function withLockConflictMessage(
+  result: { acquired: boolean; fresh?: boolean; pid?: number; release: () => void },
+  sessionDir: string,
+): { acquired: boolean; fresh?: boolean; pid?: number; message?: string; release: () => void } {
+  if (!result.acquired && result.pid !== undefined) {
+    return { ...result, message: formatSessionLockConflict(sessionDir, result.pid) };
+  }
+  return result;
+}
+
 export function acquireSessionLock(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
   options: SessionLockOptions = {},
-): { acquired: boolean; fresh?: boolean; pid?: number; release: () => void } {
+): { acquired: boolean; fresh?: boolean; pid?: number; message?: string; release: () => void } {
   // Force-disabled: report an un-fresh, no-op "acquired" so every caller behaves as
   // if it owns the dir, without ever touching the filesystem (no lock written, no
   // exit hook, no reclaim). `fresh:false` so a fresh-gated side effect does not fire.
@@ -3684,7 +3715,9 @@ export function acquireSessionLock(
   // released in the meantime (parity: proper-lockfile LockOptions.retries).
   for (let round = 0; ; round++) {
     const { result, blockedByLiveHolder } = tryAcquireOnce();
-    if (result.acquired || !blockedByLiveHolder || round >= retries) return result;
+    if (result.acquired || !blockedByLiveHolder || round >= retries) {
+      return withLockConflictMessage(result, sessionDir);
+    }
     sleepSync(Math.min(baseDelay * (round + 1), LOCK_RETRY_MAX_DELAY_MS));
   }
 }
@@ -3709,7 +3742,7 @@ export function isSessionLocked(
 export type SessionLockCheck =
   | { kind: 'free' }
   | { kind: 'held_by_self'; pid: number }
-  | { kind: 'blocked'; pid: number };
+  | { kind: 'blocked'; pid: number; message: string };
 
 /**
  * Check the session lock for `sessionDir` WITHOUT acquiring it, yet still perform
@@ -3744,7 +3777,9 @@ export function checkSessionLock(
   if (isSessionLockHeldLocally(sessionDir) || payload.pid === process.pid) {
     return { kind: 'held_by_self', pid: payload.pid };
   }
-  if (lockHolderActive(payload, deps, staleMs)) return { kind: 'blocked', pid: payload.pid };
+  if (lockHolderActive(payload, deps, staleMs)) {
+    return { kind: 'blocked', pid: payload.pid, message: formatSessionLockConflict(sessionDir, payload.pid) };
+  }
   // Stale (dead / reused PID / cross-host-expired) — recover, but do NOT acquire.
   try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
   return { kind: 'free' };

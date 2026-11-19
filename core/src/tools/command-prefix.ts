@@ -59,6 +59,70 @@ function bareName(token: string): string {
   return token.replace(/^.*\//, '');
 }
 
+/**
+ * Quote-aware argv tokenizer — word-integrity over the approval boundary.
+ *
+ * A naive `split(/\s+/)` shatters a quoted operand that contains whitespace
+ * (`-u 'admin user'` → `-u`, `'admin`, `user'`), which makes the wrapper-operand
+ * walk in {@link skipWrapperOperands} consume only the first fragment and leak the
+ * rest (`user'`) into the "inner" command — so the composed allow-rule no longer
+ * corresponds to what the user actually ran (`sudo -u 'admin user' git push`
+ * silently becomes the bogus `sudo user' git` rule). Grouping a quoted span into a
+ * SINGLE token keeps each argv element exactly one prefix word: a single-quoted
+ * argv element can never be silently promoted into multiple prefix words, so a
+ * persisted rule can never match more than the invocation that was approved.
+ *
+ * Quote characters are PRESERVED in the emitted token (not stripped): downstream
+ * subcommand-shape matching ({@link import('../permissions').getSimpleCommandPrefix})
+ * rejects a token carrying a quote, so a genuinely quoted subcommand
+ * (`git 'push origin'`) still fails closed to the exact command rather than
+ * over-matching `git push origin --force`. An unterminated quote fails closed
+ * (returns null) rather than guessing a split. Mirrors Claude Code's post-buildPrefix
+ * word-integrity / over-approval boundary check (utils/powershell/staticPrefix.ts
+ * L89-140): a prefix word that does not map to one real argv element is rejected.
+ */
+export function tokenizeArgvQuoteAware(command: string): string[] | null {
+  const tokens: string[] = [];
+  let cur = '';
+  let inToken = false;
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      cur += ch;
+      // A backslash escapes the next char inside double quotes (POSIX); single
+      // quotes are literal, so no escaping applies there.
+      if (ch === '\\' && quote === '"' && i + 1 < command.length) {
+        cur += command[++i]!;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      inToken = true;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v') {
+      if (inToken) {
+        tokens.push(cur);
+        cur = '';
+        inToken = false;
+      }
+      continue;
+    }
+    cur += ch;
+    inToken = true;
+  }
+  // An unterminated quote means the command cannot be split with integrity —
+  // fail closed so no over-broad rule is derived from a guessed split.
+  if (quote !== null) return null;
+  if (inToken) tokens.push(cur);
+  return tokens;
+}
+
 /** Does `flag` (a spaced, non-`=` flag) consume the next token as a value for `wrapper`? */
 function takesSpacedValue(wrapper: string, flag: string): boolean {
   if (flag.includes('=')) return false;
@@ -126,7 +190,12 @@ export interface UnwrappedCommand {
  * on obfuscated nesting) or cannot be parsed cleanly.
  */
 export function unwrapWrapperChain(command: string): UnwrappedCommand | null {
-  let tokens = command.trim().split(/\s+/).filter(Boolean);
+  // Quote-aware tokenization keeps every quoted argv element a single token so a
+  // wrapper's quoted operand (`sudo -u 'admin user' …`) cannot leak a fragment
+  // into the inner command and produce an over-broad composed rule. An
+  // unterminated quote fails closed (null).
+  let tokens = tokenizeArgvQuoteAware(command);
+  if (tokens === null) return null;
   const wrappers: string[] = [];
   let wrapperCount = 0;
   let recursionDepth = 0;
