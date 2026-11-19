@@ -15,6 +15,15 @@ import { AMI_VERSION } from './version';
 import { isEnvTruthy } from './analytics';
 import { isWSL } from './utils/env';
 import { normalizePermissionMode } from './permissions';
+import {
+  type ProcessIdentity,
+  type ProcessIdentityProbe,
+  readProcessStartTimeMsSync,
+  probeProcessIdentitySync,
+  isSafeToSteal,
+  isProvenAlive,
+  mintSpawnToken,
+} from './utils/process-identity';
 export { assertPathWithin } from './path-safety';
 
 /**
@@ -3416,6 +3425,22 @@ export interface SessionLockPayload {
   startedAt: number;
   /** process.execPath — identity hint for PID-reuse detection. */
   execPath: string;
+  /**
+   * Boot-anchored process start time (ms) of the holder, or null when the host
+   * could not provide it. Present only on locks written by a PID-reuse-aware
+   * build; its presence switches {@link lockHolderActive} to the fail-closed
+   * identity probe (see {@link ProcessIdentity}).
+   */
+  processStartTimeMs?: number | null;
+  /** Opaque token the holder minted, for reuse-safe identity matching. */
+  spawnToken?: string | null;
+  /**
+   * Monotonic single-writer fence. Starts at 1 for a brand-new lock and is
+   * BUMPED (prior + 1) every time a stale lock is reclaimed, so an in-flight
+   * write from a superseded owner can be rejected by comparing the fence it
+   * holds against the current on-disk fence ({@link assertSessionFence}).
+   */
+  runtimeFence?: number;
 }
 
 /** Injectable system probes so lock behavior (PID liveness, process identity,
@@ -3423,6 +3448,9 @@ export interface SessionLockPayload {
 export interface SessionLockDeps {
   isPidAlive: (pid: number) => boolean;
   getProcessCommand: (pid: number) => string | null;
+  /** Boot-anchored start-time read for the PID-reuse-safe identity probe.
+   *  Injectable so the fail-closed takeover logic is testable without `/proc`. */
+  readProcessStartTimeMs: (pid: number) => number | null;
   now: () => number;
   /** True when running under WSL — drives the cross-OS PID-probe boundary guard in
    *  {@link lockHolderActive}. Injectable so the guard is testable without a real
@@ -3467,9 +3495,17 @@ export function getProcessCommand(pid: number): string | null {
 const DEFAULT_LOCK_DEPS: SessionLockDeps = {
   isPidAlive,
   getProcessCommand,
+  readProcessStartTimeMs: (pid: number) => readProcessStartTimeMsSync(pid),
   now: Date.now,
   isWsl: () => isWSL(),
 };
+
+/**
+ * Spawn token for THIS process, minted once. Recorded in every lock payload this
+ * process writes so a reclaimer that can echo it back (future wiring) can prove
+ * reuse; today it rides alongside the start time as secondary identity evidence.
+ */
+const PROCESS_SPAWN_TOKEN = mintSpawnToken();
 
 function readLockPayload(lockPath: string): SessionLockPayload | null {
   let raw: string;
@@ -3488,6 +3524,20 @@ function readLockPayload(lockPath: string): SessionLockPayload | null {
         pid: parsed.pid,
         startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : 0,
         execPath: typeof parsed.execPath === 'string' ? parsed.execPath : '',
+        // Optional reuse-safe identity: a number|null start time, a string token,
+        // and a monotonic fence. Absent on legacy locks (undefined ⇒ identity
+        // probe not engaged, see lockHolderActive).
+        processStartTimeMs:
+          typeof parsed.processStartTimeMs === 'number'
+            ? parsed.processStartTimeMs
+            : parsed.processStartTimeMs === null
+              ? null
+              : undefined,
+        spawnToken: typeof parsed.spawnToken === 'string' ? parsed.spawnToken : undefined,
+        runtimeFence:
+          typeof parsed.runtimeFence === 'number' && Number.isFinite(parsed.runtimeFence)
+            ? parsed.runtimeFence
+            : undefined,
       };
     }
   } catch {
@@ -3505,6 +3555,31 @@ function lockHolderActive(
   staleMs: number = LOCK_FALLBACK_STALE_MS,
 ): boolean {
   const { pid } = payload;
+  // PID-reuse-safe path: a lock written by a reuse-aware build carries identity
+  // (a start time — possibly null — and/or a spawn token). For those locks we
+  // DO NOT fall back to "steal on mtime-stale"; instead we run the fail-closed
+  // four-state probe. Only a PROVABLY-gone owner (pid absent, or a verified
+  // identity mismatch from PID reuse) is reclaimable; a verified-live owner, OR
+  // an owner we cannot verify (indeterminate), keeps the lock held — so two
+  // writers never land on one transcript. This is the deliberate opposite of the
+  // legacy steal-on-(pid-dead OR mtime-stale) heuristic below.
+  const hasIdentity = payload.processStartTimeMs !== undefined || payload.spawnToken !== undefined;
+  if (hasIdentity) {
+    if (pid === process.pid) return true;
+    const identity: ProcessIdentity = {
+      pid,
+      processStartTimeMs: payload.processStartTimeMs ?? null,
+      spawnToken: payload.spawnToken ?? null,
+    };
+    const probe = probeProcessIdentitySync(identity, {
+      isPidPresent: (p) => deps.isPidAlive(p),
+      readProcessStartTimeMs: (p) => deps.readProcessStartTimeMs(p),
+    });
+    if (isProvenAlive(probe)) return true;
+    // `exited` / `identity-mismatch` ⇒ safe to steal ⇒ not held. `indeterminate`
+    // ⇒ fail closed ⇒ held (never reclaimed on an unverifiable owner).
+    return !isSafeToSteal(probe);
+  }
   if (!deps.isPidAlive(pid)) {
     // WSL cross-OS boundary guard: when the session dir is shared with a
     // Windows-native AMI (symlink / AMI_DATA_DIR on /mnt), the holder's PID is a
@@ -3531,13 +3606,25 @@ function lockHolderActive(
   return c.includes('ami') || (!!execHint && c.includes(execHint));
 }
 
-function makeLockPayload(deps: SessionLockDeps): string {
+function makeLockPayload(deps: SessionLockDeps, runtimeFence = 1): string {
   const payload: SessionLockPayload = {
     pid: process.pid,
     startedAt: deps.now(),
     execPath: process.execPath,
+    // Reuse-safe identity: record OUR start time + spawn token so a later
+    // reclaimer runs the fail-closed probe instead of the mtime heuristic.
+    processStartTimeMs: deps.readProcessStartTimeMs(process.pid),
+    spawnToken: PROCESS_SPAWN_TOKEN,
+    // Monotonic single-writer fence: 1 for a fresh lock, prior+1 on reclaim.
+    runtimeFence,
   };
   return JSON.stringify(payload);
+}
+
+/** Next monotonic fence for a reclaim: the reclaimed lock's fence + 1, defaulting
+ *  to a fresh 1 when the prior lock recorded no (or an invalid) fence. */
+function nextFenceAfter(priorFence: number | undefined): number {
+  return (typeof priorFence === 'number' && Number.isFinite(priorFence) ? priorFence : 0) + 1;
 }
 
 // Release handlers for locks held by THIS process, run on graceful exit so a
@@ -3579,7 +3666,8 @@ export function releaseAllSessionLocks(): void {
 function makeAcquiredHandle(
   lockPath: string,
   onCompromised?: (reason: string) => void,
-): { acquired: true; fresh: true; release: () => void } {
+  runtimeFence?: number,
+): { acquired: true; fresh: true; runtimeFence?: number; release: () => void } {
   let released = false;
   const release = (): void => {
     if (released) return;
@@ -3607,7 +3695,7 @@ function makeAcquiredHandle(
   activeLockReleases.add(release);
   locallyHeldLockPaths.add(lockPath);
   installExitHook();
-  return { acquired: true, fresh: true, release };
+  return { acquired: true, fresh: true, runtimeFence, release };
 }
 
 /**
@@ -3632,9 +3720,9 @@ export function formatSessionLockConflict(sessionDir: string, pid: number): stri
  *  result so the holder PID is surfaced to the user by every caller, not just
  *  silently returned. A successful (or holder-less) result is returned unchanged. */
 function withLockConflictMessage(
-  result: { acquired: boolean; fresh?: boolean; pid?: number; release: () => void },
+  result: { acquired: boolean; fresh?: boolean; pid?: number; runtimeFence?: number; release: () => void },
   sessionDir: string,
-): { acquired: boolean; fresh?: boolean; pid?: number; message?: string; release: () => void } {
+): { acquired: boolean; fresh?: boolean; pid?: number; runtimeFence?: number; message?: string; release: () => void } {
   if (!result.acquired && result.pid !== undefined) {
     return { ...result, message: formatSessionLockConflict(sessionDir, result.pid) };
   }
@@ -3645,7 +3733,7 @@ export function acquireSessionLock(
   sessionDir: string,
   depsOverride?: Partial<SessionLockDeps>,
   options: SessionLockOptions = {},
-): { acquired: boolean; fresh?: boolean; pid?: number; message?: string; release: () => void } {
+): { acquired: boolean; fresh?: boolean; pid?: number; runtimeFence?: number; message?: string; release: () => void } {
   // Force-disabled: report an un-fresh, no-op "acquired" so every caller behaves as
   // if it owns the dir, without ever touching the filesystem (no lock written, no
   // exit hook, no reclaim). `fresh:false` so a fresh-gated side effect does not fire.
@@ -3675,9 +3763,13 @@ export function acquireSessionLock(
   } => {
     // Bounded: at most one stale-reclaim retry (replaces unbounded self-recursion
     // that a racing writer recreating the lock could blow the stack with).
+    // `reclaimFence` starts at 1 (a brand-new lock) and is bumped to prior+1 when
+    // we reclaim a stale lock, so the fence advances monotonically on every
+    // takeover and a superseded owner's write can be fenced out.
+    let reclaimFence = 1;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        fsHooks.writeFileSync(lockPath, makeLockPayload(deps), { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
+        fsHooks.writeFileSync(lockPath, makeLockPayload(deps, reclaimFence), { flag: 'wx', mode: OWNER_ONLY_FILE_MODE });
       } catch (err: any) {
         if (err?.code !== 'EEXIST') throw err;
         const payload = readLockPayload(lockPath);
@@ -3692,7 +3784,9 @@ export function acquireSessionLock(
         if (payload && lockHolderActive(payload, deps, staleMs)) {
           return { result: { acquired: false, pid: payload.pid, release: () => {} }, blockedByLiveHolder: true };
         }
-        // Stale / corrupt / unreadable → reclaim and retry the exclusive create.
+        // Stale / corrupt / unreadable → reclaim and retry the exclusive create,
+        // advancing the monotonic fence past the reclaimed owner's.
+        reclaimFence = nextFenceAfter(payload?.runtimeFence);
         try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
         continue;
       }
@@ -3703,7 +3797,7 @@ export function acquireSessionLock(
       if (verify?.pid !== process.pid) {
         return { result: { acquired: false, pid: verify?.pid, release: () => {} }, blockedByLiveHolder: true };
       }
-      return { result: makeAcquiredHandle(lockPath, options.onCompromised), blockedByLiveHolder: false };
+      return { result: makeAcquiredHandle(lockPath, options.onCompromised, verify.runtimeFence), blockedByLiveHolder: false };
     }
     // Lost the recovery race after the bounded retry.
     const payload = readLockPayload(lockPath);
@@ -3783,6 +3877,102 @@ export function checkSessionLock(
   // Stale (dead / reused PID / cross-host-expired) — recover, but do NOT acquire.
   try { fsHooks.unlinkSync(lockPath); } catch { /* raced away */ }
   return { kind: 'free' };
+}
+
+/**
+ * Thrown when a write is attempted under a session fence that a newer owner has
+ * already superseded — the single-writer invariant was violated and the stale
+ * owner's in-flight mutation MUST be rejected rather than corrupt the transcript.
+ */
+export class SessionFenceError extends Error {
+  constructor(
+    readonly expectedFence: number,
+    readonly currentFence: number,
+    sessionDir: string,
+  ) {
+    super(
+      `Session ownership lost: fence ${expectedFence} was superseded by ${currentFence} ` +
+        `(another process took over "${path.basename(sessionDir)}"). Write rejected.`,
+    );
+    this.name = 'SessionFenceError';
+  }
+}
+
+/**
+ * Read the current monotonic single-writer fence recorded in `sessionDir`'s lock,
+ * or `null` when there is no lock / no fence on disk (legacy or locking disabled).
+ */
+export function readSessionFence(sessionDir: string): number | null {
+  if (isSessionLockingDisabled()) return null;
+  const lockPath = path.join(sessionDir, SESSION_LOCK_FILE);
+  if (!fs.existsSync(lockPath)) return null;
+  const payload = readLockPayload(lockPath);
+  return payload?.runtimeFence ?? null;
+}
+
+/**
+ * True when `fence` is still the current owner fence for `sessionDir`. A record
+ * that carries no fence (legacy / locking disabled) reads as current — there is
+ * no newer owner to supersede the caller. A STRICTLY newer on-disk fence means a
+ * takeover happened and the caller is stale.
+ */
+export function isSessionFenceCurrent(sessionDir: string, fence: number): boolean {
+  const current = readSessionFence(sessionDir);
+  return current === null || current === fence;
+}
+
+/**
+ * Assert the caller still owns `sessionDir` at `expectedFence`. Throws a
+ * {@link SessionFenceError} when a strictly newer fence is on disk (another
+ * process reclaimed the lock and advanced the fence) so an in-flight write from a
+ * superseded owner is rejected on takeover. A missing/legacy fence is a no-op
+ * (nothing proves a takeover). This is the assertion callers (transcript append,
+ * checkpoint writes) run before a mutation to enforce single-writer ownership.
+ */
+export function assertSessionFence(sessionDir: string, expectedFence: number): void {
+  const current = readSessionFence(sessionDir);
+  if (current !== null && current !== expectedFence) {
+    throw new SessionFenceError(expectedFence, current, sessionDir);
+  }
+}
+
+/** Fail-closed CAS acquisition decision (parity: Orca's evaluateAgentSessionAcquisition). */
+export type SessionAcquisitionDecision =
+  | { decision: 'granted'; nextFence: number }
+  | { decision: 'refused'; reason: 'fenceStale' | 'ownerAlive' | 'ownerUnproven' };
+
+/**
+ * Pure fail-closed adjudication of whether a caller may take over a lease.
+ *
+ * Every arm fails closed: a fence mismatch refuses (`fenceStale`); a verified-live
+ * owner refuses (`ownerAlive`); and crucially an UNVERIFIABLE owner refuses
+ * (`ownerUnproven`) rather than granting — expiry/indeterminacy never creates a
+ * second writer. A grant is issued ONLY when the prior owner is provably gone
+ * (`exited` / `identity-mismatch`), and it advances the monotonic fence. A null
+ * payload (no recorded owner) grants at fence 1.
+ *
+ * Mirrors Orca `evaluateAgentSessionAcquisition`: "a wrong answer here creates two
+ * writers on one provider session," so it refuses on any doubt.
+ */
+export function evaluateSessionAcquisition(args: {
+  payload: SessionLockPayload | null;
+  expectedFence: number;
+  probe: ProcessIdentityProbe;
+}): SessionAcquisitionDecision {
+  const { payload, expectedFence, probe } = args;
+  if (!payload) return { decision: 'granted', nextFence: 1 };
+  const currentFence = payload.runtimeFence ?? 1;
+  if (expectedFence !== currentFence) {
+    return { decision: 'refused', reason: 'fenceStale' };
+  }
+  if (isProvenAlive(probe)) {
+    return { decision: 'refused', reason: 'ownerAlive' };
+  }
+  if (!isSafeToSteal(probe)) {
+    // indeterminate — fail closed, never grant a second writer on an unproven owner.
+    return { decision: 'refused', reason: 'ownerUnproven' };
+  }
+  return { decision: 'granted', nextFence: nextFenceAfter(payload.runtimeFence) };
 }
 
 /** Introspection snapshot of one session lock, for diagnostics / a `/doctor`-style
@@ -4109,7 +4299,15 @@ function acquireAppendLock(
 export function safeAppendTranscript(
   filePath: string,
   entry: Record<string, unknown>,
+  ownership?: { sessionDir: string; expectedFence: number },
 ): void {
+  // Single-writer fence assert: when the caller holds a fence, reject the append
+  // if a newer owner has taken over (fence advanced on the lock). This throws a
+  // SessionFenceError OUT of the function — unlike the best-effort transcript I/O
+  // below, a superseded write MUST NOT silently land and corrupt the transcript.
+  if (ownership) {
+    assertSessionFence(ownership.sessionDir, ownership.expectedFence);
+  }
   // NDJSON-safe: escape U+2028/U+2029 so an entry can never be split into two lines.
   const line = ndjsonSafeStringify(entry) + '\n';
 

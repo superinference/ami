@@ -2,6 +2,13 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { isPidAlive } from './runtime-namespace';
+import {
+  type ProcessIdentity,
+  captureProcessIdentitySync,
+  mintSpawnToken,
+  probeProcessIdentitySync,
+  isSafeToSteal,
+} from './process-identity';
 
 /**
  * Canonical cross-process file lock for the whole AMI tree.
@@ -59,6 +66,18 @@ export interface FileLockOptions {
    * swallowed so a faulty handler cannot crash the heartbeat timer.
    */
   onCompromised?: (err: Error) => void;
+  /**
+   * Harden the advisory lock into a FAIL-CLOSED CAS. When true, a held lock is
+   * stolen ONLY when its holder is PROVABLY gone — the PID is absent, or the
+   * recorded PID-reuse-safe identity (boot-anchored start time / spawn token)
+   * mismatches a live PID (reuse). A holder that is verifiably alive, OR one that
+   * cannot be verified (indeterminate), keeps the lock — the mtime-staleness
+   * heuristic is NOT used to steal. This prevents two writers from ever landing on
+   * one resource across concurrent instances. Default (false) keeps the legacy
+   * steal-on-(pid-dead OR mtime-stale) behaviour. Mirrors Orca's fail-closed lease
+   * adjudication (`evaluateAgentSessionAcquisition`).
+   */
+  failClosed?: boolean;
 }
 
 export const DEFAULT_LOCK_OPTIONS: Required<
@@ -87,10 +106,58 @@ function syncSleep(ms: number): void {
 
 /** Name of the PID metadata entry written inside the lock directory. */
 const PID_ENTRY = 'pid';
+/** PID-reuse-safe holder identity (JSON), written for the fail-closed path. */
+const IDENTITY_ENTRY = 'identity';
+/** Monotonic single-writer fence (integer), bumped on every reclaim. */
+const FENCE_ENTRY = 'fence';
+
+/** This process's spawn token, minted once and recorded in the identity entry. */
+const PROCESS_SPAWN_TOKEN = mintSpawnToken();
 
 /** Absolute path to the holder-PID metadata file inside a lock directory. */
 function lockPidPath(lockDir: string): string {
   return path.join(lockDir, PID_ENTRY);
+}
+
+function lockIdentityPath(lockDir: string): string {
+  return path.join(lockDir, IDENTITY_ENTRY);
+}
+
+function lockFencePath(lockDir: string): string {
+  return path.join(lockDir, FENCE_ENTRY);
+}
+
+/** Read the PID-reuse-safe identity recorded in the lock dir, or null if absent. */
+function readLockIdentity(lockDir: string): ProcessIdentity | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockIdentityPath(lockDir), 'utf-8'));
+    if (parsed && typeof parsed === 'object' && typeof parsed.pid === 'number') {
+      return {
+        pid: parsed.pid,
+        processStartTimeMs: typeof parsed.processStartTimeMs === 'number' ? parsed.processStartTimeMs : null,
+        spawnToken: typeof parsed.spawnToken === 'string' ? parsed.spawnToken : null,
+      };
+    }
+  } catch { /* absent / corrupt */ }
+  return null;
+}
+
+/** Read the monotonic fence recorded in a lock DIRECTORY, or null if absent/invalid. */
+function readFenceInLockDir(lockDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(lockFencePath(lockDir), 'utf-8').trim();
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the monotonic single-writer fence currently held on `target`'s lock, or
+ *  null when no lock (or no fence) is present. Advances by 1 on every reclaim, so
+ *  a caller can detect a takeover by comparing the fence it holds against this. */
+export function readLockFence(target: string): number | null {
+  return readFenceInLockDir(`${target}.lock`);
 }
 
 /** Read the holder PID recorded in the lock directory, or null if absent/unreadable. */
@@ -110,9 +177,14 @@ function readLockPid(lockDir: string): number | null {
  * a metadata entry inside it. `mkdir` is the atomic token; the PID is best-effort
  * liveness metadata read back by {@link readLockPid} for stale-lock stealing.
  */
-function createLockDir(lockDir: string): void {
+function createLockDir(lockDir: string, fence = 1): void {
   fs.mkdirSync(lockDir);
   fs.writeFileSync(lockPidPath(lockDir), String(process.pid));
+  // PID-reuse-safe identity + monotonic fence for the fail-closed CAS path. The
+  // mkdir above is still the atomic token; these are metadata read on reclaim.
+  const identity = captureProcessIdentitySync({ spawnToken: PROCESS_SPAWN_TOKEN });
+  fs.writeFileSync(lockIdentityPath(lockDir), JSON.stringify(identity));
+  fs.writeFileSync(lockFencePath(lockDir), String(fence));
 }
 
 /**
@@ -125,12 +197,16 @@ function createLockDir(lockDir: string): void {
  */
 function removeLockDirSync(lockDir: string): void {
   fs.rmSync(lockPidPath(lockDir), { force: true });
+  fs.rmSync(lockIdentityPath(lockDir), { force: true });
+  fs.rmSync(lockFencePath(lockDir), { force: true });
   fs.rmdirSync(lockDir);
 }
 
 /** Async sibling of {@link removeLockDirSync} — used by the async release path. */
 async function removeLockDir(lockDir: string): Promise<void> {
   await fsp.rm(lockPidPath(lockDir), { force: true });
+  await fsp.rm(lockIdentityPath(lockDir), { force: true });
+  await fsp.rm(lockFencePath(lockDir), { force: true });
   await fsp.rmdir(lockDir);
 }
 
@@ -139,23 +215,22 @@ async function removeLockDir(lockDir: string): Promise<void> {
  * directory already exists but is abandoned — its holder PID is dead, or
  * (fallback) its mtime is older than staleMs — steals it and retries once.
  */
-function tryAcquire(lockDir: string, staleMs: number): boolean {
+function tryAcquire(lockDir: string, staleMs: number, failClosed = false): boolean {
   try {
     createLockDir(lockDir);
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // Lock exists — steal it if the holder is provably gone: either its recorded
-    // PID is dead (immediate reclaim — a crashed holder can never release), or
-    // (PID unreadable / reused-but-live) its mtime exceeds the staleness cap.
+    // Lock exists — decide whether its holder is reclaimable.
     try {
-      const pid = readLockPid(lockDir);
-      const deadHolder = pid !== null && !isPidAlive(pid);
-      const age = Date.now() - fs.statSync(lockDir).mtimeMs;
-      if (deadHolder || age > staleMs) {
+      const steal = failClosed
+        ? canStealFailClosed(lockDir)
+        : canStealLegacy(lockDir, staleMs);
+      if (steal) {
+        const nextFence = (readFenceInLockDir(lockDir) ?? 0) + 1;
         removeLockDirSync(lockDir);
         try {
-          createLockDir(lockDir);
+          createLockDir(lockDir, nextFence);
           return true;
         } catch {
           return false;
@@ -166,6 +241,33 @@ function tryAcquire(lockDir: string, staleMs: number): boolean {
     }
     return false;
   }
+}
+
+/** Legacy steal test: dead recorded PID, or (PID unreadable / reused-but-live) an
+ *  mtime older than the staleness cap. */
+function canStealLegacy(lockDir: string, staleMs: number): boolean {
+  const pid = readLockPid(lockDir);
+  const deadHolder = pid !== null && !isPidAlive(pid);
+  const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+  return deadHolder || age > staleMs;
+}
+
+/**
+ * Fail-closed steal test: steal ONLY when the holder is PROVABLY gone — a recorded
+ * PID-reuse-safe identity probed to `exited` / `identity-mismatch`. A live or
+ * unverifiable (`indeterminate`) holder is NEVER stolen, and mtime age is ignored
+ * — an overran-but-live holder keeps its lock instead of being torn off it.
+ */
+function canStealFailClosed(lockDir: string): boolean {
+  const identity = readLockIdentity(lockDir);
+  if (!identity) {
+    // No reuse-safe identity recorded — only a provably-absent PID is reclaimable.
+    const pid = readLockPid(lockDir);
+    return pid !== null && !isPidAlive(pid);
+  }
+  if (identity.pid === process.pid) return false; // our own live lock
+  const probe = probeProcessIdentitySync(identity, { isPidPresent: (p) => isPidAlive(p) });
+  return isSafeToSteal(probe);
 }
 
 /**
@@ -183,7 +285,7 @@ export async function withFileLock<T>(
   let backoff = opts.minTimeout;
   let acquired = false;
   for (let attempt = 0; attempt <= opts.retries; attempt++) {
-    if (tryAcquire(lockDir, opts.staleMs)) { acquired = true; break; }
+    if (tryAcquire(lockDir, opts.staleMs, options.failClosed)) { acquired = true; break; }
     await sleep(backoff);
     backoff = Math.min(backoff * 2, opts.maxTimeout);
   }
@@ -237,6 +339,8 @@ export interface FileLockSyncOptions {
   maxTimeout?: number;
   /** A lock older than this (ms) is considered abandoned and stolen (default 30000). */
   staleMs?: number;
+  /** Fail-closed CAS steal semantics (see {@link FileLockOptions.failClosed}). */
+  failClosed?: boolean;
   /**
    * Fired (at most once) when, on release, the lock is found to have been lost or
    * taken over by another process (deleted, or now records a different PID) while
@@ -273,7 +377,7 @@ export function withFileLockSync<T>(
   let backoff = opts.minTimeout;
   let acquired = false;
   for (let attempt = 0; attempt <= opts.retries; attempt++) {
-    if (tryAcquire(lockDir, opts.staleMs)) { acquired = true; break; }
+    if (tryAcquire(lockDir, opts.staleMs, options.failClosed)) { acquired = true; break; }
     syncSleep(backoff);
     backoff = Math.min(backoff * 2, opts.maxTimeout);
   }
