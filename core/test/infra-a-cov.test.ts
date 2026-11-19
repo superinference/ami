@@ -1131,37 +1131,45 @@ describe('formatter', () => {
   });
 
   it('formats when the tool is available and succeeds', () => {
-    const calls: string[] = [];
-    mock.method(execHooks, 'execSync', (cmd: string) => { calls.push(cmd); return Buffer.from(''); });
+    // Both seams are mocked so the test is HERMETIC — it never shells out to a real
+    // `npx prettier` (which errors "No files matching the pattern" in CI). The
+    // availability probe runs through `execSync`; the format invocation runs through
+    // `execFileSync` (shell-free: executable + args array, no shell re-parsing).
+    const checkCalls: string[] = [];
+    const formatCalls: Array<{ cmd: string; args: readonly string[] }> = [];
+    mock.method(execHooks, 'execSync', (cmd: string) => { checkCalls.push(cmd); return Buffer.from(''); });
+    mock.method(execHooks, 'execFileSync', (cmd: string, args: readonly string[]) => {
+      formatCalls.push({ cmd, args });
+      return Buffer.from('');
+    });
     const file = path.join(dir, "weird'name.ts");
     const res = formatFile(file, dir);
     assert.deepEqual(res, { formatted: true });
-    // availability check + the format command both ran
-    assert.equal(calls.length, 2);
-    assert.match(calls[1], /prettier --write/);
-    // single-quote in the path is shell-escaped
-    assert.match(calls[1], /weird'\\''name\.ts/);
+    // The availability probe ran once, and the format command ran once.
+    assert.equal(checkCalls.length, 1);
+    assert.match(checkCalls[0], /prettier --version/);
+    assert.equal(formatCalls.length, 1);
+    assert.equal(formatCalls[0].cmd, 'npx');
+    // Shell-free contract: the tool args precede the file path, which is passed
+    // VERBATIM as its own argv entry (no shell, so no quoting/escaping needed — the
+    // single-quote in the name is carried literally, not shell-escaped).
+    assert.deepEqual([...formatCalls[0].args], ['prettier', '--write', file]);
+    assert.ok(file.endsWith("weird'name.ts"), 'sanity: the awkward single-quote path is preserved verbatim');
   });
 
   it('reports an error when the formatter command fails', () => {
-    let n = 0;
-    mock.method(execHooks, 'execSync', () => {
-      n++;
-      if (n === 1) return Buffer.from(''); // availability check passes
-      throw new Error('format crashed'); // the actual format fails
-    });
+    // Availability passes via execSync; the actual format (execFileSync) throws.
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', () => { throw new Error('format crashed'); });
     const res = formatFile(path.join(dir, 'a.ts'), dir);
     assert.equal(res.formatted, false);
     assert.match(res.error!, /format crashed/);
   });
 
   it('reports a non-Error rejection via String()', () => {
-    let n = 0;
-    mock.method(execHooks, 'execSync', () => {
-      n++;
-      if (n === 1) return Buffer.from('');
-      throw 'string failure'; // non-Error throw
-    });
+    // A non-Error throw from the format command is surfaced via String().
+    mock.method(execHooks, 'execSync', () => Buffer.from(''));
+    mock.method(execHooks, 'execFileSync', () => { throw 'string failure'; });
     const res = formatFile(path.join(dir, 'a.ts'), dir);
     assert.equal(res.error, 'string failure');
   });

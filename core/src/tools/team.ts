@@ -333,6 +333,25 @@ let currentTeam: TeamFile | null = null;
 let currentTeamDir: string | null = null;
 
 /**
+ * In-flight {@link persistTeam} writes. The file-locked save is fire-and-forget, so
+ * this set lets {@link flushTeamPersists} deterministically await the debounced
+ * writes to land on disk instead of a caller racing a wall-clock sleep. Entries
+ * self-remove once each write settles.
+ */
+const inFlightTeamPersists = new Set<Promise<void>>();
+
+/**
+ * Resolve once every currently in-flight {@link persistTeam} write has settled
+ * (committed, or fallen back on a lock failure). Because the locked save is
+ * otherwise fire-and-forget, a caller that must OBSERVE the persisted team on disk
+ * — reading the team file back, or flushing before process exit — awaits this
+ * rather than a fixed delay. A no-op (already resolved) when nothing is pending.
+ */
+export function flushTeamPersists(): Promise<void> {
+  return Promise.allSettled([...inFlightTeamPersists]).then(() => undefined);
+}
+
+/**
  * This process's runtime team-join context (parity: Claude Code's
  * `dynamicTeamContext` in utils/teammate.ts). It carries not just the bound
  * agentId + agentName but the richer per-session knobs a joined teammate needs:
@@ -722,13 +741,16 @@ function persistTeam(): void {
   const file = teamFilePath(currentTeamDir);
   const snapshot = currentTeam;
   // Low-frequency mutation; lock to stay consistent with concurrent sessions.
-  withFileLock(file, () => {
+  const write = withFileLock(file, () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(snapshot, null, 2));
   }).catch(() => {
     // Best-effort: fall back to a direct write so a lock failure never drops state.
     try { fs.writeFileSync(file, JSON.stringify(snapshot, null, 2)); } catch { /* ignore */ }
   });
+  // Track the fire-and-forget write so {@link flushTeamPersists} can await it.
+  inFlightTeamPersists.add(write);
+  void write.finally(() => inFlightTeamPersists.delete(write));
 }
 
 /**

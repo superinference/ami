@@ -855,7 +855,8 @@ export class McpClient extends EventEmitter {
   private pendingRequests = new Map<number, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
+    /** Undefined when the request is deliberately unbounded (handshake — bounded by the outer connect guard instead). */
+    timer: ReturnType<typeof setTimeout> | undefined;
     abortHandler?: () => void;
   }>();
   private buffer = '';
@@ -1394,11 +1395,16 @@ export class McpClient extends EventEmitter {
   }
 
   private async performInitialize(): Promise<void> {
+    // The initialize handshake is bounded SOLELY by the outer `boundedCall(connectTimeout)`
+    // guard at every connect call site. Pass a non-finite inner timeout so `sendRequest`
+    // does not arm its own (`requestTimeout`-based) deadline — a short `requestTimeout`
+    // must never abort the handshake before the connect budget, which otherwise raced the
+    // wall clock under load. `connectTimeout` stays the single authority here.
     const initResult = await this.sendRequest('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: this.buildClientCapabilities(),
       clientInfo: AMI_CLIENT_INFO,
-    }) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string; instructions?: string };
+    }, undefined, Number.POSITIVE_INFINITY) as { serverInfo?: { name: string; version: string }; capabilities?: Record<string, unknown>; protocolVersion?: string; instructions?: string };
 
     this._serverInfo = initResult.serverInfo ?? { name: 'unknown', version: '0.0.0' };
     this._serverCapabilities = initResult.capabilities ?? {};
@@ -2519,10 +2525,18 @@ export class McpClient extends EventEmitter {
       };
 
       const effectiveTimeout = timeoutMs ?? this.requestTimeout;
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error(this.formatTimeoutMessage(method, params, effectiveTimeout)));
-      }, effectiveTimeout);
+      // A non-finite `timeoutMs` means "no per-request deadline" — the caller bounds
+      // this request itself (e.g. the initialize handshake, which is wrapped by the
+      // outer `boundedCall(connectTimeout)` guard). Arming a second, shorter inner
+      // timer there would let a small `requestTimeout` abort the handshake before the
+      // connect budget elapses (a wall-clock race under load). Leaving it unbounded
+      // keeps the connect timeout the single authority over the handshake deadline.
+      const timer = Number.isFinite(effectiveTimeout)
+        ? setTimeout(() => {
+            this.pendingRequests.delete(id);
+            reject(new Error(this.formatTimeoutMessage(method, params, effectiveTimeout)));
+          }, effectiveTimeout)
+        : undefined;
 
       let abortHandler: (() => void) | undefined;
       if (signal) {

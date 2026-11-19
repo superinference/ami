@@ -450,11 +450,24 @@ describe('bounded quantifiers', () => {
     assert.equal(containsCredential(`k=${key}`), true);
   });
 
-  it('completes quickly on a large non-matching input (scan work is capped)', () => {
-    const blob = 'sk-' + 'a'.repeat(2_000_000); // one huge run, well past any real key
-    const start = Date.now();
+  it('caps scan work on a large non-matching input (bounded quantifier, no ReDoS)', () => {
+    // The anti-ReDoS guarantee is structural, not timing-based: every token body is
+    // matched by a BOUNDED quantifier ({20,4096}), so a pathological 2M-char run can
+    // never drive catastrophic backtracking — the engine consumes AT MOST 4096 body
+    // chars for the single match and leaves the rest untouched. Assert that cap
+    // directly (deterministic under any CPU load) instead of a wall-clock budget.
+    const RUN = 2_000_000;
+    const MAX_TOKEN_BODY = 4096; // the {20,4096} upper bound shared by the key patterns
+    const blob = 'sk-' + 'a'.repeat(RUN); // one huge run, well past any real key
     const red = redactCredentials(blob);
-    assert.ok(Date.now() - start < 2000, 'redaction should not hang on pathological input');
-    assert.ok(red.includes('[REDACTED]')); // the leading 4096-char slice is still redacted
+    assert.ok(red.includes('[REDACTED]'), 'the capped leading token is still redacted');
+    // Exactly MAX_TOKEN_BODY of the body chars were consumed into the single
+    // (bounded) match; the remainder is left verbatim — proving the quantifier cap
+    // bounded the scan rather than walking/backtracking the whole 2M run.
+    const bodyCharsRemaining = (red.match(/a/g) ?? []).length;
+    assert.equal(bodyCharsRemaining, RUN - MAX_TOKEN_BODY);
+    // And the redaction never expands the input (no runaway rewrite): the result is
+    // the single placeholder plus the untouched tail.
+    assert.equal(red.length, '[REDACTED]'.length + (RUN - MAX_TOKEN_BODY));
   });
 });

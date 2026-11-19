@@ -69,8 +69,14 @@ describe('grep returns partial results on timeout', () => {
       child.stderr = new EventEmitter();
       child.kill = () => true;
       // Emit two complete lines + a trailing incomplete one, then never close so the
-      // timeout path fires and salvages the partial output.
-      setImmediate(() => child.stdout.emit('data', Buffer.from('a.ts:1:alpha\nb.ts:2:beta\nc.ts:3:incomple')));
+      // timeout path fires and salvages the partial output. Deliver via
+      // `process.nextTick` (NOT `setImmediate`): the nextTick queue always drains
+      // before the event loop advances to the timers phase, so the data is captured
+      // on `stdout` BEFORE the timeout timer can fire — even when CPU contention
+      // deschedules this process between arming the timer and the first loop pass
+      // (a `setImmediate` runs in the later check phase and would then lose the race,
+      // leaving stdout empty and no partial to salvage).
+      process.nextTick(() => child.stdout.emit('data', Buffer.from('a.ts:1:alpha\nb.ts:2:beta\nc.ts:3:incomple')));
       return child;
     });
     const res = await grepTool.execute!({ pattern: 'x', output_mode: 'content' }, ctx());

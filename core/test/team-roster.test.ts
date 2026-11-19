@@ -17,6 +17,7 @@ import {
   getTeammateStatuses,
   getTeamSummary,
   readTeamFile,
+  flushTeamPersists,
 } from '../src/tools/team';
 import { TEAM_LEAD_NAME } from '../src/tools/send-message';
 import { normalizePermissionMode } from '../src/permissions';
@@ -29,7 +30,10 @@ function ctx(): ToolContext {
 function teamJson(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(tmp, '.ami', 'teams', 'sq', 'team.json'), 'utf-8'));
 }
-function settle(): Promise<void> { return new Promise(r => setTimeout(r, 60)); }
+// Deterministically await the fire-and-forget file-locked persist to land on disk,
+// instead of racing a fixed wall-clock sleep (which the async locked write can miss
+// under CPU contention — the salvaged-state-on-disk assertions then read stale data).
+function settle(): Promise<void> { return flushTeamPersists(); }
 
 describe('team roster: batch modes, cycle-all, status discovery, summary, removal', () => {
   beforeEach(() => { resetTeam(); tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'team-roster-')); });
