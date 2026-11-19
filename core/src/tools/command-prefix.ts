@@ -174,5 +174,82 @@ export function isBareSubcommandAwareRoot(
   // Empty or multi-word prefixes are never a bare root: a scoped `cmd subcommand`
   // (or `npm run`) rule is safe to keep.
   if (trimmed === '' || trimmed.includes(' ')) return false;
-  return isSubcommandAwareRoot(trimmed);
+  // Root matching is CASE-INSENSITIVE: a word-aligned LCP preserves the first
+  // string's casing (`Git` for `Git add`+`git commit`) while the oracle's
+  // subcommand-aware set is lowercase, so a mixed-case `Git` must still be
+  // recognised as the bare `git` root and dropped. Mirrors Claude's
+  // `getCommandSpec(rootLower)` lookup (utils/powershell/staticPrefix.ts L273).
+  return isSubcommandAwareRoot(trimmed.toLowerCase());
+}
+
+/**
+ * Word-aligned longest common prefix of a group of command prefixes, compared
+ * CASE-INSENSITIVELY while emitting the FIRST prefix's original casing. Never
+ * chops mid-word; returns at least the first prefix's first word so a non-empty
+ * group never collapses to `''`.
+ *
+ * Case-insensitivity is required for PowerShell (which is case-insensitive:
+ * `Git` === `git`, `Get-Process` === `get-process`) and is harmless for the
+ * case-sensitive bash path (lowercased tokens compare identically). e.g.
+ * `['npm run test', 'npm run lint']` → `npm run`; `['Git status', 'git log']`
+ * → `Git`. Mirrors Claude Code's `wordAlignedLCP`
+ * (utils/powershell/staticPrefix.ts L288-316).
+ */
+export function wordAlignedCommonPrefix(prefixes: readonly string[]): string {
+  if (prefixes.length === 0) return '';
+  if (prefixes.length === 1) return prefixes[0]!;
+  const firstWords = prefixes[0]!.split(' ');
+  let common = firstWords.length;
+  for (let i = 1; i < prefixes.length; i++) {
+    const other = prefixes[i]!.split(' ');
+    let shared = 0;
+    while (
+      shared < common &&
+      shared < other.length &&
+      other[shared]!.toLowerCase() === firstWords[shared]!.toLowerCase()
+    ) {
+      shared++;
+    }
+    common = shared;
+    if (common === 0) break;
+  }
+  return firstWords.slice(0, Math.max(1, common)).join(' ');
+}
+
+/**
+ * Collapse a flat list of per-subcommand scoped prefixes (one per mutating
+ * subcommand of a compound command) into the minimal set of "allow always"
+ * rules. Prefixes are grouped by their root word (first token, keyed
+ * CASE-INSENSITIVELY so `Git`/`git` share a group); each group is collapsed to
+ * its {@link wordAlignedCommonPrefix}; and a group whose collapsed prefix is a
+ * bare subcommand-aware root ({@link isBareSubcommandAwareRoot}) is DROPPED
+ * rather than emitted, so a `git fetch`+`git worktree add` chain never suggests a
+ * too-broad `git:*` rule. A multi-word LCP (`npm run`) is narrowly scoped and
+ * kept.
+ *
+ * This is the single canonical compound-prefix collapser — the permission layer
+ * ({@link import('../permissions').getCompoundCommandPrefixes}) derives the
+ * per-subcommand prefixes, then delegates the grouping/LCP/drop to this helper so
+ * the collapse logic lives in exactly one place. Mirrors Claude Code's
+ * `getCompoundCommandPrefixesStatic` group/collapse/drop
+ * (utils/powershell/staticPrefix.ts L246-284).
+ */
+export function collapseCompoundPrefixes(
+  prefixes: readonly string[],
+  isSubcommandAwareRoot: (root: string) => boolean,
+): string[] {
+  const groups = new Map<string, string[]>();
+  for (const prefix of prefixes) {
+    const key = prefix.split(' ')[0]!.toLowerCase();
+    const group = groups.get(key);
+    if (group) group.push(prefix);
+    else groups.set(key, [prefix]);
+  }
+  const collapsed: string[] = [];
+  for (const group of groups.values()) {
+    const lcp = wordAlignedCommonPrefix(group);
+    if (isBareSubcommandAwareRoot(lcp, isSubcommandAwareRoot)) continue;
+    collapsed.push(lcp);
+  }
+  return collapsed;
 }

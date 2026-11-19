@@ -11,7 +11,7 @@ import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPow
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
 import { getCommandSpec as getArgCommandSpec, buildSpecPrefix, isScopedModulePrefix } from './tools/bash-command-specs';
-import { unwrapWrapperChain, isBareSubcommandAwareRoot } from './tools/command-prefix';
+import { unwrapWrapperChain, collapseCompoundPrefixes } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
 import { getManagedConfigPath } from './config';
@@ -4411,27 +4411,6 @@ export function suggestAllowPrefix(command: string): string | null {
 }
 
 /**
- * Word-aligned longest common prefix of a group of command prefixes.
- * e.g. ["git fetch", "git worktree add"] → "git";
- *      ["npm run test", "npm run lint"]  → "npm run".
- * Returns at least the first word so a group never collapses to "". Mirrors
- * Claude's `longestCommonPrefix` (utils/bash/prefix.ts).
- */
-function wordAlignedCommonPrefix(prefixes: string[]): string {
-  if (prefixes.length === 0) return '';
-  if (prefixes.length === 1) return prefixes[0]!;
-  const words = prefixes[0]!.split(' ');
-  let common = words.length;
-  for (let i = 1; i < prefixes.length; i++) {
-    const other = prefixes[i]!.split(' ');
-    let shared = 0;
-    while (shared < common && shared < other.length && words[shared] === other[shared]) shared++;
-    common = shared;
-  }
-  return words.slice(0, Math.max(1, common)).join(' ');
-}
-
-/**
  * Per-subcommand scoped "allow always" prefixes for a (possibly compound)
  * command. A single command returns `[prefix]` (or `[]` when no safe prefix can
  * be derived). A compound command (`cd src && git status && npm test`) is split
@@ -4476,26 +4455,15 @@ export function getCompoundCommandPrefixes(
     if (prefix) prefixes.push(prefix);
   }
   if (prefixes.length === 0) return [];
-  const groups = new Map<string, string[]>();
-  for (const prefix of prefixes) {
-    const root = prefix.split(' ')[0]!;
-    const group = groups.get(root);
-    if (group) group.push(prefix);
-    else groups.set(root, [prefix]);
-  }
-  const collapsed: string[] = [];
-  for (const group of groups.values()) {
-    const lcp = wordAlignedCommonPrefix(group);
-    // Bare-root drop guard: never collapse a group down to a single subcommand
-    // aware root (`git fetch`+`git worktree add` → `git`, `git add`+`git commit`
-    // → `git`). A bare `git:*` rule would auto-allow `git push --force` forever,
-    // so DROP the whole group rather than suggest the too-broad root. A multi-word
-    // LCP (`npm run`) is narrowly scoped and kept. Mirrors Claude's
-    // getCompoundCommandPrefixesStatic collapse guard (staticPrefix.ts L271-280).
-    if (isBareSubcommandAwareRoot(lcp, root => SUBCOMMAND_AWARE_ROOTS.has(root))) continue;
-    collapsed.push(lcp);
-  }
-  return collapsed;
+  // Group by root word + collapse each group via case-insensitive word-aligned
+  // LCP, dropping any group whose LCP degenerates to a bare subcommand-aware root
+  // (`git fetch`+`git worktree add` → `git`, which would auto-allow `git push
+  // --force` forever). This collapse is the single canonical compound-prefix
+  // collapser in {@link collapseCompoundPrefixes} (tools/command-prefix.ts); the
+  // grouping is CASE-INSENSITIVE so a PowerShell mixed-case chain (`Git add`+`git
+  // commit`) still collapses to the one `git` group. Mirrors Claude's
+  // getCompoundCommandPrefixesStatic (staticPrefix.ts L246-284).
+  return collapseCompoundPrefixes(prefixes, root => SUBCOMMAND_AWARE_ROOTS.has(root));
 }
 
 // ---------------------------------------------------------------------------
