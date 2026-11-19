@@ -1989,6 +1989,14 @@ export interface EngineConfig {
    *  are blocked, and the system prompt instructs the model to only read,
    *  search, and describe its plan. */
   planMode?: boolean;
+  /** When true, output-gating ("channel") mode is active: the model's plain-text
+   *  completions are HIDDEN from the user and every user-facing message must flow
+   *  through the `user_message` tool (two-way synced with the tool's availability).
+   *  Opt-in and gated by {@link isOutputGateEnabled} (AMI_OUTPUT_GATE). DISTINCT from
+   *  the `concise` output STYLE toggled by `/brief` (terseness, a presentation
+   *  overlay) — this gates the output CHANNEL, not verbosity. Parity: Claude Code's
+   *  brief-only mode (`isBriefOnly` + `setUserMsgOptIn`, commands/brief.ts). */
+  outputGateMode?: boolean;
   /** Handler for AskUserQuestion tool. The UI implements this to show
    *  the question and return the user's answer. Options carry optional per-option
    *  `preview`/`disabled` and an optional `defaultIndex` to preselect/focus a

@@ -37,6 +37,7 @@ import { sendMessageTool } from './send-message';
 import { sleepTool } from './sleep';
 import { workflowTool } from './workflow';
 import { briefTool } from './brief';
+import { userMessageTool } from './user-message';
 import { surfaceAttachmentTool } from './surface-attachments';
 import { teamCreateTool, teamDeleteTool } from './team';
 import { todoWriteTool, todoReadTool } from './todo-write';
@@ -191,6 +192,13 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     exitWorktreeTool,
     sleepTool,
     briefTool,
+    // PARITY (additive): dedicated user-facing output CHANNEL for output-gating
+    // mode. Gated by its own isEnabled() => isOutputGateEnabled() (opt-in via
+    // AMI_OUTPUT_GATE), so when the mode is off it is dropped at registration and
+    // the default pool is unchanged. When on, the engine advertises it only on
+    // turns where output-gating mode is active (two-way sync) and hides the model's
+    // plain prose so all user-facing output flows through this tool.
+    userMessageTool,
     surfaceAttachmentTool,
     todoWriteTool,
     todoReadTool,
@@ -298,6 +306,7 @@ export { sleepTool } from './sleep';
 export { workflowTool, MAX_WORKFLOW_SCRIPT_BYTES, sanitizeWorkflowRunId, persistWorkflowRun, loadWorkflowRun } from './workflow';
 export type { WorkflowRunRecord } from './workflow';
 export { briefTool } from './brief';
+export { userMessageTool, isOutputGateEnabled, OUTPUT_GATE_ENV, OUTPUT_GATE_ENV_COMPAT, USER_MESSAGE_MAX_CHARS } from './user-message';
 export { surfaceAttachmentTool, formatAttachmentDelivery, expandAttachmentPath, resolveSurfacedAttachments, SURFACE_ATTACHMENT_METADATA_KEY } from './surface-attachments';
 export type { SurfacedAttachment } from './surface-attachments';
 export { WorkflowRuntime, executeWorkflow, parseWorkflowMeta } from './workflow-runtime';
