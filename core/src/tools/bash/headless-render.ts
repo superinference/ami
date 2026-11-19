@@ -145,6 +145,8 @@ export function renderHeadlessTerminal(
  */
 export function describeBashHeadlessRender(): {
   supported: true;
+  /** Process-env kill switch that selects the gating mode. */
+  envVar: string;
   modes: HeadlessRenderMode[];
   defaultMode: HeadlessRenderMode;
   quietThresholdMs: number;
@@ -156,6 +158,7 @@ export function describeBashHeadlessRender(): {
 } {
   return {
     supported: true,
+    envVar: 'AMI_BASH_HEADLESS_RENDER',
     modes: ['auto', 'always', 'off'],
     defaultMode: 'auto',
     quietThresholdMs: HEADLESS_QUIET_THRESHOLD_MS,

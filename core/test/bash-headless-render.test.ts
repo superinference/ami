@@ -117,6 +117,7 @@ describe('describeBashHeadlessRender (introspect descriptor)', () => {
   it('reports the capability metadata', () => {
     const d = describeBashHeadlessRender();
     assert.equal(d.supported, true);
+    assert.equal(d.envVar, 'AMI_BASH_HEADLESS_RENDER');
     assert.deepEqual(d.modes, ['auto', 'always', 'off']);
     assert.equal(d.defaultMode, 'auto');
     assert.equal(d.quietThresholdMs, HEADLESS_QUIET_THRESHOLD_MS);

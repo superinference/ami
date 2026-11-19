@@ -27,6 +27,11 @@ import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isSandboxEscapeDi
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
 import { applySimulatedSedEdit } from './bash-sed-parser';
 import { findOnPath } from '../utils/which';
+import {
+  foldBashControlOutput,
+  resolveHeadlessRenderMode,
+  type BashHeadlessFold,
+} from './bash/headless-output';
 
 const MAX_OUTPUT_LENGTH = 200_000;
 // Floor for the resolved output cap: the head+tail truncation math in
@@ -2226,6 +2231,21 @@ export const bashTool: ToolDefinition = {
         ...(spilled.outputFilePath
           ? { outputFilePath: spilled.outputFilePath, outputFileSize: spilled.outputFileSize }
           : {}),
+        // Headless terminal fold side-band: present ONLY when the renderer
+        // actually collapsed control-heavy output, so an ordinary plain-log
+        // command's metadata shape is unchanged. Lets a programmatic caller see
+        // that the screen was flattened (and any OSC 7 cwd / OSC title / curses
+        // alt-screen a human would have seen). Parity: Orca HeadlessEmulator.
+        ...(presented.headless.used
+          ? {
+              headlessRender: {
+                used: true,
+                alternateScreen: presented.headless.alternateScreen,
+                ...(presented.headless.cwd ? { cwd: presented.headless.cwd } : {}),
+                ...(presented.headless.title ? { title: presented.headless.title } : {}),
+              },
+            }
+          : {}),
       },
     };
   },
@@ -2235,15 +2255,24 @@ function presentCommandOutput(
   command: string,
   stdout: string,
   stderr: string,
-): { stdout: string; stderr: string } {
-  const foldOut = isTestRunnerCommand(command) || looksLikeSuiteLog(stdout);
-  const foldErr = isTestRunnerCommand(command) || looksLikeSuiteLog(stderr);
+): { stdout: string; stderr: string; headless: BashHeadlessFold } {
+  // Headless terminal fold FIRST: collapse `\r` progress-bar overwrites, cursor-
+  // addressed redraws and curses alt-screen frames into the final rendered screen
+  // so the model sees what a human would, not raw ANSI soup. Heuristic-gated, so
+  // plain `\n`-delimited logs (the common case) pass through byte-for-byte; a hard
+  // AMI_BASH_HEADLESS_RENDER=off env kill switch disables it entirely. This runs
+  // before compactTestLog/stripEmptyLines so those line-oriented passes operate on
+  // the already-flattened text.
+  const headless = foldBashControlOutput(stdout, stderr, resolveHeadlessRenderMode());
+  const foldOut = isTestRunnerCommand(command) || looksLikeSuiteLog(headless.stdout);
+  const foldErr = isTestRunnerCommand(command) || looksLikeSuiteLog(headless.stderr);
   // Strip only whole leading/trailing empty lines (a trailing newline from most
   // commands, or a leading blank from a banner) while preserving interior blank
   // lines and indentation, so the model sees clean output without losing layout.
   return {
-    stdout: stripEmptyLines(foldOut ? compactTestLog(stdout) : stdout),
-    stderr: stripEmptyLines(foldErr ? compactTestLog(stderr) : stderr),
+    stdout: stripEmptyLines(foldOut ? compactTestLog(headless.stdout) : headless.stdout),
+    stderr: stripEmptyLines(foldErr ? compactTestLog(headless.stderr) : headless.stderr),
+    headless,
   };
 }
 
