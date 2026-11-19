@@ -5649,7 +5649,7 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   return matchPattern(pattern, deob);
 }
 
-function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
+export function matchBashPattern(pattern: string, command: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
   // Heredoc bodies are stripped BEFORE line-continuation joining (see
   // {@link normalizeCommandForMatching}) so a continuation inside a heredoc body
   // can never shift the closing delimiter and hide a real post-heredoc statement

@@ -5,6 +5,7 @@ import { isSafeSegment } from './skill-catalog';
 import { escapeRegExp } from './utils/string';
 import { parseFrontmatter, parseFrontmatterList } from './memory';
 import { validateLspServerConfig, type LspServerConfig } from './lsp/config';
+import { permissionRuleValueFromString, isBashPrefixTool, matchBashPattern } from './permissions';
 
 // ---------------------------------------------------------------------------
 // Git source safety — SHARED validators reused by the plugin installer AND the
@@ -600,6 +601,43 @@ export function parseCommandShell(value: unknown): CommandShell | undefined {
  */
 export function isImmediateCommand(cmd: Pick<CommandDefinition, 'immediate'>): boolean {
   return cmd.immediate === true;
+}
+
+/**
+ * Decide whether an embedded prompt-shell command — a `` !`cmd` `` / ` ```! block``` `
+ * placeholder expanded in a plugin/slash command's prompt BEFORE it reaches the
+ * model — is auto-permitted by the command's OWN declared {@link
+ * CommandDefinition.allowedTools} (Claude parity: loadPluginCommands injects the
+ * command's parsed allowed-tools into `toolPermissionContext.alwaysAllowRules.command`
+ * before `executeShellCommandsInPrompt` runs, so only the command-declared shell is
+ * auto-run — loadPluginCommands.ts L378-398 + promptShellExecution.ts's
+ * `hasPermissionsToUseTool` gate). The embedded shell is thus scoped to the command:
+ * it auto-runs an embedded command only when one of the command's own Bash allow-tools
+ * covers it.
+ *
+ * A rule grants a command when it is a Bash-class tool rule (`Bash`/`bash` and its
+ * aliases, via {@link isBashPrefixTool}): a bare `Bash` (no parenthesized content)
+ * grants every command; `Bash(<pattern>)` grants commands matched by
+ * {@link matchBashPattern} under the `allow` action (the `cmd:*` prefix form and `*`
+ * wildcards). Non-Bash entries (`Read`, `Edit`, MCP tools, …) never grant a shell
+ * command. Returns `false` for an empty/undefined/blank command or allow-list (a
+ * command that declares no Bash allow-tools auto-runs nothing — fail-closed).
+ */
+export function isEmbeddedShellCommandAllowed(
+  command: string,
+  allowedTools: readonly string[] | undefined,
+): boolean {
+  const cmd = command.trim();
+  if (cmd === '' || !allowedTools || allowedTools.length === 0) return false;
+  for (const rule of allowedTools) {
+    if (typeof rule !== 'string' || rule.trim() === '') continue;
+    const { toolName, ruleContent } = permissionRuleValueFromString(rule.trim());
+    if (!isBashPrefixTool(toolName)) continue;
+    // A bare `Bash` rule (no parenthesized content) grants every command.
+    if (ruleContent === undefined) return true;
+    if (matchBashPattern(ruleContent, cmd, 'allow')) return true;
+  }
+  return false;
 }
 
 /**
