@@ -2519,6 +2519,15 @@ export function buildSubsystems(config: EngineConfig): {
 
 export interface EngineSubmitOptions {
   systemPromptOverride?: string;
+  /** Per-turn SOFT replacement of the base system prompt: replaces the default
+   *  (or session-level {@link EngineConfig.systemPrompt}) base for this one turn,
+   *  while dynamic overlays and `appendSystemPrompt` STILL apply on top. This is a
+   *  distinct, weaker tier than {@link systemPromptOverride} (which is a HARD,
+   *  byte-exact replace that drops append and every dynamic section). Parity:
+   *  Claude Code's `customSystemPrompt` (`--system-prompt`) vs `overrideSystemPrompt`
+   *  priority order in `utils/systemPrompt.ts` — custom replaces the default but
+   *  append is still honored, whereas override short-circuits everything. */
+  customSystemPrompt?: string;
   /** Text appended to the END of the active system prompt (default / override / agent)
    *  for this turn, preserving the full prompt rather than replacing it. Parity:
    *  Claude's per-call `appendSystemPrompt`. */
