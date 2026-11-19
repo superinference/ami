@@ -472,3 +472,33 @@ export {
   getMcpServerBuckets,
 } from './tool-categories';
 export type { ToolCategory, CategorizableTool, McpServerBucket } from './tool-categories';
+
+// Tool-subsystem helper modules — not ToolDefinitions themselves, but infrastructure
+// that lives alongside the tools and is consumed by tool-adjacent layers
+// (command-prefix + command-spec-registry back the bash permission-prefix / command-spec
+// resolution used by permissions.ts; tool-schema-cache backs the provider's tool-schema
+// render cache used by provider.ts + the MCP manager). Re-exported through the tools
+// barrel so it is the single surfacing point for tool-adjacent helpers.
+export {
+  WRAPPER_PREFIX_COMMANDS,
+  unwrapWrapperChain,
+  isBareSubcommandAwareRoot,
+  wordAlignedCommonPrefix,
+  collapseCompoundPrefixes,
+} from './command-prefix';
+export type { UnwrappedCommand } from './command-prefix';
+export {
+  BUILTIN_COMMAND_SPECS,
+  isSafeCommandSpecName,
+  loadFigSpec,
+  getCommandSpec,
+  valueFlagsForCommand,
+} from './command-spec-registry';
+export type { CommandArgument, CommandOption, CommandSpec } from './command-spec-registry';
+export {
+  toolSchemaCacheKey,
+  getToolSchemaCache,
+  clearToolSchemaCache,
+  memoizeToolSchema,
+  toolSchemaCacheStats,
+} from './tool-schema-cache';
