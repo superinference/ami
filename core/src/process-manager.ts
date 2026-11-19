@@ -2151,6 +2151,10 @@ export class ProcessManager extends EventEmitter {
     maxReadBytes?: number,
   ): {
     status: string;
+    /** The task KIND discriminator (bash | monitor | agent) so a consumer can label
+     *  a background shell vs an internal monitor vs an in-process agent without
+     *  parsing the command text (parity: Claude's shell-vs-monitor wording). */
+    kind: TaskKind;
     exitCode: number | null;
     output: string;
     elapsedMs: number;
@@ -2235,6 +2239,7 @@ export class ProcessManager extends EventEmitter {
 
     return {
       status: entry.status,
+      kind: entry.kind,
       exitCode: entry.exitCode,
       output,
       // Freeze at the terminal timestamp, discount paused time, and clamp negative

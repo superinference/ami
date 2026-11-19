@@ -158,6 +158,9 @@ describe('ProcessManager – getOutput', () => {
     assert.ok(result!.output.includes('captured-output'));
     assert.equal(result!.status, 'completed');
     assert.equal(result!.exitCode, 0);
+    // getOutput reports the task KIND discriminator so a consumer can label a
+    // background shell vs a monitor vs an agent (a spawned shell is 'bash').
+    assert.equal(result!.kind, 'bash');
   });
 
   it('captures stderr to disk', async () => {
