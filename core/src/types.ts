@@ -1551,7 +1551,16 @@ export type EngineEvent =
       /** The structured patch was omitted because the file exceeded the diff-scan
        *  cap (forwarded from {@link ToolResult.structuredPatchTruncated}) — the
        *  edit succeeded but its location could not be rendered. */
-      structuredPatchTruncated?: boolean }
+      structuredPatchTruncated?: boolean;
+      /** Image content blocks the model should receive as real MULTIMODAL content
+       *  alongside this result's text — e.g. an image a hook/user attached to a
+       *  permission decision ({@link PermissionPromptResult.contentBlocks}). The
+       *  engine queues these into the pending-tool-image path (gated on vision
+       *  support) so they are injected as a user image message before the next model
+       *  turn, exactly like a tool-produced image. Absent for ordinary results.
+       *  Parity: Claude's `PermissionDecision.contentBlocks` image blocks flowing
+       *  back as tool_result content. */
+      resultImages?: ImageContent[] }
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
   | { type: 'usage_update'; stats: UsageStats }
   | { type: 'error'; error: string }

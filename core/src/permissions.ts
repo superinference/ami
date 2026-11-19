@@ -30,6 +30,7 @@ import {
   type SpeculativeBashClassifier,
 } from './speculative-classifier';
 import type { SandboxPolicy } from './types';
+import type { PermissionContentBlock } from './permission-content-blocks';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -663,6 +664,20 @@ export interface PermissionPromptResult {
    * modified edits instead of a plain allow).
    */
   updatedInput?: Record<string, unknown>;
+  /**
+   * Rich content blocks a hook or the permission prompt attaches to the decision,
+   * flowing back to the model ALONGSIDE the permission result — e.g. a structured
+   * text block, an image (a screenshot the user pasted into the deny dialog), or a
+   * document. Text blocks are folded into the model-facing feedback; image blocks
+   * are delivered as real multimodal content (queued like a tool-result image);
+   * document blocks are surfaced as a short naming note. Carried on both approve
+   * (`allow_once`/`allow_pattern`) and refuse (`deny`/`cancelled`) decisions so the
+   * model never receives ONLY a plain-text line when richer context was provided.
+   * Split into delivery channels by `splitPermissionContentBlocks`. Mirrors Claude's
+   * `PermissionDecision.contentBlocks` (PermissionContext `buildAllow` /
+   * `cancelAndAbort` / `handleUserAllow`), using AMI's own content-block union.
+   */
+  contentBlocks?: PermissionContentBlock[];
 }
 
 export interface PermissionPromptHandler {

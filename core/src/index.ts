@@ -107,6 +107,8 @@ export type { RiskLevel, PermissionExplanation } from './permissions';
 export { detectPathExpansionHazard, pathExpansionHazardReason } from './permissions';
 export type { PathExpansionHazard } from './permissions';
 export { outOfWorkspacePathDisposition } from './permissions';
+export { splitPermissionContentBlocks, composePermissionResultText } from './permission-content-blocks';
+export type { PermissionContentBlock, SplitPermissionContent } from './permission-content-blocks';
 export type { OutOfWorkspacePathDisposition } from './permissions';
 export {
   validatePermissionRule, validatePermissionUpdate, filterInvalidPermissionRules, permissionRuleValueFromString,
