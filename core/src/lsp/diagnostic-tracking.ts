@@ -422,21 +422,55 @@ export class DiagnosticTracker {
   private baseline: Map<string, Diagnostic[]> = new Map();
 
   /**
+   * When each file's baseline was last snapshotted (captured by
+   * {@link beforeFileEdited}) or rolled forward (by {@link getNewDiagnostics}),
+   * in epoch-ms. Parity (additive): Claude Code's diagnosticTracking
+   * `lastProcessedTimestamps` (Map<path,number>, diagnosticTracking.ts:L321-343) —
+   * records when each file was last processed so a consumer can tell a stale
+   * baseline from a fresh one and so the per-query-loop reset clears the same
+   * three-map state Claude's `handleQueryStart` does (baseline +
+   * last-processed cache here; the right-file state is AMI's registry, cleared
+   * separately on session reset). Kept in lock-step with {@link baseline}: every
+   * store records a timestamp, every eviction/clear drops it.
+   */
+  private readonly lastProcessed: Map<string, number> = new Map();
+
+  /**
    * Max distinct file baselines retained before least-recently-used eviction.
    * Overridable (constructor arg) so tests can exercise eviction deterministically
    * without inserting the production default ({@link MAX_TRACKED_BASELINE_FILES}).
    */
   private readonly maxFiles: number;
 
-  constructor(private readonly source: DiagnosticSource, maxFiles: number = MAX_TRACKED_BASELINE_FILES) {
+  /** Monotonic-ish wall clock for {@link lastProcessed}; injectable so tests can
+   *  assert deterministic timestamps instead of racing the real clock. */
+  private readonly now: () => number;
+
+  constructor(
+    private readonly source: DiagnosticSource,
+    maxFiles: number = MAX_TRACKED_BASELINE_FILES,
+    now: () => number = () => Date.now(),
+  ) {
     // A non-finite or non-positive cap would disable the bound entirely (or wedge
     // the eviction loop); clamp to at least one tracked file.
     this.maxFiles = Number.isFinite(maxFiles) && maxFiles >= 1 ? Math.floor(maxFiles) : MAX_TRACKED_BASELINE_FILES;
+    this.now = now;
   }
 
   /** Number of distinct files whose baseline is currently retained (introspection). */
   get trackedFileCount(): number {
     return this.baseline.size;
+  }
+
+  /**
+   * Epoch-ms when `filePath`'s baseline was last snapshotted/rolled forward, or
+   * `undefined` when no baseline is (or ever was) tracked for it. Parity with
+   * Claude's `lastProcessedTimestamps` lookup; exposed for introspection and for
+   * staleness checks by consumers (e.g. skip re-snapshotting a file processed
+   * within the same turn).
+   */
+  getLastProcessedTimestamp(filePath: string): number | undefined {
+    return this.lastProcessed.get(normalizeDiagnosticPath(filePath));
   }
 
   /**
@@ -450,10 +484,15 @@ export class DiagnosticTracker {
   private storeBaseline(key: string, diagnostics: Diagnostic[]): void {
     this.baseline.delete(key);
     this.baseline.set(key, diagnostics);
+    // Stamp when this file was last processed, in lock-step with the baseline.
+    this.lastProcessed.set(key, this.now());
     while (this.baseline.size > this.maxFiles) {
       const lru = this.baseline.keys().next().value;
       if (lru === undefined) break;
       this.baseline.delete(lru);
+      // Drop the evicted file's timestamp too so the cache never outgrows the
+      // baseline it mirrors.
+      this.lastProcessed.delete(lru);
     }
   }
 
@@ -535,9 +574,15 @@ export class DiagnosticTracker {
     return out;
   }
 
-  /** Clear all tracked baselines (e.g. at the start of a new query loop). */
+  /**
+   * Clear all tracked baselines AND the last-processed timestamp cache at the
+   * start of a new query loop (parity: Claude's `handleQueryStart` reset()ing
+   * every tracking map, diagnosticTracking.ts:L321-343), so diagnostics
+   * snapshotted during a prior turn never leak into the next turn's "new" set.
+   */
   reset(): void {
     this.baseline.clear();
+    this.lastProcessed.clear();
   }
 }
 
