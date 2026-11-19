@@ -386,3 +386,86 @@ export function isToolDenied(name: string, denied: ReadonlySet<string>): boolean
   }
   return false;
 }
+
+/**
+ * Default budget (ms) for a dynamic tool-list / tool-description enumeration.
+ * PARITY (additive): mirrors Claude Code's `APP_ENUM_TIMEOUT_MS = 1000`
+ * (utils/computerUse/mcpServer.ts), where the installed-app enumeration that
+ * enriches a tool's description is raced against a fixed timeout and "fails
+ * soft" — on timeout the description just omits the dynamic list, the model
+ * still works. AMI has no computer-use subsystem, so the reusable *mechanism*
+ * lands here and gates AMI's own dynamic enumeration (a server's advertised
+ * tool list). The default is larger than Claude's app-enum 1s because a remote
+ * MCP `tools/list` legitimately takes longer than a local Spotlight query; an
+ * operator can tighten it via {@link TOOL_ENUM_TIMEOUT_ENV}.
+ */
+export const DEFAULT_TOOL_ENUM_TIMEOUT_MS = 15_000;
+
+/** Env var that overrides {@link DEFAULT_TOOL_ENUM_TIMEOUT_MS} (milliseconds). */
+export const TOOL_ENUM_TIMEOUT_ENV = 'AMI_TOOL_ENUM_TIMEOUT_MS';
+
+/**
+ * Resolve the dynamic-enumeration timeout budget (ms). Reads
+ * {@link TOOL_ENUM_TIMEOUT_ENV}; unset/empty/whitespace, non-numeric, or a
+ * non-positive value falls back to {@link DEFAULT_TOOL_ENUM_TIMEOUT_MS} —
+ * matching the invalid-value handling of the other AMI timeout knobs
+ * (`getMcpToolTimeout`).
+ */
+export function getToolEnumerationTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[TOOL_ENUM_TIMEOUT_ENV];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_TOOL_ENUM_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_TOOL_ENUM_TIMEOUT_MS;
+  return n;
+}
+
+/**
+ * Run `producer()` with a soft-fail timeout budget. PARITY (additive): the
+ * reusable shape of Claude Code's `tryGetInstalledAppNames` — race the async
+ * enumeration against a timer and, when it exceeds `timeoutMs` OR rejects OR
+ * throws synchronously, return `fallback` instead of propagating. A late
+ * resolution/rejection from the still-running producer is swallowed (no unhandled
+ * rejection, no leaked timer), so a slow/hung enumeration can never block the
+ * caller. `onTimeout` fires only on the timeout branch (for a debug log),
+ * mirroring the reference's "exceeded Nms or failed" note.
+ *
+ * This is the single canonical timed-soft-fail primitive for dynamic tool
+ * enumeration; callers must not re-implement the race/clear/swallow dance.
+ */
+export async function softFailTimedEnumeration<T>(
+  producer: () => Promise<T>,
+  fallback: T,
+  timeoutMs: number = getToolEnumerationTimeoutMs(),
+  onTimeout?: () => void,
+): Promise<T> {
+  let work: Promise<T>;
+  try {
+    work = Promise.resolve(producer());
+  } catch {
+    // Synchronous throw from the producer — soft-fail immediately.
+    return fallback;
+  }
+
+  const TIMED_OUT = Symbol('tool-enum-timeout');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutP = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(resolve, Math.max(0, timeoutMs), TIMED_OUT);
+  });
+
+  try {
+    const result = await Promise.race([work, timeoutP]);
+    if (result === TIMED_OUT) {
+      // Enumeration still running — swallow its eventual settle so a late
+      // rejection does not surface as an unhandled rejection.
+      void work.catch(() => {});
+      onTimeout?.();
+      return fallback;
+    }
+    return result as T;
+  } catch {
+    // Producer rejected before the timeout fired — soft-fail to the fallback.
+    return fallback;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}

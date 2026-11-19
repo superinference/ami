@@ -15,6 +15,7 @@ import {
 import { resolveConfigDir } from '../reference-journal';
 import { findAvailablePort, buildRedirectUri, DEFAULT_OAUTH_CALLBACK_PORT } from './oauth-port';
 import { getMcpToolTimeout, normalizeMcpNameSegment, qualifiedMcpToolName } from '../tools/mcp-tool';
+import { softFailTimedEnumeration, getToolEnumerationTimeoutMs } from '../tools/tool-gates';
 import { classifyMcpToolForCollapse } from './classify-collapse';
 import {
   resolveEnvSecretRefs,
@@ -1550,7 +1551,11 @@ export class McpManager extends EventEmitter {
 
     client.on('tools-changed', () => {
       coreLog('mcp', `Tool list changed for ${name}, refreshing`);
-      this.invalidateToolCache(name);
+      // refreshToolsForServer invalidates + re-ingests ATOMICALLY on success and
+      // keeps the existing advertisement on a timed-out/errored re-enumeration, so
+      // we must NOT pre-invalidate here — doing so would blank the tool list the
+      // instant a tools/list_changed arrives and leave it blank if the follow-up
+      // tools/list hangs past the budget.
       this.refreshToolsForServer(name).catch(() => {});
       this.emit('tools-changed', name);
     });
@@ -3785,13 +3790,22 @@ export class McpManager extends EventEmitter {
     const client = this.clients.get(name);
     if (!client || client.state !== 'ready') return;
 
-    try {
-      const tools = await client.listTools();
-      this.invalidateToolCache(name);
-      this.ingestServerTools(name, tools);
-    } catch (err) {
-      coreLog('mcp', `Failed to refresh tools for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    // Bound the re-enumeration: a server that fires a tools/list_changed and then
+    // hangs (or is slow) on the follow-up tools/list must not block the refresh
+    // forever. softFailTimedEnumeration races listTools against the configurable
+    // enumeration budget and soft-fails to `null` on timeout OR error, in which
+    // case the server's previously-advertised tools are kept untouched.
+    const tools = await softFailTimedEnumeration<McpToolSchema[] | null>(
+      () => client.listTools(),
+      null,
+      getToolEnumerationTimeoutMs(),
+    );
+    if (tools === null) {
+      coreLog('mcp', `Failed to refresh tools for ${name} (timed out or errored); keeping existing tools`);
+      return;
     }
+    this.invalidateToolCache(name);
+    this.ingestServerTools(name, tools);
   }
 
   /**
