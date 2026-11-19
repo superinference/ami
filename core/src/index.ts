@@ -708,6 +708,30 @@ export { planWaves, computeUnitSignature, computeRunId, computeResumePlan } from
 export type { WorkUnit, WavePlan, ResumeUnit, PriorRun, ResumePlan } from './task';
 export type { WaveUnit } from './tools/workflow-runtime';
 
+// --- agent lineage graph + dispatch-depth cap (Orca dispatch-depth parity) ---
+export {
+  LineageGraph,
+  canSpawnMore,
+  DEFAULT_MAX_SPAWN_DEPTH,
+  LineageUnknownParentError,
+  LineageCycleError,
+  SpawnDepthExceededError,
+} from './orchestration/depth';
+export type { RegisterSpawnParams } from './orchestration/depth';
+export type { SpawnLineage, SpawnCreator, AgentLifecycleState } from './types';
+export { LEGAL_TRANSITIONS } from './types';
+
+// --- formal agent/task lifecycle state machine (Orca lifecycle-transition parity) ---
+export {
+  LifecycleMachine,
+  applyTransition,
+  isTerminalState,
+  canTransition,
+  LifecycleNotFoundError,
+  LifecycleConflictError,
+} from './orchestration/lifecycle';
+export type { LifecycleTransitionParams } from './orchestration/lifecycle';
+
 // --- scalable fuzzy file-path index (nucleo/fzf-v2 port) ---
 export { FileIndex, fileIndexBuildConfig, yieldToEventLoop as fileIndexYieldToEventLoop } from './file-index';
 export type { SearchResult as FileSearchResult } from './file-index';

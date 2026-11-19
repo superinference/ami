@@ -3018,3 +3018,86 @@ export function buildSlashCommandLifecycleEvent(
 ): SlashCommandLifecycleEvent {
   return { uuid, command, state };
 }
+
+// ===========================================================================
+// Agent spawn lineage + dispatch-depth cap (Orca parity:
+// runtime/orchestration/db/dispatch-depth.ts). First-class parent/child
+// lineage for everything AMI spawns, so a child's depth is derived from its
+// creator (a fork-bomb / token-burn rail) and a child's "done" is accepted
+// only when the sender's identity matches the recorded assignee. The graph
+// logic lives in core/core/src/orchestration/depth.ts; these are its types.
+// ===========================================================================
+
+/**
+ * Identity of whatever created a spawned agent/task, recorded on its lineage so
+ * depth can later tell real delegation from host bookkeeping (parity: Orca's
+ * `DispatchCreator`). `system` is host-local coordinator code — it never counts
+ * toward depth and can't be selected by a caller to bypass the fence. `agent` is
+ * another spawned agent (its logical `id`, plus an optional human-readable
+ * `handle` for display / audit).
+ */
+export type SpawnCreator =
+  | { readonly kind: 'system' }
+  | { readonly kind: 'agent'; readonly id: string; readonly handle?: string | null };
+
+/**
+ * First-class parent/child lineage record for one spawned agent/task. Keyed by
+ * BOTH `id` (stable logical identity) AND `instanceId` (per-incarnation — a
+ * retry/restart of the same logical id gets a fresh `instanceId`), matching
+ * Orca's dual-key lineage so a remint can be told from the original. `depth` is
+ * 0 for a root/system-spawned agent and `parent.depth + 1` otherwise; it drives
+ * the `canSpawnMore = depth < maxDepth` fence the worker is told about in its
+ * system prompt.
+ */
+export interface SpawnLineage {
+  readonly id: string;
+  readonly instanceId: string;
+  /** Logical id of the creating agent, or null for a root/system spawn. */
+  readonly parentId: string | null;
+  readonly creator: SpawnCreator;
+  /** Origin associations carried for the cross-agent dashboard / fleet nav. */
+  readonly runId?: string | null;
+  readonly taskId?: string | null;
+  /** 0 for a root agent; `parent.depth + 1` otherwise. */
+  readonly depth: number;
+}
+
+// ===========================================================================
+// Formal agent/task lifecycle state machine (Orca parity:
+// runtime/orchestration/db/lifecycle-transition.ts LEGAL_TRANSITIONS). One
+// declarative transition graph driving a guarded transition with optimistic
+// from-set CAS. The guard + machine live in core/core/src/orchestration/
+// lifecycle.ts; the state vocabulary + legal-edge table live here.
+// ===========================================================================
+
+/**
+ * The lifecycle states a spawned agent/task moves through. `starting` and
+ * `running` are live; `done`, `failed`, and `circuit_broken` are TERMINAL (no
+ * outgoing edges — see {@link LEGAL_TRANSITIONS}). Replaces AMI's ad-hoc state
+ * tracking spread across engine/detached-runner/task with one shared vocabulary.
+ */
+export type AgentLifecycleState =
+  | 'starting'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'circuit_broken';
+
+/**
+ * Declarative legal-transition graph (parity: Orca's `LEGAL_TRANSITIONS`).
+ * Non-terminal states include a self-edge so an idempotent re-assert of the same
+ * state is legal; the three terminal states have NO outgoing edges, so once an
+ * agent settles it can never leave that state. The guarded transition in
+ * lifecycle.ts asserts the caller-supplied `from` set (optimistic concurrency)
+ * BEFORE checking that `to` is a legal successor, so two writers racing to settle
+ * the same agent are rejected (`lifecycle_conflict`) rather than clobbering.
+ */
+export const LEGAL_TRANSITIONS: Readonly<
+  Record<AgentLifecycleState, readonly AgentLifecycleState[]>
+> = {
+  starting: ['starting', 'running', 'done', 'failed', 'circuit_broken'],
+  running: ['running', 'done', 'failed', 'circuit_broken'],
+  done: [],
+  failed: [],
+  circuit_broken: [],
+};
