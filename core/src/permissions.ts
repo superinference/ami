@@ -640,6 +640,22 @@ export const SESSION_GRANT_SCOPES = ['config-folder', 'global-config-folder'] as
 export type SessionGrantScope = (typeof SESSION_GRANT_SCOPES)[number];
 
 export interface PermissionPromptResult {
+  /**
+   * The user's decision. The two GRANT tiers are deliberately distinct — see
+   * {@link permissionGrantTier} for the single canonical classifier the executor
+   * and UI share instead of re-deriving the tier inline:
+   *   - `allow_once`    — approve THIS call only; no standing rule is created, the
+   *                       next matching call prompts again (Claude's user_temporary).
+   *   - `allow_session` — a standing allow rule for the REST OF THIS SESSION only:
+   *                       kept in memory and NEVER written to disk, even when an
+   *                       on-disk persist destination is configured. The "scoped
+   *                       session accept" that is explicitly distinct from a
+   *                       persisted "allow always" (Claude's `accept-session`).
+   *   - `allow_pattern` — a standing allow rule the user means to KEEP: persisted to
+   *                       the configured on-disk settings tier when one is set
+   *                       (Claude's persisted "don't ask again" / user_permanent).
+   *   - `deny` / `cancelled` — refuse / abandon (not a grant).
+   */
   action: 'allow_once' | 'allow_pattern' | 'allow_session' | 'deny' | 'cancelled';
   pattern?: string;
   /** Session-grant scope (for `allow_session` self-config edits). */
@@ -679,6 +695,53 @@ export interface PermissionPromptResult {
    * `cancelAndAbort` / `handleUserAllow`), using AMI's own content-block union.
    */
   contentBlocks?: PermissionContentBlock[];
+}
+
+/**
+ * The persistence TIER a permission decision requests — the single canonical
+ * discriminator distinguishing a SESSION-ONLY grant from a PERSISTED-ALWAYS grant,
+ * so the tool-executor and the UI never re-derive it with an inline `=== 'allow_…'`
+ * check that could drift:
+ *   - `'once'`      — approve this call only; no standing rule.
+ *   - `'session'`   — a standing rule for the rest of THIS session; in-memory,
+ *                     NEVER written to disk even when a persist destination is set.
+ *   - `'always'`    — a standing rule the user means to keep; persisted to the
+ *                     configured on-disk settings tier when one is set.
+ *   - `'deny'` / `'cancelled'` — not a grant.
+ * Mirrors Claude Code's accept-session vs persisted "don't ask again" distinction
+ * (FilePermissionDialog `accept-session` vs the persisted rule). Pure.
+ *
+ * REGRESSION LOCK: if `allow_session` ever maps to `'always'` (or `allow_pattern`
+ * to `'session'`) the scoped session accept would silently start PERSISTING grants
+ * to disk (over-grant) — the permissions unit test asserts this mapping exactly.
+ */
+export type PermissionGrantTier = 'once' | 'session' | 'always' | 'deny' | 'cancelled';
+
+export function permissionGrantTier(
+  action: PermissionPromptResult['action'],
+): PermissionGrantTier {
+  switch (action) {
+    case 'allow_once':
+      return 'once';
+    case 'allow_session':
+      return 'session';
+    case 'allow_pattern':
+      return 'always';
+    case 'deny':
+      return 'deny';
+    case 'cancelled':
+      return 'cancelled';
+  }
+}
+
+/**
+ * True when the decision adds a standing SESSION-ONLY rule that must NEVER be
+ * flushed to disk — the discriminator the tool-executor uses to SKIP the on-disk
+ * persist step for an `allow_session` grant while still honoring it for a persisted
+ * `allow_pattern` grant. Pure.
+ */
+export function isSessionOnlyGrant(action: PermissionPromptResult['action']): boolean {
+  return permissionGrantTier(action) === 'session';
 }
 
 export interface PermissionPromptHandler {
