@@ -798,3 +798,15 @@ export {
   renderHeadlessTerminal,
   shouldUseHeadlessRender,
 } from './tools/bash/headless-render';
+// --- Runtime hang detector (pure heartbeat/tick state machine; wired by common/src/hang-watchdog.ts) ---
+export {
+  createHangWatchdogDetectionLoop,
+  tierForSilence,
+  recoveredTier,
+  isWallClockDriftSuspend,
+} from './hang-detector';
+export type {
+  HangTier,
+  HangWatchdogDetectionLoop,
+  HangWatchdogDetectionLoopConfig,
+} from './hang-detector';
