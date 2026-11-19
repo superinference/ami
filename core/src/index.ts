@@ -764,3 +764,13 @@ export {
   HUMAN_ID_LENGTH,
   ID_AVOID_SUBSTRINGS,
 } from './ids';
+
+// Headless terminal render path for the bash tool (progress-bar/TUI collapse,
+// OSC 7 cwd, blocked-on-input quiescence). The grid/scan/quiescence primitives
+// live under ./tools/bash/; the capability descriptor is surfaced via
+// `ami --introspect`.
+export {
+  describeBashHeadlessRender,
+  renderHeadlessTerminal,
+  shouldUseHeadlessRender,
+} from './tools/bash/headless-render';
