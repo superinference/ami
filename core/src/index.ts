@@ -49,6 +49,7 @@ export { sanitizeSkillArgs, validateSkillArgs, MAX_SKILL_ARG_NAMES, MAX_SKILL_AR
 // Skill catalog types + path-safety for URL-based skill discovery.
 export type { SkillCatalogIndex, SkillCatalogEntry, SkillTrustTier, SkillSource, InstalledSkillManifest, CatalogValidationResult, SkillSourcePolicy } from './skill-catalog';
 export { SKILL_TRUST_TIERS, isSafeSegment, isSafeRelativePath, validateCatalogIndex, resolveSkillUrl, isHexSha256, isValidCatalogName, isValidGitRef, isSkillSourceAllowed, validateInstalledSkillManifest, INSTALLED_MANIFEST_SCHEMA_VERSION, compareSemver, satisfies, isAmiVersionCompatible, formatSkillSourceSuffix } from './skill-catalog';
+export { findUnsafePatternReason, isSafeRegex, safeCompileRegex, safeRegexSchema, DEFAULT_MAX_PATTERN_LENGTH } from './safe-regex';
 // --- archive safety: ZIP reader with path/size/bomb guards + Unix-mode recovery ---
 export { parseZipModes, extractZip, isArchivePathSafe, ArchiveSafetyError, ARCHIVE_LIMITS } from './archive-safety';
 export type { ExtractedEntry, ExtractResult, ArchiveLimits } from './archive-safety';

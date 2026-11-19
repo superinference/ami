@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { expandPath, realpathNFC } from './utils/path';
 import { memoizeWithLRU } from './utils/memoize';
+import { DEFAULT_MAX_PATTERN_LENGTH } from './safe-regex';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { addFileGlobRuleToGitignore } from './utils/git';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, stripHeredocBodies, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
@@ -3757,6 +3758,15 @@ export function globToRegexSource(pattern: string): string {
 
 function matchPattern(pattern: string, value: string, caseInsensitive = false): boolean {
   if (pattern.includes('\x00') || value.includes('\x00')) return false;
+  // Length cap (shared with the untrusted-regex pre-validator): a permission/
+  // hook matcher comes from settings, a plugin's hooks.json, or a model-supplied
+  // plan-mode rule. Each `*` expands to `.*`, so a pathologically long matcher
+  // compiles into a correspondingly huge regex whose `^.*…$` scan over a crafted
+  // value is a ReDoS vector on the single engine thread. A matcher far longer
+  // than any legitimate command/URL/path is refused (never matches) up front,
+  // before it can be compiled or run — mirroring the length cap in
+  // {@link findUnsafePatternReason}. The literal `*` match-all above is exempt.
+  if (pattern.length > DEFAULT_MAX_PATTERN_LENGTH) return false;
   if (pattern === '*') return true;
   if (caseInsensitive
     ? pattern.toLowerCase() === value.toLowerCase()
