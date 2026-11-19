@@ -2802,6 +2802,37 @@ export class AnalyticsTracker {
   }
 
   /**
+   * Snapshot of the batch-telemetry transport's lifetime counters for introspection
+   * (surfaced by `/analytics`). Claude frames droppedBatchCount/pendingCount as
+   * explicit introspection points ("callers can snapshot before flush() and compare
+   * after to detect silent drops"); this exposes the full set so a user-facing
+   * diagnostic can report queue depth + silent telemetry loss rather than it being
+   * invisible. `active` is false when no OTLP telemetry transport was ever started
+   * (nothing to report); `droppedEvents` is the source-gated per-event drop count
+   * (distinct from the transport's batch-level `totalDropped`).
+   */
+  getTelemetrySnapshot(): {
+    active: boolean;
+    totalSent: number;
+    totalDropped: number;
+    queueSize: number;
+    pendingCount: number;
+    batchId: number;
+    droppedEvents: number;
+  } {
+    const t = this._telemetry;
+    return {
+      active: t !== null,
+      totalSent: t?.totalSent ?? 0,
+      totalDropped: t?.totalDropped ?? 0,
+      queueSize: t?.queueSize ?? 0,
+      pendingCount: t?.pendingCount ?? 0,
+      batchId: t?.batchId ?? 0,
+      droppedEvents: this._droppedEvents,
+    };
+  }
+
+  /**
    * Bounded graceful close: give the final {@link flushOtlp} a best-effort `graceMs`
    * window (racing it against a timeout) before latching shutdown, so a slow/hung
    * collector can never block exit beyond the grace period. Mirrors Claude's
