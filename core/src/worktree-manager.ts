@@ -170,18 +170,68 @@ export function resolveGitDir(startPath: string): string | null {
  * git reader, which validates every ref it reads from disk (gitFilesystem.ts).
  */
 export function readGitBranchFromDisk(cwd: string): string {
+  const head = readGitHeadFromDisk(cwd);
+  return head.type === 'branch' ? head.branch : '';
+}
+
+/**
+ * Structured state of the current git HEAD read directly off disk (no subprocess):
+ * on a branch (`.git/HEAD` is `ref: refs/heads/<name>`), detached (`.git/HEAD`
+ * holds a bare commit SHA — during a rebase/bisect, `checkout --detach`, or a
+ * CI checkout of a tag/commit), or none (not a repo / unreadable / tampered).
+ *
+ * Parity: Claude's `readGitHead` distinguishes branch vs detached and returns the
+ * raw SHA for a detached HEAD (`{type:'detached', sha}`), so git context is not
+ * lost for detached sessions; AMI's {@link readGitBranchFromDisk} alone collapses
+ * every non-branch HEAD to '' (gitFilesystem.ts L149-183).
+ */
+export type GitHeadInfo =
+  | { type: 'branch'; branch: string }
+  | { type: 'detached'; sha: string }
+  | { type: 'none' };
+
+/**
+ * Read the current git HEAD at `cwd` WITHOUT a git subprocess, distinguishing a
+ * branch from a detached HEAD (parity: Claude's filesystem `readGitHead`). The
+ * branch name is validated through {@link isSafeRefName} (defense-in-depth: `.git/HEAD`
+ * is attacker-controlled in a cloned repo); a bare commit SHA (sha1 = 40, sha256 = 64
+ * lowercase-hex) is recognized as a detached HEAD and returned verbatim. Anything
+ * else — an unsafe ref, a non-repo, or a read failure — resolves to `{type:'none'}`.
+ */
+export function readGitHeadFromDisk(cwd: string): GitHeadInfo {
   const gitDir = resolveGitDir(cwd);
-  if (!gitDir) return '';
+  if (!gitDir) return { type: 'none' };
   try {
     const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
     const m = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-    if (!m) return '';
-    const branch = m[1];
-    // Reject a tampered/unsafe ref read off disk before it reaches any consumer.
-    return isSafeRefName(branch) ? branch : '';
+    if (m) {
+      const branch = m[1];
+      // Reject a tampered/unsafe ref read off disk before it reaches any consumer.
+      return isSafeRefName(branch) ? { type: 'branch', branch } : { type: 'none' };
+    }
+    // Detached HEAD: `.git/HEAD` holds a bare object id (sha1 = 40 hex, sha256 = 64 hex).
+    if (isValidGitSha(head)) {
+      return { type: 'detached', sha: head };
+    }
+    return { type: 'none' };
   } catch {
-    return '';
+    return { type: 'none' };
   }
+}
+
+/**
+ * A short, journal/diagnostics-friendly label for the current git HEAD at `cwd`:
+ * the branch name when on a branch, `HEAD@<short-sha>` (12-char prefix) when the
+ * HEAD is detached, or '' when the path is not a repo / unreadable. Lets the
+ * reference journal and the cross-agent spend-by-branch view record real git
+ * context for a detached session instead of a blank branch (parity: Claude's
+ * computeBranch/computeHead degrading to the SHA rather than the empty string).
+ */
+export function readGitHeadLabelFromDisk(cwd: string): string {
+  const head = readGitHeadFromDisk(cwd);
+  if (head.type === 'branch') return head.branch;
+  if (head.type === 'detached') return `HEAD@${head.sha.slice(0, 12)}`;
+  return '';
 }
 
 /**
