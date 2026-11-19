@@ -1445,6 +1445,11 @@ export class SessionManager {
   private _gitBranch?: string;
   private _gitBranchResolved = false;
   private static _idCounter = 0;
+  /** Single-writer ownership held by THIS manager: the monotonic fence won at
+   *  {@link acquireOwnership} + the lock release. Absent until ownership is taken
+   *  (every direct `new SessionManager().save()` leaves this unset → no fence
+   *  assert, unchanged behavior). */
+  private _ownership?: { fence: number; release: () => void };
 
   constructor(cwd: string, sessionDirOverride?: string) {
     // Resume blobs live GLOBALLY under ~/.ami/projects/<slug>/sessions (like Claude Code's
@@ -1473,6 +1478,78 @@ export class SessionManager {
   }
 
   /**
+   * Take hard single-writer ownership of this session directory: acquire the
+   * cross-process {@link acquireSessionLock} (a fail-closed, PID-reuse-safe CAS —
+   * a stale/dead/reused prior owner is reclaimed, a provably-live or unverifiable
+   * one blocks) and remember the monotonic {@link SessionLockPayload.runtimeFence}
+   * it won. Once held, every {@link save} asserts the fence first, so a superseded
+   * owner (another `ami --resume`/detached run took over and advanced the fence)
+   * is rejected instead of clobbering the new owner's transcript.
+   *
+   * Idempotent — a second call with ownership already held is a no-op reporting the
+   * held fence. When the lock is force-disabled ({@link isSessionLockingDisabled})
+   * or the acquire returns no fence, no ownership is recorded and `save` stays
+   * unguarded (unchanged behavior). When a live OTHER holder blocks, returns
+   * `{ acquired:false, blocked:true, message }` without recording ownership.
+   */
+  acquireOwnership(depsOverride?: Partial<SessionLockDeps>): {
+    acquired: boolean;
+    blocked?: boolean;
+    fence?: number;
+    message?: string;
+  } {
+    if (this._ownership) return { acquired: true, fence: this._ownership.fence };
+    this.ensureDir();
+    const result = acquireSessionLock(this.sessionDir, depsOverride);
+    if (!result.acquired) {
+      return { acquired: false, blocked: true, message: result.message };
+    }
+    // Only a numeric fence is enforceable; a disabled-lock no-op acquire carries
+    // none, so we record nothing and leave save() unguarded (unchanged behavior).
+    if (typeof result.runtimeFence === 'number') {
+      this._ownership = { fence: result.runtimeFence, release: result.release };
+      return { acquired: true, fence: result.runtimeFence };
+    }
+    return { acquired: true };
+  }
+
+  /** The monotonic fence this manager currently owns, or `undefined` if it holds
+   *  no enforceable ownership (never acquired, or acquired with locking disabled). */
+  ownershipFence(): number | undefined {
+    return this._ownership?.fence;
+  }
+
+  /**
+   * Assert this manager still owns the session at the fence it won. A no-op when
+   * no enforceable ownership is held; otherwise throws {@link SessionFenceError}
+   * if a newer owner has superseded this one. This is the single-writer guard
+   * {@link save} runs before writing and that the engine wires into the
+   * {@link import('../../../common/src/checkpoint').CheckpointManager} ownership
+   * guard so an in-flight rollback from a superseded owner is rejected too.
+   */
+  assertOwnership(): void {
+    if (this._ownership) assertSessionFence(this.sessionDir, this._ownership.fence);
+  }
+
+  /** A bound {@link assertOwnership} thunk for consumers that take a `() => void`
+   *  ownership guard (e.g. the checkpoint manager), so the fence is enforced on
+   *  file mutations too — not just transcript saves. */
+  ownershipGuard(): () => void {
+    return () => this.assertOwnership();
+  }
+
+  /** Release this manager's single-writer ownership (unlink the lock if still ours)
+   *  and forget the held fence. Idempotent; a no-op when no ownership is held. The
+   *  process-exit hook in {@link acquireSessionLock} is the backstop, but a clean
+   *  engine shutdown should release eagerly so a peer can take over at once. */
+  releaseOwnership(): void {
+    if (!this._ownership) return;
+    const { release } = this._ownership;
+    this._ownership = undefined;
+    try { release(); } catch { /* best effort — exit hook is the backstop */ }
+  }
+
+  /**
    * Save a session to disk as a JSON file.
    * Message content longer than 5000 chars is offloaded to a content-addressed
    * blob sidecar (full content preserved) with only a preview kept inline, so
@@ -1482,6 +1559,11 @@ export class SessionManager {
     // Honour an opt-out of transcript persistence (privacy / ephemeral runs):
     // write nothing to disk when disabled. Checked first so no dir is created.
     if (isSessionPersistenceDisabled()) return;
+    // Single-writer fence assert: when this manager holds ownership, reject the
+    // save if a newer owner took over (fence advanced on the lock) BEFORE any I/O,
+    // so a superseded process can never clobber the new owner's transcript. A
+    // manager without acquired ownership (every direct `save()`) is a no-op here.
+    this.assertOwnership();
     this.ensureDir();
     const safeId = sanitizeSessionId(session.id);
     const blobDir = this.blobDirFor(safeId);
