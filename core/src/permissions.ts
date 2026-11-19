@@ -5883,6 +5883,30 @@ export class PermissionManager {
    *  later plan-mode exit can restore it (Claude's ToolPermissionContext.prePlanMode).
    *  Undefined when not in plan mode or when none was captured. */
   private _prePlanMode?: PermissionMode;
+  /** The DESIRED "run the auto-mode safety classifier while in plan mode" setting,
+   *  read from the on-disk settings tiers (`useAutoModeDuringPlan`) by
+   *  {@link loadTieredRules}. It is the intent; {@link _autoModeActiveDuringPlan} is
+   *  the realized state. Toggling it on disk and re-syncing reconciles the realized
+   *  state via {@link transitionPlanAutoMode}. Parity: Claude's
+   *  getUseAutoModeDuringPlan() settings read (settings/settings.ts). */
+  private _useAutoModeDuringPlan = false;
+  /** Whether auto-mode screening is ACTIVE right now during the current plan run —
+   *  the realized counterpart to {@link _useAutoModeDuringPlan}. When true, a plan-mode
+   *  tool call is screened by the auto-mode classifier (screened autonomy) instead of
+   *  the pure read-only allowlist, and dangerous code-exec `allow` rules are stripped
+   *  into {@link _autoModeStrippedRules} so a broad interpreter grant cannot bypass the
+   *  classifier. Reconciled against {@link _useAutoModeDuringPlan} by
+   *  {@link transitionPlanAutoMode}; forced off (with rule restore) when plan mode is
+   *  left. Parity: Claude's autoModeState.isAutoModeActive() during plan. */
+  private _autoModeActiveDuringPlan = false;
+  /** Dangerous code-exec `allow` rules stripped specifically to activate
+   *  auto-mode-during-plan, held so they can be RESTORED verbatim when auto mode is
+   *  deactivated (or plan mode is left). Distinct from {@link strippedDangerousRules}
+   *  (load-time untrusted-source stripping, never restored) because an auto-mode strip
+   *  is temporary and reversible. Parity: Claude's
+   *  ToolPermissionContext.strippedDangerousRules stash restored by
+   *  restoreDangerousPermissions(). */
+  private _autoModeStrippedRules: PermissionRule[] = [];
   /** Managed-rules-only lockdown (Claude's `allowManagedPermissionRulesOnly`): when
    *  true, ONLY `policySettings`-sourced rules are honored, runtime non-managed grants
    *  are refused, and nothing may be persisted. Set from the managed permissions file
@@ -6691,6 +6715,22 @@ export class PermissionManager {
       }
       const readOnlyTools = new Set(['file_read', 'grep', 'glob', 'list_dir', 'web_fetch', 'web_search', 'search_symbols', 'tool_search', 'task_tracker', 'task_list', 'task_output', 'todo_read']);
       if (readOnlyTools.has(toolName)) return 'allow';
+      // Auto-mode-during-plan (reconciled from the `useAutoModeDuringPlan` setting by
+      // transitionPlanAutoMode): instead of hard-denying every non-read-only tool, the
+      // call is SCREENED by the auto-mode classifier — screened autonomy while planning
+      // — so a safe action can proceed without leaving plan mode. Ordering mirrors the
+      // `auto` branch: explicit user deny/ask rules win, then sensitive-path safety,
+      // then the static screen, then the injected classifier. Dangerous code-exec
+      // `allow` rules were already stripped on activation so a prefix-rule grant cannot
+      // bypass the screen. Parity: Claude's auto mode active during plan.
+      if (this._autoModeActiveDuringPlan) {
+        if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
+        if (this.anyAskMatches(toolName, input)) return 'ask';
+        if (this.sensitivePathRequiresPrompt(toolName, input)) return 'ask';
+        const screened = screenAutoModeToolCall(toolName, input).decision;
+        if (screened !== 'allow') return screened;
+        return this.applyAutoModeSafetyClassifier(toolName, input);
+      }
       return 'deny';
     }
 
@@ -7978,6 +8018,16 @@ export class PermissionManager {
         isPermissivePermissionMode(next) && !isPermissivePermissionMode(previousMode)) {
       this.stripDangerousRulesOnEscalation(next);
     }
+    // Leaving plan mode must tear down any active auto-mode-during-plan: deactivate the
+    // realized state and restore the rules it temporarily stripped, so a subsequent mode
+    // keeps its full rule set and the classifier-screening is not silently carried out
+    // of plan. Parity: Claude's transitionPermissionMode plan→non-plan path running
+    // restoreDangerousPermissions + setAutoModeActive(false).
+    if (previousMode === 'plan' && next !== 'plan' && this._autoModeActiveDuringPlan) {
+      this._autoModeActiveDuringPlan = false;
+      this.restoreAutoModeStrippedRules();
+      this.traceMutation(`Deactivated auto-mode-during-plan on leaving plan mode (→ '${next}')`);
+    }
     if (this._modeChangeListener) {
       const change: PermissionModeChange = {
         previousMode,
@@ -8321,6 +8371,118 @@ export class PermissionManager {
    */
   getStrippedDangerousRules(): PermissionRule[] {
     return [...this.strippedDangerousRules];
+  }
+
+  /**
+   * Temporarily strip EVERY dangerous code-exec `allow` rule (any tier) to activate
+   * auto-mode-during-plan, stashing them in {@link _autoModeStrippedRules} so they can
+   * be restored verbatim when auto mode is deactivated. Unlike
+   * {@link stripDangerousRulesOnEscalation} (permanent, recorded in
+   * {@link strippedDangerousRules}), this is a REVERSIBLE strip: while auto mode runs
+   * the classifier must not be bypassed by a prefix-rule allow, but leaving auto mode
+   * puts the user's rules back. Idempotent-safe — a re-strip (settings re-sync while
+   * already active) just captures any newly re-added disk rules. Parity: Claude's
+   * stripDangerousPermissionsForAutoMode (permissionSetup.ts).
+   */
+  private stripDangerousRulesForAutoMode(): PermissionRule[] {
+    const stripped: PermissionRule[] = [];
+    this.rules = this.rules.filter(r => {
+      if (this.isDangerousCodeExecAllow(r)) {
+        stripped.push(r);
+        return false;
+      }
+      return true;
+    });
+    if (stripped.length > 0) {
+      this._autoModeStrippedRules.push(...stripped);
+      for (const r of stripped) {
+        this.traceMutation(`Stripped dangerous code-execution allow rule for auto-mode-during-plan: ${describeRule(r)}`);
+      }
+      this._memo?.clear();
+      this.notifyPermissionStateChanged();
+    }
+    return stripped;
+  }
+
+  /**
+   * Restore the rules previously stripped by {@link stripDangerousRulesForAutoMode}
+   * (auto-mode deactivation, or leaving plan mode). Re-appends the stash and clears
+   * it. A no-op (preserving ref-equality of {@link rules}) when nothing is stashed.
+   * Parity: Claude's restoreDangerousPermissions (permissionSetup.ts) replaying
+   * strippedDangerousRules back as `addRules`.
+   */
+  private restoreAutoModeStrippedRules(): PermissionRule[] {
+    if (this._autoModeStrippedRules.length === 0) return [];
+    const restored = [...this._autoModeStrippedRules];
+    this._autoModeStrippedRules = [];
+    this.rules.push(...restored);
+    for (const r of restored) {
+      this.traceMutation(`Restored auto-mode-stripped rule on auto-mode deactivation: ${describeRule(r)}`);
+    }
+    this._memo?.clear();
+    this.notifyPermissionStateChanged();
+    return restored;
+  }
+
+  /**
+   * Reconcile auto-mode-during-plan state against the on-disk setting after a
+   * permission-context rebuild (a settings change). Compares the DESIRED state
+   * ({@link _useAutoModeDuringPlan}, re-read from disk by {@link loadTieredRules})
+   * against the REALIZED state ({@link _autoModeActiveDuringPlan}) and
+   * activates/deactivates auto mode — stripping or restoring dangerous code-exec
+   * rules — so toggling `useAutoModeDuringPlan` mid-plan takes effect immediately.
+   *
+   * No-op when NOT in plan mode (auto-during-plan only applies while planning), and —
+   * mirroring Claude's entry-time exclusion — never activates when plan mode was
+   * entered from `bypassPermissions` (a dangerous mode must not silently gain the
+   * classifier). When the desire is unchanged and auto is already active, it RE-STRIPS,
+   * because {@link syncRulesFromDisk} re-adds disk rules (including a trusted-tier
+   * `Bash(python:*)`) that must not reopen a classifier bypass. Returns a structured
+   * summary of what changed for introspection. Parity: Claude's transitionPlanAutoMode
+   * (permissionSetup.ts), called from applySettingsChange (applySettingsChange.ts:L68).
+   */
+  transitionPlanAutoMode(): { activated?: boolean; deactivated?: boolean; restripped?: boolean } {
+    if (this.mode !== 'plan') return {};
+    if (this._prePlanMode === 'bypassPermissions') return {};
+    const want = this._useAutoModeDuringPlan;
+    const have = this._autoModeActiveDuringPlan;
+    if (want && have) {
+      this.stripDangerousRulesForAutoMode();
+      this.traceMutation('Re-stripped dangerous rules for still-active auto-mode-during-plan after settings sync');
+      return { restripped: true };
+    }
+    if (!want && !have) return {};
+    if (want) {
+      this._autoModeActiveDuringPlan = true;
+      this.stripDangerousRulesForAutoMode();
+      this.traceMutation('Activated auto-mode-during-plan on settings reconciliation');
+      return { activated: true };
+    }
+    this._autoModeActiveDuringPlan = false;
+    this.restoreAutoModeStrippedRules();
+    this.traceMutation('Deactivated auto-mode-during-plan on settings reconciliation');
+    return { deactivated: true };
+  }
+
+  /**
+   * Introspection: whether auto-mode screening is currently ACTIVE during plan mode
+   * ({@link _autoModeActiveDuringPlan}). Lets a diagnostic / `/permissions` surface
+   * report that plan-mode tool calls are being screened by the classifier rather than
+   * held to the pure read-only allowlist. Parity: Claude's
+   * autoModeState.isAutoModeActive().
+   */
+  isAutoModeActiveDuringPlan(): boolean {
+    return this._autoModeActiveDuringPlan;
+  }
+
+  /**
+   * Introspection: the DESIRED `useAutoModeDuringPlan` setting last read from disk
+   * ({@link _useAutoModeDuringPlan}). Exposes the intent independently of the realized
+   * {@link isAutoModeActiveDuringPlan} state (they can differ between a settings edit
+   * and the next {@link transitionPlanAutoMode} reconciliation).
+   */
+  getUseAutoModeDuringPlan(): boolean {
+    return this._useAutoModeDuringPlan;
   }
 
   /**
@@ -9051,11 +9213,23 @@ export class PermissionManager {
     // Precedence (highest first): local → project → user. Push highest first so
     // first-match evaluation prefers the more-specific tier.
     const tiers: PermissionUpdateDestination[] = ['localSettings', 'projectSettings', 'userSettings'];
+    // Re-derive the `useAutoModeDuringPlan` preference fresh from disk on every (re)load
+    // so a mid-session settings edit toggling it is picked up by the following
+    // transitionPlanAutoMode reconciliation. Highest-precedence (first-defined) tier
+    // wins — a local override beats project beats user. Parity: Claude's
+    // getUseAutoModeDuringPlan() reading merged settings.
+    this._useAutoModeDuringPlan = false;
+    let autoModeDuringPlanResolved = false;
     for (const tier of tiers) {
       const filePath = permissionDestinationPath(cwd, tier);
       if (!filePath || !fs.existsSync(filePath)) continue;
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (!autoModeDuringPlanResolved && data && typeof data === 'object' &&
+            typeof (data as Record<string, unknown>).useAutoModeDuringPlan === 'boolean') {
+          this._useAutoModeDuringPlan = (data as Record<string, unknown>).useAutoModeDuringPlan as boolean;
+          autoModeDuringPlanResolved = true;
+        }
         if (Array.isArray(data.rules)) {
           for (const rule of data.rules) {
             const { rule: coerced, warning } = this._coerceRule(rule, tier);
@@ -9104,6 +9278,13 @@ export class PermissionManager {
     // now-removed policy file release the lockdown instead of leaving it latched on.
     this._managedRulesOnly = false;
     const warnings = this.loadTieredRules(cwd);
+    // Reconcile plan/auto-mode state against the just-reloaded settings: a mid-plan
+    // toggle of `useAutoModeDuringPlan` strips/restores dangerous rules and flips the
+    // realized auto state immediately, and a still-active auto mode re-strips the disk
+    // rules that the reload re-added. Parity: Claude's applySettingsChange running
+    // transitionPlanAutoMode(newContext) after syncPermissionRulesFromDisk
+    // (applySettingsChange.ts:L68).
+    this.transitionPlanAutoMode();
     this._memo?.clear();
     return warnings;
   }
