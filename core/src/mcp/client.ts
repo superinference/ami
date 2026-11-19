@@ -5,7 +5,7 @@ import type { McpOAuthProvider } from './oauth';
 import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { sanitizeEnvForSubprocess } from '../tools/bash';
 import { findExecutable } from '../utils/which';
-import { withTimeout } from '../utils/sleep';
+import { boundedCall } from '../utils/bounded-call';
 import { getMTLSConfig, getSecureTLSConnectOptions } from '../utils/mtls';
 import type { InProcessTransport } from './in-process-transport';
 
@@ -1137,15 +1137,14 @@ export class McpClient extends EventEmitter {
       this.emit('close', code, uptimeMs);
     });
 
-    // Bound the initialize handshake with the shared canonical `withTimeout` guard
-    // (clears + unrefs the timer, rejects with a descriptive message) instead of an
-    // inline Promise.race copy.
+    // Bound the initialize handshake with the shared canonical `boundedCall` guard
+    // (clears + unrefs the timer, swallows a post-deadline orphan rejection, rejects
+    // with a descriptive message) instead of an inline Promise.race copy.
     try {
-      await withTimeout(
-        this.performInitialize(),
-        this.connectTimeout,
-        `MCP connection timed out after ${this.connectTimeout}ms`,
-      );
+      await boundedCall(() => this.performInitialize(), {
+        timeoutMs: this.connectTimeout,
+        message: `MCP connection timed out after ${this.connectTimeout}ms`,
+      });
     } catch (err) {
       this._state = 'error';
       this.disconnect();
@@ -1210,14 +1209,13 @@ export class McpClient extends EventEmitter {
     ws.addEventListener('close', () => this.handleWsClose());
 
     // Phase 2 — run the initialize handshake over the socket, bounded by the same
-    // timeout. The handshake sends/receives through writeMessage/routeMessage.
-    const connectPromise = this.performInitialize();
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const t = setTimeout(() => reject(new Error(`MCP WebSocket connection timed out after ${this.connectTimeout}ms`)), this.connectTimeout);
-      t.unref?.();
-    });
+    // timeout via the shared `boundedCall` guard (orphan-rejection-safe). The
+    // handshake sends/receives through writeMessage/routeMessage.
     try {
-      await Promise.race([connectPromise, timeoutPromise]);
+      await boundedCall(() => this.performInitialize(), {
+        timeoutMs: this.connectTimeout,
+        message: `MCP WebSocket connection timed out after ${this.connectTimeout}ms`,
+      });
     } catch (err) {
       this._state = 'error';
       this.disconnect();
@@ -1252,13 +1250,12 @@ export class McpClient extends EventEmitter {
     transport.onerror = (err) => this.emit('stderr', `MCP in-process transport error: ${err.message}`);
     await transport.start();
 
-    const connectPromise = this.performInitialize();
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const t = setTimeout(() => reject(new Error(`MCP connection timed out after ${this.connectTimeout}ms`)), this.connectTimeout);
-      t.unref?.();
-    });
+    // Bound the handshake via the shared `boundedCall` guard (orphan-rejection-safe).
     try {
-      await Promise.race([connectPromise, timeoutPromise]);
+      await boundedCall(() => this.performInitialize(), {
+        timeoutMs: this.connectTimeout,
+        message: `MCP connection timed out after ${this.connectTimeout}ms`,
+      });
     } catch (err) {
       this._state = 'error';
       this.disconnect();
