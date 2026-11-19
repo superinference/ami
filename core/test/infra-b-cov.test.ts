@@ -606,7 +606,9 @@ describe('hooks — command/http closures produce structured results', () => {
       const hm = new HookManager();
       hm.setWorkspaceTrusted(true);
       hm.loadFromFile(writeHooks([
-        { event: 'preToolUse', hook: { type: 'http', url: `http://127.0.0.1:${port}/`, timeout: 120, onFailure: 'block' } },
+        // `timeout` is in SECONDS (resolveHookTimeoutMs multiplies by 1000, floored
+        // at 100ms); 0.2s fires the client-timeout path fast instead of waiting 2min.
+        { event: 'preToolUse', hook: { type: 'http', url: `http://127.0.0.1:${port}/`, timeout: 0.2, onFailure: 'block' } },
       ]));
       const decision = await hm.executePreToolUse({
         messages: [], turnCount: 1, toolName: 'bash', toolInput: { command: 'ls' },

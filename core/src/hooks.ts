@@ -6994,47 +6994,64 @@ export class HookManager extends EventEmitter {
     const timeoutMs = resolveHookTimeoutMs(config.timeout, DEFAULT_HTTP_HOOK_TIMEOUT_MS);
     const abort = combineHookAbort(signal, timeoutMs);
 
-    // (4) Env-var proxy routing (HTTP(S)_PROXY, honoring NO_PROXY) — Claude Code's
-    // execHttpHook routes the POST through a configured proxy and, in that case,
-    // SKIPS the local SSRF/pinned-DNS guard: the proxy performs DNS for the target
-    // and enforces its own egress allowlist (applying the guard would instead
-    // validate the proxy's own — possibly private, e.g. 10.0.0.1:3128 — address and
-    // wrongly block a corporate proxy). The URL allowlist above still applies. The
-    // proxy URL + dispatcher come from the canonical provider helpers (no second
-    // proxy implementation), loaded lazily to avoid a static import of the AI-SDK
-    // stack from this leaf hook module. The cheap env-presence gate (the SAME gate
-    // the canonical withProxyDispatcher uses) short-circuits the common no-proxy
-    // case so an unproxied http hook never pays the provider-import cost.
-    const anyProxyEnv = !!(
-      process.env.https_proxy ?? process.env.HTTPS_PROXY ??
-      process.env.http_proxy ?? process.env.HTTP_PROXY
-    );
-    if (anyProxyEnv) {
-      const { resolveProxyForUrl } = await import('./provider');
-      if (resolveProxyForUrl(process.env, config.url)) {
-        coreLog('hooks', `HTTP hook POST to ${config.url} (via env-var proxy)`);
-        return this.runHttpHookViaProxy(config, eventData, headers, abort, timeoutMs, onFail, onFailWith);
+    // Everything between here and the request Promise can throw/reject BEFORE the
+    // Promise's done() (which owns abort.cleanup()) is wired up: an unparseable
+    // `config.url` makes validateUrlSafety (and the subsequent `new URL`) throw, and
+    // a lazy proxy import can reject. Any such throw must still release the
+    // combineHookAbort deadline timer — otherwise it is left armed (10-min default)
+    // and pins the event loop until it fires (a resource leak surfaced by an
+    // invalid-URL hook). Cleanup + rethrow keeps the caller-visible rejection intact.
+    let resolvedIP: string;
+    let url: URL;
+    try {
+      // (4) Env-var proxy routing (HTTP(S)_PROXY, honoring NO_PROXY) — Claude Code's
+      // execHttpHook routes the POST through a configured proxy and, in that case,
+      // SKIPS the local SSRF/pinned-DNS guard: the proxy performs DNS for the target
+      // and enforces its own egress allowlist (applying the guard would instead
+      // validate the proxy's own — possibly private, e.g. 10.0.0.1:3128 — address and
+      // wrongly block a corporate proxy). The URL allowlist above still applies. The
+      // proxy URL + dispatcher come from the canonical provider helpers (no second
+      // proxy implementation), loaded lazily to avoid a static import of the AI-SDK
+      // stack from this leaf hook module. The cheap env-presence gate (the SAME gate
+      // the canonical withProxyDispatcher uses) short-circuits the common no-proxy
+      // case so an unproxied http hook never pays the provider-import cost.
+      const anyProxyEnv = !!(
+        process.env.https_proxy ?? process.env.HTTPS_PROXY ??
+        process.env.http_proxy ?? process.env.HTTP_PROXY
+      );
+      if (anyProxyEnv) {
+        const { resolveProxyForUrl } = await import('./provider');
+        if (resolveProxyForUrl(process.env, config.url)) {
+          coreLog('hooks', `HTTP hook POST to ${config.url} (via env-var proxy)`);
+          return this.runHttpHookViaProxy(config, eventData, headers, abort, timeoutMs, onFail, onFailWith);
+        }
       }
-    }
 
-    // (5) SSRF guard (direct connections only) — resolve + validate the hostname,
-    // reusing the shared web-utils validator (blocks private/link-local/metadata
-    // IPs) and pin the resolved IP to stop DNS-rebinding (TOCTOU). Loopback is
-    // allowed (local dev webhook servers), matching Claude Code's ssrfGuardedLookup.
-    const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
-    if ('error' in safety) {
-      // User-facing, code-tagged block message (Claude Code's ssrfError): always
-      // inform why the hook was refused — fail-closed DENY when onFailure:block,
-      // otherwise a non-blocking SYSTEM notice so the target is never silently
-      // dropped (the affordance Claude surfaces to the user).
-      const msg = formatHttpHookBlockedMessage(config.url, safety.error);
-      coreLog('hooks', msg);
-      if (outcome) outcome.success = false;
+      // (5) SSRF guard (direct connections only) — resolve + validate the hostname,
+      // reusing the shared web-utils validator (blocks private/link-local/metadata
+      // IPs) and pin the resolved IP to stop DNS-rebinding (TOCTOU). Loopback is
+      // allowed (local dev webhook servers), matching Claude Code's ssrfGuardedLookup.
+      const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
+      if ('error' in safety) {
+        // User-facing, code-tagged block message (Claude Code's ssrfError): always
+        // inform why the hook was refused — fail-closed DENY when onFailure:block,
+        // otherwise a non-blocking SYSTEM notice so the target is never silently
+        // dropped (the affordance Claude surfaces to the user).
+        const msg = formatHttpHookBlockedMessage(config.url, safety.error);
+        coreLog('hooks', msg);
+        if (outcome) outcome.success = false;
+        abort.cleanup();
+        return config.onFailure === 'block' ? `DENY:${msg}` : `SYSTEM:${msg}`;
+      }
+      resolvedIP = safety.resolvedIP;
+
+      url = new URL(config.url);
+    } catch (err) {
+      // Release the still-armed deadline timer before the rejection propagates so a
+      // failed-URL / failed-proxy-import hook cannot leave the event loop pinned.
       abort.cleanup();
-      return config.onFailure === 'block' ? `DENY:${msg}` : `SYSTEM:${msg}`;
+      throw err;
     }
-
-    const url = new URL(config.url);
     const client = url.protocol === 'https:' ? https : http;
     // Introspection: log the outbound request target before any I/O (Claude Code's
     // execHttpHook `logForDebugging("Hooks: HTTP hook POST to <url>")`).
@@ -7053,7 +7070,7 @@ export class HookManager extends EventEmitter {
         headers,
         signal: abort.signal,
         maxRedirects: 0,                       // stop redirect-based SSRF bypass
-        lookup: pinnedDnsLookup(safety.resolvedIP),
+        lookup: pinnedDnsLookup(resolvedIP),
       }, (res: any) => {
         let body = '';
         res.on('data', (d: Buffer) => body += d);
