@@ -1825,19 +1825,17 @@ function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   }
   for (const name of entries) {
     const dropInPath = path.join(dropInDir, name);
-    let dropIn: ProjectConfig;
-    try {
-      dropIn = parseManagedFile(dropInPath, relocatable);
-    } catch (err) {
-      // Per-file fault isolation for the drop-in DIRECTORY only: one malformed,
-      // unreadable, or untrusted `config.d/*.json` entry is SKIPPED (logged) so it
-      // cannot take down the whole managed policy — the authoritative base file and
-      // the remaining well-formed drop-ins still apply. The BASE managed file above
-      // still fails closed (it IS the policy; a broken one must not be silently
-      // ignored). Parity: Claude Code's managed-settings.d per-file try/catch skip.
-      coreLog('config', `skipping invalid managed drop-in ${dropInPath}: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
-    }
+    // A `config.d/*.json` drop-in is an AUTHORITATIVE managed-policy layer, so it
+    // enforces the SAME strict trust as the base managed file: {@link parseManagedFile}
+    // fails closed on a symlink-redirected, world-writable, or (for a relocatable
+    // override) foreign-owned source, on an unreadable file, and on a JSON syntax
+    // error / non-object payload. A broken or untrusted drop-in therefore FAILS CLOSED
+    // (propagates {@link ManagedConfigError}) exactly like the base — a security-bearing
+    // managed policy that cannot be honored must NEVER be silently dropped (fail-open),
+    // whether it lives in the base file or a drop-in. Per-field invalid VALUES are still
+    // salvaged inside parseManagedFile (one bad enum never rejects the whole policy); it
+    // is only an untrusted/unreadable/unparseable drop-in that fails the load closed.
+    const dropIn = parseManagedFile(dropInPath, relocatable);
     merged = merged === null ? dropIn : mergeManagedLayer(merged, dropIn);
   }
   // OS-NATIVE managed policy (macOS configuration profile / Windows Group Policy) is

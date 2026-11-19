@@ -4,10 +4,12 @@
 //   - loadManagedConfig empty-source FALL-THROUGH: a present-but-empty higher-priority
 //     managed source does NOT shadow a populated lower-priority one (parity: Claude's
 //     consumeRawReadResult first-non-empty-source-wins chain).
-//   - managed `config.d/*.json` drop-in PER-FILE fault isolation: one malformed/unreadable
-//     drop-in is skipped (logged) while the base file + remaining drop-ins still apply
-//     (parity: Claude's managed-settings.d per-file try/catch skip). The BASE file still
-//     fails closed.
+//   - managed `config.d/*.json` drop-in FAIL-CLOSED trust: a drop-in is an authoritative
+//     managed-policy layer and enforces the SAME strict trust as the base managed file, so
+//     a malformed/unreadable/untrusted drop-in FAILS CLOSED (ManagedConfigError) rather
+//     than being silently dropped — a security-bearing managed policy that cannot be
+//     honored must never fail OPEN, whether it lives in the base file or a drop-in. The
+//     base file fails closed too (it IS the policy). Well-formed drop-ins still merge.
 //   - ConfigService.reload() introspection breadcrumb: a project-tier change emits a
 //     "changed; reapplying (source: project)" debug line, matching the global/managed
 //     tiers' change logs (parity: Claude's logForDebugging settings-change line).
@@ -142,7 +144,7 @@ describe('U010/w108 — loadManagedConfig empty-source fall-through', () => {
   });
 });
 
-describe('U010/w108 — managed config.d drop-in per-file fault isolation', () => {
+describe('U010/w108 — managed config.d drop-in fail-closed trust (drop-ins match the base)', () => {
   let prevEnv: string | undefined;
   beforeEach(() => {
     prevEnv = process.env.SUPERINFERENCE_MANAGED_CONFIG;
@@ -154,7 +156,25 @@ describe('U010/w108 — managed config.d drop-in per-file fault isolation', () =
     else process.env.SUPERINFERENCE_MANAGED_CONFIG = prevEnv;
   });
 
-  it('skips a malformed drop-in while keeping the base + the well-formed drop-ins', () => {
+  it('merges well-formed drop-ins over the base (last well-formed wins per field)', () => {
+    const base = '/etc/fixture/config.json';
+    const dropDir = '/etc/fixture/config.d';
+    seedFs(
+      new Set([base, dropDir]),
+      {
+        [base]: JSON.stringify({ model: 'base-model', maxTurns: 10 }),
+        [`${dropDir}/10-ok.json`]: JSON.stringify({ maxTurns: 20 }),
+        [`${dropDir}/30-ok.json`]: JSON.stringify({ permissionMode: 'auto-allow' }),
+      },
+      { [dropDir]: ['10-ok.json', '30-ok.json'] },
+    );
+    const cfg = loadManagedConfig() as ProjectConfig;
+    assert.equal(cfg.model, 'base-model');
+    assert.equal(cfg.maxTurns, 20);
+    assert.equal(cfg.permissionMode, 'auto-allow');
+  });
+
+  it('FAILS CLOSED on a malformed drop-in, like the base (a drop-in is an authoritative policy layer)', () => {
     const base = '/etc/fixture/config.json';
     const dropDir = '/etc/fixture/config.d';
     seedFs(
@@ -167,13 +187,11 @@ describe('U010/w108 — managed config.d drop-in per-file fault isolation', () =
       },
       { [dropDir]: ['10-ok.json', '20-broken.json', '30-ok.json'] },
     );
-    // RED (parseManagedFile throwing out of the loop): the whole load throws on the
-    // malformed drop-in. GREEN (per-file skip): the broken file is skipped and the
-    // valid base + remaining drop-ins merge (last well-formed wins per field).
-    const cfg = loadManagedConfig() as ProjectConfig;
-    assert.equal(cfg.model, 'base-model');
-    assert.equal(cfg.maxTurns, 20);
-    assert.equal(cfg.permissionMode, 'auto-allow');
+    // A managed drop-in enforces the SAME strict trust as the base: a malformed
+    // (unparseable) drop-in FAILS CLOSED rather than being silently dropped, so a
+    // security-bearing managed policy can never fail OPEN. The loop applies the earlier
+    // well-formed 10-ok.json, then throws on the malformed 20-broken.json.
+    assert.throws(() => loadManagedConfig(), /failed to parse/);
   });
 
   it('still FAILS CLOSED on a malformed BASE managed file (base is the authoritative policy)', () => {
