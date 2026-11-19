@@ -1345,7 +1345,7 @@ export const ENGINE_EVENT_TYPES = [
   'mcp_resource_update', 'mcp_polling_update', 'mcp_connection_changed',
   'external_import_blocked', 'peer_message', 'background_task_complete',
   'hook_response', 'max_turns_reached', 'classifier_checking',
-  'skill_improvement', 'done',
+  'skill_improvement', 'agent_turn_stop', 'done',
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
@@ -1731,7 +1731,34 @@ export type EngineEvent =
    *  ({@link drainSkillImprovementNotices}) so the TUI and the detached/SDK runner
    *  receive an identical shape (the TUI↔CLI parity invariant). */
   | { type: 'skill_improvement'; phase: 'detected' | 'responded'; skillName: string; updateCount: number; applied?: boolean }
+  /** A supervised child (sub)agent's turn ENDED without a proper completion, so the
+   *  supervisor classified the stop and raised a structured notice to its parent. This
+   *  is the agent-supervision parity of Orca's worker turn-stop report
+   *  (runtime/orchestration/workers/turn-stops/worker-turn-stop-report.ts): when a child
+   *  turn stops, `reason` classifies HOW (`finished` = at rest without reporting,
+   *  `errored` = ended on an error, `needs-input` = waiting on a prompt/approval a human
+   *  must answer, `exited` = the process ended, `lost` = it vanished). `reportId` is a
+   *  content-hashed stable id (`stopReportId`) so the parent is told ONCE per distinct
+   *  event, not once per supervision poll — a re-emit with the same `reportId` is a no-op
+   *  for a deduping consumer. `subject`/`body` are the ready-to-render notice (what
+   *  happened, a redacted output tail, left-behind artifacts), `recommendedNextStep` is
+   *  the single actionable line, `failureCount` is the child's accumulated consecutive
+   *  failure count, and `settled` names how the stop closed the child's dispatch:
+   *  `'failed'` (retryable) or `'circuit_broken'` (the retry budget is spent — give up and
+   *  tell the user). `awaitsReply` is true when a `needs-input` stop can be answered with a
+   *  message (vs a prompt a person must answer in place). `outputTail` is the redacted,
+   *  length-capped tail of the child's last output. Append-only EngineEvent member. */
+  | { type: 'agent_turn_stop'; nodeId: string; depth?: number; reason: AgentTurnStopReason; reportId: string; subject: string; body: string; recommendedNextStep: string; failureCount: number; settled?: 'failed' | 'circuit_broken'; awaitsReply?: boolean; outputTail?: string }
   | { type: 'done'; totalTurns: number; exitReason: ExitReason };
+
+/** How a supervised child (sub)agent's turn stopped without a proper completion
+ *  (parity: Orca's `WorkerTurnStopReason`): `finished` = ended at rest without sending a
+ *  done report, `errored` = ended on an error, `needs-input` = stopped at a prompt/approval
+ *  a human must answer, `exited` = the process ended, `lost` = it vanished with no cause.
+ *  Single source of truth for the {@link EngineEvent} `agent_turn_stop` `reason` and the
+ *  common-layer supervision module. */
+export const AGENT_TURN_STOP_REASONS = ['finished', 'errored', 'needs-input', 'exited', 'lost'] as const;
+export type AgentTurnStopReason = (typeof AGENT_TURN_STOP_REASONS)[number];
 
 /**
  * Natural-language auto-mode (YOLO) rule configuration (parity: Claude's
