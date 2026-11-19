@@ -1882,9 +1882,14 @@ describe('PermissionManager — loadRules with pattern and reason fields (lines 
   it('handles rule with non-string pattern (ignores it)', () => {
     const dir = path.join(tmpDir, '.ami');
     fs.mkdirSync(dir, { recursive: true });
+    // Use a `deny` rule so this exercises ONLY the pattern/reason string type
+    // guard. A bash `allow` rule whose non-string pattern collapses to an
+    // (effectively pattern-less) blanket allow is deliberately removed by the
+    // overly-broad-bash-allow strip for untrusted project settings — that is a
+    // separate, intentional security contract, not the behavior under test here.
     fs.writeFileSync(path.join(dir, 'permissions.json'), JSON.stringify({
       rules: [
-        { tool: 'bash', pattern: 123, action: 'allow', reason: 456 },
+        { tool: 'bash', pattern: 123, action: 'deny', reason: 456 },
       ],
     }));
 
