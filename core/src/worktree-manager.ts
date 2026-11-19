@@ -38,7 +38,276 @@ const GIT_HARDENING_FLAGS = [
 ];
 
 // Hard ceiling so a wedged git invocation can never hang an unattended run.
+// Default for WRITE/other commands (worktree add/remove/prune, commit, …).
 const GIT_CMD_TIMEOUT_MS = 15_000;
+
+/**
+ * Ceiling for a READ command (status/rev-list/log/…). A flat 15s cap is too tight
+ * for a status/diff over a very large or cold working tree, yet a read must still
+ * be bounded so a wedged reader can never hang an unattended run. 120s mirrors
+ * Orca's read-class ceiling (git-command-classification.ts) — generous enough for
+ * a legitimate large read, still bounded.
+ */
+export const GIT_READ_CMD_TIMEOUT_MS = 120_000;
+
+export type GitCommandClass = 'network' | 'read' | 'other';
+
+// Global options that take a VALUE and so precede the subcommand (their value must
+// be skipped when scanning for the subcommand): `git -C <dir> status`, `git -c k=v …`.
+const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
+  '--config-env', '--exec-path',
+]);
+
+// Subcommands whose dominant phase is a remote transfer — these MUST NOT be killed
+// by the read/other timeout (a real clone/fetch/push over a slow link legitimately
+// runs for minutes). Classified 'network' → run UNCAPPED.
+const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote']);
+
+// Subcommands that are always a read (no working-tree mutation, no network).
+const GIT_ALWAYS_READ_SUBCOMMANDS = new Set([
+  'blame', 'cat-file', 'check-attr', 'check-ref-format', 'check-ignore',
+  'describe', 'diff', 'diff-tree', 'for-each-ref', 'log', 'ls-files', 'ls-tree',
+  'merge-base', 'name-rev', 'rev-list', 'rev-parse', 'show', 'show-ref', 'status', 'var',
+]);
+
+// `branch`/`config` are reads only with a listing/query flag anywhere in the args.
+const GIT_READ_FLAG_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  branch: new Set(['--list', '-l', '--show-current', '--contains', '--points-at', '--all', '-a', '--remotes', '-r']),
+  config: new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']),
+};
+
+// `remote`/`submodule`/`worktree` are reads only in their listing action form.
+const GIT_READ_ACTION_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  remote: new Set(['get-url', 'show']),
+  submodule: new Set(['status']),
+  worktree: new Set(['list']),
+};
+const GIT_BARE_FORM_IS_READ = new Set(['remote', 'submodule']);
+
+/** Index of the git subcommand token, skipping leading global options + their values. */
+export function findGitSubcommandIndex(args: readonly string[]): number {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (GIT_GLOBAL_OPTIONS_WITH_VALUE.has(a)) { i += 1; continue; }
+    if (a.startsWith('-')) continue;
+    return i;
+  }
+  return -1;
+}
+
+function isGitReadCommand(args: readonly string[], subIndex: number): boolean {
+  const sub = args[subIndex];
+  if (GIT_ALWAYS_READ_SUBCOMMANDS.has(sub)) return true;
+  const rest = args.slice(subIndex + 1);
+  if (sub === 'symbolic-ref') {
+    if (rest.some(a => a === '-d' || a === '--delete' || a === '-m')) return false;
+    // Reading takes one ref; a second positional is a value being written.
+    return rest.filter(a => a !== '--' && !a.startsWith('-')).length <= 1;
+  }
+  const readActions = GIT_READ_ACTION_SUBCOMMANDS[sub];
+  if (readActions) {
+    const action = rest.find(a => !a.startsWith('-'));
+    if (!action) return GIT_BARE_FORM_IS_READ.has(sub);
+    return readActions.has(action);
+  }
+  const readFlags = GIT_READ_FLAG_SUBCOMMANDS[sub];
+  return Boolean(readFlags && rest.some(a => readFlags.has(a.split('=')[0])));
+}
+
+/**
+ * Classify a git argv by its dominant phase so a single flat timeout can be
+ * replaced by a command-class ceiling (parity: Orca git-command-classification.ts).
+ * 'network' (fetch/pull/push/clone/ls-remote, submodule/remote update) must run
+ * UNCAPPED — a flat 15s cap would kill any real network op. 'read' gets the larger
+ * read ceiling. Everything else (write/other) keeps the tight default.
+ */
+export function classifyGitCommand(args: readonly string[]): GitCommandClass {
+  const subIndex = findGitSubcommandIndex(args);
+  if (subIndex === -1) return 'other';
+  const sub = args[subIndex];
+  if (GIT_NETWORK_SUBCOMMANDS.has(sub)) return 'network';
+  const action = args.slice(subIndex + 1).find(a => !a.startsWith('-'));
+  if ((sub === 'submodule' && action === 'update') || (sub === 'remote' && action === 'update')) {
+    return 'network';
+  }
+  return isGitReadCommand(args, subIndex) ? 'read' : 'other';
+}
+
+/** Effective timeout (ms) for a git class: network uncapped (0 = no timeout). */
+export function gitTimeoutForClass(cls: GitCommandClass): number {
+  if (cls === 'network') return 0; // uncapped — execFileSync treats 0 as no timeout
+  if (cls === 'read') return GIT_READ_CMD_TIMEOUT_MS;
+  return GIT_CMD_TIMEOUT_MS;
+}
+
+// Only "another git process holds the lock" is transient and worth retrying; a
+// CAS ref mismatch (`cannot lock ref …: is at X but expected Y`) is NOT transient.
+const GIT_LOCK_CONTENTION_PATTERNS = [
+  /Unable to create '[^'\n]*\.lock': File exists/i,
+  /could not lock config file [^\n]*: File exists/i,
+  /cannot lock ref '[^'\n]*': Unable to create '[^'\n]*\.lock': File exists/i,
+];
+
+export const GIT_LOCK_CONTENTION_RETRY_DELAYS_MS: readonly number[] = [50, 150, 400];
+
+/** Read the combined stderr/stdout/message text from a thrown execFileSync error. */
+function gitFailureText(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error ?? '');
+  const e = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
+  const parts = [e.stderr, e.stdout, e.message]
+    .map(p => (typeof p === 'string' ? p : Buffer.isBuffer(p) ? p.toString('utf-8') : ''))
+    .filter(Boolean);
+  return parts.join('\n');
+}
+
+/**
+ * True when `error` is a TRANSIENT git lock-contention failure (another git
+ * process briefly held a `*.lock`), the only failure class safe to retry
+ * (parity: Orca git-lock-contention.ts). A ref CAS mismatch or any other failure
+ * returns false so a genuine error is never masked by a retry.
+ */
+export function isGitLockContentionFailure(error: unknown): boolean {
+  const text = gitFailureText(error);
+  return GIT_LOCK_CONTENTION_PATTERNS.some(p => p.test(text));
+}
+
+/** Synchronous sleep (ms) — the runner is sync, so backoff must block in-thread. */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Re-run `attempt` after each TRANSIENT git lock-contention failure, sleeping the
+ * next backoff delay between tries; ANY other failure (or exhausting the delays)
+ * is thrown so a genuine error is never masked (parity: Orca retryOnGitLockContention,
+ * adapted to the synchronous runner). A `shouldAbort` hook lets a caller bail out
+ * of the backoff on cancellation.
+ */
+export function retryOnGitLockContention<T>(
+  attempt: () => T,
+  delaysMs: readonly number[] = GIT_LOCK_CONTENTION_RETRY_DELAYS_MS,
+  shouldAbort?: () => boolean,
+): T {
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return attempt();
+    } catch (err) {
+      const delay = delaysMs[retry];
+      if (delay === undefined || !isGitLockContentionFailure(err)) throw err;
+      if (shouldAbort?.()) throw new Error('git operation aborted');
+      sleepSync(delay);
+    }
+  }
+}
+
+/**
+ * Resolve the per-common-dir FETCH_HEAD lock key for a git argv whose write of a
+ * SHARED FETCH_HEAD / remote-tracking ref races sibling-worktree fetches
+ * (parity: Orca git-fetch-head-lock.ts resolveGitFetchHeadCommand). Returns the
+ * absolute `<commonGitDir>/FETCH_HEAD` path to serialize on, or null when the
+ * command does not write a shared FETCH_HEAD (so no lane is taken). fs-only — no
+ * subprocess — so it is safe inside the hardened sync runner.
+ */
+export function resolveFetchHeadLockKey(args: readonly string[], cwd: string): string | null {
+  const subIndex = findGitSubcommandIndex(args);
+  if (subIndex === -1) return null;
+  const sub = args[subIndex];
+  if (sub !== 'fetch' && sub !== 'pull') return null;
+
+  // `-C <dir>` / `--git-dir` before the subcommand relocate the repo we resolve.
+  let base = cwd;
+  let explicitGitDir: string | undefined;
+  for (let i = 0; i < subIndex; i += 1) {
+    const a = args[i];
+    if (a === '-C' && args[i + 1]) { base = path.resolve(base, args[i + 1]); i += 1; continue; }
+    if (a.startsWith('-C') && a.length > 2) { base = path.resolve(base, a.slice(2)); continue; }
+    if (a === '--git-dir' && args[i + 1]) { explicitGitDir = path.resolve(base, args[i + 1]); i += 1; continue; }
+    if (a.startsWith('--git-dir=')) { explicitGitDir = path.resolve(base, a.slice('--git-dir='.length)); continue; }
+    if (GIT_GLOBAL_OPTIONS_WITH_VALUE.has(a)) { i += 1; }
+  }
+
+  if (sub === 'fetch') {
+    // A fetch that does not write FETCH_HEAD and touches no tracking ref needs no lane.
+    let writesFetchHead = true;
+    let updatesTrackingRef = false;
+    for (const a of args.slice(subIndex + 1)) {
+      if (a === '--no-write-fetch-head') writesFetchHead = false;
+      else if (a === '--write-fetch-head') writesFetchHead = true;
+      else if (a.includes(':refs/remotes/')) updatesTrackingRef = true;
+    }
+    if (!writesFetchHead && !updatesTrackingRef) return null;
+  }
+
+  const commonGitDir = explicitGitDir ?? resolveCommonGitDir(base);
+  if (!commonGitDir) return null;
+  return path.join(commonGitDir, 'FETCH_HEAD');
+}
+
+/**
+ * Resolve the SHARED (common) git dir for `startPath` using ONLY the filesystem
+ * (no subprocess): the worktree's git dir, then its `commondir` pointer. Returns
+ * an absolute path, or null when `startPath` is not a repo.
+ */
+export function resolveCommonGitDir(startPath: string): string | null {
+  const gitDir = resolveGitDir(startPath);
+  if (!gitDir) return null;
+  try {
+    const commondir = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim();
+    if (commondir) return path.resolve(gitDir, commondir);
+  } catch { /* no commondir → gitDir IS the common dir (main checkout) */ }
+  return gitDir;
+}
+
+// Bound the wait for a sibling process's FETCH_HEAD lane so a crashed holder can
+// never wedge a fetch forever; a lockfile older than this is treated as abandoned.
+const FETCH_HEAD_LOCK_STALE_MS = 2 * 60_000;
+const FETCH_HEAD_LOCK_POLL_MS = 100;
+
+/**
+ * Run `fn` while holding a cross-process advisory lock on `<commonDir>/FETCH_HEAD`,
+ * so two processes in the SAME repo cannot write FETCH_HEAD concurrently and
+ * corrupt a sibling-worktree fetch transaction (parity: Orca runWithGitFetchHeadLock,
+ * keyed by the resolved common dir rather than the worktree path). An abandoned
+ * lockfile (holder crashed) older than {@link FETCH_HEAD_LOCK_STALE_MS} is stolen.
+ * Within a single process the sync runner already serializes, so this lane is the
+ * CROSS-process guard the ~20-lane fleet needs.
+ */
+export function withFetchHeadLock<T>(lockKey: string, fn: () => T): T {
+  const lockPath = `${lockKey}.ami-lock`;
+  const deadline = Date.now() + FETCH_HEAD_LOCK_STALE_MS;
+  let fd: number | null = null;
+  for (;;) {
+    try {
+      fd = fs.openSync(lockPath, 'wx');
+      break;
+    } catch (err) {
+      if (errnoCodeOf(err) !== 'EEXIST') {
+        // Cannot even create the lock file (ENOENT parent, EACCES) → run
+        // unlocked rather than fail the fetch outright.
+        return fn();
+      }
+      const held = mtimeOrUndefined(lockPath);
+      if (held !== undefined && (Date.now() - held) > FETCH_HEAD_LOCK_STALE_MS) {
+        try { fs.unlinkSync(lockPath); } catch { /* raced another stealer */ }
+        continue;
+      }
+      if (Date.now() > deadline) {
+        // Waited out the stale window without acquiring — proceed unlocked so a
+        // persistently-wedged holder cannot block the fetch indefinitely.
+        return fn();
+      }
+      sleepSync(FETCH_HEAD_LOCK_POLL_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.closeSync(fd); } catch { /* best effort */ }
+    try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
+  }
+}
 
 /**
  * Run git with the hardening flags, NO SHELL (execFile with an argv array), so
@@ -49,6 +318,20 @@ const GIT_CMD_TIMEOUT_MS = 15_000;
  * destructive calls through the SAME hardened runner (timeout + GIT_NO_PROMPT_ENV
  * + hooks/fsmonitor/gpg disabled) instead of a raw, unbounded child_process call
  * — one canonical hardened git invocation for the whole worktree subsystem.
+ *
+ * Concurrent-git hardening (parity: Orca shared/git):
+ *   - command-class timeout: an explicit `opts.timeout` always wins; otherwise the
+ *     ceiling is derived from {@link classifyGitCommand} — a NETWORK op (fetch/
+ *     pull/push/clone) runs UNCAPPED instead of being killed by the flat 15s cap,
+ *     a READ gets the larger {@link GIT_READ_CMD_TIMEOUT_MS}, and a write/other op
+ *     keeps the tight default.
+ *   - lock-contention retry: a TRANSIENT `*.lock: File exists` failure (a sibling
+ *     git briefly held the lock) is retried with backoff
+ *     ({@link GIT_LOCK_CONTENTION_RETRY_DELAYS_MS}); any other failure is thrown at
+ *     once so a genuine error is never masked.
+ *   - FETCH_HEAD serialization: a fetch/pull that writes the SHARED FETCH_HEAD is
+ *     run under a per-common-dir cross-process lane ({@link withFetchHeadLock}) so
+ *     sibling-worktree fetches in the fleet cannot corrupt each other.
  */
 export function gitExec(args: string[], opts: { cwd: string; timeout?: number; stdio?: 'ignore' | 'pipe'; signal?: AbortSignal } = { cwd: process.cwd() }): string {
   // Honor cancellation for the SYNCHRONOUS runner: a blocked event loop means
@@ -62,16 +345,33 @@ export function gitExec(args: string[], opts: { cwd: string; timeout?: number; s
   if (opts.signal?.aborted) {
     throw new Error('git operation aborted');
   }
+  const cls = classifyGitCommand(args);
+  const timeout = opts.timeout ?? gitTimeoutForClass(cls);
   const env = { ...process.env, ...GIT_NO_PROMPT_ENV };
-  const out = execFileSync('git', [...GIT_HARDENING_FLAGS, ...args], {
-    cwd: opts.cwd,
-    encoding: 'utf-8',
-    env,
-    timeout: opts.timeout ?? GIT_CMD_TIMEOUT_MS,
-    stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
-    ...(opts.signal ? { signal: opts.signal } : {}),
-  } as Parameters<typeof execFileSync>[2]);
-  return typeof out === 'string' ? out.trim() : '';
+
+  const runOnce = (): string => {
+    const out = execFileSync('git', [...GIT_HARDENING_FLAGS, ...args], {
+      cwd: opts.cwd,
+      encoding: 'utf-8',
+      env,
+      timeout,
+      stdio: opts.stdio === 'ignore' ? 'ignore' : ['ignore', 'pipe', 'pipe'],
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    } as Parameters<typeof execFileSync>[2]);
+    return typeof out === 'string' ? out.trim() : '';
+  };
+
+  // Retry ONLY transient lock contention; everything else propagates immediately.
+  const runWithRetry = (): string =>
+    retryOnGitLockContention(runOnce, GIT_LOCK_CONTENTION_RETRY_DELAYS_MS, () => opts.signal?.aborted === true);
+
+  // Serialize a shared-FETCH_HEAD write across processes in the same repo.
+  if (cls === 'network') {
+    let lockKey: string | null = null;
+    try { lockKey = resolveFetchHeadLockKey(args, opts.cwd); } catch { lockKey = null; }
+    if (lockKey) return withFetchHeadLock(lockKey, runWithRetry);
+  }
+  return runWithRetry();
 }
 
 /** 40-hex (SHA-1) or 64-hex (SHA-256) git object id. */
