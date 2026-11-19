@@ -51,6 +51,7 @@ import { scoutTool } from './scout';
 import { endConversationTool } from './end-conversation';
 import { replTool } from './repl-tool';
 import { testingPermissionTool } from './testing-permission';
+import { computerUseTool } from './computer-use';
 
 /** Sources whose tools form the cache-stable BUILT-IN prefix partition. Everything
  *  else (MCP, installed plugins, user tools) sorts into the suffix partition. */
@@ -231,6 +232,13 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     // default pool is unchanged. When enabled it is advertised and the centralized
     // permission guard forces an unconditional ask (see permissions.ts).
     testingPermissionTool,
+    // PARITY (additive): macOS computer-use GUI-automation tool (mouse/keyboard/
+    // clipboard/app-control). Gated by its own isEnabled() => isComputerUseEnabled()
+    // (opt-in via AMI_COMPUTER_USE), so OFF by default it is dropped at registration
+    // and the pool is unchanged. When enabled it dispatches actions through an
+    // injectable native backend; absent one (every non-macOS host) each call returns
+    // a clear platform-unavailability message (parity: Claude's non-darwin guard).
+    computerUseTool,
   ];
 
   // PARITY (additive): apply the operator-configurable AMI_DENY_TOOLS blocklist so a
