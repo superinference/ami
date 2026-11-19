@@ -223,7 +223,13 @@ export interface PreSamplingContext extends HookContext {
 }
 
 export type HookDecision =
-  | { action: 'allow'; additionalContext?: string }
+  // `permissionBypass` marks an EXPLICIT PreToolUse approval (Claude Code's
+  // `permissionDecision: 'allow'` / `decision: 'approve'`) that PRE-APPROVES the call
+  // so the consumer (tool-executor) bypasses a would-be interactive permission prompt.
+  // A bare `allow` (the default "no objection" verdict) leaves it unset and does NOT
+  // bypass — deny rules / the hardline check still resolve first, so an explicit
+  // approval can never override a deny.
+  | { action: 'allow'; additionalContext?: string; permissionBypass?: boolean }
   | { action: 'deny'; reason: string; additionalContext?: string }
   // Claude Code's PreToolUse `permissionDecision: 'ask'` — the hook does not
   // allow or deny outright but FORCES an interactive permission confirmation,
@@ -4988,6 +4994,21 @@ export class HookManager extends EventEmitter {
               } catch { /* ignore parse errors */ }
             }
             if (result.startsWith('SYSTEM:')) return { action: 'allow', additionalContext: result.slice(7).trim() };
+            // A PreToolUse hook that EXPLICITLY approves (Claude Code's
+            // `permissionDecision: 'allow'` / `decision: 'approve'`) PRE-APPROVES the
+            // call: the decision-less JSON flows through runHookByType verbatim, so
+            // recover it here as an allow carrying `permissionBypass` (the consumer
+            // bypasses a would-be permission prompt). A bare/plain-text result is the
+            // default no-objection allow (no bypass).
+            const preApproveRaw = tryParseHookJson(result);
+            const preApprove = preApproveRaw ? unwrapHookSpecificOutput(preApproveRaw) : undefined;
+            if (preApprove && (preApprove.permissionDecision === 'allow' || preApprove.decision === 'approve')) {
+              return {
+                action: 'allow',
+                permissionBypass: true,
+                additionalContext: typeof preApprove.additionalContext === 'string' ? preApprove.additionalContext : undefined,
+              };
+            }
             return { action: 'allow' };
           };
           this.onPreToolUse(fn, tier);
@@ -6475,7 +6496,12 @@ export class HookManager extends EventEmitter {
           if (accumulated.action === 'ask') {
             accumulated = { action: 'ask', reason: accumulated.reason, updatedInput: accumulated.updatedInput, additionalContext: decision.additionalContext ?? accumulated.additionalContext };
           } else {
-            accumulated = { action: 'allow', additionalContext: decision.additionalContext ?? accumulated.additionalContext };
+            // Carry an EXPLICIT permission-bypass across the allow accumulation: once
+            // any matching PreToolUse hook pre-approved (permissionDecision allow), the
+            // combined verdict stays a bypass (a later bare allow does not clear it).
+            const priorBypass: boolean | undefined = accumulated.action === 'allow' ? accumulated.permissionBypass : undefined;
+            const bypass: boolean | undefined = decision.permissionBypass || priorBypass;
+            accumulated = { action: 'allow', additionalContext: decision.additionalContext ?? accumulated.additionalContext, ...(bypass ? { permissionBypass: true } : {}) };
           }
         }
       } catch (err) {
