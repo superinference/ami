@@ -3128,3 +3128,33 @@ export const LEGAL_TRANSITIONS: Readonly<
   failed: [],
   circuit_broken: [],
 };
+
+/**
+ * Why a message to a recipient is NOT delivered the instant it is sent, read from
+ * the SAME gates that actually hold it — so a send receipt states only what is true
+ * at send time, never a dishonest "delivered". A reader returning `null` (rather than
+ * a {@link DeliveryHold}) means delivery goes ahead now. Mirrors Orca's
+ * `MailboxDeliveryHold` (runtime/orchestration/mailbox/delivery-hold/
+ * mailbox-delivery-hold.ts `describeMailboxDeliveryHold`), narrowed to the states AMI
+ * can honestly observe about an inter-agent/subagent recipient:
+ *  - `busy`        — the recipient is running but has not settled at its prompt / is
+ *                    not actively listening, so the message waits in its mailbox until
+ *                    its next tool round.
+ *  - `blocked`     — the recipient's OWN state says it is blocked (awaiting a plan
+ *                    approval, mid-shutdown handshake, shutting down); `reason` names it.
+ *  - `detached`    — the recipient is a known/declared teammate that is not yet
+ *                    attached/online; the message waits until it comes up.
+ *  - `failed-turn` — the recipient's task ended in failure; the message waits for a
+ *                    retry / its next turn rather than being dropped.
+ *  - `unreachable` — no live/known agent answers to this name (a likely typo / stale
+ *                    name, or a killed/finished agent); `recipient` echoes the name.
+ *
+ * ADDITIVE/append-only: new members may be appended as AMI learns to observe more
+ * recipient states; existing members never change shape so consumers stay stable.
+ */
+export type DeliveryHold =
+  | { kind: 'busy' }
+  | { kind: 'blocked'; reason: string }
+  | { kind: 'detached' }
+  | { kind: 'failed-turn' }
+  | { kind: 'unreachable'; recipient: string };

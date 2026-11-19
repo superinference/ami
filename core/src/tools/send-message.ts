@@ -1,4 +1,4 @@
-import { ToolDefinition, ToolResult, ToolContext } from '../types';
+import { ToolDefinition, ToolResult, ToolContext, DeliveryHold } from '../types';
 import { isTerminalTaskStatus } from '../process-manager';
 import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
 import { isTeammatesEnabled } from './tool-gates';
@@ -1775,6 +1775,95 @@ function deliveryAffordance(toRaw: string, to: string, context: ToolContext): st
   return '';
 }
 
+// --- Honest delivery-hold receipt (parity: Orca describeMailboxDeliveryHold) --
+// A send receipt must state only what is TRUE at send time: a message to a
+// not-yet-settled recipient is QUEUED, not "delivered". {@link readDeliveryHold}
+// reads the SAME gates send_message already enforces and returns a typed
+// {@link DeliveryHold} naming WHY the message will wait (or null when it goes
+// through now); {@link describeDeliveryHold} renders that into a one-line, honest
+// "Queued. …" note. Mirrors Orca's runtime/orchestration/mailbox/delivery-hold
+// (readMailboxDeliveryHold → chatMailHold + describeMailboxDeliveryHold), narrowed
+// to the recipient states AMI can honestly observe. Pure: no mutation, no delivery.
+
+/**
+ * Read the delivery-hold state for a plain-text DM to `to` (resolved key) /
+ * `toRaw` (addressed name), from the same gates `send_message` enforces. Returns a
+ * typed {@link DeliveryHold}, or `null` when delivery would go through immediately
+ * (the recipient has a live eager-delivery notifier — it is settled and listening).
+ * Resolution order mirrors Orca's readMailboxDeliveryHold (most-decisive first):
+ *  1. a tracked task in a terminal/blocked state — `failed` → `failed-turn`,
+ *     `killed`/`completed` → `unreachable`, running-but-aborting → `blocked`;
+ *  2. the recipient's OWN blocked state (awaiting plan approval / outstanding
+ *     shutdown handshake) → `blocked`;
+ *  3. a live notifier → `null` (settled, delivers now);
+ *  4. a tracked `running` task with no live notifier → `busy` (waits for its next
+ *     tool round);
+ *  5. a known/roster/cross-process peer not yet online → `detached`;
+ *  6. an unrecognized name while a roster or other live agents exist → `unreachable`.
+ * Never a hold for a broadcast caller (the caller passes a concrete recipient).
+ */
+export function readDeliveryHold(toRaw: string, to: string, context: ToolContext): DeliveryHold | null {
+  const pm = context.processManager;
+  if (pm) {
+    const status = pm.getStatus(to);
+    if (status === 'failed') return { kind: 'failed-turn' };
+    if (status === 'killed' || status === 'completed') return { kind: 'unreachable', recipient: toRaw };
+    if (status === 'running' && typeof pm.isActive === 'function' && !pm.isActive(to)) {
+      return { kind: 'blocked', reason: 'shutting down' };
+    }
+  }
+  // The recipient's own blocked state (its status says it is blocked), keyed by the
+  // bare addressed name the handshake/boundary registries use.
+  if (hasOutstandingShutdownRequest(toRaw)) return { kind: 'blocked', reason: 'shutdown requested' };
+  if (isAwaitingPlanApproval(toRaw)) return { kind: 'blocked', reason: 'awaiting plan approval' };
+  // Settled + listening: the eager-delivery notifier is live, so enqueue fires it
+  // and the recipient picks the message up now — no hold.
+  if (mailboxNotifiers.has(to)) return null;
+  if (pm && pm.getStatus(to) === 'running') return { kind: 'busy' };
+  // Known teammate (roster / cross-process peer / tracked) that is not yet online.
+  if (isReachable(to)) return { kind: 'detached' };
+  // Nobody answers to this name, but a roster or other live agents exist → a likely
+  // typo/stale name. With no team context at all, there is no honest hold to report
+  // (the message simply queues into a fresh mailbox for a coming-online teammate).
+  if (mailboxNotifiers.size > 0 || rosterMemberNames().length > 0) {
+    return { kind: 'unreachable', recipient: toRaw };
+  }
+  return null;
+}
+
+/**
+ * Render a {@link DeliveryHold} into a one-line, honest "Queued. …" receipt naming
+ * WHY the message waits, so the sender can reason about the peer's state. Mirrors
+ * Orca's describeMailboxDeliveryHold per-kind wording.
+ */
+export function describeDeliveryHold(recipient: string, hold: DeliveryHold): string {
+  switch (hold.kind) {
+    case 'busy':
+      return `Queued. ${recipient} is busy (running, not settled at its prompt); it will pick this up at its next tool round.`;
+    case 'blocked':
+      return `Queued. ${recipient} is blocked (${hold.reason}); delivery is held until that clears.`;
+    case 'detached':
+      return `Queued. ${recipient} is not attached/online yet; delivery waits until it comes up.`;
+    case 'failed-turn':
+      return `Queued. ${recipient}'s last turn failed; delivery waits for its next turn rather than being dropped.`;
+    case 'unreachable':
+      return `Queued. No live agent answers to "${hold.recipient}" (check the name); delivery waits in case it comes online.`;
+  }
+}
+
+/**
+ * Deliver a message the durable parked mailbox ({@link common/src/mailbox}) has
+ * decided is now settled, routing it through the SAME canonical in-session
+ * {@link enqueue} primitive a direct send uses — so a redriven parked message is
+ * delivered with identical semantics (revision bump, waiter hand-off, durable
+ * cross-process copy) to one sent while the recipient was already settled. The park
+ * layer lives in common (it may import core); this is the core-side delivery seam it
+ * targets so there is never a second delivery path. Exposed for that layer and tests.
+ */
+export function enqueueParkedDelivery(recipient: string, msg: AgentMessage): void {
+  enqueue(recipient, { ...msg, to: recipient });
+}
+
 /**
  * Display names of every member in the current team roster (from the trusted team
  * file, never model-supplied), or `[]` when no team is established. Used both to
@@ -2190,9 +2279,15 @@ export const sendMessageTool: ToolDefinition = {
       const targetTaskId = getAgentByName(toRaw) || toRaw;
       const status = context.processManager.getStatus(targetTaskId);
       if (isTerminalTaskStatus(status)) {
+        // Carry the honest typed receipt even on the hard reject: a `failed` agent is
+        // a `failed-turn`, a `killed`/`completed` one is `unreachable`.
+        const termHold: DeliveryHold = status === 'failed'
+          ? { kind: 'failed-turn' }
+          : { kind: 'unreachable', recipient: toRaw };
         return {
           output: `Error: cannot send to "${toRaw}" — that agent has ${status} and is no longer running.`,
           isError: true,
+          metadata: { deliveryHold: termHold },
         };
       }
       // Composite-liveness boundary (parity with Claude Code's InProcessBackend
@@ -2214,6 +2309,7 @@ export const sendMessageTool: ToolDefinition = {
         return {
           output: `Error: cannot send to "${toRaw}" — that agent is shutting down (abort in progress) and is no longer accepting messages.`,
           isError: true,
+          metadata: { deliveryHold: { kind: 'blocked', reason: 'shutting down' } satisfies DeliveryHold },
         };
       }
     }
@@ -2545,6 +2641,14 @@ export const sendMessageTool: ToolDefinition = {
       deliveryWarning = hasRoster ? 'unknown_recipient' : 'no_team_context';
     }
 
+    // Honest delivery-hold receipt: read the SAME gates just enforced and, when the
+    // recipient is not settled, capture a typed {@link DeliveryHold} naming WHY the
+    // message waits (busy / blocked / detached / failed-turn / unreachable). Null
+    // means it will be delivered to a listening recipient now. Computed BEFORE
+    // enqueue — which creates the mailbox and would otherwise flip the recipient to
+    // `detached` — so the receipt reflects the state at SEND time.
+    const hold = readDeliveryHold(toRaw, to, context);
+
     enqueue(to, msg);
 
     // Record this plain-text DM so a later idle_notification can derive its
@@ -2562,6 +2666,7 @@ export const sendMessageTool: ToolDefinition = {
     const meta: Record<string, unknown> = {};
     if (deliveryWarning) meta.deliveryWarning = deliveryWarning;
     if (status) meta.status = status;
+    if (hold) meta.deliveryHold = hold;
     return {
       output: `Message sent to "${toRaw}"${summaryTag} [from: ${from}] (${content.length} chars)${affordance}${unreachableWarn}`,
       ...(Object.keys(meta).length > 0 ? { metadata: meta } : {}),
