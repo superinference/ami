@@ -94,6 +94,24 @@ describe('LineageGraph depth cap enforcement', () => {
     );
   });
 
+  it('pluralises the level count for a multi-level cap breach', () => {
+    const g = new LineageGraph();
+    g.registerSpawn({ id: 'root', creator: { kind: 'system' } });
+    g.registerSpawn({ id: 'w1', creator: { kind: 'agent', id: 'root' } }); // depth 1
+    g.registerSpawn({ id: 'w2', creator: { kind: 'agent', id: 'w1' } }); // depth 2
+    assert.throws(
+      () => g.registerSpawn({ id: 'w3', creator: { kind: 'agent', id: 'w2' }, maxDepth: 2 }),
+      (err: unknown) => {
+        assert.ok(err instanceof SpawnDepthExceededError);
+        assert.equal(err.depth, 3);
+        assert.equal(err.maxDepth, 2);
+        // maxDepth !== 1 → plural "levels"
+        assert.match(err.message, /at most 2 levels deep, so this worker can't start another \(depth 3\)/);
+        return true;
+      },
+    );
+  });
+
   it('allows a spawn exactly at the cap boundary', () => {
     const g = new LineageGraph();
     g.registerSpawn({ id: 'root', creator: { kind: 'system' } });
@@ -163,6 +181,18 @@ describe('LineageGraph lineage-authority gating', () => {
     g.registerSpawn({ id: 'root', creator: { kind: 'system' } });
     g.registerSpawn({ id: 'child', instanceId: 'child#inc7', creator: { kind: 'agent', id: 'root' } });
     assert.equal(g.isAuthorizedToSettle('child', 'child#inc7'), true);
+  });
+
+  it('resolves the assignee by incarnation key when the child is looked up by its instanceId', () => {
+    // When the caller passes the per-incarnation handle (not the logical id), the
+    // node must still be found via the byInstanceId index and the sender authorised.
+    const g = new LineageGraph();
+    g.registerSpawn({ id: 'root', creator: { kind: 'system' } });
+    g.registerSpawn({ id: 'child', instanceId: 'child#inc9', creator: { kind: 'agent', id: 'root' } });
+    // 'child#inc9' is NOT a logical id (byId miss) → byInstanceId fallback finds it.
+    assert.equal(g.isAuthorizedToSettle('child#inc9', 'child'), true);
+    assert.equal(g.isAuthorizedToSettle('child#inc9', 'child#inc9'), true);
+    assert.equal(g.isAuthorizedToSettle('child#inc9', 'imposter'), false);
   });
 
   it('rejects a spoofed settle from a sibling or unknown sender', () => {
