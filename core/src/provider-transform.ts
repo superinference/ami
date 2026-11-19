@@ -163,11 +163,34 @@ export function sanitizeToolCallIds(
   });
 }
 
+/**
+ * The Anthropic prompt-cache breakpoint object emitted for a cached prefix block.
+ * Mirrors the shape Claude's `getCacheControl()` returns
+ * (`{ type: 'ephemeral'; ttl?: '1h'; scope?: CacheScope }`):
+ *  - `ttl: '1h'` opts a breakpoint into the extended-cache window instead of the
+ *    implicit 5-minute default — longer-lived caching for long/idle sessions that
+ *    reduces re-cache cost (requires Anthropic's extended-cache beta);
+ *  - `scope` opts into a cross-session/key cache (`'global'` / `'org'`).
+ * Omitting `ttl` keeps the standard 5-minute ephemeral cache, so the default
+ * breakpoint is `{ type: 'ephemeral' }` and behavior is unchanged when no TTL is
+ * requested.
+ */
+export interface CacheBreakpoint {
+  type: string;
+  ttl?: '1h';
+  scope?: string;
+}
+
+/** The standard 5-minute ephemeral breakpoint — the default when no TTL/scope is
+ *  requested, matching Anthropic's implicit cache window. */
+const DEFAULT_CACHE_BREAKPOINT: CacheBreakpoint = { type: 'ephemeral' };
+
 export function buildConversationCachePoints(
   messages: Array<{ role: string }>,
   enablePromptCaching = true,
-): Record<number, { type: string }> {
-  const points: Record<number, { type: string }> = {};
+  breakpoint: CacheBreakpoint = DEFAULT_CACHE_BREAKPOINT,
+): Record<number, CacheBreakpoint> {
+  const points: Record<number, CacheBreakpoint> = {};
   if (!enablePromptCaching || messages.length === 0) return points;
 
   let lastNonTool = -1;
@@ -186,8 +209,8 @@ export function buildConversationCachePoints(
     }
   }
 
-  if (secondLastNonTool >= 0) points[secondLastNonTool] = { type: 'ephemeral' };
-  if (lastNonTool >= 0) points[lastNonTool] = { type: 'ephemeral' };
+  if (secondLastNonTool >= 0) points[secondLastNonTool] = breakpoint;
+  if (lastNonTool >= 0) points[lastNonTool] = breakpoint;
 
   return points;
 }
@@ -195,9 +218,10 @@ export function buildConversationCachePoints(
 export function buildToolCacheBreakpoints(
   tools: ToolDefinition[],
   enablePromptCaching = true,
-): Record<number, { type: string }> {
+  breakpoint: CacheBreakpoint = DEFAULT_CACHE_BREAKPOINT,
+): Record<number, CacheBreakpoint> {
   if (!enablePromptCaching || tools.length === 0) return {};
-  return { [tools.length - 1]: { type: 'ephemeral' } };
+  return { [tools.length - 1]: breakpoint };
 }
 
 /**

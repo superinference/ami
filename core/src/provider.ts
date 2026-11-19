@@ -21,7 +21,8 @@ import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as pathJoin, dirname as pathDirname } from 'node:path';
 import { getModelCapabilities, resolveThinkingBudget, resolveTemperature, fitOutputTokens, getModelMaxOutputTokens, getContextWindow, collectModelRecords, pickAdvertisedContextWindow, huggingfaceRepoCandidates, readHuggingFaceContextWindow, requiresResponsesAPI, supportsOneMillionContextBeta, resolveMaxEffortLevel, modelAlwaysOnThinking, normalizeModelStringForAPI } from './model-capabilities';
-import { sanitizeToolCallIds, buildConversationCachePoints, healOrphanedToolCalls, stripUnavailableToolReferences, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
+import { sanitizeToolCallIds, buildConversationCachePoints, buildToolCacheBreakpoints, healOrphanedToolCalls, stripUnavailableToolReferences, stripEmptyTextBlocks, stripExcessMediaItems, validateImagesForAPI, getPromptCachingEnabled, getStrictToolResultPairing, ToolPairingError } from './provider-transform';
+import type { CacheBreakpoint } from './provider-transform';
 import { estimateTokens } from './utils/tokens';
 import { memoizeWithTTLAsync } from './utils/memoize';
 import { createCombinedAbortSignal } from './utils/combined-abort-signal';
@@ -1526,9 +1527,19 @@ export function injectAnthropicCacheControl(bodyText: string, cacheControl: Reco
   if (!body || typeof body !== 'object') return bodyText;
   const cc = cacheControl;
   // Tools block: mark the last tool (tools are first in the cache hierarchy).
+  // Route through the canonical breakpoint-index helper so the SAME TTL/scope-aware
+  // breakpoint shape (`cc`, which may carry `ttl:'1h'`/`scope`) is emitted here as on
+  // the SDK path — one source for "which tool to cache", no inline re-derivation.
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    const last = body.tools[body.tools.length - 1];
-    if (last && typeof last === 'object') last.cache_control = cc;
+    const toolBps = buildToolCacheBreakpoints(
+      body.tools as unknown as ToolDefinition[],
+      true,
+      cc as unknown as CacheBreakpoint,
+    );
+    for (const [i, bp] of Object.entries(toolBps)) {
+      const tool = body.tools[Number(i)];
+      if (tool && typeof tool === 'object') tool.cache_control = bp;
+    }
   }
   // System block: cache ONLY the STATIC prefix (before the dynamic boundary). The
   // dynamic context (memory/workspace/skills) grows each turn and would bust the
@@ -3791,7 +3802,11 @@ export async function* streamChatCompletion(
   if (useSdkCacheMarkers) {
     const breakpointIndices = new Set<number>();
     if (systemPrompt && coreMessages.length > 0) breakpointIndices.add(0);
-    const convPoints = buildConversationCachePoints(coreMessages, promptCachingEnabled);
+    // Emit the TTL/scope-aware breakpoint (`cacheControl`) at each conversation
+    // breakpoint index, then apply the per-index breakpoint value below. The
+    // system-prompt breakpoint (index 0) is not produced by the helper, so it
+    // falls back to the same `cacheControl`.
+    const convPoints = buildConversationCachePoints(coreMessages, promptCachingEnabled, cacheControl);
     for (const idx of Object.keys(convPoints)) breakpointIndices.add(Number(idx));
     for (const idx of breakpointIndices) {
       const msg = coreMessages[idx] as Record<string, unknown> | undefined;
@@ -3804,11 +3819,12 @@ export async function* streamChatCompletion(
       } else if (typeof content === 'string' && content.trim() === '') {
         continue;
       }
+      const breakpoint = convPoints[idx] ?? cacheControl;
       msg.providerOptions = {
         ...((msg.providerOptions as Record<string, unknown>) || {}),
         anthropic: {
           ...((msg.providerOptions as Record<string, Record<string, unknown>>) || {}).anthropic,
-          cacheControl,
+          cacheControl: breakpoint,
         },
       };
     }
