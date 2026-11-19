@@ -1269,7 +1269,21 @@ export function findExecutable(executable: string): string | null {
     }).toString();
     const candidates = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     // SECURITY: skip any candidate inside the cwd tree (a planted git.exe/.bat).
-    return candidates.find(c => !isCwdShadowed(c)) ?? null;
+    // Each rejection is traced through the opt-in {@link shellHooks.onShellDebug}
+    // introspection surface so a user debugging why their git/shell was not picked
+    // up can see the security filter firing — parity with Claude Code's
+    // `logForDebugging('Skipping potentially malicious executable …')`
+    // (windowsPaths.ts:L64-68).
+    for (const candidate of candidates) {
+      if (isCwdShadowed(candidate)) {
+        shellHooks.onShellDebug(
+          `Skipping potentially malicious executable in current directory: ${candidate}`,
+        );
+        continue;
+      }
+      return candidate;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1287,7 +1301,15 @@ export function findExecutable(executable: string): string | null {
  */
 export function findGitBashPath(): string | null {
   const override = GIT_BASH_PATH_ENV.map(k => (process.env[k] || '').trim()).find(Boolean);
-  if (override) return shellHooks.existsSync(override) ? override : null;
+  if (override) {
+    if (shellHooks.existsSync(override)) return override;
+    // The user explicitly configured a git-bash path that does not exist — trace
+    // the bad value they supplied (distinct from the "not found at all" case) so
+    // a typo is self-evident. Parity with Claude Code echoing back
+    // `CLAUDE_CODE_GIT_BASH_PATH` (windowsPaths.ts:L104-106).
+    shellHooks.onShellDebug(`Configured git-bash path "${override}" does not exist`);
+    return null;
+  }
 
   const gitPath = findExecutable('git');
   if (gitPath) {
@@ -1295,7 +1317,26 @@ export function findGitBashPath(): string | null {
     const bashPath = path.win32.join(gitPath, '..', '..', 'bin', 'bash.exe');
     if (shellHooks.existsSync(bashPath)) return bashPath;
   }
+  shellHooks.onShellDebug('git-bash not found; install git-for-Windows or set AMI_GIT_BASH_PATH to your bash.exe');
   return null;
+}
+
+/**
+ * Build the user-facing launch-failure message when git-bash cannot be resolved
+ * on Windows. When the user set an explicit git-bash path env var
+ * ({@link GIT_BASH_PATH_ENV}) the bad value is echoed back so a typo is obvious —
+ * a message distinct from the "no git-bash installed at all" case. Parity with
+ * Claude Code distinguishing the explicitly-configured-but-missing path
+ * (windowsPaths.ts:L104-106) from git-bash-not-found (L120-122). Used by
+ * {@link execCommand} to surface an actionable exit-126 launch failure instead of
+ * exiting the process.
+ */
+export function describeGitBashResolutionError(): string {
+  const override = GIT_BASH_PATH_ENV.map(k => (process.env[k] || '').trim()).find(Boolean);
+  if (override) {
+    return `The configured git-bash path "${override}" does not exist. AMI runs commands through bash on Windows: fix AMI_GIT_BASH_PATH to point at your bash.exe, or install git-bash (https://git-scm.com/downloads/win).`;
+  }
+  return 'No git-bash found. AMI runs commands through bash on Windows: install git-bash (https://git-scm.com/downloads/win), or set AMI_GIT_BASH_PATH to its bash.exe.';
 }
 
 let cachedGitBashPath: string | null | undefined;
@@ -1643,7 +1684,7 @@ export function execCommand(
         if (resolved === null || resolved === '') {
           resolve({
             stdout: stdoutBuf.value(),
-            stderr: stderrBuf.value() + 'No git-bash found. AMI runs commands through bash on Windows: install git-bash (https://git-scm.com/downloads/win), or set AMI_GIT_BASH_PATH to its bash.exe.',
+            stderr: stderrBuf.value() + describeGitBashResolutionError(),
             exitCode: SPAWN_FAILURE_EXIT_CODE,
             signal: null,
           });
