@@ -6,8 +6,8 @@
  *    (or 0 = unlimited) at creation, not only by mutating the job object afterwards.
  *    The permanent flag + maxAgeDays===0-unlimited handling in expireOld already
  *    existed; this wires the knob into the public create() API + durable round-trip.
- *    (claudeRef: src/utils/cronTasks.ts recurringMaxAgeMs + src/tools/ScheduleCronTool.)
- *  - Human-readable schedule parity (claudeRef: src/utils/cron.ts cronToHuman
+ *    (upstreamRef: src/utils/cronTasks.ts recurringMaxAgeMs + src/tools/ScheduleCronTool.)
+ *  - Human-readable schedule parity (upstreamRef: src/utils/cron.ts cronToHuman
  *    L257-305): "every N hours at :MM" when the hour is a step and the minute is a
  *    fixed value, and a "Weekdays" label for the 1-5 day-of-week range.
  */

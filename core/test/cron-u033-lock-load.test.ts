@@ -3,15 +3,15 @@
  *
  * Gaps implemented (see plannings/parity/gaps.jsonl):
  *  - Schema-validated, non-throwing parse of untrusted lock-file contents
- *    (claudeRef: src/utils/cronTasksLock.ts — zod-validated readLock): a single
+ *    (upstreamRef: src/utils/cronTasksLock.ts — zod-validated readLock): a single
  *    parseCronLock() validator replaces the ad-hoc field casts in
  *    acquireLock/heartbeatLock/releaseLock.
  *  - Scheduler-lock lifecycle introspection logging on release
- *    (claudeRef: src/utils/cronTasksLock.ts:L191 — logForDebugging('released …')):
+ *    (upstreamRef: src/utils/cronTasksLock.ts:L191 — logForDebugging('released …')):
  *    releaseLock now emits a "Released cron lock" diagnostic, pairing the
  *    acquire/reclaim logs with a release line.
  *  - Distinguishing FS-inaccessible from real read errors on durable load
- *    (claudeRef: src/utils/cronTasks.ts:L91-100 — isFsInaccessible→silent vs
+ *    (upstreamRef: src/utils/cronTasks.ts:L91-100 — isFsInaccessible→silent vs
  *    logError): loadDurable logs an unexpected read fault instead of swallowing it.
  */
 

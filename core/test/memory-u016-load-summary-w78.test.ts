@@ -2,7 +2,7 @@
  * U016 (wave 78) — memory.ts parity gap: MEMORY-LOAD INTROSPECTION.
  *
  * Claude Code emits `memory_files_completed` / `tengu_claudemd__initial_load`
- * introspection events (utils/claudemd.ts:L1014-L1040) recording the loaded
+ * introspection events (the reference's markdown-memory module:L1014-L1040) recording the loaded
  * instruction/memory file count, per-source-level counts, total content length and
  * load duration so the context COST of what memory contributes each turn is
  * visible. AMI previously loaded memory/instruction files with no such summary.

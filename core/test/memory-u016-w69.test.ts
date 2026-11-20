@@ -12,11 +12,11 @@
  *    (parity: AgentTool/agentMemory.ts loadAgentMemoryPrompt)
  *  - resolveAtImports skips INDENTED code blocks + fires a per-@import
  *    instructionsLoaded hook with loadReason 'include'
- *    (parity: utils/claudemd.ts lexer-token @include extraction + load reasons)
+ *    (parity: the reference's markdown-memory module lexer-token @include extraction + load reasons)
  *  - Per-source provenance/trust labels on instruction sections +
  *    differentiated InstructionsLoaded load_reason (session_start /
  *    nested_traversal) and memory_type (Project/Local)
- *    (parity: utils/claudemd.ts getClaudeMds + sdk/coreSchemas.ts)
+ *    (parity: the reference's markdown-memory module getClaudeMds + sdk/coreSchemas.ts)
  *
  * Run: cd core/core && node --import tsx --test test/memory-u016-w69.test.ts
  */

@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
  * deprecated `shell_id` and coalesces `id = task_id ?? shell_id`, so an old
  * KillShell-style transcript/SDK call keeps resolving. AMI must do the same.
  *
- * claudeRef: references/claude/claude-code-main/src/tools/TaskStopTool/TaskStopTool.ts:L10-L18,L60-63
+ * upstreamRef: references/claude/claude-code-main/src/tools/TaskStopTool/TaskStopTool.ts:L10-L18,L60-63
  */
 describe('taskKillTool — shell_id deprecated alias (U209)', () => {
   const runningManager = (seen: { id?: string } = {}) =>

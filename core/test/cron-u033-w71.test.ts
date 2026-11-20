@@ -4,10 +4,10 @@
  * Gaps implemented (plannings/parity/gaps.jsonl):
  *  - UTC-aware cron definition + display (`utc` flag on a job; computeNextRun reads
  *    fields in UTC; formatSchedule renders a UTC schedule in local time with a TZ
- *    label). claudeRef: src/utils/cron.ts:L183-307 (cronToHuman `{ utc }` option,
+ *    label). upstreamRef: src/utils/cron.ts:L183-307 (cronToHuman `{ utc }` option,
  *    formatUtcTimeAsLocal, UTC dayIndex recomputation) + the UTC next-run path.
  *  - assistant-mode bypass of the busy/idle gate (setAssistantMode / isAssistantMode
- *    + AMI_CRON_ASSISTANT_MODE env). claudeRef: src/hooks/useScheduledTasks.ts:L18-28
+ *    + AMI_CRON_ASSISTANT_MODE env). upstreamRef: src/hooks/useScheduledTasks.ts:L18-28
  *    (assistantMode knob that bypasses the isLoading gate).
  *
  * The UTC assertions are timezone-robust: they assert the absolute instant's UTC

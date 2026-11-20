@@ -3,11 +3,11 @@
  *
  * Gaps implemented (see plannings/parity/gaps.jsonl):
  *  - Full-range (semantic) detection for dom/dow OR-semantics
- *    (claudeRef: src/utils/cron.ts:L129-158 — domWild/dowWild via expanded-set length).
+ *    (upstreamRef: src/utils/cron.ts:L129-158 — domWild/dowWild via expanded-set length).
  *  - Recurring jitter proportional to the ACTUAL gap between the next two fires
- *    (claudeRef: src/utils/cronTasks.ts:L367-398 — jitteredNextCronRunMs uses t2-t1).
+ *    (upstreamRef: src/utils/cronTasks.ts:L367-398 — jitteredNextCronRunMs uses t2-t1).
  *  - Grammatically correct singular/plural phrasing in the human-readable schedule
- *    (claudeRef: src/utils/cron.ts:L231-254 — "Every minute"/"Every hour" singular).
+ *    (upstreamRef: src/utils/cron.ts:L231-254 — "Every minute"/"Every hour" singular).
  */
 
 import { describe, it, beforeEach } from 'node:test';

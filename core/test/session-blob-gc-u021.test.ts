@@ -16,7 +16,7 @@
  *      absent base = no-op, count correct).
  *
  * The AMI divergence from the reference is deliberate and asserted: a NON-current but
- * still-live session's blobs are KEPT (they back its `--resume`), unlike Claude's
+ * still-live session's blobs are KEPT (they back its `--resume`), unlike the reference's
  * keep-only-current image sweep.
  *
  * RED/GREEN: `collectOrphanedCacheDirs` and `SessionManager.cleanupOrphanedBlobs` do

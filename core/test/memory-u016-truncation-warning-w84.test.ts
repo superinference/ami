@@ -10,7 +10,7 @@
  *     overgrown index. Backed by `loadMemoriesWithMeta().totalFound` (pre-cap).
  *
  *   - "rules-directory readdir distinguishes expected vs unexpected errors"
- *     (Claude Code utils/claudemd.ts `processMdRules`): `loadRulesDirectory` /
+ *     (Claude Code the reference's markdown-memory module `processMdRules`): `loadRulesDirectory` /
  *     `loadRulesForFile` wrapped the whole readdir in `catch {}` → a transient
  *     EACCES/EIO was indistinguishable from a missing dir. Now an unexpected
  *     errno is surfaced via the memory logger (ENOENT/ENOTDIR stay silent).

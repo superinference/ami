@@ -3,14 +3,14 @@
  *
  * Gaps implemented here (see plannings/parity/gaps.jsonl, target core/core/src/cron.ts):
  *
- *  - Durable-teammate orphan guard (claudeRef:
+ *  - Durable-teammate orphan guard (upstreamRef:
  *    src/tools/ScheduleCronTool/CronCreateTool.ts:L105-114). Claude rejects a
  *    durable cron created inside a teammate/sub-agent context (errorCode 4) because
  *    the teammate does not persist across sessions, so the durable job's stored
  *    agentId would orphan on restart. AMI now rejects create({ durable:true, agentId })
  *    the same way — session-only jobs for a teammate are still allowed.
  *
- *  - Natural-language cron rendering parity (claudeRef: src/utils/cron.ts cronToHuman
+ *  - Natural-language cron rendering parity (upstreamRef: src/utils/cron.ts cronToHuman
  *    L183-308, src/utils/cronScheduler.ts:L552). formatSchedule() now reads a fixed
  *    daily time as a single fluent phrase leading with the day context:
  *    "every day at 9:00 am", "every Mon at 9:00 am", "Weekdays at 9:00 am (Mon to Fri)"

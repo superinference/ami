@@ -5,13 +5,13 @@
  *  - G2: human-readable `name` field on a scheduled job (CronJob.name + create()
  *    validation + persistence + findByName lookup; surfaced in cron_create /
  *    cron_list / cron_get output and usable as a selector in cron_get / cron_delete).
- *    claudeRef: src/skills/bundled/scheduleRemoteAgents.ts:L250 (required trigger name).
+ *    upstreamRef: src/skills/bundled/scheduleRemoteAgents.ts:L250 (required trigger name).
  *  - G3: run-now — the new cron_run tool wires the previously-unwired
  *    CronScheduler.runNow(id) so a job can be fired on demand.
- *    claudeRef: src/skills/bundled/scheduleRemoteAgents.ts:L191 ({action:"run"}).
+ *    upstreamRef: src/skills/bundled/scheduleRemoteAgents.ts:L191 ({action:"run"}).
  *  - G4: user-visible recurring-job auto-expiry — startTicker's onExpire callback +
  *    the effective-expiry flag now shown for DEFAULT-window recurring jobs in
- *    cron_list. claudeRef: src/tools/ScheduleCronTool/prompt.ts:116-118.
+ *    cron_list. upstreamRef: src/tools/ScheduleCronTool/prompt.ts:116-118.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';

@@ -4,7 +4,7 @@
  *                            (parity: memdir/paths.ts isAutoMemPath, AgentTool
  *                            isAgentMemoryPath)
  *  - isMemoryFilePath()    — recognize a .md path inside the memory tree
- *                            (parity: utils/claudemd.ts isMemoryFilePath)
+ *                            (parity: the reference's markdown-memory module isMemoryFilePath)
  *  - isTeamMemFile()       — shared team-memory path predicate
  *                            (parity: utils/teamMemoryOps.ts / teamMemPaths)
  *  - memoryScopeForPath()  — personal|team|null, TEAM-FIRST ordering

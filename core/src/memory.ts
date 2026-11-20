@@ -51,7 +51,7 @@ function redactLogPath(p: string): string {
 /**
  * Deny-by-default allowlist of file extensions that `@include` / `@path` imports
  * are permitted to inline into instructions/memory. Parity with the reference's
- * `TEXT_FILE_EXTENSIONS` (utils/claudemd.ts `parseMemoryFileContent`): a crafted
+ * `TEXT_FILE_EXTENSIONS` (the reference's markdown-memory module `parseMemoryFileContent`): a crafted
  * CLAUDE.md/AGENTS.md could otherwise slurp a binary blob (an image, PDF, archive,
  * shared object, `.so.1`, `.dat`, or any novel binary format) into the system
  * prompt. An allowlist is strictly safer than a finite binary DENYlist, which any
@@ -380,7 +380,7 @@ export interface MemoryDiagnostic {
  * A machine-readable summary of everything the memory/instruction loader pulled
  * into context for a cwd, produced by {@link MemoryManager.getMemoryLoadSummary}.
  * Parity with the reference's `memory_files_completed` / `tengu_claudemd__initial_load`
- * introspection events (utils/claudemd.ts:L1014-L1040): rather than the context cost
+ * introspection events (the reference's markdown-memory module:L1014-L1040): rather than the context cost
  * of loaded instruction/memory files being invisible, the counts (overall + per
  * source level), total content size and load duration are SURFACED — to `/doctor`
  * for the user and to the no-PII diagnostics stream for machine monitoring — so a
@@ -491,7 +491,7 @@ const LOCAL_VARIANTS = [
  * Per-source provenance/trust labels appended to each instruction-file section
  * header so the model can see WHERE an instruction came from and whether editing
  * it is shared or private. Parity with the reference's `getClaudeMds` descriptive
- * suffixes (utils/claudemd.ts) — AMI previously emitted a bare relative-path header.
+ * suffixes (the reference's markdown-memory module) — AMI previously emitted a bare relative-path header.
  */
 const PROVENANCE_PROJECT = 'project instructions, checked into the codebase';
 const PROVENANCE_LOCAL = 'private project instructions, not checked in';
@@ -555,7 +555,7 @@ const TWO_STEP_SAVE_GUIDANCE = [
 
 /**
  * Recommended maximum character count for a single memory file (parity with
- * the reference's `MAX_MEMORY_CHARACTER_COUNT`, utils/claudemd.ts). Files over this
+ * the reference's `MAX_MEMORY_CHARACTER_COUNT`, the reference's markdown-memory module). Files over this
  * are not silently clipped — {@link MemoryManager.getLargeMemoryFiles} surfaces
  * them and {@link MemoryManager.getMemoryContext} emits a visible performance
  * warning so the user can split/trim rather than having context silently crowded.
@@ -593,7 +593,7 @@ export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): 
 
 /**
  * Glob exclude-list for instruction (CLAUDE.md / AGENTS.md / *.local.md) files.
- * Parity with the reference's `claudeMdExcludes` setting (utils/claudemd.ts
+ * Parity with the reference's `claudeMdExcludes` setting (the reference's markdown-memory module
  * `isClaudeMdExcluded`): a user can opt specific instruction files OUT of the
  * auto-load (e.g. a vendored `**\/node_modules/**\/CLAUDE.md`). Only USER /
  * PROJECT / LOCAL instruction files are eligible — team-managed `.ami/rules/`
@@ -732,7 +732,7 @@ export function resolveMemoryRelevanceConfig(env: NodeJS.ProcessEnv = process.en
  * read access to via `--add-dir` / `--context-file` (the engine's
  * `allowedReadRoots`), beyond cwd and its parents — also contribute their
  * instructions to the system prompt. Parity with the reference's
- * `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` (utils/claudemd.ts): a granted
+ * `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` (the reference's markdown-memory module): a granted
  * read-access dir does NOT silently inject its instruction file by default — the
  * user must opt in with a truthy value. When OFF, the additional directories still
  * grant tool read-access (unchanged) but add nothing to the prompt.
@@ -872,7 +872,7 @@ export function isAutoMemoryEnabled(
 /**
  * The independently-gateable instruction/memory SOURCE tiers. Parity with the reference
  * Code's per-source `isSettingSourceEnabled('userSettings' | 'projectSettings' |
- * 'localSettings')` gate (utils/claudemd.ts): a host/SDK can disable whole
+ * 'localSettings')` gate (the reference's markdown-memory module): a host/SDK can disable whole
  * instruction sources (e.g. a sandboxed run that must ignore checked-in project
  * instructions, or a run that loads nothing user-global).
  *  - `user`: user-global instructions (`~/.ami`, `~/.claude/CLAUDE.md`).
@@ -1052,7 +1052,7 @@ function worktreeMainRootFromPointer(dir: string): string | null {
 
 /**
  * Detect the NESTED-WORKTREE case that `loadProjectInstructions` must handle for parity
- * with the reference's nested-worktree de-duplication (utils/claudemd.ts): a git worktree
+ * with the reference's nested-worktree de-duplication (the reference's markdown-memory module): a git worktree
  * (`.git` pointer file) that lives physically INSIDE its own main repo tree — e.g. AMI's
  * `<main>/.claude/worktrees/<name>/`. Walking up from `cwd` would stop at the worktree's
  * `.git` and so MISS the main repo's gitignored Local files (CLAUDE.local.md), which only
@@ -1110,7 +1110,7 @@ function normalizeForScanning(text: string): string {
 /**
  * Strip block-level HTML comments (`<!-- … -->`) from instruction/memory
  * content before it is injected into the prompt. Parity with the reference's
- * `stripHtmlComments` (utils/claudemd.ts): authorial notes written as HTML
+ * `stripHtmlComments` (the reference's markdown-memory module): authorial notes written as HTML
  * comments are editorial, not instructions, and should not reach the model.
  *
  * Preserved verbatim (never stripped):
@@ -1173,7 +1173,7 @@ function* prosePlainLines(content: string): Generator<string> {
  * One node in a memory/instruction `@include` hierarchy: the imported file, the
  * file that imported it (`null` for the root entrypoint), and its nesting depth
  * (0 = root). Parity with the reference's `MemoryFileInfo.parent`
- * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked
+ * (the reference's markdown-memory module), which models `@includes` as SEPARATE parent-tracked
  * entries rather than inline substitution.
  */
 export interface MemoryImportNode {
@@ -1287,7 +1287,7 @@ export function parseFrontmatterList(value: string): string[] {
 
 /**
  * Normalize a rule's `paths:` globs the way the reference's `parseFrontmatterPaths`
- * does (utils/claudemd.ts): if EVERY pattern is the match-all `**` (after ignoring a
+ * does (the reference's markdown-memory module): if EVERY pattern is the match-all `**` (after ignoring a
  * trailing `/**`, since `path` and `path/**` denote the same membership), the rule is
  * UNCONDITIONAL — `null` is returned so the caller loads it eagerly instead of routing
  * it through the per-file conditional filter.
@@ -2243,7 +2243,7 @@ export class MemoryManager {
    * Build the `@include` hierarchy rooted at `filePath` as a flat, PARENT-BEFORE-CHILD
    * (pre-order DFS) list of {@link MemoryImportNode} — each tagged with the file that
    * imported it and its nesting depth. Parity with the reference's `processMemoryFile`
-   * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked entries
+   * (the reference's markdown-memory module), which models `@includes` as SEPARATE parent-tracked entries
    * (main file first, then its imports) rather than AMI's inline substitution — giving
    * an OBSERVABLE import graph with per-file provenance (surfaced via `/memory`) without
    * changing what the model is injected. Uses the SAME security-cleared resolver
@@ -2320,7 +2320,7 @@ export class MemoryManager {
     const projectEnabled = isMemorySourceEnabled('project');
     const localEnabled = isMemorySourceEnabled('local');
 
-    // Nested-worktree de-duplication (parity: the reference utils/claudemd.ts): when cwd
+    // Nested-worktree de-duplication (parity: the reference the reference's markdown-memory module): when cwd
     // is a git worktree nested inside its own main repo, the plain upward walk stops at
     // the worktree's `.git` and MISSES the main repo's gitignored Local files. Once the
     // walk passes the worktree root we continue up to the canonical main root in a
@@ -2684,7 +2684,7 @@ export class MemoryManager {
   /**
    * Return the stored memory files whose raw content exceeds the recommended
    * {@link MAX_MEMORY_CHARACTER_COUNT} limit. Parity with the reference's
-   * `getLargeMemoryFiles` (utils/claudemd.ts): an oversized memory file is
+   * `getLargeMemoryFiles` (the reference's markdown-memory module): an oversized memory file is
    * SURFACED (see {@link getMemoryContext}) rather than silently clipped, so the
    * user can split or trim it before it degrades performance / crowds the context
    * window. Scans the memory directory recursively (same traversal as
@@ -3630,7 +3630,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Is `absPath` a MEMORY FILE (a `.md` inside the auto-memory tree)? Parity with
-   * the reference's `isMemoryFilePath` (utils/claudemd.ts): recognizes a path as a
+   * the reference's `isMemoryFilePath` (the reference's markdown-memory module): recognizes a path as a
    * memory file so an edit to it can trigger a memory-section refresh. Narrows
    * {@link isMemoryPath} to markdown so a sibling non-memory artifact in the dir
    * is not misclassified.
@@ -4397,7 +4397,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * pass covering managed/project/local/user/automem/team) so the summary can never
    * diverge from what is actually loaded, then emits a no-PII `memory_load_summary`
    * diagnostic (parity with the reference's `memory_files_completed` /
-   * `tengu_claudemd__initial_load` events, utils/claudemd.ts:L1014-L1040) for machine
+   * `tengu_claudemd__initial_load` events, the reference's markdown-memory module:L1014-L1040) for machine
    * monitoring. The returned {@link MemoryLoadSummary} is rendered by `/doctor` so the
    * user can see the context cost of what memory contributes each turn.
    */

@@ -3,7 +3,7 @@
  *
  * Parity gaps closed:
  *   - `@include resolved into SEPARATE file entries (parent-before-child) with per-file
- *     parent tracking` (Claude Code `processMemoryFile`, utils/claudemd.ts): AMI inlines
+ *     parent tracking` (Claude Code `processMemoryFile`, the reference's markdown-memory module): AMI inlines
  *     imports into the prompt (kept — superset), and now ALSO exposes the import graph as
  *     an observable, parent-tracked, pre-order (parent-before-child) list via
  *     `MemoryManager.buildImportGraph`.

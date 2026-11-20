@@ -3,14 +3,14 @@
  *
  * Gaps implemented (see plannings/parity/gaps.jsonl):
  *  - "Missed-task notification wording with ask-before-run affordance"
- *    (claudeRef: src/utils/cronScheduler.ts:L533-565 — buildMissedTaskNotification).
+ *    (upstreamRef: src/utils/cronScheduler.ts:L533-565 — buildMissedTaskNotification).
  *  - "Missed scheduled-task notification asks user to confirm before executing"
- *    (claudeRef: src/entrypoints/agentSdkTypes.ts:L358-365).
+ *    (upstreamRef: src/entrypoints/agentSdkTypes.ts:L358-365).
  *  - "Missed one-shot durable task catch-up on launch" + "Startup missed-task
  *    surfacing: one-shot-only filter, delete-before-notify"
- *    (claudeRef: src/utils/cronScheduler.ts:L164-167,L192-228 — load(initial)).
+ *    (upstreamRef: src/utils/cronScheduler.ts:L164-167,L192-228 — load(initial)).
  *  - "Fence length computed to exceed any backtick run in the prompt"
- *    (claudeRef: src/utils/cronScheduler.ts:L551-562 — content-derived fence via fenceFor).
+ *    (upstreamRef: src/utils/cronScheduler.ts:L551-562 — content-derived fence via fenceFor).
  */
 
 import { describe, it, beforeEach } from 'node:test';

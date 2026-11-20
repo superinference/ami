@@ -9,7 +9,7 @@
  *      `resolveExternalMemoryImportConsent` + the `resolveAtImports` approval branch.
  *
  *   2. Nested-worktree de-duplication of checked-in Project memory (parity: the reference
- *      Code utils/claudemd.ts): from a worktree nested inside its own main repo, the
+ *      Code the reference's markdown-memory module): from a worktree nested inside its own main repo, the
  *      walk continues past the worktree root to load the main repo's gitignored Local
  *      files while SKIPPING the main repo's checked-in Project files.
  *
