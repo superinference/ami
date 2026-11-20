@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { workflowTool } from '../src/tools/workflow';
+import { workflowTool, persistWorkflowRun, listWorkflowRuns, saveWorkflowScript } from '../src/tools/workflow';
 import { projectStateDir } from '../src/reference-journal';
 import { DISABLE_BACKGROUND_TASKS_ENV } from '../src/tools/tool-gates';
 
@@ -225,5 +225,38 @@ return 'ok'`;
     assert.ok(fs.existsSync(outPath));
     assert.match(fs.readFileSync(outPath, 'utf-8'), /Workflow 'outfile' completed[\s\S]*Result: 42/);
     void r;
+  });
+});
+
+describe('workflow run enumeration + save helpers (U3)', () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+  const mkcwd = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wf-runs-')); dirs.push(d); return d; };
+
+  it('listWorkflowRuns returns [] when no runs dir exists', () => {
+    assert.deepEqual(listWorkflowRuns(mkcwd()), []);
+  });
+
+  it('listWorkflowRuns enumerates persisted runs newest-first with runId + script', () => {
+    const cwd = mkcwd();
+    persistWorkflowRun(cwd, 'run-old', { script: 'A', meta: { name: 'a', description: 'd' }, createdAt: '2026-01-01T00:00:00Z' });
+    persistWorkflowRun(cwd, 'run-new', { script: 'B', meta: { name: 'b', description: 'd' }, createdAt: '2026-06-01T00:00:00Z' });
+    const runs = listWorkflowRuns(cwd);
+    assert.equal(runs.length, 2);
+    assert.equal(runs[0].runId, 'run-new');
+    assert.equal(runs[0].script, 'B');
+    assert.equal(runs[1].runId, 'run-old');
+  });
+
+  it('saveWorkflowScript writes .ami/workflows/<name>.js and sanitizes the name', () => {
+    const cwd = mkcwd();
+    const res = saveWorkflowScript(cwd, 'my cool/flow', "export const meta = { name: 'x', description: 'd' }\nreturn 1");
+    assert.equal(res.name, 'my_cool_flow');
+    assert.ok(res.path.endsWith(path.join('.ami', 'workflows', 'my_cool_flow.js')));
+    assert.match(fs.readFileSync(res.path, 'utf-8'), /export const meta/);
+  });
+
+  it('saveWorkflowScript rejects an empty/invalid name', () => {
+    assert.throws(() => saveWorkflowScript(mkcwd(), '///', 'x'), /non-empty workflow name/);
   });
 });

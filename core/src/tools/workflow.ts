@@ -103,6 +103,48 @@ export function loadWorkflowRun(cwd: string, runId: string): WorkflowRunRecord |
   }
 }
 
+/** A persisted workflow run record with its id attached (for enumeration). */
+export interface WorkflowRunListing extends WorkflowRunRecord {
+  runId: string;
+}
+
+/** Enumerate all persisted (resumable, runId-tagged) workflow runs, most-recent
+ *  first. Powers `/flows` "recent/saved runs". Returns [] when the runs dir is
+ *  absent / unreadable, and skips any malformed record (best-effort). */
+export function listWorkflowRuns(cwd: string): WorkflowRunListing[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(workflowRunsDir(cwd)).filter(f => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const runs: WorkflowRunListing[] = [];
+  for (const f of files) {
+    const runId = f.replace(/\.json$/, '');
+    const rec = loadWorkflowRun(cwd, runId);
+    if (rec) runs.push({ ...rec, runId });
+  }
+  // Newest first by createdAt (ISO strings sort lexicographically); ties keep order.
+  runs.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  return runs;
+}
+
+/** Save a workflow SCRIPT to `.ami/workflows/<name>.js` so it can be relaunched by
+ *  `name` later (the reference's "/flows to monitor and SAVE"). The name is reduced
+ *  to a single safe path segment so it can never escape the workflows dir. Returns
+ *  the absolute path written. Throws on an empty/invalid name. */
+export function saveWorkflowScript(cwd: string, name: string, script: string): { path: string; name: string } {
+  const safe = sanitizeWorkflowRunId(name).replace(/^_+|_+$/g, '');
+  if (!safe) throw new Error('A non-empty workflow name is required.');
+  const dir = path.join(cwd, '.ami', 'workflows');
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, `${safe}.js`);
+  // O_NOFOLLOW-safe write (same hardening as task output) so a planted symlink at
+  // the destination cannot redirect the write outside the workflows dir.
+  writeTaskOutputNoFollow(dest, script);
+  return { path: dest, name: safe };
+}
+
 export const workflowTool: ToolDefinition = {
   name: 'workflow',
   // PARITY (additive): declarative per-tool gate for the workflow-scripts subsystem.
