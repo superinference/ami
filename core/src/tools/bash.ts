@@ -1407,7 +1407,9 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   // for bare-name lookups while every system binary still resolves. Set CLAUDE_SKILL_DIR
   // (not SKILL_DIR, which is the same value) is the trigger. REGRESSION LOCK: if a skill is
   // active and `<skillDir>/scripts` is NOT on PATH, imported-skill helpers break again.
-  const activeSkillDir = extra?.CLAUDE_SKILL_DIR;
+  // AMI_SKILL_DIR is the canonical var AMI exports; CLAUDE_SKILL_DIR is the compat alias
+  // for imported Claude-Code skills (both point at the same dir).
+  const activeSkillDir = extra?.AMI_SKILL_DIR ?? extra?.CLAUDE_SKILL_DIR;
   if (activeSkillDir) {
     const skillPathEntries = [path.join(activeSkillDir, 'scripts'), activeSkillDir].join(path.delimiter);
     env.PATH = env.PATH ? skillPathEntries + path.delimiter + env.PATH : skillPathEntries;

@@ -51,14 +51,24 @@ after(() => {
 });
 
 describe('ui#33 — skill helper resolvable by bare name from any cwd', () => {
-  it('runs a bare-name helper shipped under <skillDir>/scripts when the skill is active', async () => {
+  it('runs a bare-name helper via the canonical AMI_SKILL_DIR when the skill is active', async () => {
     if (process.platform === 'win32') return; // POSIX helper fixture
     const res = await bashTool.execute(
       { command: 'myskillhelper restyle' },
-      ctx({ skillEnv: { CLAUDE_SKILL_DIR: skillDir, SKILL_DIR: skillDir } }),
+      ctx({ skillEnv: { AMI_SKILL_DIR: skillDir, SKILL_DIR: skillDir } }),
     );
     assert.equal(res.isError, false, `expected the skill helper to resolve from PATH, got: ${res.output}`);
     assert.match(res.output, new RegExp(`${MARKER} restyle`));
+  });
+
+  it('also resolves via the CLAUDE_SKILL_DIR compat alias (imported Claude-Code skills)', async () => {
+    if (process.platform === 'win32') return;
+    const res = await bashTool.execute(
+      { command: 'myskillhelper' },
+      ctx({ skillEnv: { CLAUDE_SKILL_DIR: skillDir, SKILL_DIR: skillDir } }),
+    );
+    assert.equal(res.isError, false, `CLAUDE_SKILL_DIR alias must still resolve helpers, got: ${res.output}`);
+    assert.match(res.output, new RegExp(MARKER));
   });
 
   it('does NOT resolve the helper when no skill is active (prepend is scoped)', async () => {
