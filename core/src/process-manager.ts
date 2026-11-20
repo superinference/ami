@@ -1,4 +1,6 @@
 import * as child_process from 'child_process';
+import { isTerminalTaskStatus } from './terminal-task-status';
+export { isTerminalTaskStatus } from './terminal-task-status';
 import { projectStateDir } from './reference-journal';
 import { instanceScopedTempName } from './utils/runtime-namespace';
 import * as fs from 'fs';
@@ -276,7 +278,6 @@ export function resolveSpawnCwd(requested: string, fallback: string): { cwd: str
 }
 
 /** Terminal states — a task in one of these will never run again. */
-const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'killed']);
 
 /**
  * ACTIVE states — a task in one of these is in-flight and belongs in the
@@ -291,9 +292,7 @@ const ACTIVE_TASK_STATUSES = new Set<TaskStatus>(['pending', 'running']);
  * injecting messages into dead teammates, evicting finished tasks, and orphan
  * cleanup (mirrors the reference's isTerminalTaskStatus).
  */
-export function isTerminalTaskStatus(status: string | undefined): boolean {
-  return !!status && TERMINAL_TASK_STATUSES.has(status as TaskStatus);
-}
+
 
 /**
  * Whether a task status is ACTIVE (running or pending) — the two-state "in-flight"

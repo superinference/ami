@@ -1,4 +1,4 @@
-import { isGitInvocationReadOnly } from '../permissions';
+import { isGitInvocationReadOnly } from '../git-invocation';
 
 const READ_ONLY_PREFIXES = new Set([
   'ls', 'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'find', 'wc',

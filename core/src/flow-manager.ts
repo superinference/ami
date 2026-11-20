@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { toAgentId } from './types';
-import { isTerminalTaskStatus } from './process-manager';
+import { isTerminalTaskStatus } from './terminal-task-status';
 
 export interface FlowInfo {
   flowId: string;

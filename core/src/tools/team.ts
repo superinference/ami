@@ -5,7 +5,7 @@ import { withFileLock } from '../utils/file-lock';
 import { TEAM_LEAD_NAME, purgeMailbox } from './send-message';
 import { PERMISSION_MODES, normalizePermissionMode, PermissionMode, PermissionRule } from '../permissions';
 import { unassignTeammateTasks, setTaskPersistPath, deleteTaskList } from './task-tracker';
-import { sanitizeAgentName } from './task';
+import { sanitizeAgentName } from './agent-name';
 import { log as coreLog } from '../logger';
 import { gitExec } from '../worktree-manager';
 import { isTeammatesEnabled } from './tool-gates';

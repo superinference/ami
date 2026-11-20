@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import { sanitizeAgentName } from './agent-name';
+export { sanitizeAgentName, AGENT_NAME_RESERVED_CHARS } from './agent-name';
 import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -543,7 +545,6 @@ export function uniqueAgentName(
 /** Routing-significant characters that must never appear in an agent name: `@`
  *  is the reserved `agentName@teamName` identity separator and `*` is the
  *  send_message broadcast wildcard. */
-const AGENT_NAME_RESERVED_CHARS = /[@*]/g;
 
 /**
  * Sanitize a caller-supplied agent `name` so it is safe to use as a routing /
@@ -557,12 +558,7 @@ const AGENT_NAME_RESERVED_CHARS = /[@*]/g;
  * empty string only when the input was ENTIRELY reserved characters, so callers
  * can fall back to no-name rather than register a degenerate key.
  */
-export function sanitizeAgentName(name: string): string {
-  return name
-    .replace(AGENT_NAME_RESERVED_CHARS, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
+
 
 const DEFAULT_MAX_AGENT_DEPTH = 5;
 export const DEFAULT_MAX_AGENTS_PER_SESSION = 50;
