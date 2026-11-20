@@ -591,7 +591,7 @@ export const workflowTool: ToolDefinition = {
     // (detached) paths so the result wording — agents, tokens, logs, result, resume
     // hint — is identical regardless of how the run was launched (no semantic
     // duplication between the two paths).
-    const runWorkflow = async (): Promise<string> => {
+    const runWorkflow = async (progressTaskId?: string): Promise<string> => {
       // Opt-in resume cache (B2): keyed per run/resume id, else per resumeKey,
       // under a contained .cache subdir (segment sanitized to block traversal).
       const cacheNamespace = effectiveRunId
@@ -608,6 +608,27 @@ export const workflowTool: ToolDefinition = {
       // duration; we format one summary line per completed agent and surface them
       // in the tool output so the TUI renders what each spawned agent did.
       const agentSummaries: string[] = [];
+      // U2 live progress: for a BACKGROUND run, enrich the workflow's own tracked
+      // entry with the current phase, running agent counts, and aggregate token/tool
+      // totals as the runtime emits them — so /flows and the progress tree render
+      // live progress. No new EngineEvent: the TUI polls this entry like any task
+      // (reuses the existing progress-summary/token channels — no duplication).
+      let agentsStarted = 0;
+      let agentsCompleted = 0;
+      let currentPhase: string | undefined;
+      const liveSummary = (): string => {
+        const phase = currentPhase ? `${currentPhase} · ` : '';
+        return `${phase}${agentsCompleted}/${agentsStarted} agents`.slice(0, 80);
+      };
+      const pushLiveProgress = (): void => {
+        if (progressTaskId && pm) {
+          pm.updateEntry(progressTaskId, {
+            progressSummary: liveSummary(),
+            tokenCount: totalAgentTokens,
+            toolCount: totalToolUses,
+          });
+        }
+      };
       const result = await executeWorkflow(script, agentHandler, {
         args: input.args,
         abortSignal: runAbortSignal,
@@ -615,14 +636,21 @@ export const workflowTool: ToolDefinition = {
         maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
         cache,
         // Capture the live runtime so a per-agent task_kill retry/skip can recover
-        // one wedged agent mid-run (parity: onRetryAgent / onSkipAgent), and
-        // subscribe to agent-complete for the per-agent completion summaries.
+        // one wedged agent mid-run (parity: onRetryAgent / onSkipAgent), subscribe
+        // to agent-complete for the per-agent completion summaries, and (background
+        // run only) drive the run entry's live phase/agent-count progress.
         onRuntime: (rt) => {
           wfRuntime = rt;
           rt.on('agent-complete', (e: { label?: string; toolUseCount?: number; tokenCount?: number; durationMs?: number }) => {
             const prefix = e.label ? `${e.label}: ` : '';
             agentSummaries.push(`${prefix}${formatAgentCompletion(e)}`);
+            agentsCompleted++;
+            pushLiveProgress();
           });
+          if (progressTaskId && pm) {
+            rt.on('agent-start', () => { agentsStarted++; pushLiveProgress(); });
+            rt.on('phase', (title: string) => { if (typeof title === 'string') currentPhase = title; pushLiveProgress(); });
+          }
         },
       });
 
@@ -689,7 +717,7 @@ export const workflowTool: ToolDefinition = {
       let sawError = false;
       let out = '';
       try {
-        out = await runWorkflow();
+        out = await runWorkflow(wfTaskId);
       } catch (err) {
         sawError = true;
         const message = err instanceof Error ? err.message : String(err);

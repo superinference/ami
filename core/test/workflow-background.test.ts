@@ -186,6 +186,32 @@ describe('workflowTool — background deploy (U1)', () => {
     assert.equal(calls.completions[0].exitCode, 1);
   });
 
+  it('drives LIVE progress (phase + agent counts) onto the workflow entry (U2)', async () => {
+    const cwd = mkcwd();
+    const { pm, calls } = makeProcessManager();
+    const script = `export const meta = { name: 'prog-wf', description: 'd' }
+phase('Analyze')
+await parallel([() => agent('a', { label: 'a' }), () => agent('b', { label: 'b' })])
+return 'ok'`;
+
+    const r = await workflowTool.execute!({ script }, baseCtx(cwd, pm, instantEngineFactory()));
+    assert.match(r.output, /started in the background/);
+    const wfEntry = calls.registered.find(e => e.opts.kind === 'workflow')!;
+
+    await waitFor(() => calls.completions.length > 0);
+    // At least one live progress update for the workflow entry carried the current
+    // phase and an N/M agent count (the shape the /flows tree renders).
+    const wfUpdates = calls.updates.filter(u => u.taskId === wfEntry.taskId && u.updates.progressSummary);
+    assert.ok(wfUpdates.length > 0, 'expected live progress updates on the workflow entry');
+    assert.ok(
+      wfUpdates.some(u => /Analyze · \d+\/\d+ agents/.test(u.updates.progressSummary)),
+      `expected a "Analyze · N/M agents" progress summary, got: ${wfUpdates.map(u => u.updates.progressSummary).join(' | ')}`,
+    );
+    // The final progress reflects both agents completed.
+    const last = wfUpdates[wfUpdates.length - 1].updates.progressSummary;
+    assert.match(last, /2\/2 agents/);
+  });
+
   it('writes the run output to the workflow task output file', async () => {
     const cwd = mkcwd();
     const { pm, calls } = makeProcessManager();
