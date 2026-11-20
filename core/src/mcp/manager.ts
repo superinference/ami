@@ -417,7 +417,8 @@ export function isTransientConnectError(err: unknown): boolean {
  * loaded; a `warning` problem is recoverable (the server still loads, e.g. an unset
  * env var or the Windows npx-wrapper footgun).
  */
-export type McpConfigSeverity = 'fatal' | 'warning';
+export const MCP_CONFIG_SEVERITYS = ['fatal', 'warning'] as const;
+export type McpConfigSeverity = (typeof MCP_CONFIG_SEVERITYS)[number];
 
 /**
  * A fatal MCP config diagnostic: a config file that exists but could not be parsed.

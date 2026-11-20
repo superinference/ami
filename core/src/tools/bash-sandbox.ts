@@ -211,7 +211,8 @@ let _wslVersion: 'none' | 'wsl1' | 'wsl2' | null = null;
 
 /** The WSL (Windows Subsystem for Linux) generation, which decides whether the
  *  host namespace sandbox can run at all. */
-export type WslVersion = 'none' | 'wsl1' | 'wsl2';
+export const WSL_VERSIONS = ['none', 'wsl1', 'wsl2'] as const;
+export type WslVersion = (typeof WSL_VERSIONS)[number];
 
 /** Seam over `os.release()` so the WSL-generation probe is testable without a
  *  real WSL1/WSL2 kernel (the `os` namespace import is frozen and cannot be

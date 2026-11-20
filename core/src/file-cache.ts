@@ -51,7 +51,8 @@ export const MAX_CONTENT_HASH_SIZE = 100 * 1024; // 100 KB
  *                 a linter/formatter that rewrote the file in place.
  * - `missing`   — the file no longer exists on disk (deleted/moved since the read).
  */
-export type FileChangeReason = 'unchanged' | 'mtime' | 'content' | 'missing';
+export const FILE_CHANGE_REASONS = ['unchanged', 'mtime', 'content', 'missing'] as const;
+export type FileChangeReason = (typeof FILE_CHANGE_REASONS)[number];
 
 /** Discriminated freshness result — see {@link FileCache.describeChange}. */
 export interface FileChangeResult {

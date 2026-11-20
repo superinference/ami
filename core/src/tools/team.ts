@@ -182,9 +182,9 @@ function sanitizeTeamName(name: string): string | null {
  * `in-process` runs a teammate inside the same Node process with an isolated
  * context. Persisted per-member so a resumed session knows how each teammate runs.
  */
-export type BackendType = 'tmux' | 'iterm2' | 'in-process';
+export type BackendType = (typeof BACKEND_TYPES)[number];
 
-const BACKEND_TYPES: readonly BackendType[] = ['tmux', 'iterm2', 'in-process'];
+export const BACKEND_TYPES = ['tmux', 'iterm2', 'in-process'] as const;
 
 /**
  * Type guard for a valid {@link BackendType} (parity: the reference validates persisted

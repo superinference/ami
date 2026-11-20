@@ -172,7 +172,8 @@ export function resolveBedrockModelId(
 }
 
 /** What a Bedrock auth/config env knob controls. */
-export type BedrockAuthAffordanceKind = 'auth' | 'endpoint' | 'region' | 'model';
+export const BEDROCK_AUTH_AFFORDANCE_KINDS = ['auth', 'endpoint', 'region', 'model'] as const;
+export type BedrockAuthAffordanceKind = (typeof BEDROCK_AUTH_AFFORDANCE_KINDS)[number];
 
 /** One surfaced Bedrock auth/config affordance (env var + what it does). */
 export interface BedrockAuthAffordance {

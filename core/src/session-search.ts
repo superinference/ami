@@ -82,7 +82,8 @@ export const DATE_TIE_THRESHOLD_MS = 60 * 1000; // 1 minute
  *   only WITHIN {@link DATE_TIE_THRESHOLD_MS}. Parity with the reference
  *   LogSelector deep-search ordering. Exposed via `/search --recent`.
  */
-export type SearchOrdering = 'relevance' | 'recency';
+export const SEARCH_ORDERINGS = ['relevance', 'recency'] as const;
+export type SearchOrdering = (typeof SEARCH_ORDERINGS)[number];
 
 /**
  * @public Step-by-step diagnostic trace of one search pass, mirroring the
@@ -696,7 +697,8 @@ export function searchSessions(
  *   find overlay navigates with next/prev (`n`/`N`), where a match's place in the
  *   conversation, not its score, is what the user steps through.
  */
-export type TranscriptOrdering = 'relevance' | 'position';
+export const TRANSCRIPT_ORDERINGS = ['relevance', 'position'] as const;
+export type TranscriptOrdering = (typeof TRANSCRIPT_ORDERINGS)[number];
 
 /**
  * @public One hit from {@link searchTranscript}: the matched message's position in

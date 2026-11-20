@@ -45,21 +45,12 @@ import { memoizeWithLRU } from '../utils/windows-paths';
 // ---------------------------------------------------------------------------
 
 /** AST element type for pipeline elements (CommandBaseAst derivatives). */
-export type PipelineElementType =
-  | 'CommandAst'
-  | 'CommandExpressionAst'
-  | 'ParenExpressionAst';
+export const PIPELINE_ELEMENT_TYPES = ['CommandAst', 'CommandExpressionAst', 'ParenExpressionAst'] as const;
+export type PipelineElementType = (typeof PIPELINE_ELEMENT_TYPES)[number];
 
 /** AST node type for individual command elements (arguments, expressions). */
-export type CommandElementType =
-  | 'ScriptBlock'
-  | 'SubExpression'
-  | 'ExpandableString'
-  | 'MemberInvocation'
-  | 'Variable'
-  | 'StringConstant'
-  | 'Parameter'
-  | 'Other';
+export const COMMAND_ELEMENT_TYPES = ['ScriptBlock', 'SubExpression', 'ExpandableString', 'MemberInvocation', 'Variable', 'StringConstant', 'Parameter', 'Other'] as const;
+export type CommandElementType = (typeof COMMAND_ELEMENT_TYPES)[number];
 
 /** A child node of a command element (one level deep; colon-bound params). */
 export type CommandElementChild = {
@@ -68,32 +59,12 @@ export type CommandElementChild = {
 };
 
 /** AST statement type (StatementAst derivatives). */
-export type StatementType =
-  | 'PipelineAst'
-  | 'PipelineChainAst'
-  | 'AssignmentStatementAst'
-  | 'IfStatementAst'
-  | 'ForStatementAst'
-  | 'ForEachStatementAst'
-  | 'WhileStatementAst'
-  | 'DoWhileStatementAst'
-  | 'DoUntilStatementAst'
-  | 'SwitchStatementAst'
-  | 'TryStatementAst'
-  | 'TrapStatementAst'
-  | 'FunctionDefinitionAst'
-  | 'DataStatementAst'
-  | 'UnknownStatementAst';
+export const STATEMENT_TYPES = ['PipelineAst', 'PipelineChainAst', 'AssignmentStatementAst', 'IfStatementAst', 'ForStatementAst', 'ForEachStatementAst', 'WhileStatementAst', 'DoWhileStatementAst', 'DoUntilStatementAst', 'SwitchStatementAst', 'TryStatementAst', 'TrapStatementAst', 'FunctionDefinitionAst', 'DataStatementAst', 'UnknownStatementAst'] as const;
+export type StatementType = (typeof STATEMENT_TYPES)[number];
 
 /** A redirection operator found in the command. */
-export type RedirectionOperator =
-  | '>'
-  | '>>'
-  | '2>'
-  | '2>>'
-  | '*>'
-  | '*>>'
-  | '2>&1';
+export const REDIRECTION_OPERATORS = ['>', '>>', '2>', '2>>', '*>', '*>>', '2>&1'] as const;
+export type RedirectionOperator = (typeof REDIRECTION_OPERATORS)[number];
 
 /** A command invocation within a pipeline segment. */
 export type ParsedCommandElement = {

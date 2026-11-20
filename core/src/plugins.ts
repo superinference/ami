@@ -2960,7 +2960,8 @@ export function sanitizePluginIdSegment(str: string): string {
 
 /** Prefixes a deterministic plugin id may carry (the reference parity: local unpacked vs
  *  packaged `.dxt`/`.mcpb` bundle). */
-export type PluginIdPrefix = 'local.unpacked' | 'local.dxt';
+export const PLUGIN_ID_PREFIXS = ['local.unpacked', 'local.dxt'] as const;
+export type PluginIdPrefix = (typeof PLUGIN_ID_PREFIXS)[number];
 
 /**
  * Generate a deterministic plugin/extension id from an author name and a plugin
@@ -3629,7 +3630,8 @@ export function describePluginConsent(capabilities: readonly PluginCapability[])
 }
 
 /** Why a {@link gatePluginHostCall} refused a call. */
-export type PluginGateErrorCode = 'unknown_method' | 'capability_denied' | 'consent_required';
+export const PLUGIN_GATE_ERROR_CODES = ['unknown_method', 'capability_denied', 'consent_required'] as const;
+export type PluginGateErrorCode = (typeof PLUGIN_GATE_ERROR_CODES)[number];
 
 /** The decision of the capability gate: granted, or denied with a code + message. */
 export type PluginGateDecision =

@@ -12,14 +12,8 @@ import { stripBom } from './config';
  * positive tag being worth exactly the same. Every value maps to a signed weight
  * (see {@link FEEDBACK_WEIGHT}) accumulated into {@link SkillbookEntry.score}.
  */
-export type SkillbookFeedback =
-  | 'harmful'
-  | 'unhelpful'
-  | 'neutral'
-  | 'slightly_helpful'
-  | 'helpful'
-  | 'very_helpful'
-  | 'essential';
+export const SKILLBOOK_FEEDBACKS = ['harmful', 'unhelpful', 'neutral', 'slightly_helpful', 'helpful', 'very_helpful', 'essential'] as const;
+export type SkillbookFeedback = (typeof SKILLBOOK_FEEDBACKS)[number];
 
 /** Signed weight each feedback grade contributes to {@link SkillbookEntry.score}. */
 const FEEDBACK_WEIGHT: Record<SkillbookFeedback, number> = {

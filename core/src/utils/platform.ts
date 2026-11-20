@@ -36,7 +36,8 @@ import { log } from '../logger';
  * The normalized host-platform classes AMI reasons about. Mirrors the reference's
  * `Platform` type exactly.
  */
-export type Platform = 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown';
+export const PLATFORMS = ['macos', 'windows', 'wsl', 'linux', 'unknown'] as const;
+export type Platform = (typeof PLATFORMS)[number];
 
 /**
  * The allow-list of host platforms AMI officially supports — the single building

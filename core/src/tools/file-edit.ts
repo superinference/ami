@@ -435,7 +435,8 @@ interface SequentialEdit {
  * the reference's IDEDiffConfig `editMode`, stamped `'single'` by
  * createSingleEditDiffConfig and `'multiple'` for an `edits[]` batch).
  */
-export type EditMode = 'single' | 'multiple';
+export const EDIT_MODES = ['single', 'multiple'] as const;
+export type EditMode = (typeof EDIT_MODES)[number];
 
 /**
  * Build the structured result metadata every SUCCESSFUL file_edit emits (parity:

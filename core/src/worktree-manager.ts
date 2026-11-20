@@ -50,7 +50,8 @@ const GIT_CMD_TIMEOUT_MS = 15_000;
  */
 export const GIT_READ_CMD_TIMEOUT_MS = 120_000;
 
-export type GitCommandClass = 'network' | 'read' | 'other';
+export const GIT_COMMAND_CLASS = ['network', 'read', 'other'] as const;
+export type GitCommandClass = (typeof GIT_COMMAND_CLASS)[number];
 
 // Global options that take a VALUE and so precede the subcommand (their value must
 // be skipped when scanning for the subcommand): `git -C <dir> status`, `git -c k=v …`.

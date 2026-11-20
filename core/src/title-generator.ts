@@ -36,18 +36,15 @@ export const AUX_QUERY_TIMEOUT_MS = 30000;
  *  `tool_use_summary` tags the LLM-written past-tense label describing what a batch
  *  of completed tool calls accomplished (parity: the reference's
  *  `querySource: 'tool_use_summary_generation'`, toolUseSummaryGenerator.ts). */
-export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary' | 'tool_use_summary' | 'issue_title';
+export const AUX_QUERY_SOURCES = ['session_title', 'branch_name', 'compaction_summary', 'tool_use_summary', 'issue_title'] as const;
+export type AuxQuerySource = (typeof AUX_QUERY_SOURCES)[number];
 
 /** Why a background query yielded no usable model output. Distinguishes an OUTER
  *  failure (stream error / abort / timeout / exception) from a two-tier INNER
  *  `unparseable` failure where the query returned but produced nothing usable —
  *  mirroring the reference's parse-error vs outer-error split (apiQueryHookHelper.ts:126,137). */
-export type AuxQueryErrorReason =
-  | 'stream_error'
-  | 'aborted'
-  | 'timeout'
-  | 'exception'
-  | 'unparseable';
+export const AUX_QUERY_ERROR_REASONS = ['stream_error', 'aborted', 'timeout', 'exception', 'unparseable'] as const;
+export type AuxQueryErrorReason = (typeof AUX_QUERY_ERROR_REASONS)[number];
 
 export interface AuxQuerySuccess {
   type: 'success';

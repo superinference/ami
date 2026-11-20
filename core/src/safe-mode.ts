@@ -349,7 +349,8 @@ export function isPartiallyBlocked(resource: BlockedResource): boolean {
  *  `restricted` (partially honored), or `allowed` (unaffected). Single static
  *  classifier shared by {@link SafeModeGuard} and disclosure consumers so the
  *  partial tier is actually enforced/surfaced, not merely declared. */
-export type ResourceTier = 'blocked' | 'restricted' | 'allowed';
+export const RESOURCE_TIERS = ['blocked', 'restricted', 'allowed'] as const;
+export type ResourceTier = (typeof RESOURCE_TIERS)[number];
 
 export function resourceTier(resource: BlockedResource): ResourceTier {
   if (isBlockedInSafeMode(resource)) return 'blocked';

@@ -295,7 +295,8 @@ export function getRepoRemoteHash(cwd: string): string | null {
  * and `none` both fall to the strict side, matching the reference's "only a confirmed
  * internal repo relaxes the guard" rule.
  */
-export type RepoRemoteClass = 'owned' | 'external' | 'none';
+export const REPO_REMOTE_CLASS = ['owned', 'external', 'none'] as const;
+export type RepoRemoteClass = (typeof REPO_REMOTE_CLASS)[number];
 
 export function classifyRepoRemote(
   cwd: string,

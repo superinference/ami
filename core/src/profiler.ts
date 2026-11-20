@@ -62,7 +62,8 @@ export interface SlowOperation {
 }
 
 /** Severity of a per-operation bottleneck affordance hint. */
-export type SlowSeverity = 'none' | 'slow' | 'very-slow' | 'bottleneck';
+export const SLOW_SEVERITYS = ['none', 'slow', 'very-slow', 'bottleneck'] as const;
+export type SlowSeverity = (typeof SLOW_SEVERITYS)[number];
 
 /** A UI-agnostic bottleneck affordance hint for one measured operation. */
 export interface SlowWarning {

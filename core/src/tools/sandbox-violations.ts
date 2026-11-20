@@ -61,7 +61,8 @@ export function removeSandboxViolationTags(text: string): string {
 }
 
 /** The class of sandbox boundary that blocked an operation. */
-export type SandboxViolationKind = 'network' | 'filesystem';
+export const SANDBOX_VIOLATION_KINDS = ['network', 'filesystem'] as const;
+export type SandboxViolationKind = (typeof SANDBOX_VIOLATION_KINDS)[number];
 
 /** A single blocked-by-sandbox operation. */
 export interface SandboxViolationEvent {

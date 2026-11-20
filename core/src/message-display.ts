@@ -152,7 +152,8 @@ export function deriveToolCallDisplayState(
 // System-message severity display (parity: SystemTextMessage.tsx L200-L239)
 // ---------------------------------------------------------------------------
 
-export type SystemMessageLevel = 'info' | 'warning' | 'error';
+export const SYSTEM_MESSAGE_LEVELS = ['info', 'warning', 'error'] as const;
+export type SystemMessageLevel = (typeof SYSTEM_MESSAGE_LEVELS)[number];
 
 export interface SystemMessageDisplay {
   /** When true the message must not be rendered at all (info-level, non-verbose). */

@@ -35,7 +35,8 @@ import { recordDiagnostic } from './logger';
 export const FAULT_INJECTION_ENV = 'AMI_FAULT_INJECTION';
 
 /** The two recovery regimes a fault exercises. */
-export type FaultKind = 'fatal' | 'transient';
+export const FAULT_KINDS = ['fatal', 'transient'] as const;
+export type FaultKind = (typeof FAULT_KINDS)[number];
 
 /**
  * Default HTTP status per kind. A `transient` fault defaults to 503 (in

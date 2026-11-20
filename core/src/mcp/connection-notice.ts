@@ -27,7 +27,8 @@
 import { plural } from '../utils/string';
 
 /** The user-facing classification of an MCP connection change. */
-export type McpConnectionState = 'lost' | 'recovered' | 'failed';
+export const MCP_CONNECTION_STATES = ['lost', 'recovered', 'failed'] as const;
+export type McpConnectionState = (typeof MCP_CONNECTION_STATES)[number];
 
 /** A single connection-change provenance notice (server attribution + state). */
 export interface McpConnectionChange {

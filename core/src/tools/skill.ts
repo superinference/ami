@@ -72,7 +72,8 @@ type SkillPermissionRule = { tool: string; pattern?: string; action: 'allow' | '
 /** The per-skill permission decision: an EXPLICIT operator rule matched the skill
  *  name, or `undefined` when no `Skill(...)` rule applies (fall through to the
  *  generic skill-tool permission gate, which still enforces the default-ask). */
-export type SkillPermissionDecision = 'allow' | 'deny' | 'ask';
+export const SKILL_PERMISSION_DECISIONS = ['allow', 'deny', 'ask'] as const;
+export type SkillPermissionDecision = (typeof SKILL_PERMISSION_DECISIONS)[number];
 
 /** Does a `Skill(...)` rule's pattern match this skill name? A rule with no
  *  pattern (`{tool:'skill', action:'deny'}`) matches EVERY skill; otherwise the
@@ -182,7 +183,7 @@ export interface SkillToolFilterWarning {
  * and shell/process tools are never read-only, so they can't be auto-classified by
  * the flags alone) — mirroring the reference's hard-coded bucket membership.
  */
-export type ToolCategory = 'read-only' | 'edit' | 'execution' | 'mcp' | 'other';
+import { TOOL_CATEGORYS, type ToolCategory } from './tool-categories';
 
 /** Tools that MUTATE files on disk — the "edit" bucket. */
 const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set(['file_edit', 'file_write', 'notebook_edit']);

@@ -50,12 +50,8 @@ export const PR_SET_DUMPABLE = 4;
  *  - `disabled`     — the opt-out env var was set.
  *  - `unsupported`  — not Linux / no `/proc/self/coredump_filter` (fail-open).
  *  - `failed`       — Linux + filter present but the read/write failed (fail-open). */
-export type ProcessHardeningStatus =
-  | 'applied'
-  | 'already'
-  | 'disabled'
-  | 'unsupported'
-  | 'failed';
+export const PROCESS_HARDENING_STATUS = ['applied', 'already', 'disabled', 'unsupported', 'failed'] as const;
+export type ProcessHardeningStatus = (typeof PROCESS_HARDENING_STATUS)[number];
 
 /** Result of the core-dump-filter measure (measure 1). */
 export interface CoreDumpHardeningResult {
@@ -77,13 +73,8 @@ export interface CoreDumpHardeningResult {
  *  - `no-ffi`      — Linux but the runtime has no libc FFI (plain Node); fail-open.
  *  - `failed`      — prctl was called but returned nonzero; fail-open.
  *  - `error`       — the FFI call threw; fail-open. */
-export type PtraceHardeningStatus =
-  | 'applied'
-  | 'disabled'
-  | 'unsupported'
-  | 'no-ffi'
-  | 'failed'
-  | 'error';
+export const PTRACE_HARDENING_STATUS = ['applied', 'disabled', 'unsupported', 'no-ffi', 'failed', 'error'] as const;
+export type PtraceHardeningStatus = (typeof PTRACE_HARDENING_STATUS)[number];
 
 /** Result of the `prctl(PR_SET_DUMPABLE,0)` live-ptrace block (measure 2). */
 export interface PtraceHardeningResult {

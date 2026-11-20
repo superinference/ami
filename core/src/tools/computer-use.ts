@@ -38,7 +38,8 @@ import { errorMessage } from '../credential-guard';
 // ── Config knobs + coordinate mode (parity: gates.ts) ────────────────────────
 
 /** How model-supplied coordinates are interpreted. Parity: the reference's `CoordinateMode`. */
-export type CoordinateMode = 'pixels' | 'normalized';
+export const COORDINATE_MODES = ['pixels', 'normalized'] as const;
+export type CoordinateMode = (typeof COORDINATE_MODES)[number];
 
 /**
  * Behavioral sub-gates for the computer-use capability. Parity: the reference's

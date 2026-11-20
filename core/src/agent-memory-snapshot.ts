@@ -97,7 +97,8 @@ function getSyncedJsonPath(
 }
 
 /** The three outcomes of a snapshot drift check. */
-export type SnapshotAction = 'none' | 'initialize' | 'prompt-update';
+export const SNAPSHOT_ACTIONS = ['none', 'initialize', 'prompt-update'] as const;
+export type SnapshotAction = (typeof SNAPSHOT_ACTIONS)[number];
 
 /** Result of {@link checkAgentMemorySnapshot}. */
 export interface SnapshotCheck {
@@ -320,10 +321,10 @@ export function saveAgentSyncedMeta(
  *                newer snapshot; a merge PROMPT is produced for the caller to
  *                inject into the agent's input.
  */
-export type SnapshotUpdateResolution = 'merge' | 'keep' | 'replace';
+export type SnapshotUpdateResolution = (typeof SNAPSHOT_UPDATE_RESOLUTIONS)[number];
 
 /** All valid {@link SnapshotUpdateResolution} values (for validation/iteration). */
-export const SNAPSHOT_UPDATE_RESOLUTIONS: readonly SnapshotUpdateResolution[] = [
+export const SNAPSHOT_UPDATE_RESOLUTIONS = [
   'merge',
   'keep',
   'replace',

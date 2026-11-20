@@ -193,7 +193,8 @@ export function suggestSimilarPaths(
 // a misspelled *directory* component, not just a misspelled basename.
 // ---------------------------------------------------------------------------
 
-export type PathSuggestionKind = 'exact-case' | 'typo' | 'missing-dir' | 'none';
+export const PATH_SUGGESTION_KINDS = ['exact-case', 'typo', 'missing-dir', 'none'] as const;
+export type PathSuggestionKind = (typeof PATH_SUGGESTION_KINDS)[number];
 
 export interface PathCorrectionOptions {
   maxResults?: number;

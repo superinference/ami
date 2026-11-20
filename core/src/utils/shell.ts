@@ -674,7 +674,8 @@ function isExecutable(shellPath: string): boolean {
 }
 
 /** The interactive login-shell families AMI can classify from `$SHELL`. */
-export type InteractiveShellType = 'zsh' | 'bash' | 'fish' | 'unknown';
+export const INTERACTIVE_SHELL_TYPES = ['zsh', 'bash', 'fish', 'unknown'] as const;
+export type InteractiveShellType = (typeof INTERACTIVE_SHELL_TYPES)[number];
 
 /**
  * Classify the user's interactive login shell from a shell path (defaults to

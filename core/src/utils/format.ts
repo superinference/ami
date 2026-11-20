@@ -29,7 +29,8 @@ export function formatFileSize(bytes: number): string {
 /** Rendering style for {@link formatRelativeTime}. `narrow` uses AMI's compact
  *  custom units (`3d ago`, `in 2h`); `short`/`long` defer to the localized
  *  `Intl.RelativeTimeFormat` for full-word output (`3 days ago`). */
-export type RelativeTimeStyle = 'narrow' | 'short' | 'long';
+export const RELATIVE_TIME_STYLES = ['narrow', 'short', 'long'] as const;
+export type RelativeTimeStyle = (typeof RELATIVE_TIME_STYLES)[number];
 
 /** Options for {@link formatRelativeTime} / {@link formatRelativeTimeAgo}
  *  (parity with the reference's `RelativeTimeOptions`, utils/format.ts). */

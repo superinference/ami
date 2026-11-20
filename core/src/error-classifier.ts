@@ -1225,7 +1225,8 @@ export function stopFailureErrorClass(error: string | Error | unknown): StopFail
  * JSON problem, not a provider response. Mirrors the network/permissions/config
  * triage the reference performs in `sessionStart.ts` when plugin-hook loading fails.
  */
-export type LoadFailureCategory = 'network' | 'permissions' | 'config' | 'unknown';
+export const LOAD_FAILURE_CATEGORYS = ['network', 'permissions', 'config', 'unknown'] as const;
+export type LoadFailureCategory = (typeof LOAD_FAILURE_CATEGORYS)[number];
 
 export interface LoadFailureGuidance {
   category: LoadFailureCategory;
@@ -1287,12 +1288,8 @@ export function categorizeLoadFailure(error: unknown): LoadFailureGuidance {
  * subprocess error becomes an actionable recovery path instead of an opaque
  * "crashed with exit code N".
  */
-export type SubprocessErrorReason =
-  | 'missing-dependency'
-  | 'permission-denied'
-  | 'api-not-enabled'
-  | 'connection-refused'
-  | 'out-of-memory';
+export const SUBPROCESS_ERROR_REASONS = ['missing-dependency', 'permission-denied', 'api-not-enabled', 'connection-refused', 'out-of-memory'] as const;
+export type SubprocessErrorReason = (typeof SUBPROCESS_ERROR_REASONS)[number];
 
 /** Typed classification of a subprocess failure, returned by {@link classifySubprocessError}. */
 export interface SubprocessErrorClassification {

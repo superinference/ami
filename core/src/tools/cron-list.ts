@@ -20,7 +20,8 @@ function truncatePrompt(prompt: string, max = 100): string {
 }
 
 /** Optional status filter accepted by cron_list. */
-export type CronListStatus = 'all' | 'active' | 'inactive';
+export const CRON_LIST_STATUS = ['all', 'active', 'inactive'] as const;
+export type CronListStatus = (typeof CRON_LIST_STATUS)[number];
 
 export const CRON_LIST_STATUSES: readonly CronListStatus[] = ['all', 'active', 'inactive'];
 

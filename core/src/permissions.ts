@@ -189,7 +189,8 @@ export function isPermissivePermissionMode(mode: PermissionMode | undefined): bo
  * drift from the mode semantics. (In-workspace paths never reach this function —
  * they classify as 'allow' before the boundary check.)
  */
-export type OutOfWorkspacePathDisposition = 'grant' | 'deny' | 'classify';
+export const OUT_OF_WORKSPACE_PATH_DISPOSITIONS = ['grant', 'deny', 'classify'] as const;
+export type OutOfWorkspacePathDisposition = (typeof OUT_OF_WORKSPACE_PATH_DISPOSITIONS)[number];
 export function outOfWorkspacePathDisposition(mode: PermissionMode | undefined): OutOfWorkspacePathDisposition {
   if (mode === 'auto-allow' || mode === 'bypassPermissions') return 'grant';
   if (mode === 'deny-all' || mode === 'plan') return 'deny';
@@ -500,7 +501,8 @@ export function findOverlyBroadBashPermissions(
  *    prompts first (it still "fires", just never silently allows).
  * Mirrors the reference's `ShadowType` (utils/permissions/shadowedRuleDetection.ts).
  */
-export type ShadowType = 'deny' | 'ask';
+export const SHADOW_TYPES = ['deny', 'ask'] as const;
+export type ShadowType = (typeof SHADOW_TYPES)[number];
 
 /**
  * A permission rule that can never fire because a higher-priority rule shadows it,
@@ -715,7 +717,8 @@ export interface PermissionPromptResult {
  * to `'session'`) the scoped session accept would silently start PERSISTING grants
  * to disk (over-grant) — the permissions unit test asserts this mapping exactly.
  */
-export type PermissionGrantTier = 'once' | 'session' | 'always' | 'deny' | 'cancelled';
+export const PERMISSION_GRANT_TIERS = ['once', 'session', 'always', 'deny', 'cancelled'] as const;
+export type PermissionGrantTier = (typeof PERMISSION_GRANT_TIERS)[number];
 
 export function permissionGrantTier(
   action: PermissionPromptResult['action'],
@@ -849,7 +852,8 @@ export function getRuleBehaviorDescription(behavior: string): string {
  * discovery and takes a full tool object — this one keys off the tool NAME alone
  * so it is usable anywhere a permission decision is narrated.
  */
-export type PermissionPromptToolType = 'command' | 'edit' | 'read' | 'tool';
+export const PERMISSION_PROMPT_TOOL_TYPES = ['command', 'edit', 'read', 'tool'] as const;
+export type PermissionPromptToolType = (typeof PERMISSION_PROMPT_TOOL_TYPES)[number];
 
 /**
  * Classify a tool by name into its {@link PermissionPromptToolType} for prompt
@@ -1688,11 +1692,8 @@ export function normalizeCaseForComparison(p: string): string {
  *     validated literal and the real target diverge (a TOCTOU gap `$(...)` already
  *     covers under `shell-expansion`, but backtick substitution has no `$`).
  */
-export type PathExpansionHazard =
-  | 'shell-expansion'
-  | 'tilde-variant'
-  | 'network-path'
-  | 'command-substitution';
+export const PATH_EXPANSION_HAZARDS = ['shell-expansion', 'tilde-variant', 'network-path', 'command-substitution'] as const;
+export type PathExpansionHazard = (typeof PATH_EXPANSION_HAZARDS)[number];
 
 /**
  * Classify a raw (un-expanded) path token for shell-expansion / tilde-variant
@@ -4742,7 +4743,8 @@ function countUnescapedChar(str: string, char: string): number {
 
 /** The three behaviors a permission rule can carry. Mirrors the reference's
  *  `permissionBehavior` enum; identical to {@link PermissionRule.action}. */
-export type PermissionBehavior = 'allow' | 'deny' | 'ask';
+export const PERMISSION_BEHAVIORS = ['allow', 'deny', 'ask'] as const;
+export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number];
 
 /**
  * A structured, declarative mutation of a {@link PermissionManager}'s live rule
@@ -4861,7 +4863,8 @@ export function validatePermissionUpdate(update: unknown): { valid: boolean; err
  * allow rule, and only a non-`read` op targeting the agent's own config folder gets
  * the "allow editing its own settings this session" grant.
  */
-export type FileOperationType = 'read' | 'write' | 'create';
+export const FILE_OPERATION_TYPES = ['read', 'write', 'create'] as const;
+export type FileOperationType = (typeof FILE_OPERATION_TYPES)[number];
 
 /** Read-shaped canonical tools: they access content without mutating the tree. */
 const READ_SHAPED_FILE_TOOLS = new Set(['file_read', 'glob', 'grep', 'list_dir']);
@@ -4907,7 +4910,8 @@ export function resolveFileOperationType(
  * (`~/.ami` | `~/.ami-plugin` | `~/.claude`). Mirrors the reference's `isInClaudeFolder` /
  * `isInGlobalClaudeFolder` scope distinction.
  */
-export type ConfigFolderScope = 'project-config-folder' | 'global-config-folder';
+export const CONFIG_FOLDER_SCOPES = ['project-config-folder', 'global-config-folder'] as const;
+export type ConfigFolderScope = (typeof CONFIG_FOLDER_SCOPES)[number];
 
 /** Directory names that are a genuine AMI *settings root* the agent may self-grant
  *  (NOT the IDE/git dirs in {@link AGENT_CONFIG_DIR_SEGMENTS}, which are not AMI's

@@ -27,13 +27,8 @@ export function deepSortKeys(obj: unknown): unknown {
  * - `project` — shared project settings (`projectSettings`);
  * - `local` — machine-local, un-shared project settings (`localSettings`).
  */
-export type ApprovalScope =
-  | 'once'
-  | 'session'
-  | 'workspace'
-  | 'user'
-  | 'project'
-  | 'local';
+export const APPROVAL_SCOPES = ['once', 'session', 'workspace', 'user', 'project', 'local'] as const;
+export type ApprovalScope = (typeof APPROVAL_SCOPES)[number];
 
 /** Every known scope, used for revoke-all and iteration. */
 const ALL_SCOPES: readonly ApprovalScope[] = [
@@ -56,10 +51,12 @@ const EPHEMERAL_SCOPES: ReadonlySet<ApprovalScope> = new Set<ApprovalScope>([
 ]);
 
 /** @public Whether a remembered decision allows or denies execution. */
-export type ApprovalBehavior = 'allow' | 'deny';
+export const APPROVAL_BEHAVIORS = ['allow', 'deny'] as const;
+export type ApprovalBehavior = (typeof APPROVAL_BEHAVIORS)[number];
 
 /** @public How a scoped (content-based) approval matches a tool parameter. */
-export type ApprovalMatchMode = 'exact' | 'prefix' | 'wildcard';
+export const APPROVAL_MATCH_MODES = ['exact', 'prefix', 'wildcard'] as const;
+export type ApprovalMatchMode = (typeof APPROVAL_MATCH_MODES)[number];
 
 /**
  * @public Describes a content-based (scoped) match against a single tool

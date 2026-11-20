@@ -20,7 +20,8 @@
  */
 
 /** The two escalation tiers an unresponsive episode can reach. */
-export type HangTier = 'stall' | 'hang';
+export const HANG_TIERS = ['stall', 'hang'] as const;
+export type HangTier = (typeof HANG_TIERS)[number];
 
 export type HangWatchdogDetectionLoopConfig = {
   /** Silence beyond this (and ticks still arriving) is a HANG. */

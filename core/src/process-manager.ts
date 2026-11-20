@@ -119,7 +119,8 @@ export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry:
  *   - `shutdown`  → a cooperative graceful shutdown was requested (requestShutdown).
  *   - `idle`      → an agent toggled its idle flag (markIdle).
  */
-export type PmLifecyclePhase = 'spawn' | 'register' | 'start' | 'kill' | 'interrupt' | 'shutdown' | 'idle';
+export const PM_LIFECYCLE_PHASES = ['spawn', 'register', 'start', 'kill', 'interrupt', 'shutdown', 'idle'] as const;
+export type PmLifecyclePhase = (typeof PM_LIFECYCLE_PHASES)[number];
 
 /**
  * GATED diagnostic trace seam for task lifecycle transitions (parity with the reference

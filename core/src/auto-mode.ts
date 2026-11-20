@@ -216,7 +216,8 @@ export function getAutoModeUnavailableNotification(reason: AutoModeUnavailableRe
  * downgrades an auto-approval to a prompt (a HARD deny is a separate permission
  * rule that runs before the classifier).
  */
-export type AutoModeClassifierResolution = 'auto-approve' | 'prompt';
+export const AUTO_MODE_CLASSIFIER_RESOLUTIONS = ['auto-approve', 'prompt'] as const;
+export type AutoModeClassifierResolution = (typeof AUTO_MODE_CLASSIFIER_RESOLUTIONS)[number];
 
 /**
  * Outcome of running the auto-mode security classifier for one tool call. Exactly

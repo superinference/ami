@@ -1933,7 +1933,8 @@ export const JSON_SYNTAX_RECOVERY_HINT =
  * the {@link CONFIG_ENV_TIERS} env-trust tiers, so every provenance-aware surface names
  * the same set of sources. Parity: the reference's `SettingSource` enum.
  */
-export type ConfigSource = 'cli' | 'env' | 'local' | 'project' | 'global' | 'managed';
+export const CONFIG_SOURCES = ['cli', 'env', 'local', 'project', 'global', 'managed'] as const;
+export type ConfigSource = (typeof CONFIG_SOURCES)[number];
 
 /**
  * Human-readable provenance name for each {@link ConfigSource}, so a diagnostic / `/doctor`
@@ -5845,7 +5846,8 @@ export function resetConfigToDefault(filePath: string): ResetConfigResult {
 }
 
 /** Why a {@link updateConfigFile} call did (or did not) persist. */
-export type UpdateConfigReason = 'written' | 'no-change' | 'corrupt';
+export const UPDATE_CONFIG_REASONS = ['written', 'no-change', 'corrupt'] as const;
+export type UpdateConfigReason = (typeof UPDATE_CONFIG_REASONS)[number];
 
 /** Outcome of a guarded functional config update. */
 export interface UpdateConfigResult {

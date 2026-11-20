@@ -6,7 +6,8 @@ import * as fs from 'fs';
  * specific attack vector (null-byte injection, lexical escape, or symlink escape)
  * rather than string-matching a single generic message.
  */
-export type PathTraversalReason = 'null-byte' | 'out-of-base' | 'symlink-escape';
+export const PATH_TRAVERSAL_REASONS = ['null-byte', 'out-of-base', 'symlink-escape'] as const;
+export type PathTraversalReason = (typeof PATH_TRAVERSAL_REASONS)[number];
 
 /**
  * Error thrown by {@link assertPathWithin} when a path fails containment. Extends

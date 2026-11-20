@@ -4,7 +4,8 @@ import * as path from 'path';
 // findings (insecure randomness, cleartext HTTP, weak hashing). 'low' findings
 // are advisory — they flag patterns that are frequently benign but can be
 // security-relevant depending on usage.
-export type SecuritySeverity = 'high' | 'medium' | 'low';
+export const SECURITY_SEVERITYS = ['high', 'medium', 'low'] as const;
+export type SecuritySeverity = (typeof SECURITY_SEVERITYS)[number];
 
 export interface SecurityPattern {
   id: string;

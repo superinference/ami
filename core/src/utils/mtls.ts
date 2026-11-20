@@ -28,7 +28,8 @@ export interface MTLSMaterial {
 }
 
 /** Accepted TLS protocol floors for {@link getSecureTLSConnectOptions}. */
-export type TLSMinVersion = 'TLSv1' | 'TLSv1.1' | 'TLSv1.2' | 'TLSv1.3';
+export const TLSMIN_VERSIONS = ['TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3'] as const;
+export type TLSMinVersion = (typeof TLSMIN_VERSIONS)[number];
 
 export const MTLS_ENV = {
   cert: 'AMI_CLIENT_CERT',

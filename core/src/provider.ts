@@ -3502,7 +3502,8 @@ function promptTokensForFit(
  * Mirrors the reference's `CacheScope` (utils/api.ts). Unset = the default,
  * key-private ephemeral cache.
  */
-export type PromptCacheScope = 'global' | 'org';
+export const PROMPT_CACHE_SCOPES = ['global', 'org'] as const;
+export type PromptCacheScope = (typeof PROMPT_CACHE_SCOPES)[number];
 
 /** Env var that opts a run into a wider cross-session prompt-cache scope. */
 export const PROMPT_CACHE_SCOPE_ENV = 'AMI_PROMPT_CACHE_SCOPE';
@@ -3580,7 +3581,8 @@ export const PROMPT_CACHE_STRATEGY_ENV = 'AMI_PROMPT_CACHE_STRATEGY';
  * Any unrecognized / unset value resolves to `'tool_based'`, so behavior is
  * unchanged unless the operator opts in. Read at call time (toggleable per process).
  */
-export type PromptCacheStrategy = 'tool_based' | 'system_prompt' | 'none';
+export const PROMPT_CACHE_STRATEGYS = ['tool_based', 'system_prompt', 'none'] as const;
+export type PromptCacheStrategy = (typeof PROMPT_CACHE_STRATEGYS)[number];
 export function resolvePromptCacheStrategy(env: NodeJS.ProcessEnv = process.env): PromptCacheStrategy {
   const raw = env[PROMPT_CACHE_STRATEGY_ENV]?.trim().toLowerCase();
   return raw === 'system_prompt' || raw === 'none' ? raw : 'tool_based';

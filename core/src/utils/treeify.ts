@@ -40,7 +40,8 @@ export type TreeNode = {
 };
 
 /** Which element a {@link TreeifyOptions.colorize} call is painting. */
-export type TreeColorRole = 'treeChar' | 'key' | 'value';
+export const TREE_COLOR_ROLES = ['treeChar', 'key', 'value'] as const;
+export type TreeColorRole = (typeof TREE_COLOR_ROLES)[number];
 
 export type TreeifyOptions = {
   /** Render leaf values (default true). When false only keys/structure are shown. */

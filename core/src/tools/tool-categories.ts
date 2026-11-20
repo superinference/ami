@@ -6,7 +6,8 @@
  * (tool discovery) so the model sees each discovered tool's category.
  */
 
-export type ToolCategory = 'read-only' | 'edit' | 'execution' | 'mcp' | 'other';
+export const TOOL_CATEGORYS = ['read-only', 'edit', 'execution', 'mcp', 'other'] as const;
+export type ToolCategory = (typeof TOOL_CATEGORYS)[number];
 
 /** Human-readable label for each category (parity with the reference's bucket names). */
 export const TOOL_CATEGORY_LABELS: Record<ToolCategory, string> = {

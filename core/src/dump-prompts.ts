@@ -36,7 +36,8 @@ export interface DumpState {
 }
 
 /** A structured dump entry: the session's non-message init blob or one user message. */
-export type DumpEntryType = 'init' | 'system_update' | 'message';
+export const DUMP_ENTRY_TYPES = ['init', 'system_update', 'message'] as const;
+export type DumpEntryType = (typeof DUMP_ENTRY_TYPES)[number];
 
 /** A fresh, uninitialized {@link DumpState}. */
 export function createDumpState(): DumpState {

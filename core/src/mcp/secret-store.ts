@@ -31,7 +31,8 @@
 import { execFile } from 'child_process';
 
 /** Which backend a secret reference resolves against. */
-export type SecretRefBackend = 'env' | 'keychain';
+export const SECRET_REF_BACKENDS = ['env', 'keychain'] as const;
+export type SecretRefBackend = (typeof SECRET_REF_BACKENDS)[number];
 
 /** A parsed `${secret:<backend>:<key>}` reference found in a config string. */
 export interface SecretRef {

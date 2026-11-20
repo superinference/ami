@@ -27,7 +27,8 @@ import { firstAvailableBinary, isBinaryInstalled } from './which';
  * of preference. `'uvx'` denotes `uv` (the type name is kept for the reference
  * schema compatibility); `'pip'` covers both `pip` and `pip3`.
  */
-export type PythonPackageManager = 'uvx' | 'pipx' | 'pip';
+export const PYTHON_PACKAGE_MANAGERS = ['uvx', 'pipx', 'pip'] as const;
+export type PythonPackageManager = (typeof PYTHON_PACKAGE_MANAGERS)[number];
 
 /**
  * Ordered probe table: the concrete binary to look for on PATH → the logical

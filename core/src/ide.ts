@@ -26,22 +26,8 @@ import { homedir, platform as osPlatform } from 'node:os';
  * subset — the VS Code-family identifiers are intentionally omitted (AMI does not
  * pursue VS Code integration).
  */
-export type JetBrainsIdeType =
-  | 'pycharm'
-  | 'intellij'
-  | 'webstorm'
-  | 'phpstorm'
-  | 'rubymine'
-  | 'clion'
-  | 'goland'
-  | 'rider'
-  | 'datagrip'
-  | 'appcode'
-  | 'dataspell'
-  | 'aqua'
-  | 'gateway'
-  | 'fleet'
-  | 'androidstudio';
+export const JET_BRAINS_IDE_TYPES = ['pycharm', 'intellij', 'webstorm', 'phpstorm', 'rubymine', 'clion', 'goland', 'rider', 'datagrip', 'appcode', 'dataspell', 'aqua', 'gateway', 'fleet', 'androidstudio'] as const;
+export type JetBrainsIdeType = (typeof JET_BRAINS_IDE_TYPES)[number];
 
 /**
  * Config table mapping each supported JetBrains IDE to the on-disk

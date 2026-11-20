@@ -34,7 +34,8 @@
 
 /** Confidence a speculative classifier attaches to its match verdict. Only a
  *  `high`-confidence match is allowed to auto-approve a would-be prompt. */
-export type SpeculativeConfidence = 'high' | 'low';
+export const SPECULATIVE_CONFIDENCES = ['high', 'low'] as const;
+export type SpeculativeConfidence = (typeof SPECULATIVE_CONFIDENCES)[number];
 
 /** A speculative classifier's verdict on a single bash command. */
 export interface SpeculativeClassifierResult {

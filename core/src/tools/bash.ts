@@ -743,7 +743,8 @@ export const GIT_VALUE_OPTS = new Set([
  * cherry-pick is a separate git subcommand (not `commit`) and is intentionally
  * NOT classified here — AMI only gates the `commit` subcommand via bash.
  */
-export type GitCommitKind = 'amended' | 'committed';
+export const GIT_COMMIT_KINDS = ['amended', 'committed'] as const;
+export type GitCommitKind = (typeof GIT_COMMIT_KINDS)[number];
 
 /**
  * Classify a bash command that runs `git commit`, or `null` when it does not.

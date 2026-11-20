@@ -15,7 +15,8 @@ export type ProvenanceTier = (typeof PROVENANCE_TIERS)[number];
  * - `unverified` — an untrusted-origin source with no content check.
  * - `failed` — a content/signature check was attempted and did NOT match.
  */
-export type ProvenanceIntegrity = 'verified' | 'attested' | 'unverified' | 'failed';
+export const PROVENANCE_INTEGRITYS = ['verified', 'attested', 'unverified', 'failed'] as const;
+export type ProvenanceIntegrity = (typeof PROVENANCE_INTEGRITYS)[number];
 
 /**
  * Concrete risky capabilities a source can introduce. These are origin-independent
@@ -64,7 +65,8 @@ export interface ProvenanceRecord {
 }
 
 /** Human-readable severity of a trust/integrity signal, for display surfaces. */
-export type ProvenanceSeverity = 'ok' | 'caution' | 'warning';
+export const PROVENANCE_SEVERITYS = ['ok', 'caution', 'warning'] as const;
+export type ProvenanceSeverity = (typeof PROVENANCE_SEVERITYS)[number];
 
 export interface ProvenanceTierInfo {
   label: string;

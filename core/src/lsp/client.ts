@@ -106,7 +106,8 @@ export function lspLocale(env: NodeJS.ProcessEnv = process.env): string {
  * `LspServerState` (services/lsp/LSPServerInstance.ts). `error` is retained after
  * a crash so the failure reason stays attributable once the live process is gone.
  */
-export type LspServerState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+export const LSP_SERVER_STATES = ['stopped', 'starting', 'running', 'stopping', 'error'] as const;
+export type LspServerState = (typeof LSP_SERVER_STATES)[number];
 
 /**
  * Introspection snapshot of one language server's lifecycle — the AMI analogue of

@@ -42,19 +42,12 @@ import { detectWslForAnalytics } from './analytics';
 import { log } from './logger';
 
 /** The native package manager / install method that owns the running binary. */
-export type PackageManager =
-  | 'homebrew'
-  | 'winget'
-  | 'pacman'
-  | 'deb'
-  | 'rpm'
-  | 'apk'
-  | 'mise'
-  | 'asdf'
-  | 'unknown';
+export const PACKAGE_MANAGERS = ['homebrew', 'winget', 'pacman', 'deb', 'rpm', 'apk', 'mise', 'asdf', 'unknown'] as const;
+export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
 
 /** Coarse host platform used to gate platform-specific detectors. */
-export type InstallPlatform = 'macos' | 'linux' | 'wsl' | 'windows';
+export const INSTALL_PLATFORMS = ['macos', 'linux', 'wsl', 'windows'] as const;
+export type InstallPlatform = (typeof INSTALL_PLATFORMS)[number];
 
 /** Parsed subset of `/etc/os-release`: the distro id and its family hints. */
 export interface OsRelease {

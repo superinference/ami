@@ -81,7 +81,8 @@ export function debugBody(data: unknown): string {
  * dropped before they touch disk, letting a user raise or lower verbosity at
  * runtime without a rebuild. Mirrors the reference's DebugLogLevel.
  */
-export type LogLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error';
+export const LOG_LEVELS = ['verbose', 'debug', 'info', 'warn', 'error'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   verbose: 0,

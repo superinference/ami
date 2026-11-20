@@ -87,7 +87,8 @@ export function parseEnvInt(envVar: string | undefined, fallback: number, bounds
 }
 
 /** Outcome classification for {@link validateBoundedEnvInt}. */
-export type EnvIntStatus = 'valid' | 'capped' | 'invalid';
+export const ENV_INT_STATUS = ['valid', 'capped', 'invalid'] as const;
+export type EnvIntStatus = (typeof ENV_INT_STATUS)[number];
 
 /**
  * Structured result of validating a bounded integer env var: the value actually

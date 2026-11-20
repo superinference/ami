@@ -37,13 +37,8 @@ export function isSensitiveEnvVar(name: string): boolean {
  * a secret can fall into so redacted diagnostics stay self-describing instead of
  * collapsing every secret to one opaque marker.
  */
-export type EnvSecretClass =
-  | 'api_key'
-  | 'aws_key'
-  | 'gcp_key'
-  | 'gcp_service_account'
-  | 'token'
-  | 'generic';
+export const ENV_SECRET_CLASS = ['api_key', 'aws_key', 'gcp_key', 'gcp_service_account', 'token', 'generic'] as const;
+export type EnvSecretClass = (typeof ENV_SECRET_CLASS)[number];
 
 // Value-shape detectors: catch secrets even when the variable NAME is innocuous
 // (e.g. MY_CONFIG holding an sk-ant… key, or X holding a service-account email).

@@ -1859,13 +1859,8 @@ export function coerceReadLineParam(
  * corrupted bytes, renderer unavailable) rather than collapsed into one opaque
  * string. The reason drives the actionable message in {@link classifyPdfError}.
  */
-export type PdfErrorReason =
-  | 'empty'
-  | 'too_large'
-  | 'password_protected'
-  | 'corrupted'
-  | 'unavailable'
-  | 'unknown';
+export const PDF_ERROR_REASONS = ['empty', 'too_large', 'password_protected', 'corrupted', 'unavailable', 'unknown'] as const;
+export type PdfErrorReason = (typeof PDF_ERROR_REASONS)[number];
 
 /**
  * Classify a PDF-parse failure message into a {@link PdfErrorReason}. The reason

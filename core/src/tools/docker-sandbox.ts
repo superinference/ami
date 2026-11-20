@@ -136,12 +136,8 @@ export interface DockerSandboxConfig {
  * fail-closed message name the real cause (CLI missing vs. permission vs. a slow
  * or unreachable daemon).
  */
-export type DockerUnavailableCause =
-  | 'cli-missing'
-  | 'permission-denied'
-  | 'daemon-slow'
-  | 'daemon-unreachable'
-  | 'aborted';
+export const DOCKER_UNAVAILABLE_CAUSES = ['cli-missing', 'permission-denied', 'daemon-slow', 'daemon-unreachable', 'aborted'] as const;
+export type DockerUnavailableCause = (typeof DOCKER_UNAVAILABLE_CAUSES)[number];
 
 /** Structured result of a Docker availability probe. */
 export interface DockerAvailability {

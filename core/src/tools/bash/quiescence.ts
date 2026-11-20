@@ -18,17 +18,11 @@
  * a known prompt pattern in the LAST non-empty line dominates every timing tier.
  */
 
-export type BashBlockedReason =
-  | 'password'
-  | 'passphrase'
-  | 'sudo-password'
-  | 'yes-no'
-  | 'confirm'
-  | 'overwrite'
-  | 'press-key'
-  | 'generic-prompt';
+export const BASH_BLOCKED_REASONS = ['password', 'passphrase', 'sudo-password', 'yes-no', 'confirm', 'overwrite', 'press-key', 'generic-prompt'] as const;
+export type BashBlockedReason = (typeof BASH_BLOCKED_REASONS)[number];
 
-export type BashQuiescenceState = 'streaming' | 'quiescent' | 'blocked-on-input';
+export const BASH_QUIESCENCE_STATES = ['streaming', 'quiescent', 'blocked-on-input'] as const;
+export type BashQuiescenceState = (typeof BASH_QUIESCENCE_STATES)[number];
 
 export type BashQuiescenceVerdict = {
   state: BashQuiescenceState;

@@ -161,7 +161,8 @@ export type MemoryScope = (typeof MEMORY_SCOPES)[number];
  * `memoryScopeForPath` return type (utils/memoryFileDetection.ts). `null` means
  * the path is not inside any memory store.
  */
-export type MemoryPathScope = 'personal' | 'team';
+export const MEMORY_PATH_SCOPES = ['personal', 'team'] as const;
+export type MemoryPathScope = (typeof MEMORY_PATH_SCOPES)[number];
 
 /**
  * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors the reference
@@ -882,7 +883,8 @@ export function isAutoMemoryEnabled(
  * project's enforced rules and always load (mirroring the exclude-list rule that
  * never excludes managed rules).
  */
-export type MemorySource = 'user' | 'project' | 'local';
+export const MEMORY_SOURCES = ['user', 'project', 'local'] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
 
 /** Per-tier disable env var, mirroring {@link DISABLE_AUTO_MEMORY_ENV}. */
 const MEMORY_SOURCE_DISABLE_ENV: Record<MemorySource, string> = {

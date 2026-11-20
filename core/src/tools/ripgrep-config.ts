@@ -13,7 +13,8 @@ export const USE_BUILTIN_RIPGREP_ENV = 'USE_BUILTIN_RIPGREP';
 /** Env knob: an explicit ripgrep binary path to prefer (the AMI "builtin" slot). */
 export const RIPGREP_PATH_ENV = 'AMI_RIPGREP_PATH';
 
-export type RipgrepMode = 'system' | 'builtin' | 'config';
+export const RIPGREP_MODES = ['system', 'builtin', 'config'] as const;
+export type RipgrepMode = (typeof RIPGREP_MODES)[number];
 
 /** A config-level ripgrep override (from `sandbox.ripgrep` in settings): an explicit
  *  binary plus optional extra flags, taking precedence over the env waterfall. */

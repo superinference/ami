@@ -20,7 +20,8 @@ import { getContextWindow, getModelMaxOutputTokens } from './model-capabilities'
  * maps Anthropic's `service_tier: 'priority'` to `'fast'`. Absent/`medium`/`slow`
  * price at the model's standard rate.
  */
-export type ModelSpeed = 'fast' | 'medium' | 'slow';
+export const MODEL_SPEEDS = ['fast', 'medium', 'slow'] as const;
+export type ModelSpeed = (typeof MODEL_SPEEDS)[number];
 
 /**
  * Extended stats that include prompt caching information.
@@ -152,7 +153,8 @@ const CACHE_WRITE_1H_PRICE_RATIO = 2;
  * standard rate would OVERSTATE its cost by 2×, so the cross-agent spend view
  * must honor the recorded tier.
  */
-export type UsageServiceTier = 'standard' | 'batch' | 'priority';
+export const USAGE_SERVICE_TIERS = ['standard', 'batch', 'priority'] as const;
+export type UsageServiceTier = (typeof USAGE_SERVICE_TIERS)[number];
 
 /** Per-token discount applied to a `batch` service-tier usage record (−50%). */
 const BATCH_TIER_DISCOUNT = 0.5;

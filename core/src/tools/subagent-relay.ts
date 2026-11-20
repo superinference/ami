@@ -278,7 +278,8 @@ export function attachSubagentUsage(
  * first-class waiting state — idle teammates can still receive messages and must
  * never be treated as an error or as unavailable.
  */
-export type SubagentState = 'pending' | 'idle' | 'completed' | 'failed';
+export const SUBAGENT_STATES = ['pending', 'idle', 'completed', 'failed'] as const;
+export type SubagentState = (typeof SUBAGENT_STATES)[number];
 
 /** A routed message with a monotonic sequence number fixing delivery order. */
 export interface RelayMessage {
@@ -293,7 +294,8 @@ export interface RelayMessage {
 }
 
 /** Why a `send` could not be accepted (only present when `accepted` is false). */
-export type RelayRejectReason = 'unknown-recipient' | 'recipient-finished';
+export const RELAY_REJECT_REASONS = ['unknown-recipient', 'recipient-finished'] as const;
+export type RelayRejectReason = (typeof RELAY_REJECT_REASONS)[number];
 
 /** Result of attempting to route a message to a recipient. */
 export interface RelaySendResult {
@@ -469,7 +471,8 @@ export function buildSubagentIdleEvent(
  * ------------------------------------------------------------------------- */
 
 /** Whether an agent invocation is a fresh spawn or a resume of an existing node. */
-export type InvocationKind = 'spawn' | 'resume';
+export const INVOCATION_KINDS = ['spawn', 'resume'] as const;
+export type InvocationKind = (typeof INVOCATION_KINDS)[number];
 
 /** A sparse invocation edge marking one spawn/resume boundary exactly once. */
 export interface InvocationEdge {

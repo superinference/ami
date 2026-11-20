@@ -11,9 +11,9 @@
  * config→env bridge seeds from ProjectConfig.dynamicWorkflowSize.
  */
 
-export type WorkflowSize = 'small' | 'medium' | 'large' | 'off';
+export type WorkflowSize = (typeof WORKFLOW_SIZES)[number];
 
-export const WORKFLOW_SIZES: readonly WorkflowSize[] = ['small', 'medium', 'large', 'off'] as const;
+export const WORKFLOW_SIZES = ['small', 'medium', 'large', 'off'] as const;
 
 /** Env knob seeded from ProjectConfig.dynamicWorkflowSize by the config bridge. */
 export const WORKFLOW_SIZE_ENV = 'AMI_DYNAMIC_WORKFLOW_SIZE';

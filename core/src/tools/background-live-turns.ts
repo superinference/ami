@@ -78,7 +78,8 @@ export function resolveLiveTurnRetention(explicit?: number): number {
 }
 
 /** A background agent's sub-phase (parity: the reference's `DreamPhase`). */
-export type BackgroundLivePhase = 'starting' | 'updating';
+export const BACKGROUND_LIVE_PHASES = ['starting', 'updating'] as const;
+export type BackgroundLivePhase = (typeof BACKGROUND_LIVE_PHASES)[number];
 
 /**
  * A single retained assistant turn, with tool uses collapsed to a count (parity:

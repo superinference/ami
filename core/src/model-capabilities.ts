@@ -937,12 +937,8 @@ export function discoveryToCacheEntries(discovery: {
  * `adaptive_thinking` → `supportsAdaptiveThinking`; `max_effort` /
  * `interleaved_thinking` are accepted by the generic predicate for forward parity.
  */
-export type ModelCapabilityOverride =
-  | 'effort'
-  | 'max_effort'
-  | 'thinking'
-  | 'adaptive_thinking'
-  | 'interleaved_thinking';
+export const MODEL_CAPABILITY_OVERRIDES = ['effort', 'max_effort', 'thinking', 'adaptive_thinking', 'interleaved_thinking'] as const;
+export type ModelCapabilityOverride = (typeof MODEL_CAPABILITY_OVERRIDES)[number];
 
 /** Custom base-URL env vars that signal a gateway/proxy (non-first-party) endpoint. */
 const THIRD_PARTY_BASE_URL_ENV = [
@@ -1687,7 +1683,8 @@ export function getAvailableContextUpgrade(
  * party vs Bedrock vs Vertex vs Foundry), so a single flat date would be wrong
  * for 3P users. Mirrors the reference's APIProvider union (utils/model/providers.ts).
  */
-export type ApiProviderClass = 'firstParty' | 'bedrock' | 'vertex' | 'foundry';
+export const API_PROVIDER_CLASS = ['firstParty', 'bedrock', 'vertex', 'foundry'] as const;
+export type ApiProviderClass = (typeof API_PROVIDER_CLASS)[number];
 
 /**
  * Map an AMI provider id (as returned by detectProvider) to the coarse hosting

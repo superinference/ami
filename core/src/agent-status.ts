@@ -21,18 +21,8 @@
  * {@link AGENT_STATUS_GLYPH}; {@link assertUniqueAgentStatusRanks} additionally fails at
  * module load if two states share a rank, so recency can never reorder headers.
  */
-export type AgentStatus =
-  | 'waiting'
-  | 'blocked'
-  | 'permission'
-  | 'failed'
-  | 'unconfirmed'
-  | 'working'
-  | 'monitoring'
-  | 'interrupted'
-  | 'unverifiable'
-  | 'done'
-  | 'idle';
+export const AGENT_STATUS = ['waiting', 'blocked', 'permission', 'failed', 'unconfirmed', 'working', 'monitoring', 'interrupted', 'unverifiable', 'done', 'idle'] as const;
+export type AgentStatus = (typeof AGENT_STATUS)[number];
 
 /**
  * Exhaustive, unique total-order rank (lower = louder / sorts first). A row with a lower
@@ -95,15 +85,15 @@ export function compareAgentStatus(a: AgentStatus, b: AgentStatus): number {
 }
 
 /** The four coarse buckets a roster groups its rows into. Parity: Orca's CrewStatusGroup. */
-export type AgentAttentionBucket = 'needsYou' | 'working' | 'idle' | 'failed';
+export type AgentAttentionBucket = (typeof AGENT_ATTENTION_BUCKETS)[number];
 
 /** Bucket iteration order, loudest first — the order a grouped roster renders its sections. */
-export const AGENT_ATTENTION_BUCKETS: readonly AgentAttentionBucket[] = [
+export const AGENT_ATTENTION_BUCKETS = [
   'needsYou',
   'working',
   'idle',
   'failed',
-];
+] as const;
 
 /**
  * Collapse a fine-grained {@link AgentStatus} into its coarse attention bucket. A `Record`
@@ -141,7 +131,8 @@ export function agentStatusNeedsYou(status: AgentStatus): boolean {
  * (never a raw color, so core stays display-agnostic). `attention` = act now, `active` =
  * live work, `error` = failed, `warning` = ambiguous/missing-evidence, `muted` = quiet.
  */
-export type AgentStatusTone = 'attention' | 'active' | 'error' | 'warning' | 'muted';
+export const AGENT_STATUS_TONES = ['attention', 'active', 'error', 'warning', 'muted'] as const;
+export type AgentStatusTone = (typeof AGENT_STATUS_TONES)[number];
 
 /** One status's glyph + tone — the single display descriptor every surface reuses. */
 export interface AgentStatusGlyph {
@@ -182,7 +173,8 @@ export function agentStatusGlyph(status: AgentStatus): AgentStatusGlyph {
  * Re-declared here (not imported — core must never import cli) so {@link subagentStatusToAgentStatus}
  * can lift it into the canonical taxonomy.
  */
-export type SubagentLifecycleStatus = 'pending' | 'running' | 'done' | 'failed' | 'killed';
+export const SUBAGENT_LIFECYCLE_STATUS = ['pending', 'running', 'done', 'failed', 'killed'] as const;
+export type SubagentLifecycleStatus = (typeof SUBAGENT_LIFECYCLE_STATUS)[number];
 
 /**
  * Orthogonal transient flags that layer on top of a live subagent's base status, mirroring

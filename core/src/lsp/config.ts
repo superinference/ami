@@ -22,7 +22,8 @@ import { expandEnvVarsTracked, substitutePluginMcpVars, type PluginMcpVars } fro
  * the reference schema parity but rejected at spawn time with a clear error rather
  * than being silently treated as stdio.
  */
-export type LspTransport = 'stdio' | 'socket';
+export const LSP_TRANSPORTS = ['stdio', 'socket'] as const;
+export type LspTransport = (typeof LSP_TRANSPORTS)[number];
 
 export interface LspServerConfig {
   /** Executable to spawn (required). */

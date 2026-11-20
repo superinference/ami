@@ -68,7 +68,8 @@ export const VALID_TASK_STATUSES: readonly string[] = [
 ];
 
 /** Canonical status bucket the tool reasons about. */
-export type CanonicalTaskStatus = 'completed' | 'partial' | 'blocked' | 'failed';
+export const CANONICAL_TASK_STATUS = ['completed', 'partial', 'blocked', 'failed'] as const;
+export type CanonicalTaskStatus = (typeof CANONICAL_TASK_STATUS)[number];
 
 /**
  * Map a raw status token to its canonical bucket. Returns undefined when the

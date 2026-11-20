@@ -261,7 +261,8 @@ export function isConsolidationDue(opts: {
 export const SESSION_SCAN_INTERVAL_MS = 10 * 60 * 1000;
 
 /** Why a {@link ConsolidationScheduler.evaluate} turn did (or did not) fire. */
-export type ConsolidationScheduleReason = 'time-gate' | 'scan-throttled' | 'session-gate' | 'due';
+export const CONSOLIDATION_SCHEDULE_REASONS = ['time-gate', 'scan-throttled', 'session-gate', 'due'] as const;
+export type ConsolidationScheduleReason = (typeof CONSOLIDATION_SCHEDULE_REASONS)[number];
 
 /** Outcome of one {@link ConsolidationScheduler.evaluate} turn. */
 export interface ConsolidationScheduleDecision {
@@ -463,7 +464,8 @@ export interface ConsolidationRunParams {
 }
 
 /** Lifecycle state of a consolidation run (parity: the reference's DreamTask status). */
-export type ConsolidationStatus = 'running' | 'completed' | 'error';
+export const CONSOLIDATION_STATUS = ['running', 'completed', 'error'] as const;
+export type ConsolidationStatus = (typeof CONSOLIDATION_STATUS)[number];
 
 /**
  * One assistant turn of a consolidation run, as surfaced in the live transcript

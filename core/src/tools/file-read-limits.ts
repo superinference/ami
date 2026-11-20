@@ -145,7 +145,8 @@ export interface FileReadingLimits {
  * already lives in {@link module:file-cache-seed.stripLineNumberPrefix}. Mirrors
  * the reference's `isCompactLinePrefixEnabled()` line-prefix selector (utils/file.ts).
  */
-export type LineNumberStyle = 'compact' | 'arrow';
+export const LINE_NUMBER_STYLES = ['compact', 'arrow'] as const;
+export type LineNumberStyle = (typeof LINE_NUMBER_STYLES)[number];
 
 /** Default line-number prefix style (compact `N\t`), matching the historical output. */
 export const DEFAULT_LINE_NUMBER_STYLE: LineNumberStyle = 'compact';

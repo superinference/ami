@@ -49,7 +49,8 @@ import {
  *   - `never`   — never suggest THIS plugin again (persistent per-plugin opt-out),
  *   - `disable` — turn OFF all LSP recommendations (global opt-out).
  */
-export type LspRecommendationResponse = 'yes' | 'no' | 'never' | 'disable';
+export const LSP_RECOMMENDATION_RESPONSES = ['yes', 'no', 'never', 'disable'] as const;
+export type LspRecommendationResponse = (typeof LSP_RECOMMENDATION_RESPONSES)[number];
 
 /** The subset of {@link EngineConfig} this module reads/writes. */
 export type LspRecommendationConfig = Pick<

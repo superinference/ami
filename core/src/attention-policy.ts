@@ -21,7 +21,8 @@ import type { AgentStatus } from './agent-status';
  * whole model: a live session with stale reporting proves only MISSING evidence, not idle,
  * work, or completion, so it must never be shown as a confident spinner or a false 'done'.
  */
-export type AgentLiveness = 'live' | 'unverifiable' | 'settled';
+export const AGENT_LIVENESS = ['live', 'unverifiable', 'settled'] as const;
+export type AgentLiveness = (typeof AGENT_LIVENESS)[number];
 
 /** Iteration order (loudest/most-certain-live first). */
 export const AGENT_LIVENESS_STATES: readonly AgentLiveness[] = ['live', 'unverifiable', 'settled'];

@@ -506,11 +506,11 @@ export function resolveSessionSummary(
  * Orthogonal to {@link Session.entrypoint} (which records the invocation surface,
  * e.g. `cli`/`detached`/`sdk`): a `detached` run can still be `interactive`.
  */
-export type SessionKind = 'interactive' | 'bg' | 'daemon' | 'daemon-worker';
+export type SessionKind = (typeof SESSION_KINDS)[number];
 
 /** The valid {@link SessionKind} values, exported so a consumer (CLI/introspection)
  *  can validate an override without duplicating the union. */
-export const SESSION_KINDS: readonly SessionKind[] = ['interactive', 'bg', 'daemon', 'daemon-worker'];
+export const SESSION_KINDS = ['interactive', 'bg', 'daemon', 'daemon-worker'] as const;
 
 /**
  * Read the session-kind override from the environment, if any. Honors the AMI

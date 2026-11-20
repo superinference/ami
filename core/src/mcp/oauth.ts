@@ -951,7 +951,8 @@ export function refreshToken(
 }
 
 /** Client-auth method a confidential client uses at the token/revocation endpoint. */
-export type ClientAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none';
+export const CLIENT_AUTH_METHODS = ['client_secret_basic', 'client_secret_post', 'none'] as const;
+export type ClientAuthMethod = (typeof CLIENT_AUTH_METHODS)[number];
 
 /**
  * Pick the client-authentication method for a confidential request (RFC 7009

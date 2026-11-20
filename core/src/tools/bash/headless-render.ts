@@ -25,7 +25,8 @@ import {
 /** Default quiet window before a blocked-tail scan can declare quiescence. */
 export const HEADLESS_QUIET_THRESHOLD_MS = 500;
 
-export type HeadlessRenderMode = 'auto' | 'always' | 'off';
+export const HEADLESS_RENDER_MODES = ['auto', 'always', 'off'] as const;
+export type HeadlessRenderMode = (typeof HEADLESS_RENDER_MODES)[number];
 
 export type HeadlessRenderOptions = HeadlessGridOptions & {
   /**

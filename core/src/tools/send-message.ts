@@ -98,7 +98,8 @@ export interface AgentMessage {
  * - `proactive` — an unsolicited surfacing the recipient needs to see now (a
  *                 blocker, a completion while it was away, an unprompted update).
  */
-export type MessageStatus = 'normal' | 'proactive';
+export const MESSAGE_STATUS = ['normal', 'proactive'] as const;
+export type MessageStatus = (typeof MESSAGE_STATUS)[number];
 
 /** The accepted {@link MessageStatus} values, for input validation. */
 const MESSAGE_STATUSES = new Set<MessageStatus>(['normal', 'proactive']);
@@ -113,7 +114,8 @@ const MESSAGE_STATUSES = new Set<MessageStatus>(['normal', 'proactive']);
  * - `tick`     — reserved for timer/heartbeat-injected messages (not produced by
  *                send_message itself; kept for schema parity with consumers).
  */
-export type MessageSource = 'user' | 'teammate' | 'system' | 'tick' | 'task';
+export const MESSAGE_SOURCES = ['user', 'teammate', 'system', 'tick', 'task'] as const;
+export type MessageSource = (typeof MESSAGE_SOURCES)[number];
 
 /**
  * The canonical name of the team lead / main session. Control messages
@@ -1950,7 +1952,8 @@ export const SEND_MESSAGE_VALIDATION_ERROR_CODE = 9;
  * ADDITIVE structured hint: a programmatic consumer gets the same classification
  * the reference surfaces as a hard failure, without regressing AMI's delivery behavior.
  */
-export type DeliveryWarning = 'unknown_recipient' | 'no_team_context';
+export const DELIVERY_WARNINGS = ['unknown_recipient', 'no_team_context'] as const;
+export type DeliveryWarning = (typeof DELIVERY_WARNINGS)[number];
 
 /** Build an input-shape validation error carrying {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}. */
 function validationError(message: string): ToolResult {

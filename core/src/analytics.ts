@@ -1533,9 +1533,11 @@ export const ANALYTICS_SOURCE_CRON = WORKLOAD_CRON;
 // ---------------------------------------------------------------------------
 
 /** The file operation being recorded. */
-export type FileOperationKind = 'read' | 'write' | 'edit';
+export const FILE_OPERATION_KINDS = ['read', 'write', 'edit'] as const;
+export type FileOperationKind = (typeof FILE_OPERATION_KINDS)[number];
 /** AMI canonical file-tool names (vs the reference's FileReadTool/FileWriteTool/FileEditTool). */
-export type FileOperationTool = 'file_read' | 'file_write' | 'file_edit';
+export const FILE_OPERATION_TOOLS = ['file_read', 'file_write', 'file_edit'] as const;
+export type FileOperationTool = (typeof FILE_OPERATION_TOOLS)[number];
 
 /** Inputs for a structured file-operation analytics event. */
 export interface FileOperationParams {
@@ -1580,9 +1582,8 @@ export function buildFileOperationEvent(params: FileOperationParams): Record<str
 // ---------------------------------------------------------------------------
 
 /** The set of git/PR operations a single command can be classified as. */
-export type GitOperationName =
-  | 'commit' | 'commit_amend' | 'push'
-  | 'pr_create' | 'pr_edit' | 'pr_merge' | 'pr_comment' | 'pr_close' | 'pr_ready';
+export const GIT_OPERATION_NAMES = ['commit', 'commit_amend', 'push', 'pr_create', 'pr_edit', 'pr_merge', 'pr_comment', 'pr_close', 'pr_ready'] as const;
+export type GitOperationName = (typeof GIT_OPERATION_NAMES)[number];
 
 /** Result of classifying one (successful) command for git/PR usage counters. */
 export interface GitOperationClassification {
@@ -2065,7 +2066,8 @@ export function resolveFileFlushIntervalMs(env: NodeJS.ProcessEnv, opt?: number)
 // ---------------------------------------------------------------------------
 
 /** Diagnostic severity levels recognised by {@link createTelemetryDiagLogger}. */
-export type TelemetryDiagLevel = 'error' | 'warn' | 'info' | 'debug' | 'verbose';
+export const TELEMETRY_DIAG_LEVELS = ['error', 'warn', 'info', 'debug', 'verbose'] as const;
+export type TelemetryDiagLevel = (typeof TELEMETRY_DIAG_LEVELS)[number];
 
 /** The five-level diagnostic sink the telemetry subsystem logs through. */
 export interface TelemetryDiagLogger {

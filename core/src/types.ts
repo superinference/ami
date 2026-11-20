@@ -532,19 +532,8 @@ export interface ToolResult {
  *  read/search group. Parity: the reference's `getToolSearchOrReadInfo` discriminator
  *  (`utils/collapseReadSearch.ts`). `absorbed` tool calls (e.g. `tool_search`)
  *  belong to the group visually but increment no count. */
-export type ToolGroupKind =
-  | 'search'
-  | 'read'
-  | 'list'
-  | 'repl'
-  | 'bash'
-  | 'gitOpBash'
-  | 'mcpCall'
-  | 'memoryRead'
-  | 'memorySearch'
-  | 'memoryWrite'
-  | 'absorbed'
-  | 'none';
+export const TOOL_GROUP_KINDS = ['search', 'read', 'list', 'repl', 'bash', 'gitOpBash', 'mcpCall', 'memoryRead', 'memorySearch', 'memoryWrite', 'absorbed', 'none'] as const;
+export type ToolGroupKind = (typeof TOOL_GROUP_KINDS)[number];
 
 /** Aggregated per-kind counts for a collapsed run of consecutive read/search
  *  tool calls, so a frontend can render one summary row ("Read 4 files · Searched
@@ -1502,7 +1491,8 @@ export function reconcileSessionMode(
  * `pendingWorkerRequest` "waiting for leader approval" affordance + the
  * AssistantToolUseMessage hook-progress "waiting" subtree.
  */
-export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry' | 'waiting';
+export const SUBAGENT_ACTIVITYS = ['text', 'thinking', 'tool', 'error', 'retry', 'waiting'] as const;
+export type SubagentActivity = (typeof SUBAGENT_ACTIVITYS)[number];
 
 /**
  * Why a request is being retried, carried on the `retry_attempt` {@link EngineEvent}
@@ -1515,7 +1505,8 @@ export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry' 
  *   - `connection_timeout` — the request hard-timeout fired before any response.
  *   - `stream_idle`        — the inactivity watchdog aborted a quiet-but-open stream.
  */
-export type RetryErrorKind = 'http' | 'connection_reset' | 'connection_timeout' | 'stream_idle';
+export const RETRY_ERROR_KINDS = ['http', 'connection_reset', 'connection_timeout', 'stream_idle'] as const;
+export type RetryErrorKind = (typeof RETRY_ERROR_KINDS)[number];
 
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
@@ -2949,7 +2940,8 @@ export const DEFAULT_NOTIFICATION_TIMEOUT_MS = 8000;
 
 /** Priority tier of a {@link ReplNotification}. Parity: the reference's notification
  *  `Priority`. */
-export type NotificationPriority = 'low' | 'medium' | 'high' | 'immediate';
+export const NOTIFICATION_PRIORITYS = ['low', 'medium', 'high', 'immediate'] as const;
+export type NotificationPriority = (typeof NOTIFICATION_PRIORITYS)[number];
 
 /** A transient in-REPL startup notification. Parity: the reference's `Notification`
  *  (context/notifications.tsx) minus the React-specific JSX variant. */
@@ -2996,7 +2988,8 @@ export function planNotificationQueue(
  * invocations (by {@link SlashCommandLifecycleEvent.uuid}) and render affordances
  * while a command runs.
  */
-export type SlashCommandLifecycleState = 'started' | 'completed';
+export const SLASH_COMMAND_LIFECYCLE_STATES = ['started', 'completed'] as const;
+export type SlashCommandLifecycleState = (typeof SLASH_COMMAND_LIFECYCLE_STATES)[number];
 
 /** The canonical analytics-event TYPE AMI records each slash-command lifecycle
  *  transition under, so observers (the usage view, remote-control, a `/` spinner)
@@ -3089,12 +3082,8 @@ export interface SpawnLineage {
  * outgoing edges — see {@link LEGAL_TRANSITIONS}). Replaces AMI's ad-hoc state
  * tracking spread across engine/detached-runner/task with one shared vocabulary.
  */
-export type AgentLifecycleState =
-  | 'starting'
-  | 'running'
-  | 'done'
-  | 'failed'
-  | 'circuit_broken';
+export const AGENT_LIFECYCLE_STATES = ['starting', 'running', 'done', 'failed', 'circuit_broken'] as const;
+export type AgentLifecycleState = (typeof AGENT_LIFECYCLE_STATES)[number];
 
 /**
  * Declarative legal-transition graph (parity: Orca's `LEGAL_TRANSITIONS`).

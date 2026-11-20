@@ -45,10 +45,12 @@ export type ProcessIdentity = {
 };
 
 /** Which identity field a probe compared. */
-export type ProcessIdentityField = 'process-start-time' | 'spawn-token';
+export const PROCESS_IDENTITY_FIELDS = ['process-start-time', 'spawn-token'] as const;
+export type ProcessIdentityField = (typeof PROCESS_IDENTITY_FIELDS)[number];
 
 /** Four-state liveness verdict. */
-export type ProcessLivenessOutcome = 'live' | 'exited' | 'identity-mismatch' | 'indeterminate';
+export const PROCESS_LIVENESS_OUTCOMES = ['live', 'exited', 'identity-mismatch', 'indeterminate'] as const;
+export type ProcessLivenessOutcome = (typeof PROCESS_LIVENESS_OUTCOMES)[number];
 
 export type ProcessIdentityProbe = {
   outcome: ProcessLivenessOutcome;

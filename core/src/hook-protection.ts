@@ -201,7 +201,8 @@ export function shouldSkipHookDueToTrust(trusted: boolean, interactive: boolean)
  * can only reorder sources; this kind lets a loader EXCLUDE a source entirely by
  * where it came from.
  */
-export type HookSourceKind = 'managed' | 'plugin' | 'project' | 'user' | 'config';
+export const HOOK_SOURCE_KINDS = ['managed', 'plugin', 'project', 'user', 'config'] as const;
+export type HookSourceKind = (typeof HOOK_SOURCE_KINDS)[number];
 
 /**
  * The only provenance an `allowManagedHooksOnly` policy permits to run:
@@ -254,7 +255,8 @@ export function sortHooksByTier(hooks: HookRegistration[]): HookRegistration[] {
  * `allow` only wins when nothing is set yet while `passthrough` is a true no-op.
  * Precedence (strictest wins): passthrough < allow < ask < deny.
  */
-export type HookVerdict = 'passthrough' | 'allow' | 'ask' | 'deny';
+export const HOOK_VERDICTS = ['passthrough', 'allow', 'ask', 'deny'] as const;
+export type HookVerdict = (typeof HOOK_VERDICTS)[number];
 
 const VERDICT_RANK: Record<HookVerdict, number> = {
   passthrough: -1, // neutral no-op: never overrides a real verdict, is overridden by any

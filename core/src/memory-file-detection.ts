@@ -18,7 +18,8 @@ import * as path from 'path';
 import { isPathWithin } from './utils/path';
 
 /** The two kinds of session-scoped file a tool call can target. */
-export type SessionFileType = 'session_memory' | 'session_transcript';
+export const SESSION_FILE_TYPES = ['session_memory', 'session_transcript'] as const;
+export type SessionFileType = (typeof SESSION_FILE_TYPES)[number];
 
 /** The directories that define what counts as memory/transcript for a project. */
 export interface MemoryDirs {
