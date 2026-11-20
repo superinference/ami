@@ -61,7 +61,7 @@ test('suggestAllowPrefix + compound derivation benefit from flag-value skipping 
   // now it derives a correctly scoped `git status`.
   assert.equal(suggestAllowPrefix('git -C /repo status'), 'git status');
   // Compound command: each subcommand scoped through the same spec-driven path.
-  // FUNCTIONAL CHANGE (U345 w112, Claude-parity §0c): `git fetch`+`git pull` LCP
+  // FUNCTIONAL CHANGE (U345 w112, the reference-parity §0c): `git fetch`+`git pull` LCP
   // to the bare subcommand-aware root `git`, which the collapse guard now DROPS
   // (previously emitted ['git'], auto-allowing `git push --force`).
   assert.deepEqual(

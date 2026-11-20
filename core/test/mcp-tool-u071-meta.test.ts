@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { createMcpTool, readMcpToolMeta } from '../src/tools/mcp-tool';
 
 // ---------------------------------------------------------------------------
-// U071 — per-MCP-tool `_meta` discovery hints (Claude Code parity,
+// U071 — per-MCP-tool `_meta` discovery hints (the reference parity,
 // services/mcp/client.ts:L1779-L1785):
 //   * anthropic/searchHint  -> ToolDefinition.searchHint (whitespace-collapsed)
 //   * anthropic/alwaysLoad  -> ToolDefinition.alwaysLoad (strict === true)

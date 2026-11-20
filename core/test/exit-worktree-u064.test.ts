@@ -1,7 +1,7 @@
 /**
  * U064 — exit_worktree parity hardening.
  *
- * Covers two confirmed parity gaps against Claude's ExitWorktree/
+ * Covers two confirmed parity gaps against the reference's ExitWorktree/
  * WorktreeExitDialog:
  *   1. (G3) Consequence-explaining COMBINED summary before a destructive remove:
  *      when a worktree has BOTH uncommitted files AND unpushed commits, the

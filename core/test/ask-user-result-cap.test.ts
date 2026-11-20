@@ -7,7 +7,7 @@ import {
 } from '../src/tools/ask-user';
 
 // ---------------------------------------------------------------------------
-// U078 — result-size cap parity (Claude's maxResultSizeChars: 100_000 on the
+// U078 — result-size cap parity (the reference's maxResultSizeChars: 100_000 on the
 // AskUserQuestion tool). Bounds how much user/model-derived answer+annotation
 // text flows back into the model context.
 // ---------------------------------------------------------------------------

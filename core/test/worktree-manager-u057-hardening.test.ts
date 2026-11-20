@@ -119,7 +119,7 @@ describe('U057: validateWorktreeGitFile commondir trust-chain', () => {
 });
 
 // ---------------------------------------------------------------------------
-// U057 — copyWorktreeIncludes gitignore-gating (Claude parity)
+// U057 — copyWorktreeIncludes gitignore-gating (the reference parity)
 // Only BOTH-named-AND-gitignored files are carried over; a directory entry
 // expands to its gitignored contents.
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 /**
  * U122 — persisted folder trust + parent-directory ancestor walk (safe-mode).
  *
- * Covers two parity gaps against Claude Code's TrustDialog:
+ * Covers two parity gaps against the reference's TrustDialog:
  *   1. `isTrustedByAncestor` performs a TRUE parent-directory walk with a
  *      filesystem-root boundary (parity: `computeTrustDialogAccepted` /
  *      `isPathTrusted`), not a string-prefix test.

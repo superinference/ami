@@ -295,7 +295,7 @@ describe('loadCommands', () => {
   });
 
   // Functional change: .md command files are now a supported command format
-  // (Claude parity), so a command dir is "empty" only when it has no .toml/.md
+  // (the reference parity), so a command dir is "empty" only when it has no .toml/.md
   // command files — a non-command extension (e.g. .txt) is still ignored.
   it('returns empty array for directory with no command files', () => {
     const dir = path.join(tmpDir, 'no-toml');
@@ -339,7 +339,7 @@ describe('loadCommands', () => {
     // Missing prompt → dropped (a command needs a prompt to do anything).
     fs.writeFileSync(path.join(dir, 'no-prompt.toml'), 'description = "desc only"');
     // Missing description → loaded with a description DERIVED from the prompt
-    // (Claude parity: extractDescriptionFromMarkdown), not a generic label.
+    // (the reference parity: extractDescriptionFromMarkdown), not a generic label.
     fs.writeFileSync(path.join(dir, 'no-desc.toml'), 'prompt = "prompt only"');
     // Valid (both fields).
     fs.writeFileSync(path.join(dir, 'valid.toml'), [
@@ -372,7 +372,7 @@ describe('loadCommands', () => {
     assert.deepEqual(names, ['alpha', 'beta']);
   });
 
-  // Functional change: .md is now a command format (Claude parity); only files
+  // Functional change: .md is now a command format (the reference parity); only files
   // with neither a .toml nor .md extension are ignored.
   it('ignores files that are not .toml or .md command files', () => {
     const dir = path.join(tmpDir, 'mixed-cmds');
@@ -452,7 +452,7 @@ describe('loadCommands', () => {
     assert.equal(cmds[0]!.name, 'my-custom-command');
   });
 
-  it('discovers commands in a nested subdirectory and namespaces by sub-path (Claude parity)', () => {
+  it('discovers commands in a nested subdirectory and namespaces by sub-path (the reference parity)', () => {
     const dir = path.join(tmpDir, 'nested-cmds');
     fs.mkdirSync(path.join(dir, 'git'), { recursive: true });
     // Top-level command keeps its bare name.
@@ -583,7 +583,7 @@ describe('CommandDefinition shape', () => {
     // Verify no UNEXPECTED enumerable properties. `namespace` (the on-disk
     // sub-path, empty for a top-level command) and `type` ('prompt' for a command
     // file) are always-present parity fields; `hasUserSpecifiedDescription` is set
-    // because this file declares an EXPLICIT description (Claude parity); every other
+    // because this file declares an EXPLICIT description (the reference parity); every other
     // knob stays omitted when the file declares none.
     const keys = Object.keys(cmd).sort();
     assert.deepEqual(keys, ['description', 'filePath', 'hasUserSpecifiedDescription', 'name', 'namespace', 'prompt', 'type']);

@@ -23,7 +23,7 @@ import {
 //     a domain-scoped "always allow" rule candidate for web_fetch (the URL's
 //     hostname). Parity with the reference's WebFetchPermissionRequest
 //     ("Yes, and don't ask again for <hostname>"). AMI's canonical web_fetch rule
-//     content is the BARE DOMAIN (not Claude's `domain:` prefix) so it matches AMI's
+//     content is the BARE DOMAIN (not the reference's `domain:` prefix) so it matches AMI's
 //     existing matcher + sandbox-domain extraction — an intentional superset
 //     divergence kept consistent with validatePermissionRule.
 // ---------------------------------------------------------------------------

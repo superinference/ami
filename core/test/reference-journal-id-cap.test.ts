@@ -1,5 +1,5 @@
 /**
- * Claude-parity (U058): filename-length boundary guard on the sanitized session/
+ * the reference-parity (U058): filename-length boundary guard on the sanitized session/
  * agent id used in journal filenames — truncate + stable hash suffix, mirroring
  * the projectSlug cap. A long id must never overflow a filesystem path component
  * (ENAMETOOLONG) and two long ids differing only past the cap must not collide.

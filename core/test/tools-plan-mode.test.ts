@@ -158,7 +158,7 @@ describe('planModeTool — parity enhancements', () => {
     assert.ok(planFile, 'Plan file path should be set after enter');
     fs.writeFileSync(planFile, '## Draft plan\n- explore the module\n');
     // No exit has run, so there is no in-memory submitted plan; getPlan must
-    // recover the plan content straight from disk (Claude getPlan() parity).
+    // recover the plan content straight from disk (the reference getPlan() parity).
     assert.equal(mod.getPlan(), '## Draft plan\n- explore the module\n');
     mod.setPlanModeActive(false);
   });

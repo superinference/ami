@@ -63,7 +63,7 @@ describe('proxyResolvesHosts', () => {
   it('honors AMI_PROXY_RESOLVES_HOSTS', () => {
     assert.equal(proxyResolvesHosts(E({ AMI_PROXY_RESOLVES_HOSTS: '1' })), true);
   });
-  it('honors the Claude Code name for parity', () => {
+  it('honors the reference name for parity', () => {
     assert.equal(proxyResolvesHosts(E({ CLAUDE_CODE_PROXY_RESOLVES_HOSTS: 'true' })), true);
   });
   it('is off for a falsy value', () => {

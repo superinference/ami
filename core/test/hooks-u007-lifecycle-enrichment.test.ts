@@ -1,6 +1,6 @@
 /**
  * U007 — SessionStart / Setup / SessionEnd lifecycle hook input enrichment
- * (Claude Code → AMI parity). Covers:
+ * (the reference → AMI parity). Covers:
  *  - G1 SessionStart hook result as an ARRAY of injectable messages
  *       (`initialUserMessages[]`) + aggregation of ALL hooks (not last-wins)
  *       — refs useDeferredHookMessages.ts:L12-L45.

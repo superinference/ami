@@ -1,7 +1,7 @@
 /**
- * U087 — redirect protocol/port boundary guard (Claude-parity).
+ * U087 — redirect protocol/port boundary guard (the reference-parity).
  *
- * Mirrors the protocol/port arms of Claude Code's isPermittedRedirect
+ * Mirrors the protocol/port arms of the reference's isPermittedRedirect
  * (WebFetchTool/utils.ts): a redirect that changes protocol (esp. the
  * https→http TLS downgrade) or port must never be auto-followed, even when the
  * target host is PUBLIC. AMI deliberately still follows a same-protocol /

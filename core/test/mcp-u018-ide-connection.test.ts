@@ -14,7 +14,7 @@ import {
 } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// U018 — IDE MCP connection parity (Claude Code useIdeConnectionStatus.ts +
+// U018 — IDE MCP connection parity (the reference useIdeConnectionStatus.ts +
 // the `sse-ide`/`ws-ide`/`sdk` transport discriminants):
 //   * McpServerConfig.ideName + the IDE/sdk transport discriminants validate.
 //   * canonicalMcpTransport maps the IDE discriminants to their base transport.

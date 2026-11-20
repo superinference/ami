@@ -1,5 +1,5 @@
 /**
- * Claude-parity hardening for detectPowerShellExecution in bash-security.ts.
+ * the reference-parity hardening for detectPowerShellExecution in bash-security.ts.
  *
  * Gap: references/claude/claude-code-main/src/tools/PowerShellTool/powershellSecurity.ts
  *   L67-L100 — "Alternative parameter-prefix recognition for PowerShell flags

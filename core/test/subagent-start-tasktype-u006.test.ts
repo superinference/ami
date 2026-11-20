@@ -21,7 +21,7 @@ function gen(events: unknown[]) {
 // U006 — subagent_start carries the spawned KIND as `taskType`
 // (parity: the reference's task_started.task_type). The task tool must relay the
 // resolved kind on the child event feed so a roster can classify the agent.
-describe('taskTool — subagent_start taskType (Claude task_type parity)', () => {
+describe('taskTool — subagent_start taskType (the reference task_type parity)', () => {
   beforeEach(() => resetAgentRegistry());
 
   it('reports the named subagent_type as taskType', async () => {

@@ -1,5 +1,5 @@
 /**
- * Claude-parity (medium): human-turn predicate (excludes engine-injected meta
+ * the reference-parity (medium): human-turn predicate (excludes engine-injected meta
  * user messages) + credential-redaction guard on the memory-persistence path.
  *
  * Run: cd core/core && node --import tsx --test test/conversation-memory-redaction.test.ts

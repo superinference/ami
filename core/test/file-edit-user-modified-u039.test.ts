@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
 // U039 — file_edit result metadata.userModified reflects the approve-with-edits
 // (accept-with-edits) permission signal.
 //
-// Parity target: Claude Code's FileEditTool outputSchema `userModified` +
+// Parity target: the reference's FileEditTool outputSchema `userModified` +
 // hooks/useDiffInIDE.ts computeEditsFromContents, which records that the applied
 // bytes are the USER-corrected call, not the model's original proposal. AMI's
 // permission layer rewrites the edit INPUT the user approved (updatedInput /

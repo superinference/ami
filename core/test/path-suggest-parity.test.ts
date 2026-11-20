@@ -12,7 +12,7 @@ import {
 } from '../src/tools/path-suggest';
 
 // ---------------------------------------------------------------------------
-// Parity superset vs Claude Code path correction. Each describe block maps to a
+// Parity superset vs the reference path correction. Each describe block maps to a
 // labeled ADDITIVE fix and is red-green validated (fails if the fix is
 // reverted, passes with it; no block passes both ways).
 // ---------------------------------------------------------------------------

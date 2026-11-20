@@ -1,6 +1,6 @@
 /**
  * U022 wave-76 additions to the teammate send_message subsystem. Each block maps to
- * a confirmed Claude-Code parity gap that was NOT yet implemented on the file:
+ * a confirmed the reference parity gap that was NOT yet implemented on the file:
  *
  *  - Teammate blocked-on-plan-approval state tracking + reset on leader response —
  *    utils/inProcessTeammateHelpers.ts setAwaitingPlanApproval / handlePlanApprovalResponse

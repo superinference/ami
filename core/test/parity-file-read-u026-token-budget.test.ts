@@ -16,7 +16,7 @@ import type { ToolContext } from '../src/types';
 // =============================================================================
 // U026 — GAP (FileReadTool.ts:L755-772): two-stage token budgeting / error vs
 // silent truncation. AMI already does a byte-aware, file-type-aware rough
-// estimate; this adds the Claude-parity OPT-IN to HARD-ERROR (with an actionable
+// estimate; this adds the reference-parity OPT-IN to HARD-ERROR (with an actionable
 // offset/limit-or-search nudge) instead of silently truncating a file mid-content.
 // =============================================================================
 

@@ -2,7 +2,7 @@
  * U083 — unit: session-scoped cost persistence (session-id boundary check) + render-perf
  * (FPS) metrics persisted alongside the serialized cost state.
  *
- * PARITY (Claude's getStoredSessionCosts / saveCurrentSessionCosts):
+ * PARITY (the reference's getStoredSessionCosts / saveCurrentSessionCosts):
  *  - getStoredSessionCosts returns undefined when projectConfig.lastSessionId !== the
  *    resuming sessionId — another session's spend is never restored into the wrong session.
  *    AMI mirrors this with an embedded `sessionId` in the serialized cost state and the

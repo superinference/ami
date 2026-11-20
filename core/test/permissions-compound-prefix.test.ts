@@ -47,7 +47,7 @@ test('subcommands sharing a root collapse via word-aligned LCP', () => {
 });
 
 // U345 (w112) — bare-root drop guard on the compound LCP collapse.
-// FUNCTIONAL CHANGE (Claude-parity, §0c): a group whose word-aligned LCP
+// FUNCTIONAL CHANGE (the reference-parity, §0c): a group whose word-aligned LCP
 // degenerates to a bare SUBCOMMAND-AWARE root (`git fetch`+`git worktree add`
 // → `git`, `git add`+`git commit` → `git`) is now DROPPED rather than emitted.
 // Previously this returned ['git'], which would auto-allow `git push --force`.

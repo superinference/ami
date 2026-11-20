@@ -17,7 +17,7 @@ import type {
 // with the three fine-grained knobs (leafOnlyPathParams / positionalSkip /
 // optionalWrite) and defaults (none / 0 / false).
 //
-// Parity gaps (Claude Code PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
+// Parity gaps (the reference PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
 // extractPathsFromCommand):
 //   - Per-cmdlet path-param data structure with switch/value/path classification
 //     and an unknown-param → force-ask security model.

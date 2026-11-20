@@ -1,6 +1,6 @@
 // Unit U020 — additive provider.ts parity gaps:
 //  - NO_PROXY `*.domain` glob form matching in resolveProxyForUrl/hostMatchesNoProxy
-//  - proxy env-var precedence: lowercase preferred over uppercase (curl/Claude parity)
+//  - proxy env-var precedence: lowercase preferred over uppercase (curl/the reference parity)
 //  - identity-keyed tool-schema cache so convertToolsForSDK converts each tool once
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
@@ -30,7 +30,7 @@ describe('resolveProxyForUrl — NO_PROXY `*.domain` glob form', () => {
   });
 });
 
-describe('resolveProxyForUrl — lowercase env precedence (curl/Claude parity)', () => {
+describe('resolveProxyForUrl — lowercase env precedence (curl/the reference parity)', () => {
   it('prefers https_proxy over HTTPS_PROXY for an https target', () => {
     const env = { https_proxy: 'http://low:1', HTTPS_PROXY: 'http://up:2' } as NodeJS.ProcessEnv;
     assert.equal(resolveProxyForUrl(env, 'https://api.anthropic.com/v1'), 'http://low:1');

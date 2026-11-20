@@ -5,7 +5,7 @@ import { validatePluginManifest } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
 // U029 — plugin-manifest metadata validation + corrective, example-bearing
-// messages (Claude parity: PluginManifestMetadataSchema / PluginAuthorSchema,
+// messages (the reference parity: PluginManifestMetadataSchema / PluginAuthorSchema,
 // utils/plugins/schemas.ts L251-L320).
 //
 // AMI's validatePluginManifest previously type-checked only name/version and the

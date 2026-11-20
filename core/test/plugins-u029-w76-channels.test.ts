@@ -11,7 +11,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 w76 — plugin `channels` declaration (Claude parity:
+// U029 w76 — plugin `channels` declaration (the reference parity:
 // PluginManifestChannelsSchema, utils/plugins/schemas.ts L656-703). A channel
 // binds an MCP server (by name, matching a key in the plugin's `mcpServers`)
 // that emits notifications to inject messages into the conversation, and may

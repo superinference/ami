@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { McpManager } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// U018 (w82) — provenance-scoped MCP allowlist (Claude-parity channelAllowlist:
+// U018 (w82) — provenance-scoped MCP allowlist (the reference-parity channelAllowlist:
 // services/mcp/channelAllowlist.ts). Claude's allowlist keys approval to a
 // server's PROVENANCE ({marketplace, plugin}) rather than its arbitrary local
 // name, so "only servers from this plugin are trusted" is expressible. AMI's

@@ -49,7 +49,7 @@ function netErr(code: string): Error {
   return e;
 }
 
-describe('countTokensWithAPI — bounded transient retry (Claude maxRetries:1 parity)', () => {
+describe('countTokensWithAPI — bounded transient retry (the reference maxRetries:1 parity)', () => {
   it('retries once on a transient 503 and returns the recovered count', async () => {
     const f = scriptedFetch([{ status: 503 }, { status: 200, json: { input_tokens: 77 } }]);
     const n = await countTokensWithAPI(baseConfig, { messages: [{ role: 'user', content: 'hi' }], fetchImpl: f.fetchImpl });

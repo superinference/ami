@@ -31,7 +31,7 @@ import {
 const WIDE_COMPOUND =
   'echo a && ls b && cat c && head d && tail e && wc f && sort g && uniq h';
 
-test('w117: the compound-suggestion cap is 5 (Claude parity)', () => {
+test('w117: the compound-suggestion cap is 5 (the reference parity)', () => {
   assert.equal(MAX_SUGGESTED_RULES_FOR_COMPOUND, 5);
 });
 

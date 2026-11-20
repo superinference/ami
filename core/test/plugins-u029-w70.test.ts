@@ -13,7 +13,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 w70 — three Claude-parity building blocks on core/core/src/plugins.ts:
+// U029 w70 — three the reference-parity building blocks on core/core/src/plugins.ts:
 //  1. `userConfig` manifest validation (schemas.ts L575-654 — user-prompted config
 //     options: type enum, required title/description, optional
 //     required/default/multiple/sensitive/min/max, identifier-safe keys).

@@ -1111,7 +1111,7 @@ describe('resolveBashTimeout — BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS',
     process.env.BASH_MAX_TIMEOUT_MS = '500';
     try { assert.equal(resolveBashTimeout(99999), 500); } finally { restore(); }
   });
-  // [functional parity] Claude Code floors the effective max UP to the default
+  // [functional parity] the reference floors the effective max UP to the default
   // (Math.max). A BASH_MAX_TIMEOUT_MS below the default no longer shrinks a
   // defaulted command's timeout below the configured default.
   it('floors the effective max up to BASH_DEFAULT_TIMEOUT_MS when max < default', () => {

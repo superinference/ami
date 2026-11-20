@@ -1,7 +1,7 @@
 /**
  * U058 — file_edit emits a `structuredPatchTruncated` signal on the diff-cost-cap
  * success paths (file exceeds the 10 MiB diff-scan cap). This is the machine-readable
- * analogue of Claude Code's readEditContext `truncated: true`: the edit landed but its
+ * analogue of the reference's readEditContext `truncated: true`: the edit landed but its
  * per-hunk location could not be rendered, so a replay/introspection surface (the session
  * journal) can say "edit location not shown — file too large to scan" instead of mistaking
  * the empty `structuredPatch: []` for "no change".

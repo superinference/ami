@@ -4,7 +4,7 @@ import { createMcpConnectTool } from '../src/tools/mcp-connect';
 
 // ---------------------------------------------------------------------------
 // U268 — Cancellable MCP connect: active teardown of the half-open connection
-// on abort (Claude-parity transport.close()/inProcessServer.close()).
+// on abort (the reference-parity transport.close()/inProcessServer.close()).
 //
 // The tool already races ensureConnected() against the abort signal. This suite
 // locks in the ADDITIVE behavior: when the race is settled by an abort, the tool

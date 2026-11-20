@@ -237,7 +237,7 @@ describe('createMcpTool.execute binary blob e2e', () => {
 
 // ---------------------------------------------------------------------------
 // E2E: an inlined text resource returned by a tool call is labeled with the
-// originating server + resource URI (Claude parity, client.ts:L2526-2534).
+// originating server + resource URI (the reference parity, client.ts:L2526-2534).
 // ---------------------------------------------------------------------------
 
 describe('createMcpTool.execute resource provenance e2e', () => {

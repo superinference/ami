@@ -19,7 +19,7 @@ import {
 // U029 w67 — additive command-definition metadata + plugin-bundle metadata +
 // ENOENT I/O-error discrimination + deterministic plugin-id generation.
 //
-// Every feature below is a Claude-Code parity building block landed in
+// Every feature below is a reference parity building block landed in
 // core/core/src/plugins.ts (the types/validators/parsers layer):
 //   - CommandDefinition: namespace, progressMessage, argNames, kind, aliases,
 //     source, type, supportsNonInteractive
@@ -43,7 +43,7 @@ function writeCmd(dir: string, rel: string, body: string): void {
   fs.writeFileSync(full, body);
 }
 
-// --- namespace (Claude parity: walkPluginMarkdown namespace array) ----------
+// --- namespace (the reference parity: walkPluginMarkdown namespace array) ----------
 
 test('namespace: top-level command has an empty namespace; nested tracks the sub-path', () => {
   const dir = path.join(tmpDir, 'ns-cmds');
@@ -183,7 +183,7 @@ test('discoverPlugins sets author + deterministic id from author.name + name', (
   assert.equal(bundles.get('anon')!.id, undefined);
 });
 
-// --- generatePluginId / sanitizePluginIdSegment (Claude parity) -------------
+// --- generatePluginId / sanitizePluginIdSegment (the reference parity) -------------
 
 test('sanitizePluginIdSegment applies the ordered Claude sanitize pipeline', () => {
   assert.equal(sanitizePluginIdSegment('Ada Lovelace'), 'ada-lovelace');

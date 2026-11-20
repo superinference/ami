@@ -1,5 +1,5 @@
 /**
- * U018 — PROJECT-tier MCP approval/rejection decision model (Claude-parity).
+ * U018 — PROJECT-tier MCP approval/rejection decision model (the reference-parity).
  *
  * AMI's M14 gate previously persisted only APPROVALS: a project `.mcp.json`
  * server the user did not approve re-surfaced as `pending` every session, and

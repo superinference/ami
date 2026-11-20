@@ -28,7 +28,7 @@ function pad(label: string): string {
 // Gaps U086: aggregate session-memory token budget (parity: MAX_TOTAL_SESSION_MEMORY_TOKENS)
 // ---------------------------------------------------------------------------
 describe('mergeFacts — aggregate token budget', () => {
-  it('exposes a default 12000-token whole-document budget (Claude parity)', () => {
+  it('exposes a default 12000-token whole-document budget (the reference parity)', () => {
     assert.equal(DEFAULT_SESSION_MEMORY_CONFIG.maxTotalTokens, 12_000);
     assert.equal(MAX_SESSION_MEMORY_TOTAL_TOKENS, 12_000);
   });

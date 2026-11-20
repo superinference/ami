@@ -229,7 +229,7 @@ describe('ProcessManager – stall-watchdog tuning knobs', () => {
   let pm: ProcessManager;
   afterEach(async () => { await cleanupPm(pm); if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('exposes distinct, Claude-parity knob constants', () => {
+  it('exposes distinct, the reference-parity knob constants', () => {
     assert.equal(STALL_CHECK_INTERVAL_MS, 5_000);
     assert.equal(STALL_THRESHOLD_MS, 45_000);
     assert.equal(STALL_TAIL_BYTES, 1024);

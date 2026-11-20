@@ -4,7 +4,7 @@ import * as assert from 'node:assert/strict';
 import { TurnMetrics } from '../src/turn-metrics';
 
 /**
- * Parity hardening for per-turn metrics (additive superset of Claude Code's
+ * Parity hardening for per-turn metrics (additive superset of the reference's
  * turn accounting). Each block is a RED-GREEN reproducer: it fails when the
  * corresponding change in turn-metrics.ts is reverted.
  */

@@ -1,7 +1,7 @@
 // Unit U018 (wave w79) — core/core/src/mcp/manager.ts
 //
 // Gap: per-plugin MCP server name scoping to avoid cross-plugin collisions
-//   (Claude-parity `addPluginScopeToServers`, mcpPluginIntegration.ts:L341-360).
+//   (the reference-parity `addPluginScopeToServers`, mcpPluginIntegration.ts:L341-360).
 //   Two plugins can both ship a server named e.g. `github`; scoping renames each to
 //   `plugin:<pluginName>:<server>` + tags `pluginSource`, and the companion
 //   `remapMcpAutoAllowPatterns` carries the plugin's auto-allow globs onto the

@@ -15,7 +15,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 w68 — Claude-Code parity building blocks in core/core/src/plugins.ts:
+// U029 w68 — the reference parity building blocks in core/core/src/plugins.ts:
 //   - Typed discriminated PluginError union + getPluginErrorMessage formatter,
 //     produced by discoverPluginsDetailed alongside the human reason.
 //   - mergePluginMcpServers: cross-plugin MCP-server duplicate suppression

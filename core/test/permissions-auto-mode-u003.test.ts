@@ -11,7 +11,7 @@ import {
 // ---------------------------------------------------------------------------
 // U003 — the `auto` permission mode: screened autonomy.
 //
-// Parity gap (AutoModeOptInDialog.tsx): Claude Code exposes a distinct permission
+// Parity gap (AutoModeOptInDialog.tsx): the reference exposes a distinct permission
 // mode between `ask` (prompt on everything) and `auto-allow` (run everything): it
 // screens EACH tool call for risky actions AND prompt injection before executing,
 // runs what is judged safe, and BLOCKS what is judged risky so the agent may try a

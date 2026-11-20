@@ -11,7 +11,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U018 (w88) — interactive IDE connect/disconnect state machine + current-IDE
-// reconciliation (Claude-parity ide.tsx `IDECommandFlow` + `findCurrentIDE`):
+// reconciliation (the reference-parity ide.tsx `IDECommandFlow` + `findCurrentIDE`):
 //   * ideTransportForUrl maps a URL scheme → the IDE transport discriminant.
 //   * McpManager.findCurrentIde reconciles the live `ide` config to a detected IDE.
 //   * McpManager.connectIde registers + connects the `ide` server and resolves
@@ -137,7 +137,7 @@ describe('McpManager.connectIde', () => {
     assert.deepEqual(mgr.findCurrentIde([vscode, jetbrains]), jetbrains);
   });
 
-  it('defaults to the Claude-parity 35s connection ceiling', () => {
+  it('defaults to the reference-parity 35s connection ceiling', () => {
     assert.equal(IDE_CONNECTION_TIMEOUT_MS, 35000);
   });
 });

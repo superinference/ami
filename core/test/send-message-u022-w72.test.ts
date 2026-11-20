@@ -1,6 +1,6 @@
 /**
  * U022 wave-72 additions to the teammate send_message subsystem. Each block maps to
- * a confirmed Claude-Code parity gap:
+ * a confirmed the reference parity gap:
  *
  *  - teammate_terminated structured message type ({type, message}) —
  *    components/messages/PlanApprovalMessage.tsx + UserTeammateMessage.tsx: a silent

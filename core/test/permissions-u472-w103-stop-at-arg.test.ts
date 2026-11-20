@@ -18,7 +18,7 @@ import {
 // `/`, `.`, `:` so the collection loop breaks at it) plus the per-command
 // spec `depth` (git stays at the two-word default so the 3rd, transient
 // token is never reached). These tests lock that behavior as an explicit
-// parity regression surface for Claude's shouldStopAtArg + calculateDepth
+// parity regression surface for the reference's shouldStopAtArg + calculateDepth
 // leaf-subcommand cap
 // (references/claude/claude-code-main/src/utils/shell/specPrefix.ts:L140-241):
 // a widening of SUBCOMMAND_SHAPE_RE or a depth bump that let a path / URL /
@@ -68,7 +68,7 @@ test('transient tokens are excluded end-to-end from a compound allow grant', () 
   // The exact function tool-executor calls to seed "allow always" rules: a
   // compound chain of git commands with transient ref/SHA args scopes each
   // subcommand with NO transient token embedded (`git show`, `git checkout`).
-  // FUNCTIONAL CHANGE (U345 w112, Claude-parity §0c): those two LCP to the bare
+  // FUNCTIONAL CHANGE (U345 w112, the reference-parity §0c): those two LCP to the bare
   // subcommand-aware root `git`, which the collapse guard now DROPS rather than
   // emit ['git'] (which would auto-allow `git push --force`).
   assert.deepEqual(

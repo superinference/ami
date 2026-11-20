@@ -41,7 +41,7 @@ function gitDiff(r: { metadata?: Record<string, unknown> }): GitDiffSummary {
   return g;
 }
 
-describe('fileEditTool – outputSchema (Claude FileEditTool contract parity)', () => {
+describe('fileEditTool – outputSchema (the reference FileEditTool contract parity)', () => {
   it('declares an object outputSchema with gitDiff/editMode/replaceAll/userModified', () => {
     const schema = fileEditTool.outputSchema;
     assert.ok(schema, 'file_edit must declare an outputSchema');

@@ -161,7 +161,7 @@ describe('validateLspServerConfig', () => {
     assert.equal('.bad' in c.extensionToLanguage!, false);
   });
 
-  // Claude parity (LspServerConfigSchema.command refine): a command carrying its
+  // the reference parity (LspServerConfigSchema.command refine): a command carrying its
   // arguments inline is rejected with a corrective, example-bearing message.
   it('rejects a command with spaces and names the "args" array as the fix', () => {
     assert.throws(
@@ -175,7 +175,7 @@ describe('validateLspServerConfig', () => {
     assert.equal(c.command, '/Applications/My App/bin/lsp');
   });
 
-  // Claude parity (schemas.ts fileExtension refine): an extension key must start
+  // the reference parity (schemas.ts fileExtension refine): an extension key must start
   // with a dot, with a corrective example in the message.
   it('rejects an extensionToLanguage key missing its leading dot', () => {
     assert.throws(

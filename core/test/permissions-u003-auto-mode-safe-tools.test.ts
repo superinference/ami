@@ -11,7 +11,7 @@ import {
 // ---------------------------------------------------------------------------
 // U003 — coordination/orchestration tools are auto-mode-safe (skip the screen).
 //
-// Parity gap (classifierDecision.ts SAFE_YOLO_ALLOWLISTED_TOOLS): Claude Code marks
+// Parity gap (classifierDecision.ts SAFE_YOLO_ALLOWLISTED_TOOLS): the reference marks
 // swarm/agent-coordination tools (send_message, task-*, team create/delete, workflow)
 // as safe-to-skip in autonomous mode because the spawned subagents/teammates carry
 // their OWN per-call permission checks. AMI's `auto` mode previously screened EVERY

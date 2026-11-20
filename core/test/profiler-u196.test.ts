@@ -23,7 +23,7 @@ describe('Profiler.formatTimeline column alignment', () => {
     p.mark('b');
     const out = p.formatTimeline();
     // Cumulative column padded to width 7, delta to width 6; memory via the
-    // shared formatFileSize humanizer (RSS + Heap, Claude profilerBase parity).
+    // shared formatFileSize humanizer (RSS + Heap, the reference profilerBase parity).
     assert.match(out, /a {2} {6}0ms {2}Δ {5}0ms {2}RSS: 10MB, Heap: 5MB/);
   });
 

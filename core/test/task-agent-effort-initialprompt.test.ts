@@ -1,5 +1,5 @@
 // E2E red-green reproducer for the per-agent `effort` and `initialPrompt` defaults
-// (Claude parity), driven through the real taskTool.execute path:
+// (the reference parity), driven through the real taskTool.execute path:
 //
 //  - `effort`: when an agent definition declares an effort level and the caller does
 //    NOT pass a per-call `effort`, the spawned sub-engine config must enable thinking

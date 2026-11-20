@@ -1,5 +1,5 @@
 /**
- * Unit U007 — hook output parsing/aggregation parity (Claude Code -> AMI).
+ * Unit U007 — hook output parsing/aggregation parity (the reference -> AMI).
  *
  * Gaps covered (all self-contained in core/core/src/hooks.ts):
  *  - [20] executePostToolUse / executeUserPromptSubmit aggregate ALL

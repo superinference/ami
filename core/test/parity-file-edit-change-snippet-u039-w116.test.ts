@@ -15,7 +15,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U039/w116 — Bounded context-8 change snippet for out-of-band file changes.
  *
- * Parity target: Claude Code's FileEditTool/utils.ts `getSnippetForTwoFileDiff`
+ * Parity target: the reference's FileEditTool/utils.ts `getSnippetForTwoFileDiff`
  * (references/claude/claude-code-main/src/tools/FileEditTool/utils.ts:L352-406),
  * surfaced via the `edited_text_file` attachment. AMI previously detected an
  * external modification (fileCache.describeChange) and ONLY errored with

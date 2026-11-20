@@ -33,7 +33,7 @@ function byPath(files: { path: string; content: string }[]): Map<string, string>
   return new Map(files.map((f) => [f.path, f.content]));
 }
 
-test('captures Claude-parity default constants', () => {
+test('captures the reference-parity default constants', () => {
   assert.equal(UNTRACKED_MAX_FILE_SIZE_BYTES, 500 * 1024 * 1024);
   assert.equal(UNTRACKED_MAX_TOTAL_SIZE_BYTES, 5 * 1024 * 1024 * 1024);
   assert.equal(UNTRACKED_MAX_FILE_COUNT, 20000);

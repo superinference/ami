@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { taskTrackerTool } from '../src/tools/task-tracker';
 
 // ---------------------------------------------------------------------------
-// U050 parity: the richer per-action prompt/affordance guidance Claude Code
+// U050 parity: the richer per-action prompt/affordance guidance the reference
 // ships on its dedicated TaskCreate/TaskGet/TaskList tool prompts must be
 // surfaced on AMI's consolidated task_tracker tool description — the string the
 // model always sees — not relegated to a disable-model-invocation skill. These

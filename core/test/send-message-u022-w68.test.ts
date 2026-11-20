@@ -1,7 +1,7 @@
 /**
  * U022 (w68) — additive per-message sender COLOR on the teammate mailbox.
  *
- * Parity gap (Claude Code teammateMailbox TeammateMessage.color /
+ * Parity gap (the reference teammateMailbox TeammateMessage.color /
  * UserTeammateMessage): every delivered inter-agent message should carry the
  * sender's assigned display color so a consumer can render it in that teammate's
  * own color. AMI assigns per-agent colors in team.ts (round-robin palette) but

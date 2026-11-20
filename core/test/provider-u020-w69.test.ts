@@ -2,7 +2,7 @@
 // provider-u020-w69.test.ts
 //
 // Parity unit U020 (wave 69) — additive provider-transport capabilities in
-// core/core/src/provider.ts, each mirroring a Claude Code reference:
+// core/core/src/provider.ts, each mirroring a reference reference:
 //
 //   - stop_sequences generation control: ProviderConfig.stopSequences threaded
 //     into the AI SDK streamText call so a caller can halt generation on a

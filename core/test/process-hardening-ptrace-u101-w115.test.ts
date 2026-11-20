@@ -1,6 +1,6 @@
 /**
  * Unit tests (U101/w115) for the live-ptrace block added to best-effort process
- * hardening — the pure port of Claude Code's setNonDumpable()/prctl(PR_SET_DUMPABLE,0)
+ * hardening — the pure port of the reference's setNonDumpable()/prctl(PR_SET_DUMPABLE,0)
  * call (upstreamproxy.ts:L220-252). This complements the existing core-dump-filter
  * measure: prctl(PR_SET_DUMPABLE,0) ALSO blocks a same-UID `gdb -p $PPID` /
  * /proc/<pid>/mem read of the live heap, not just the post-crash core file. Node has

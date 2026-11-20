@@ -61,7 +61,7 @@ describe('U049 w91 — buildRipgrepShellIntegration', () => {
   it('emits a guarded function execing the configured path (builtin, no argv0)', () => {
     const snippet = buildRipgrepShellIntegration({ mode: 'builtin', command: '/opt/rg bin/rg' });
     assert.ok(snippet);
-    // System-rg-absent guard with the unalias-first probe (Claude parity).
+    // System-rg-absent guard with the unalias-first probe (the reference parity).
     assert.match(snippet!, /if ! \(unalias rg 2>\/dev\/null; command -v rg\) >\/dev\/null 2>&1; then/);
     assert.match(snippet!, /^fi$/m);
     // Path POSIX-quoted (contains a space) and NOT the ARGV0 form.

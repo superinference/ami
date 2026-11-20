@@ -10,7 +10,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// U003-w71 — two Claude-parity primitives for core/core/src/permissions.ts:
+// U003-w71 — two the reference-parity primitives for core/core/src/permissions.ts:
 //
 //  1. isHelpCommand: a plain `<cmd> --help` is read-only; the derived allow rule
 //     should be the FULL command, never a broad `cmd:*` prefix (which would grant

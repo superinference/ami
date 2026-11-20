@@ -1,7 +1,7 @@
 /**
  * Unit tests for the canonical UUID boundary validator (core/src/ids.ts).
  *
- * Parity target: Claude Code's `validateUuid`
+ * Parity target: the reference's `validateUuid`
  * (references/claude/claude-code-main/src/utils/uuid.ts:L12-L17) — accept
  * `unknown`, type-guard to a string, match the anchored 8-4-4-4-12 regex, and
  * return the narrowed string or `null`, never throwing.

@@ -1,7 +1,7 @@
 /**
  * U064 (w75) — exit_worktree parity hardening, additive behaviors.
  *
- * Confirmed parity gaps against Claude's ExitWorktree / WorktreeExitDialog that
+ * Confirmed parity gaps against the reference's ExitWorktree / WorktreeExitDialog that
  * AMI's exit_worktree was missing or only partially covering:
  *
  *   1. SESSION-OWNERSHIP SCOPE GUARD (gaps "no-op safety boundary" / "session

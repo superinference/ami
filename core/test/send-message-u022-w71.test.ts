@@ -1,6 +1,6 @@
 /**
  * U022 wave-71 additions to the teammate send_message subsystem. Each block maps to
- * a confirmed Claude-Code parity gap:
+ * a confirmed the reference parity gap:
  *
  *  - Multi-subscriber mailbox change signal (subscribeMailbox) — utils/mailbox.ts
  *    `Mailbox.subscribe` (createSignal), coexisting with AMI's single eager notifier.

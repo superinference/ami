@@ -1,5 +1,5 @@
 /**
- * Parity hardening for the `diagnostics` LSP tool (additive superset of Claude
+ * Parity hardening for the `diagnostics` LSP tool (additive superset of the reference
  * Code's Problems surfacing). Each test discriminates the new behavior from the
  * old: reverting the corresponding change in src/tools/lsp-diagnostics.ts makes
  * the test fail (RED), re-applying it makes it pass (GREEN).

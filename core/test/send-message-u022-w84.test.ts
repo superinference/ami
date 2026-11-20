@@ -3,7 +3,7 @@
  *
  * `clearPendingCrossAgentHandshakes()` drops ONLY the pending-decision registries
  * (outstanding shutdown-request handshakes + blocked-on-plan-approval boundaries),
- * AMI's analog of Claude Code's `clearAllPendingCallbacks` on /clear
+ * AMI's analog of the reference's `clearAllPendingCallbacks` on /clear
  * (hooks/useSwarmPermissionPoller.ts). It must:
  *   - clear outstanding shutdown requests (hasOutstandingShutdownRequest → false),
  *   - clear awaiting-plan-approval boundaries (isAwaitingPlanApproval → false),

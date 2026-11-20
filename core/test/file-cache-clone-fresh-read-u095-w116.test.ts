@@ -4,7 +4,7 @@
  * The canonical "clone + per-path invalidation" dedup-busting primitive: produce a
  * fully independent snapshot that has FORGOTTEN one path, so a read of that path
  * through the clone cannot be short-circuited by a stale/"unchanged" entry, while the
- * live cache is left completely untouched. Claude parity: updateMagicDoc's
+ * live cache is left completely untouched. the reference parity: updateMagicDoc's
  * `cloneFileStateCache(x); x.delete(docPath)` (services/MagicDocs/magicDocs.ts L121-153).
  *
  * The cache is inspected via listPaths()/entries()/dump() (not get(), which stats the

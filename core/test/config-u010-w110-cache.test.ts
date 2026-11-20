@@ -1,7 +1,7 @@
 /**
  * U010 / w110 — config read-cache control (parity: the reference's settings cache).
  *
- * Three Claude-Code parity caching capabilities, all correctness-preserving and
+ * Three the reference parity caching capabilities, all correctness-preserving and
  * tied to ONE invalidation point:
  *
  *  - Memoized managed-config DEVICE-DEFAULT path resolution (parity:

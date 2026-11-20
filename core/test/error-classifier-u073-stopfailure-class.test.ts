@@ -1,7 +1,7 @@
 /**
  * U073 — StopFailure error-class taxonomy (error-classifier.ts + hooks.ts wiring).
  *
- * Parity gap: Claude Code's StopFailure hook is matched on an enumerated error
+ * Parity gap: the reference's StopFailure hook is matched on an enumerated error
  * taxonomy (rate_limit / authentication_failed / billing_error / invalid_request /
  * server_error / max_output_tokens / unknown). AMI advertised those exact matcher
  * values but scoped the StopFailure hook on the RAW error message, and the sole

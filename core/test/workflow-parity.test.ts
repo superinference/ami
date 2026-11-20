@@ -12,7 +12,7 @@ import {
 } from '../src/tools/workflow';
 import type { ToolContext } from '../src/types';
 
-// Workflow tool — Claude Code parity hardening (additive superset):
+// Workflow tool — the reference parity hardening (additive superset):
 //   1. meta must declare BOTH a non-empty name AND description.
 //   2. string-typed inputs are validated up front.
 //   3. script size is bounded before compilation.

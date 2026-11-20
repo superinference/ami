@@ -13,7 +13,7 @@ import type { ToolContext, ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // gap U011 (w89): Required-MCP-server readiness poll before spawn, with
-// early-exit on a failed server. Parity: Claude AgentTool.tsx:L367-410.
+// early-exit on a failed server. Parity: the reference AgentTool.tsx:L367-410.
 // ---------------------------------------------------------------------------
 
 describe('normalizeMcpServerState', () => {

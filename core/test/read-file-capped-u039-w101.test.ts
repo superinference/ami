@@ -7,7 +7,7 @@ import { readFileCapped, READ_CHUNK_SIZE } from '../src/tools/read-edit-context'
 
 /**
  * Unit coverage for the memory-bounded, truncation-aware incremental file reader
- * (U039 / w101). Parity intent: Claude Code's readCapped (readEditContext.ts) —
+ * (U039 / w101). Parity intent: the reference's readCapped (readEditContext.ts) —
  * read a file into memory incrementally with a hard byte cap so a file that is
  * (or GROWS, past an earlier stat) beyond the cap is reported as `truncated`
  * instead of being slurped whole and risking an OOM.

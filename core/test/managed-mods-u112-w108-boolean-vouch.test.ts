@@ -16,7 +16,7 @@ import {
  */
 const localUserMod: ModInfo = { name: 'my-mod', id: 'my-mod@local', tier: 'user', marketplace: 'local' };
 
-describe('isModAllowed — legacy string[] entry is NOT an enablement vouch (Claude parity)', () => {
+describe('isModAllowed — legacy string[] entry is NOT an enablement vouch (the reference parity)', () => {
   it('a non-empty version-list array does NOT vouch a user mod under allow-only', () => {
     const policy: ManagedModsPolicy = {
       allowManagedModsOnly: true,

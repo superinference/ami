@@ -5,7 +5,7 @@ import { validatePluginManifest } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
 // U029 — corrective, example-bearing validation messages for a plugin manifest's
-// inline `lspServers` declarations (Claude parity: LspServerConfigSchema +
+// inline `lspServers` declarations (the reference parity: LspServerConfigSchema +
 // fileExtension refine, utils/plugins/schemas.ts L708-L736).
 //
 // AMI's validatePluginManifest previously treated an inline `lspServers` record as

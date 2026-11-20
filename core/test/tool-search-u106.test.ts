@@ -11,7 +11,7 @@ import type { SkillDefinition, SkillManagerLike } from '../src/skills';
 //  B) a required `+term` matches against the description / searchHint / whenToUse,
 //     not only the name (Claude pre-filters on name-parts OR description OR hint).
 //  D) a term that matches a tool's curated `searchHint` ranks ABOVE a term that
-//     only matches a description (Claude weights hint +4 vs description +2).
+//     only matches a description (the reference weights hint +4 vs description +2).
 
 const base: ToolDefinition[] = [
   { name: 'bash', description: 'Execute shell commands', inputSchema: { type: 'object', properties: {}, required: [] }, isReadOnly: false, execute: async () => ({ output: '', isError: false }) },

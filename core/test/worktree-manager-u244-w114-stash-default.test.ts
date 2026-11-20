@@ -2,7 +2,7 @@
  * U244 (w114) — stashToCleanState: optional message parameter with a timestamped
  * default + untracked-file preservation.
  *
- * Confirmed parity gaps against Claude's `stashToCleanState(message?)`:
+ * Confirmed parity gaps against the reference's `stashToCleanState(message?)`:
  *   - OPTIONAL MESSAGE / TIMESTAMPED DEFAULT: Claude's helper takes an optional
  *     stash message and, when omitted, falls back to a timestamped default so an
  *     auto-stash is always identifiable in `git stash list`. AMI's helper

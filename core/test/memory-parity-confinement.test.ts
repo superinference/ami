@@ -1,5 +1,5 @@
 /**
- * Claude-parity hardening for MemoryManager — new confinement + cap behaviors:
+ * the reference-parity hardening for MemoryManager — new confinement + cap behaviors:
  *   - truncateEntrypointContent / MEMORY.md entrypoint size caps (H4)
  *   - resolveAtImports realpath confinement — a symlink INSIDE the workspace
  *     pointing OUT is blocked (lexical prefix check missed it) (H15/H16)

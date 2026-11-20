@@ -2,7 +2,7 @@
  * Unit + integration tests for the speculative bash-classifier (the interactive
  * ASK-path grace-race optimization) and its PermissionManager wiring.
  *
- * Parity target: Claude's speculative classifier (bashPermissions.ts peek/consume
+ * Parity target: the reference's speculative classifier (bashPermissions.ts peek/consume
  * + the Promise.race grace window in useCanUseTool.tsx). A high-confidence match
  * that settles inside the grace window turns a would-be prompt into an allow; a
  * miss / low-confidence / timeout / rejection falls through to the prompt.

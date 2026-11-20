@@ -1,7 +1,7 @@
 /**
  * U022 (w67) — additive structured-protocol + mailbox parity for send_message.
  *
- * New capabilities covered (all additive; Claude-parity schemas):
+ * New capabilities covered (all additive; the reference-parity schemas):
  *  - sandbox_permission_request / sandbox_permission_response (host-egress
  *    delegation worker→lead→worker)  — teammateMailbox.SandboxPermission*Message
  *  - team_permission_update (lead-only team-wide rule; DM or "*" broadcast)

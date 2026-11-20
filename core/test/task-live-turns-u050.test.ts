@@ -4,7 +4,7 @@ import { taskTool, resetAgentRegistry } from '../src/tools/task';
 import type { ToolContext, EngineConfig, EngineEvent } from '../src/types';
 
 /**
- * U050 — END-TO-END: a subagent's live-display state (PARITY: Claude's DreamTask
+ * U050 — END-TO-END: a subagent's live-display state (PARITY: the reference's DreamTask
  * phase + bounded turn buffer) is tracked through the REAL task tool event loop and
  * surfaced in the terminated/capped completion introspection footer. Drives the
  * actual taskTool.execute → foreground subagent loop with a fake sub-engine.

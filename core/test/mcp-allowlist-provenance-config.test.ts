@@ -11,7 +11,7 @@ after(() => { setTimeout(() => process.exit(0), 200); });
 
 // ---------------------------------------------------------------------------
 // U018 (w82) — the `allowedMcpServers` config knob now accepts provenance-scoped
-// entries (Claude-parity channelAllowlist) in addition to name/URL strings, and
+// entries (the reference-parity channelAllowlist) in addition to name/URL strings, and
 // those entries validate + accumulate across config layers. This is the
 // user-facing end of the provenance allowlist capability (the enforcement end is
 // McpManager.setAllowedServers / enforceAllowlist).

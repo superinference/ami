@@ -1,4 +1,4 @@
-// Unit coverage for the agent-definition schema fields added for Claude parity:
+// Unit coverage for the agent-definition schema fields added for the reference parity:
 // `effort` (a thinking-effort level OR a non-negative integer) and `initialPrompt`
 // (text prepended to the agent's first user turn). Exercises the REAL exported
 // AgentDefinition type + validateAgentDefinition warnings in core/src/skills.ts.

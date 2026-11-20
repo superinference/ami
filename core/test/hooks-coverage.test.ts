@@ -1378,7 +1378,7 @@ describe('runHookByType — command hook JSON output', () => {
 // ---------------------------------------------------------------------------
 describe('runHookByType — command hook error/timeout', () => {
   it('handles command timeout gracefully', async () => {
-    // timeout is in SECONDS (Claude Code parity); 0.1s → clamped to 100ms, so the
+    // timeout is in SECONDS (the reference parity); 0.1s → clamped to 100ms, so the
     // 30s sleep is killed almost immediately. Timeout rejects → caught → allow.
     const tmpDir = writeTmpHooks([
       { event: 'preToolUse', hook: { type: 'command', command: 'sleep 30', timeout: 0.1 } },

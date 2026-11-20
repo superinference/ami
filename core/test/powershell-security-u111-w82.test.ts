@@ -12,7 +12,7 @@ import type {
 // ---------------------------------------------------------------------------
 // U111 (w82) — AST structural defense-in-depth for Start-Process -Verb RunAs.
 //
-// Parity gap (Claude Code PowerShellTool/powershellSecurity.ts checkStartProcess,
+// Parity gap (the reference PowerShellTool/powershellSecurity.ts checkStartProcess,
 // PR #23554): the AST validator inspects the parsed `children[]` of a colon-bound
 // `-Verb:<value>` parameter and asks when the bound value, with quotes/backticks/
 // whitespace stripped, normalizes to `runas`. This catches elevation requests

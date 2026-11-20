@@ -81,7 +81,7 @@ describe('checkBinaryContent — null-byte threshold', () => {
     assert.ok(!(await checkBinaryContent(fp)));
   });
 
-  it('ANY null byte makes a file binary (Claude parity)', async () => {
+  it('ANY null byte makes a file binary (the reference parity)', async () => {
     const fp = path.join(tmpDir, 'edge.dat');
     const buf = Buffer.alloc(1000, 0x41); // all 'A'
     buf[500] = 0; // a single NUL is enough
@@ -147,10 +147,10 @@ describe('file_read tool rejects known binary extensions', () => {
     assert.ok(result.output.includes('Hello world'));
   });
 
-  // Claude parity: a single embedded NUL byte classifies content as binary. A planted
+  // the reference parity: a single embedded NUL byte classifies content as binary. A planted
   // "text" file with a NUL is the classic binary-smuggling vector, so file_read reports
   // it as a binary file rather than streaming raw bytes into the prompt.
-  it('classifies text-with-single-null-byte as binary (Claude parity)', async () => {
+  it('classifies text-with-single-null-byte as binary (the reference parity)', async () => {
     const fp = path.join(tmpDir, 'sparse-null.txt');
     const buf = Buffer.alloc(1000, 0x41); // 1000 bytes of 'A'
     buf[500] = 0; // one embedded NUL

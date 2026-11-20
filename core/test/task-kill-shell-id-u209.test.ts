@@ -5,7 +5,7 @@ import { taskKillTool } from '../src/tools/task-kill';
 import type { ToolContext } from '../src/types';
 
 /**
- * PARITY (U209): the deprecated `shell_id` input alias (Claude Code's KillShell
+ * PARITY (U209): the deprecated `shell_id` input alias (the reference's KillShell
  * backward-compat parameter). Claude's TaskStop accepts both `task_id` and a
  * deprecated `shell_id` and coalesces `id = task_id ?? shell_id`, so an old
  * KillShell-style transcript/SDK call keeps resolving. AMI must do the same.

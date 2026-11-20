@@ -1,5 +1,5 @@
 /**
- * Claude-parity: projectSlug length cap + hash suffix for deep paths (H31).
+ * the reference-parity: projectSlug length cap + hash suffix for deep paths (H31).
  *
  * Run: cd core/core && node --import tsx --test test/reference-journal-slug-cap.test.ts
  */

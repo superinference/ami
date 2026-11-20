@@ -6,7 +6,7 @@ import * as os from 'os';
 import { ProcessManager } from '../src/process-manager';
 
 // ---------------------------------------------------------------------------
-// Parity tests for background-process management (additive superset vs Claude
+// Parity tests for background-process management (additive superset vs the reference
 // Code background shells): concurrency-limit enforcement, output-line filter,
 // and terminal-task reaping/orphan cleanup. Each block is red-green validated:
 // reverting the corresponding src change makes exactly that block fail.

@@ -37,7 +37,7 @@ function mkTmp(): string {
 // Feature 1 — bounded recursive command decomposition (DoS guard)
 // ---------------------------------------------------------------------------
 
-test('MAX_COMMAND_PARSE_DEPTH is a small positive bound (Claude parity: 10)', () => {
+test('MAX_COMMAND_PARSE_DEPTH is a small positive bound (the reference parity: 10)', () => {
   assert.equal(MAX_COMMAND_PARSE_DEPTH, 10);
 });
 

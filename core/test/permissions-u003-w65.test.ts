@@ -8,7 +8,7 @@ import {
 
 // ===========================================================================
 // UNIT U003 — wave w65 parity gaps in core/core/src/permissions.ts
-// Each block cites the Claude reference whose behavior AMI is matching.
+// Each block cites the reference reference whose behavior AMI is matching.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------

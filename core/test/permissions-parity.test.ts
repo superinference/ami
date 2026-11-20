@@ -18,7 +18,7 @@ import {
 //   `normalizePermissionMode('default')` then returns null → these assertions fail.
 // GREEN: with the alias table it returns 'ask'.
 // ---------------------------------------------------------------------------
-describe('normalizePermissionMode — Claude Code wire-name + alias parity', () => {
+describe('normalizePermissionMode — the reference wire-name + alias parity', () => {
   it("maps Claude Code's `default` mode to AMI's `ask` (not null)", () => {
     // Discriminator: the OLD code returned null here; the fix returns 'ask'.
     assert.equal(normalizePermissionMode('default'), 'ask');
@@ -74,7 +74,7 @@ describe('normalizePermissionMode — Claude Code wire-name + alias parity', () 
 });
 
 // ---------------------------------------------------------------------------
-// Fix 2: cyclePermissionMode — Claude Code shift-tab mode cycle parity.
+// Fix 2: cyclePermissionMode — the reference shift-tab mode cycle parity.
 //
 // RED (revert fix): delete cyclePermissionMode / PERMISSION_MODE_CYCLE. The
 //   import fails to resolve and the whole suite errors (red). Alternatively,

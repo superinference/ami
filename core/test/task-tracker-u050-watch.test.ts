@@ -59,7 +59,7 @@ describe('U050 resolveTaskWatchDebounceMs — env waterfall', () => {
     if (saved.CLAUDE_CODE_TASK_WATCH_DEBOUNCE_MS === undefined) delete process.env.CLAUDE_CODE_TASK_WATCH_DEBOUNCE_MS;
   });
 
-  it('defaults to DEBOUNCE_MS = 1000 (Claude parity) when nothing is set', () => {
+  it('defaults to DEBOUNCE_MS = 1000 (the reference parity) when nothing is set', () => {
     delete process.env.AMI_TASK_WATCH_DEBOUNCE_MS;
     delete process.env.CLAUDE_CODE_TASK_WATCH_DEBOUNCE_MS;
     assert.equal(DEFAULT_TASK_WATCH_DEBOUNCE_MS, 1000);

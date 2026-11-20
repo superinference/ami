@@ -11,7 +11,7 @@ import type { ToolContext } from '../src/types';
 // memory-bounded readFileCapped seam (readHooks.readCapped) instead of an
 // unbounded fs.readFile.
 //
-// Parity intent: Claude Code's readCapped diff-read fallback — a file that is
+// Parity intent: the reference's readCapped diff-read fallback — a file that is
 // (or GROWS past the earlier stat, a TOCTOU window) beyond the cap is reported
 // as truncated and never slurped whole, degrading to a size-limit error rather
 // than risking an OOM. For a normal file the full content is read exactly as

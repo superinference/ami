@@ -203,7 +203,7 @@ function captureRgArgs(): { args: string[][] } {
   return { args: captured };
 }
 
-describe('grep – Claude-Code single-letter aliases translate to rg flags (parity)', () => {
+describe('grep – the reference single-letter aliases translate to rg flags (parity)', () => {
   it('-C maps to context_lines, -i to case_insensitive', async () => {
     const cap = captureRgArgs();
     await grepTool.execute!(

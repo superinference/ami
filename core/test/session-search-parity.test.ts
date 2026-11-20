@@ -7,7 +7,7 @@ import { searchSessions, searchSessionsRanked } from '../src/session-search';
 import { projectStateDir } from '../src/reference-journal';
 
 /**
- * Parity features ported from Claude Code's session/transcript search:
+ * Parity features ported from the reference's session/transcript search:
  *  - RENDERED_AS_SENTINEL exclusion (transcriptSearch.ts L9-43): interrupt
  *    placeholder strings render as a UI widget, so their raw text must NOT be
  *    indexed (phantom match: /interrupted -> "[... interrupted ...]").

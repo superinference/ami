@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { resolveBashTimeout, interpretExitCode, diagnoseError, bashTool } from '../src/tools/bash';
 
-// Unit U030 — parity gaps against Claude Code's BashTool / commandSemantics /
+// Unit U030 — parity gaps against the reference's BashTool / commandSemantics /
 // timeouts behaviour. Each describe block maps to one confirmed gap.
 
 describe('U030 resolveBashTimeout — effective max is never below the configured default', () => {

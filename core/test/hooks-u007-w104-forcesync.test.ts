@@ -1,6 +1,6 @@
 /**
  * U007 (w104) — forceSyncExecution for SessionStart / Setup lifecycle hooks
- * (Claude Code parity: executeSessionStartHooks / executeSetupHooks
+ * (the reference parity: executeSessionStartHooks / executeSetupHooks
  * `forceSyncExecution` option — references/claude/claude-code-main/src/utils/
  * sessionStart.ts:L17, L139, L179-L207).
  *

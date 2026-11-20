@@ -127,7 +127,7 @@ describe('Profiler – getStatistics', () => {
     assert.equal(stats.minMs, 1);
     assert.equal(stats.maxMs, 100);
     assert.equal(stats.totalMs, 5050);
-    // Linear-interpolation percentiles (Claude stats.tsx parity): for [1..100],
+    // Linear-interpolation percentiles (the reference stats.tsx parity): for [1..100],
     // p50 = 50.5, p95 = 95.05, p99 = 99.01.
     assert.equal(stats.p50Ms, 50.5);
     assert.equal(stats.p95Ms, 95.05);
@@ -367,7 +367,7 @@ describe('computeStatistics', () => {
     assert.equal(stats.count, 100);
     assert.equal(stats.minMs, 1);
     assert.equal(stats.maxMs, 100);
-    // Linear interpolation (Claude stats.tsx parity).
+    // Linear interpolation (the reference stats.tsx parity).
     assert.equal(stats.p50Ms, 50.5);
     assert.equal(stats.p75Ms, 75.25);
     assert.equal(stats.p95Ms, 95.05);

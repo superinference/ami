@@ -1,5 +1,5 @@
 /**
- * Parity tests for hook execute* RETURN-VALUE enrichments (Claude->AMI parity):
+ * Parity tests for hook execute* RETURN-VALUE enrichments (the reference->AMI parity):
  *  - Stop hooks can block turn-end (blockingErrors) / prevent continuation
  *    (preventContinuation + stopReason) + stopHookActive re-entrancy guard.
  *  - PostToolUse hooks can block / prevent continuation.

@@ -1,5 +1,5 @@
 // Behavioral coverage for resolveAgentModelDisplay — the resolved display-model
-// helper added for Claude parity (agentDisplay.ts resolveAgentModelDisplay): an
+// helper added for the reference parity (agentDisplay.ts resolveAgentModelDisplay): an
 // agent's declared model, else the caller-supplied effective subagent default, with
 // the `inherit` sentinel surfaced verbatim and a blank result collapsing to
 // undefined. Exercises the REAL exported function in core/src/skills.ts.

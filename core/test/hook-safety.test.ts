@@ -9,7 +9,7 @@ import {
 } from '../src/hooks';
 
 describe('Hook safety constants', () => {
-  it('MAX_HOOK_TIMEOUT_MS is 600000 (10 min — Claude Code parity)', () => {
+  it('MAX_HOOK_TIMEOUT_MS is 600000 (10 min — the reference parity)', () => {
     assert.equal(MAX_HOOK_TIMEOUT_MS, 600_000);
   });
 

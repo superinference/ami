@@ -1,6 +1,6 @@
 /**
  * Parity-campaign wiring tests (hooks-core gap file). Each block closes a themed
- * cluster of Claude Code parity gaps, with red-green discriminators noted inline:
+ * cluster of the reference parity gaps, with red-green discriminators noted inline:
  *
  *  - HTTP header injection hardening (sanitizeHeaderValue; CR/LF/NUL strip after
  *    env interpolation) — SECURITY. [gaps 96,100,104]
@@ -211,7 +211,7 @@ describe('engine-backed hook posture', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('uses Claude-parity "Agent hook condition was not met" wording', async () => {
+  it('uses the reference-parity "Agent hook condition was not met" wording', async () => {
     const dir = tmpCwdWithHooks([{ event: 'preToolUse', hook: { type: 'agent', prompt: 'verify', timeout: 5 } }]);
     const { decision } = await captureCfg(dir, '{"ok":false,"reason":"nope"}');
     const d = decision as { action: string; reason?: string };
@@ -220,7 +220,7 @@ describe('engine-backed hook posture', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('uses Claude-parity "Prompt hook condition was not met" wording', async () => {
+  it('uses the reference-parity "Prompt hook condition was not met" wording', async () => {
     const dir = tmpCwdWithHooks([{ event: 'preToolUse', hook: { type: 'prompt', prompt: 'verify', timeout: 5 } }]);
     const { decision } = await captureCfg(dir, '{"ok":false,"reason":"bad"}');
     const d = decision as { action: string; reason?: string };

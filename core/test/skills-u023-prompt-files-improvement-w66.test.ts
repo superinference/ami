@@ -1,4 +1,4 @@
-// U023 (w66) — Claude-parity skill/agent building blocks added to core/core/src/skills.ts:
+// U023 (w66) — the reference-parity skill/agent building blocks added to core/core/src/skills.ts:
 //   * getPromptForCommand / resolveSkillPrompt — programmatic dynamic skill body
 //       (parity with the reference's bundled-skill getPromptForCommand, e.g. /batch, /claude-api)
 //   * files / getSkillFile — bundled companion-file resources with path-traversal safety

@@ -33,7 +33,7 @@ describe('expandEnvVars defaults (H39)', () => {
     assert.equal(expandEnvVars('${__EE_MISS:-a:-b}'), 'a:-b');
   });
 
-  it('expands plain ${VAR} and bare $VAR, preserving the original token for missing ones (Claude-parity)', () => {
+  it('expands plain ${VAR} and bare $VAR, preserving the original token for missing ones (the reference-parity)', () => {
     process.env.__EE_SET = 'x';
     // Unresolved references keep their literal token so the broken placeholder
     // stays visible for debugging instead of collapsing to ''.
@@ -46,7 +46,7 @@ describe('expandEnvVarsTracked missing-var reporting (H35)', () => {
   it('reports only variables that are undefined and have no default', () => {
     process.env.__EE_SET = 'x';
     const r = expandEnvVarsTracked('${__EE_SET}/${__EE_MISS}/${__EE_SET:-d}/${__EE_MISS:-d}');
-    // The unresolved `${__EE_MISS}` keeps its literal token (Claude-parity); the
+    // The unresolved `${__EE_MISS}` keeps its literal token (the reference-parity); the
     // `${__EE_MISS:-d}` resolves to its default and is not reported missing.
     assert.equal(r.expanded, 'x/${__EE_MISS}/x/d');
     assert.deepEqual(r.missingVars, ['__EE_MISS']);

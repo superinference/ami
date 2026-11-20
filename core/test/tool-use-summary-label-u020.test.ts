@@ -63,7 +63,7 @@ const sampleTools: ToolUseSummaryInput[] = [
   { name: 'file_edit', input: { file_path: 'src/user.ts' }, output: 'ok' },
 ];
 
-describe('U020 TOOL_USE_SUMMARY_PROMPT (verbatim Claude parity)', () => {
+describe('U020 TOOL_USE_SUMMARY_PROMPT (verbatim the reference parity)', () => {
   it('is a past-tense, git-commit-subject label prompt with the reference examples', () => {
     assert.ok(TOOL_USE_SUMMARY_PROMPT.includes('short summary label'));
     assert.ok(TOOL_USE_SUMMARY_PROMPT.includes('truncates around 30 characters'));

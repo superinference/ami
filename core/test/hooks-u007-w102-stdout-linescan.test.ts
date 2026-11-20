@@ -1,6 +1,6 @@
 /**
  * U007 / w102 — Recover a command hook's JSON decision from stdout that
- * interleaves ordinary log lines with the decision line (Claude Code parity:
+ * interleaves ordinary log lines with the decision line (the reference parity:
  * `checkForAsyncHookResponses` stdout line-scan, AsyncHookRegistry.ts L183-212).
  *
  * Before this change AMI parsed a command hook's stdout with a single

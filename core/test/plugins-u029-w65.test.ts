@@ -13,7 +13,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 (w65) — two Claude-parity gaps in core/core/src/plugins.ts:
+// U029 (w65) — two the reference-parity gaps in core/core/src/plugins.ts:
 //   (gap) Description derived from the command body/prompt when none is declared
 //         (parity: extractDescriptionFromMarkdown, utils/markdownConfigLoader.ts).
 //   (gap) Plugin manifest name sanitized for namespacing: a name with spaces /

@@ -11,7 +11,7 @@ import {
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// Claude Code task-tracker parity hardening.
+// the reference task-tracker parity hardening.
 //
 // Each behavioural suite below is a red-green reproducer: it is written so that
 // reverting the corresponding fix in src/tools/task-tracker.ts makes the suite

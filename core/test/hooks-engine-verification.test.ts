@@ -1,6 +1,6 @@
 /**
  * Parity tests for AI-driven (prompt/agent) hook verification contract + the
- * session permission context for hook sub-engines (Claude->AMI parity):
+ * session permission context for hook sub-engines (the reference->AMI parity):
  *  - prompt/agent hooks run under the configured permission mode (not blanket
  *    auto-allow) and are told to return {ok, reason};
  *  - an {ok:false} verification result blocks (DENY with reason);

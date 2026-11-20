@@ -17,7 +17,7 @@ afterEach(() => resetTaskState());
 
 // ---------------------------------------------------------------------------
 // U050 gap: a blocking TaskCreated hook can VETO creation (with compensating
-// rollback of the just-created task) — Claude Code parity.
+// rollback of the just-created task) — the reference parity.
 // ---------------------------------------------------------------------------
 describe('task_tracker — blocking TaskCreated hook veto + rollback', () => {
   it('rolls back the created task and surfaces the error when a hook blocks', async () => {

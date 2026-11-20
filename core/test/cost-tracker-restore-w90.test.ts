@@ -1,7 +1,7 @@
 /**
  * w90/U004 — unit: CostTracker.restoreTotals re-seeds a resumed session's coarse totals.
  *
- * PARITY (Claude's restoreCostStateForSession/setCostStateForRestore): resuming the SAME
+ * PARITY (the reference's restoreCostStateForSession/setCostStateForRestore): resuming the SAME
  * session must continue its /cost figure instead of restarting at $0. restoreTotals folds
  * a persisted {@link CostState} (the serialize/deserialize round-trip the engine stores in
  * the session file) back into a fresh tracker's running totals.

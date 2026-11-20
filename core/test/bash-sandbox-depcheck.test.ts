@@ -73,7 +73,7 @@ function cfg(overrides: Partial<SandboxConfig> = {}): Partial<SandboxConfig> {
 // ---------------------------------------------------------------------------
 // checkSandboxDependencies — structured { errors, warnings }
 // ---------------------------------------------------------------------------
-describe('checkSandboxDependencies — two-tier errors/warnings (Claude parity)', () => {
+describe('checkSandboxDependencies — two-tier errors/warnings (the reference parity)', () => {
   it('returns the documented shape (arrays)', () => {
     const r = checkSandboxDependencies();
     assert.ok(Array.isArray(r.errors));

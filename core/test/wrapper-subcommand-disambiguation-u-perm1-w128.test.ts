@@ -5,7 +5,7 @@ import { SUBCOMMAND_AWARE_ROOTS } from '../src/permissions';
 
 // U-perm1 / w128 — wrapper-vs-subcommand disambiguation invariant.
 //
-// Parity reference: Claude Code's prefix.ts `isKnownSubcommand` reclassifies a command
+// Parity reference: the reference's prefix.ts `isKnownSubcommand` reclassifies a command
 // that a spec marks as a wrapper (e.g. git, whose spec has `isCommand` alias args) back
 // to a REGULAR command when args[0] is a declared subcommand — so `git status` is never
 // mis-handled as a generic wrapper invocation.

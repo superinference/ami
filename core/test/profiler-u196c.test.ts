@@ -1,6 +1,6 @@
 /**
  * U196 (batch c) parity additions to the Profiler. Each block maps to a
- * confirmed parity gap against Claude Code's telemetry/profiler surface:
+ * confirmed parity gap against the reference's telemetry/profiler surface:
  *
  *  - formatSecondsShort ms→"1.2s" helper (utils/format.ts formatSecondsShort).
  *  - Unified metric store: histogram observe() + flat getAll() snapshot

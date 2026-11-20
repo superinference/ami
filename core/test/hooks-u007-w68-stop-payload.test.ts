@@ -1,5 +1,5 @@
 /**
- * U007 / w68 — Stop hook stdin payload parity (Claude Code's StopHookInput).
+ * U007 / w68 — Stop hook stdin payload parity (the reference's StopHookInput).
  *
  * Claude Code passes a Stop hook two fields on stdin so the hook can make a
  * decision without reading the transcript file:

@@ -1,5 +1,5 @@
 /**
- * U027 parity: position → symbol extraction (Claude Code's getSymbolAtPosition,
+ * U027 parity: position → symbol extraction (the reference's getSymbolAtPosition,
  * tools/LSPTool/symbolContext.ts) plus its wiring into the diagnostic-detail
  * renderer so a diagnostic line shows a readable `symbol: foo` label instead of
  * only a bare `line:char`.

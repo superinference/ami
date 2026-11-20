@@ -30,7 +30,7 @@ describe('U471 — one canonical fs-error classifier (no parallel errno set)', (
     assert.strictEqual(cron.isFsInaccessible, errno.isFsInaccessible);
   });
 
-  it('the canonical classifier covers exactly the Claude-parity inaccessible set', () => {
+  it('the canonical classifier covers exactly the reference-parity inaccessible set', () => {
     for (const code of ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR', 'ELOOP']) {
       assert.equal(cron.isFsInaccessible(Object.assign(new Error('x'), { code })), true, code);
     }

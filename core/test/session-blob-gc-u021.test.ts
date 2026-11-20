@@ -1,7 +1,7 @@
 /**
  * U021 — cross-session blob-cache garbage collection (orphaned-blob GC).
  *
- * Parity target: Claude Code's cross-session cache GC (`cleanupOldImageCaches`,
+ * Parity target: the reference's cross-session cache GC (`cleanupOldImageCaches`,
  * imageStore.ts L126-167) — read the per-session cache base, delete the session dirs
  * that no longer belong to a live session, then rmdir the base when it ends up empty.
  *

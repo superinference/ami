@@ -1,7 +1,7 @@
 /**
  * Parity-hardening tests for bash-security command-safety analysis.
  *
- * Covers the additive superset added for Claude-Code command-safety parity:
+ * Covers the additive superset added for the reference command-safety parity:
  *   - detectGitConfigRce extensions: git RCE env vars (GIT_SSH_COMMAND, …),
  *     `alias.* = !shell` code-execution aliases, and `--upload-pack` /
  *     `--receive-pack` pack-helper execution.

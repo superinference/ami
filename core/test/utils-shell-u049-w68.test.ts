@@ -2,7 +2,7 @@
  * U049 (w68) — Shell-environment snapshot sourcing (user aliases / functions /
  * options / PATH) for core/core/src/utils/shell.ts.
  *
- * Parity gaps covered (Claude Code ShellSnapshot.ts + shell/bashProvider.ts):
+ * Parity gaps covered (the reference ShellSnapshot.ts + shell/bashProvider.ts):
  *  - Shell snapshot sourcing: capture the user's interactive aliases/functions/
  *    options/PATH once per session and source them before each command so a
  *    model-run `bash -c` behaves like the user's interactive shell

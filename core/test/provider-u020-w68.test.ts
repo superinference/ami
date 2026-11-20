@@ -2,7 +2,7 @@
 // provider-u020-w68.test.ts
 //
 // Parity unit U020 (wave 68) — additive provider-transport capabilities in
-// core/core/src/provider.ts, each mirroring a Claude Code reference:
+// core/core/src/provider.ts, each mirroring a reference reference:
 //
 //   - CLAUDE_CODE_EXTRA_BODY / AMI_EXTRA_BODY env-var request-body knob:
 //     resolveExtraBodyFromEnv() + deep-merge into config.extraBody in resolveModel

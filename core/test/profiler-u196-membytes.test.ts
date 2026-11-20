@@ -18,7 +18,7 @@ describe('Profiler.formatTimeline memory via shared formatFileSize', () => {
     const p = new Profiler({ memSnapshot: mem });
     p.mark('boot');
     const out = p.formatTimeline();
-    // Claude-parity memory segment: "RSS: <size>, Heap: <size>".
+    // the reference-parity memory segment: "RSS: <size>, Heap: <size>".
     assert.match(out, /RSS: 2GB, Heap: 1\.5GB/);
     // Must go through the shared helper, not the old ad-hoc MB-only arithmetic.
     assert.ok(out.includes(`RSS: ${formatFileSize(2 * 1024 ** 3)}`), 'RSS uses formatFileSize');

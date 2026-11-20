@@ -1,7 +1,7 @@
 /**
  * U021 — once-per-day, cross-process-safe session housekeeping (retention) throttle.
  *
- * Parity target: Claude Code's backgroundHousekeeping, which throttles the cleanup
+ * Parity target: the reference's backgroundHousekeeping, which throttles the cleanup
  * sweep to "once per day" with "marker files and locks" and "skip[s] immediately if
  * another process holds the lock". AMI already had `cleanupOldSessions` (retention),
  * but it ran unconditionally on every engine start (and would run in every one of N

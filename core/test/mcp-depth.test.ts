@@ -858,7 +858,7 @@ describe('expandEnvVars', () => {
     delete process.env.__TEST_MCP_BARE;
   });
 
-  it('preserves the original token for undefined vars (Claude-parity debuggability)', () => {
+  it('preserves the original token for undefined vars (the reference-parity debuggability)', () => {
     delete process.env.__UNDEFINED_MCP_VAR;
     assert.equal(expandEnvVars('${__UNDEFINED_MCP_VAR}'), '${__UNDEFINED_MCP_VAR}');
   });

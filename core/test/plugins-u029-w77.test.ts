@@ -17,12 +17,12 @@ import {
 // ---------------------------------------------------------------------------
 // U029 w77
 //   Gap 5 (ami-partial): manifest.hooks as string path / array / inline object +
-//     realpath de-dup + strict duplicate detection (Claude parity: pluginLoader.ts
+//     realpath de-dup + strict duplicate detection (the reference parity: pluginLoader.ts
 //     L1652-1755). AMI previously resolved a SINGLE hooks file and never consulted a
 //     manifest `hooks` array / inline form — closing that.
 //   Gap 9 (ami-missing): plugin-recommendation input schema fields on a command
 //     (sourceCommand provenance + pluginName/marketplaceName/pluginDescription;
-//     Claude parity: PluginHintMenu Props).
+//     the reference parity: PluginHintMenu Props).
 // ---------------------------------------------------------------------------
 
 let tmpDir: string;

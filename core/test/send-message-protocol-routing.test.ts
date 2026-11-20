@@ -80,7 +80,7 @@ describe('summarizeStructuredMessage', () => {
   const rid = generateRequestId('x', 'w');
   it('summarizes each protocol type as a one-liner without raw JSON', () => {
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'plan_approval_request', planContent: 'p', planFilePath: '/a.md' }))!, /\[Plan Approval Request\] \(\/a\.md\)/);
-    // Plan-approval summaries carry Claude-parity next-step guidance (approved →
+    // Plan-approval summaries carry the reference-parity next-step guidance (approved →
     // "proceed"; rejected → feedback-or-default + ExitPlanMode affordance).
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'plan_approval_response', requestId: rid, approve: true }))!, /^\[Plan Approved\] You can now proceed with implementation/);
     assert.match(summarizeStructuredMessage(JSON.stringify({ type: 'plan_approval_response', requestId: rid, approve: false, feedback: 'redo' }))!, /\[Plan Rejected\] redo — revise and call ExitPlanMode again/);

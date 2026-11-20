@@ -52,7 +52,7 @@ describe('posixSingleQuote', () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatShellPrefixCommand (Claude Code parity)
+// formatShellPrefixCommand (the reference parity)
 // ---------------------------------------------------------------------------
 describe('formatShellPrefixCommand', () => {
   it('quotes bare prefix and command', () => {

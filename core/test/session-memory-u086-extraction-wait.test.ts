@@ -33,7 +33,7 @@ function contentChunk(text: string): StreamChunk {
 }
 
 describe('U086 extraction-wait constants', () => {
-  it('exports the Claude-parity defaults (15s wait, 60s stale)', () => {
+  it('exports the reference-parity defaults (15s wait, 60s stale)', () => {
     assert.equal(EXTRACTION_WAIT_TIMEOUT_MS, 15_000);
     assert.equal(EXTRACTION_STALE_THRESHOLD_MS, 60_000);
     assert.equal(DEFAULT_SESSION_MEMORY_CONFIG.extractionWaitTimeoutMs, 15_000);

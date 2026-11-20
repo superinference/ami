@@ -1,5 +1,5 @@
 /**
- * Claude-parity: session-search hardening — match-centered snippets, scan/read
+ * the reference-parity: session-search hardening — match-centered snippets, scan/read
  * budgets, and system-reminder stripping.
  *   - matchSnippet: …before <match> after… with a bounded total length
  *   - size-guarded read (skip a session file over MAX_SESSION_SEARCH_BYTES)

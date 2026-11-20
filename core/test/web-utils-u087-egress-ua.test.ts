@@ -1,7 +1,7 @@
 /**
  * U087 — web-utils additive parity features.
  *
- * Two independent, additive capabilities (Claude-parity, no restyle):
+ * Two independent, additive capabilities (the reference-parity, no restyle):
  *
  *  1. Egress-proxy allow-list block detection. A network egress proxy signals an
  *     allow-list refusal with a `403` + `X-Proxy-Error: blocked-by-allowlist`

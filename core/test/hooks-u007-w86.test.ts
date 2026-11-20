@@ -35,7 +35,7 @@ describe('U007-w86 F1 — shouldEmitHookLifecycle gate', () => {
     }
   });
 
-  it('allowlist is exactly sessionStart + setup (Claude Code parity)', () => {
+  it('allowlist is exactly sessionStart + setup (the reference parity)', () => {
     assert.deepEqual([...ALWAYS_EMITTED_HOOK_EVENTS], ['sessionStart', 'setup']);
   });
 

@@ -390,7 +390,7 @@ describe('grepTool – output modes', () => {
   });
 
   it('defaults to files_with_matches mode when no output_mode is given', async () => {
-    // Claude Code parity: the default output mode is files_with_matches, so an
+    // the reference parity: the default output mode is files_with_matches, so an
     // unspecified call returns the file listing (paths only), NOT matching lines.
     const result = await grepTool.execute(
       { pattern: 'function hello' },

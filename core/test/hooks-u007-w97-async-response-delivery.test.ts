@@ -1,6 +1,6 @@
 /**
  * U007 / w97 — Deliver a COMPLETED background ('async') hook's result back into
- * the turn (Claude Code parity: `checkForAsyncHookResponses`).
+ * the turn (the reference parity: `checkForAsyncHookResponses`).
  *
  * AMI backgrounds `async:true` hooks fire-and-forget: the turn returns `allow`
  * immediately and the hook's child runs to completion unobserved. Before this

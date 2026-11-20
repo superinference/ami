@@ -1,18 +1,18 @@
 // Unit U018 (wave w80) — core/core/src/mcp/manager.ts
 //
-// Two additive Claude-parity improvements:
+// Two additive the reference-parity improvements:
 //
 //  * substitutePluginMcpVars Windows backslash normalization — the two plugin-PATH
 //    substitutions (${CLAUDE_PLUGIN_ROOT} / ${CLAUDE_PLUGIN_DATA}) have backslashes
 //    normalized to forward slashes on win32 so a `C:\…\plugin` path dropped into a
-//    shell command/arg is not mangled by escape interpretation (Claude-parity
+//    shell command/arg is not mangled by escape interpretation (the reference-parity
 //    `substitutePluginVariables`, pluginOptionsStorage.ts:L312-345). user_config
 //    values are opaque user data and are NOT normalized.
 //
 //  * getServerStateSummary / formatMcpStateSummary — a compact four-way
 //    {connected, pending, needsAuth, failed} tally for a single-row status-pane
 //    summary, excluding the reserved `ide` pseudo-client and counting intentional
-//    disabled/stopped/disconnected states in NO bucket (Claude-parity
+//    disabled/stopped/disconnected states in NO bucket (the reference-parity
 //    `buildMcpProperties`, status.tsx:L89-115).
 //
 // Pure/in-memory — no spawn, no fs, no network. Run from core/core/:

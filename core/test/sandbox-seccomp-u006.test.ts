@@ -1,7 +1,7 @@
 /**
  * U006 — custom seccomp syscall-filter profile for the Docker sandbox.
  *
- * PARITY (Claude's `sandbox.seccomp.bpfPath` / `applyPath`): AMI sandboxes via
+ * PARITY (the reference's `sandbox.seccomp.bpfPath` / `applyPath`): AMI sandboxes via
  * Docker, so the architecture-native analog is a Docker seccomp JSON profile
  * surfaced through `SandboxPolicy.seccomp.profilePath`. This suite proves the
  * knob is wired end to end: typed + validated + sanitized in types.ts, passed to

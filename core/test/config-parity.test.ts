@@ -13,7 +13,7 @@ import {
 } from '../src/config';
 
 // ---------------------------------------------------------------------------
-// Claude-parity additive-superset gaps for config loading:
+// the reference-parity additive-superset gaps for config loading:
 //   Gap 1 — unrecognized top-level config keys are surfaced (not silently
 //            ignored), so a typo like "modle" doesn't take no effect.
 //   Gap 2 — nested `superinference` flags are value-validated (a string where a

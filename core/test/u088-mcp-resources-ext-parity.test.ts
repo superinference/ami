@@ -38,7 +38,7 @@ async function extFor(mimeType: string): Promise<string> {
   return path.extname(file).replace(/^\./, '');
 }
 
-describe('U088 — mime→extension allowlist parity (Claude extensionForMimeType)', () => {
+describe('U088 — mime→extension allowlist parity (the reference extensionForMimeType)', () => {
   it('maps office document mime types to their canonical extensions', async () => {
     assert.equal(await extFor('application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'docx');
     assert.equal(await extFor('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 'xlsx');

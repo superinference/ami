@@ -14,7 +14,7 @@ import {
 import { _pathHooks } from '../src/utils/path';
 
 // ---------------------------------------------------------------------------
-// U069 — tool-utils.ts Claude Code parity additions:
+// U069 — tool-utils.ts the reference parity additions:
 //  - GCP / Vertex AI service-account email detection + redaction.
 //  - Device-file blocklist completion (/dev/full, /dev/tty, /dev/console).
 //  - Glob-metacharacter block on NEW write/create targets (base-dir bypass).

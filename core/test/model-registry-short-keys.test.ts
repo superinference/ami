@@ -12,7 +12,7 @@ import {
 // that pins a concrete generation without the dated, provider-prefixed literal.
 // (Parity gap: "stable short model keys as a user-facing selector".)
 describe('model short keys — version-specific selectors', () => {
-  it('maps the Claude-parity ModelKey set to concrete ids', () => {
+  it('maps the reference-parity ModelKey set to concrete ids', () => {
     assert.equal(MODEL_SHORT_KEYS['opus45'], 'claude-opus-4-5');
     assert.equal(MODEL_SHORT_KEYS['opus46'], 'claude-opus-4-6');
     assert.equal(MODEL_SHORT_KEYS['opus41'], 'claude-opus-4-1');

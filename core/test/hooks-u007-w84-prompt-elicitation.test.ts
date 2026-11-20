@@ -1,5 +1,5 @@
 /**
- * Claude -> AMI parity (U007, wave 84): hook-driven prompt-elicitation protocol.
+ * the reference -> AMI parity (U007, wave 84): hook-driven prompt-elicitation protocol.
  *
  * Reference:
  *  - references/claude/claude-code-main/src/types/hooks.ts:L26-L47
@@ -73,7 +73,7 @@ describe('validatePromptRequest', () => {
     });
   });
 
-  it('accepts an empty options array (Claude parity: z.array allows empty)', () => {
+  it('accepts an empty options array (the reference parity: z.array allows empty)', () => {
     assert.deepEqual(validatePromptRequest({ prompt: 'p', message: '', options: [] }), { prompt: 'p', message: '', options: [] });
   });
 

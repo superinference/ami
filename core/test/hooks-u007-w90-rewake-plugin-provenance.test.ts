@@ -1,5 +1,5 @@
 /**
- * U007 / w90 — Plugin provenance on the hook REWAKE payload (Claude Code parity:
+ * U007 / w90 — Plugin provenance on the hook REWAKE payload (the reference parity:
  * per-hook `pluginName`/`pluginId`).
  *
  * A backgrounded (asyncRewake) hook that completes/blocks emits a `hookRewake`

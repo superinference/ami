@@ -1,5 +1,5 @@
 /**
- * U007 (w72) — hook observability + correctness parity (Claude Code → AMI).
+ * U007 (w72) — hook observability + correctness parity (the reference → AMI).
  *
  * Covers these confirmed gaps, all contained in core/core/src/hooks.ts:
  *

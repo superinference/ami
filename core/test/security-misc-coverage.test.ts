@@ -690,7 +690,7 @@ describe('validateBackslashEscapedOperators -- extra', () => {
   });
 
   // An escaped operator is only structure-hiding when a real control operator
-  // co-occurs (AST gate, Claude `hasActualOperatorNodes` parity); the leading
+  // co-occurs (AST gate, the reference `hasActualOperatorNodes` parity); the leading
   // `echo a &&` supplies that real operator so the escaped `\&`/`\<`/`\>` blocks.
   it('rejects backslash-& when a real operator is also present', () => {
     assert.equal(validateBackslashEscapedOperators('echo a && cmd \\& evil').safe, false);

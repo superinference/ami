@@ -194,7 +194,7 @@ describe('expandEnvVars', () => {
     process.env.MCP_T_A = 'alpha';
     process.env.MCP_T_B = 'beta';
     try {
-      // An unresolved reference keeps its literal token (Claude-parity) rather
+      // An unresolved reference keeps its literal token (the reference-parity) rather
       // than collapsing to ''.
       assert.equal(expandEnvVars('${MCP_T_A}-$MCP_T_B-${MCP_T_MISSING}'), 'alpha-beta-${MCP_T_MISSING}');
     } finally {

@@ -2,7 +2,7 @@
  * U018 (w85) — MCP tool-polling schema + scheduler (parity: the reference's
  * `mcp-polling-update`).
  *
- * Parity gap (UserResourceUpdateMessage.tsx:L34-43): Claude surfaces a second
+ * Parity gap (UserResourceUpdateMessage.tsx:L34-43): the reference surfaces a second
  * inbound MCP update kind — a periodically re-invoked ("polled") tool whose output
  * changed — as an `<mcp-polling-update type="tool" server="…" tool="…"><reason>…`
  * block. AMI had NO polling concept at all.

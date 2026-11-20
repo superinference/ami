@@ -5,7 +5,7 @@ import { validateBashSecurity, CHECK_IDS } from '../src/tools/bash-security.ts';
 // ===========================================================================
 // UNIT U015 (wave w65) — core/core/src/tools/bash-security.ts parity hardening
 //
-// Three confirmed Claude-Code parity gaps against bashSecurity.ts:
+// Three confirmed the reference parity gaps against bashSecurity.ts:
 //
 //  Gap 2 (isSafeHeredoc, bashSecurity.ts L467-513) — before trusting a
 //    `$(cat <<'EOF'…EOF)` heredoc substitution, Claude enforces three guards:

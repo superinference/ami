@@ -15,7 +15,7 @@ import {
 } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// U018-w69 — additive MCP manager parity (Claude Code):
+// U018-w69 — additive MCP manager parity (the reference):
 //   * desktop-config import (readClaudeDesktopMcpServers + WSL path resolution)
 //   * numbered-suffix server-name collision resolution
 //   * bypass/auto-allow permission env propagation into stdio MCP servers

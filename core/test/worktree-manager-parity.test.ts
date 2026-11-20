@@ -230,7 +230,7 @@ describe('path-traversal guards', () => {
   });
 
   it('copyWorktreeIncludes copies a gitignored file, skips tracked and plain-untracked', () => {
-    // Claude parity (utils/worktree.ts copyWorktreeIncludeFiles): a file is only
+    // the reference parity (utils/worktree.ts copyWorktreeIncludeFiles): a file is only
     // carried over when it is BOTH named in .worktreeinclude AND gitignored.
     const repo = makeRepo();
     try {

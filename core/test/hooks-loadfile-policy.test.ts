@@ -1,5 +1,5 @@
 /**
- * Parity tests for hook loading policies & matcher scoping (Claude->AMI parity):
+ * Parity tests for hook loading policies & matcher scoping (the reference->AMI parity):
  *  - matcherAppliesToCtx / HOOK_MATCHER_FIELD: matcher scoping on non-tool events.
  *  - isHookEqual + content-identity de-dup across overlapping sources.
  *  - allowManagedHooksOnly: only admin/managed-settings hooks execute.

@@ -1,5 +1,5 @@
 /**
- * U007 — Hook introspection catalog parity (Claude Code → AMI). Covers:
+ * U007 — Hook introspection catalog parity (the reference → AMI). Covers:
  *  - G146 Per-event hook metadata catalog: matcher FIELD + enumerated allowed
  *         matcher VALUES for each event (hooksConfigManager.getHookEventMetadata,
  *         ref utils/hooks/hooksConfigManager.ts:L26-267). AMI already exposed

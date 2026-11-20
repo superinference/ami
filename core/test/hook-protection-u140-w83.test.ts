@@ -2,7 +2,7 @@
  * U140 (w83) — hook-protection parity additions:
  *  - HOOK_EVENT_INFO metadata catalog (+ getHookEventInfo) as the single source
  *    of truth behind PROTECTED_EVENTS / PASSTHROUGH_EVENTS, with per-event
- *    summary/description (Claude Code getHookEventMetadata parity).
+ *    summary/description (the reference getHookEventMetadata parity).
  *  - describeProtectedEventBlock: actionable blocked-hook reason that names the
  *    hook, explains WHY the event is protected, and states which tiers are allowed.
  *  - HookChainGuard.checkRegistration accepts a hook name woven into the reason.

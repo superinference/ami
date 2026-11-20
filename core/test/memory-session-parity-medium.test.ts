@@ -1,5 +1,5 @@
 /**
- * Claude-parity (medium): YAML frontmatter injection defense + MEMORY.md body
+ * the reference-parity (medium): YAML frontmatter injection defense + MEMORY.md body
  * exclusion + bounded memory read; NDJSON-safe (U+2028/U+2029) serialization of
  * persisted session + transcript records.
  *

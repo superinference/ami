@@ -135,14 +135,14 @@ describe('getVertexRegionForModel', () => {
 });
 
 // ---------------------------------------------------------------------------
-// API_TIMEOUT_MS env-var name parity (Claude client.ts L144).
+// API_TIMEOUT_MS env-var name parity (the reference client.ts L144).
 // ---------------------------------------------------------------------------
 describe('envApiTimeoutMs', () => {
   it('reads SUPERINFERENCE_API_TIMEOUT_MS', () => {
     assert.equal(envApiTimeoutMs({ SUPERINFERENCE_API_TIMEOUT_MS: '1234' } as NodeJS.ProcessEnv), 1234);
   });
 
-  it('falls back to API_TIMEOUT_MS for Claude-name parity', () => {
+  it('falls back to API_TIMEOUT_MS for the reference-name parity', () => {
     assert.equal(envApiTimeoutMs({ API_TIMEOUT_MS: '5678' } as NodeJS.ProcessEnv), 5678);
   });
 

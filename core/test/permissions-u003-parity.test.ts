@@ -13,7 +13,7 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('U003: subcommand fanout cap (MAX_SUBCOMMANDS_FOR_SECURITY_CHECK)', () => {
-  it('exports a cap of 50 (Claude parity)', () => {
+  it('exports a cap of 50 (the reference parity)', () => {
     assert.equal(MAX_SUBCOMMANDS_FOR_SECURITY_CHECK, 50);
   });
 

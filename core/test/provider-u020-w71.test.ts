@@ -2,7 +2,7 @@
 // provider-u020-w71.test.ts
 //
 // Parity unit U020 (wave 71) — three ADDITIVE provider.ts capabilities that
-// close confirmed Claude-Code parity gaps:
+// close confirmed the reference parity gaps:
 //
 //   1. isFirstPartyBaseUrl(baseUrl, domains) — host-boundary classification of a
 //      first-party API base URL, replacing host-spoofable

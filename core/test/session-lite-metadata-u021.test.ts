@@ -69,7 +69,7 @@ describe('partial-JSON field extractors (unescapeJsonString / extract*JsonString
     assert.equal(extractJsonStringField('{"title": "unterminated val', 'title'), 'unterminated val');
   });
 
-  it('constants match the Claude parity values', () => {
+  it('constants match the reference parity values', () => {
     assert.equal(LITE_READ_BUF_SIZE, 65536);
     assert.equal(INITIAL_ENRICH_COUNT, 50);
     assert.equal(SKIP_PRECOMPACT_THRESHOLD, 5 * 1024 * 1024);

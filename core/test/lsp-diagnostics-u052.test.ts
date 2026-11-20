@@ -69,7 +69,7 @@ before(() => {
 after(() => fs.rmSync(TMP_DIR, { recursive: true, force: true }));
 
 // ---------------------------------------------------------------------------
-// Gap 10/11/12 — formatLspDisplayPath (Claude formatUri parity)
+// Gap 10/11/12 — formatLspDisplayPath (the reference formatUri parity)
 // ---------------------------------------------------------------------------
 describe('formatLspDisplayPath', () => {
   it('returns <unknown location> for an empty/undefined uri', () => {

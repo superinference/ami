@@ -17,7 +17,7 @@ import { fileEditTool } from '../src/tools/file-edit';
 import type { ToolDefinition, ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U069 / w74 — tool-utils.ts Claude Code parity additions:
+// U069 / w74 — tool-utils.ts the reference parity additions:
 //  - Additional curated secret-provider rules (Sentry, Grafana SA / legacy API
 //    key, Slack app token, Shopify) with escaped-boundary alternation.
 //  - Deterministic built-in/MCP partition-sort of the tool pool for prompt-cache

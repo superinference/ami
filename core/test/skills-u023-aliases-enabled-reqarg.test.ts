@@ -1,4 +1,4 @@
-// U023 — core building blocks for three Claude-parity skill fields:
+// U023 — core building blocks for three the reference-parity skill fields:
 //   * `aliases`         — alternate lookup names            → parseSkillAliases
 //   * `isEnabled`       — runtime availability predicate     → isSkillEnabled
 //   * `requiresArgument`/`missingArgumentMessage`            → missingSkillArgumentMessage

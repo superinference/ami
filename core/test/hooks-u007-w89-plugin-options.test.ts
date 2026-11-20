@@ -1,5 +1,5 @@
 /**
- * U007 / w89 — Plugin command-hook userConfig OPTION values (Claude Code parity:
+ * U007 / w89 — Plugin command-hook userConfig OPTION values (the reference parity:
  * CLAUDE_PLUGIN_OPTION_<KEY> env vars + `${user_config.X}` command substitution,
  * utils/hooks.ts).
  *

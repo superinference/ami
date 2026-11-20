@@ -16,7 +16,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 // UNIT U045 (continuation) — END-TO-END through the real bash tool: when the
 // host sandbox degrades to resource-limits-only while a network/filesystem
 // carve-out was requested, the degradation warning must reach the command
-// output so the lost protection is not silent (Claude parity: degraded-mode
+// output so the lost protection is not silent (the reference parity: degraded-mode
 // "Cannot block …" notices surfaced to the user).
 //
 // RED on revert: removing the `sandboxFallbackAdvisory` wiring in bash.ts drops

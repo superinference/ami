@@ -1,7 +1,7 @@
 /**
  * U007 / w76 — Stop-hook run summary + malformed-config surfacing (parity).
  *
- * Two confirmed Claude Code parity gaps, both OPERATOR-facing (never fed to the
+ * Two confirmed the reference parity gaps, both OPERATOR-facing (never fed to the
  * model):
  *
  *  A. Stop-hook summary (stopHooks.ts createStopHookSummaryMessage / hookInfos):

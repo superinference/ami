@@ -11,7 +11,7 @@ import type { ToolContext } from '../src/types';
 // U098-w78 — NotebookEditTool: cross-turn LSP diagnostic deduplication via the
 // bounded-LRU DiagnosticTracker, with PER-FILE INVALIDATION ON EDIT.
 //
-// Parity (LSPDiagnosticRegistry.ts L51-56, L290-312, L372-379): Claude invalidates
+// Parity (LSPDiagnosticRegistry.ts L51-56, L290-312, L372-379): the reference invalidates
 // a file's delivered-diagnostics on edit so the next publish surfaces its issues
 // again, and caps retention with a bounded LRU. AMI's DiagnosticTracker already
 // provides the bounded-LRU baseline (MAX_TRACKED_BASELINE_FILES=500 + LRU

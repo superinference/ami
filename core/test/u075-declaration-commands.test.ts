@@ -34,7 +34,7 @@ function ast(cmd: string): CommandNode {
 }
 
 describe('DECLARATION_COMMANDS set', () => {
-  it('contains the bash declaration keywords (Claude parity)', () => {
+  it('contains the bash declaration keywords (the reference parity)', () => {
     for (const kw of ['export', 'declare', 'typeset', 'readonly', 'local', 'unset', 'unsetenv']) {
       assert.ok(DECLARATION_COMMANDS.has(kw), `missing ${kw}`);
     }

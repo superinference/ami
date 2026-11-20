@@ -10,11 +10,11 @@ import { loadCommands, isCommandModelListable } from '../src/plugins';
 // U028 w112 — plugins.ts parity building blocks:
 //   - CommandDefinition.hasUserSpecifiedDescription: records whether the
 //     description was author-specified (TOML/frontmatter `description`) vs
-//     auto-derived from the prompt/body first line (Claude parity:
+//     auto-derived from the prompt/body first line (the reference parity:
 //     Command.hasUserSpecifiedDescription).
 //   - isCommandModelListable: a plugin/MCP command is advertised to the model
 //     only when it carries an explicit description OR a whenToUse trigger
-//     (Claude parity: getSkillToolCommands' `hasUserSpecifiedDescription ||
+//     (the reference parity: getSkillToolCommands' `hasUserSpecifiedDescription ||
 //     whenToUse` gate).
 // ---------------------------------------------------------------------------
 

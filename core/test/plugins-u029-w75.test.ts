@@ -25,7 +25,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 w75 — Claude-parity runtime building blocks on core/core/src/plugins.ts:
+// U029 w75 — the reference-parity runtime building blocks on core/core/src/plugins.ts:
 //  1. Plugin option VALUE coercion/validation/prefill (PluginOptionsDialog
 //     buildFinalValues + initialFor; pluginOptionsStorage validateUserConfig /
 //     getUnconfiguredOptions) — blank-number omit, NaN→string, boolean allow-list,

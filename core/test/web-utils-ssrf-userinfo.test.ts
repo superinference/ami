@@ -1,5 +1,5 @@
 /**
- * U087 — web-utils SSRF + userinfo hardening (Claude-parity).
+ * U087 — web-utils SSRF + userinfo hardening (the reference-parity).
  *
  * Covers:
  *  - IPv4-mapped IPv6 decoding in hex / compressed / expanded form so a mapped

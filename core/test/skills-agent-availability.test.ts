@@ -1,5 +1,5 @@
 // Behavioral coverage for the agent-availability + preload schema added for
-// Claude parity: requiredMcpServers gating (hasRequiredMcpServers /
+// the reference parity: requiredMcpServers gating (hasRequiredMcpServers /
 // filterAgentsByMcpRequirements), per-agent skills preload + allowedAgentTypes
 // parsing/enforcement, per-subagent mcpServers field, and the forward-compatible
 // SAFE_SKILL_PROPERTIES allowlist (skillHasOnlySafeProperties). Exercises the

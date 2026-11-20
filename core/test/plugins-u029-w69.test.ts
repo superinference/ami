@@ -13,7 +13,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 w69 — `commandsMetadata` manifest object-mapping (Claude parity:
+// U029 w69 — `commandsMetadata` manifest object-mapping (the reference parity:
 // CommandMetadataSchema + the loadPluginCommands metadata-override / inline-content
 // loops, utils/plugins/schemas.ts L385-416, utils/plugins/loadPluginCommands.ts
 // L516-668). An entry carries EXACTLY ONE of `source` (override a file-based
@@ -53,7 +53,7 @@ describe('loadCommands with commandsMetadata', () => {
     const cmds = loadCommands(cmdDir, undefined, undefined, metadata);
     assert.equal(cmds.length, 1);
     const cmd = cmds[0]!;
-    // Renamed to the metadata KEY (Claude parity), namespace reset.
+    // Renamed to the metadata KEY (the reference parity), namespace reset.
     assert.equal(cmd.name, 'about');
     assert.deepEqual(cmd.namespace, []);
     // Overrides applied; the body stays the command's prompt.

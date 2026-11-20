@@ -1,5 +1,5 @@
 /**
- * U007 / w88 — Plugin command-hook PERSISTENT data directory (Claude Code parity:
+ * U007 / w88 — Plugin command-hook PERSISTENT data directory (the reference parity:
  * CLAUDE_PLUGIN_DATA / getPluginDataDir, utils/hooks.ts).
  *
  * A plugin-contributed command hook already resolves its read-only bundle root via

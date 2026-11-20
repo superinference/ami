@@ -28,7 +28,7 @@ function waitFor(cond: () => boolean, timeoutMs = 4000): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// computeElapsedMs: Claude-parity formula — freeze at endTime, subtract paused,
+// computeElapsedMs: the reference-parity formula — freeze at endTime, subtract paused,
 // clamp negative skew to 0 (mirrors CoordinatorAgentStatus/useElapsedTime).
 // ---------------------------------------------------------------------------
 describe('computeElapsedMs', () => {

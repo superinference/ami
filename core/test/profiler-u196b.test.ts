@@ -1,6 +1,6 @@
 /**
  * U196 (batch b) parity additions to the Profiler. Each block maps to a
- * confirmed parity gap against Claude Code's telemetry/profiler surface:
+ * confirmed parity gap against the reference's telemetry/profiler surface:
  *
  *  - timeAsync lifecycle + getData extractor (diagLogs withDiagnosticsTiming).
  *  - Chrome-Trace / Perfetto export (telemetry/perfettoTracing + sessionTracing).

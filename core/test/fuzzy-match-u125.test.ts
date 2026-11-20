@@ -4,7 +4,7 @@
 // Two behavior gaps are closed here, each as a RED-GREEN reproducer:
 //
 //   1. preserveQuoteStyle previously chose open vs close curly quotes by an
-//      even/odd PARITY counter. Claude Code instead walks each character and
+//      even/odd PARITY counter. the reference instead walks each character and
 //      decides from the PREVIOUS character's CONTEXT (whitespace / start / an
 //      opening bracket / em-or-en dash), and special-cases a contraction
 //      apostrophe (a `'` flanked by two letters -> always a RIGHT single curly

@@ -1,5 +1,5 @@
 /**
- * Unit U007 (w80) — hook result parity (Claude Code -> AMI). All gaps are
+ * Unit U007 (w80) — hook result parity (the reference -> AMI). All gaps are
  * self-contained in core/core/src/hooks.ts.
  *
  * Gaps covered:

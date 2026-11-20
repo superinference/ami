@@ -11,7 +11,7 @@ import {
 } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// U018-w75 — additive MCP manager parity (Claude Code):
+// U018-w75 — additive MCP manager parity (the reference):
 //   * Curated read/search allowlist in getToolAnnotations (classifyForCollapse.ts
 //     SEARCH_TOOLS/READ_TOOLS) so a verb-less read op (`whoami`, `esql`, …) is
 //     still classified readOnly, UNIONED with the verb-prefix heuristic.

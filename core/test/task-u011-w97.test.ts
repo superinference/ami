@@ -13,7 +13,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U011 / w97 — atomic agent-spawn slot reservation (reserveAgentSlot).
  *
- * Parity target: Claude Code's serialized teammate-spawn critical section
+ * Parity target: the reference's serialized teammate-spawn critical section
  * (swarm/backends TmuxBackend `paneCreationLock` / ITermBackend
  * `acquirePaneCreationLock`). AMI spawns sub-engines in-process, so the shared
  * state to protect against concurrent mutation is the spawn counter, not a pane

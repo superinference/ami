@@ -1,6 +1,6 @@
 /**
  * U022 wave-75 additions to the teammate send_message subsystem. Each block maps to
- * a confirmed Claude-Code parity gap that was NOT yet implemented on the file:
+ * a confirmed the reference parity gap that was NOT yet implemented on the file:
  *
  *  - errorCode-carrying input-shape validation — tools/SendMessageTool/
  *    SendMessageTool.ts validateInput returns `errorCode: 9` for every input-shape
@@ -63,7 +63,7 @@ afterEach(() => { resetAllMailboxes(); resetAgentRegistry(); });
 // errorCode-carrying input-shape validation
 // ---------------------------------------------------------------------------
 describe('U022-w75 errorCode on input-shape validation', () => {
-  it('exposes the Claude-parity errorCode constant (9)', () => {
+  it('exposes the reference-parity errorCode constant (9)', () => {
     assert.equal(SEND_MESSAGE_VALIDATION_ERROR_CODE, 9);
   });
 

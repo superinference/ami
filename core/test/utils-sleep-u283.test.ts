@@ -7,7 +7,7 @@
 // throw), and (b) WIRES that option into the real best-effort consumers that must
 // never hold the process open at shutdown: the analytics graceful-close drain
 // (`raceWithTimeout` / `closeWithGrace`) and the inter-batch OTLP delay — the
-// AMI analog of Claude's `sleep(500, undefined, { unref: true })` grace race in
+// AMI analog of the reference's `sleep(500, undefined, { unref: true })` grace race in
 // bridgeMain.ts L2064-2068.
 //
 // RED/GREEN: these assert `timer.unref()` is invoked. Revert the analytics

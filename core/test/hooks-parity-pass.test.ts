@@ -1,5 +1,5 @@
 /**
- * Parity (pass-hooks) unit — tests for the hook capabilities brought to Claude
+ * Parity (pass-hooks) unit — tests for the hook capabilities brought to the reference
  * Code parity in core/core/src/hooks.ts:
  *  - timeout-in-SECONDS contract for every hook type (resolveHookTimeoutMs)
  *  - HTTP-hook URL allowlist (isHttpHookUrlAllowed, three-state)

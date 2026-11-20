@@ -277,7 +277,7 @@ describe('exitWorktreeTool — successful remove with discard_changes (lines 91-
   });
 
   it('no-ops a destructive remove when no active session owns the worktree', async () => {
-    // Parity (Claude's ExitWorktree): with no active enter_worktree session the
+    // Parity (the reference's ExitWorktree): with no active enter_worktree session the
     // destructive remove is an informational no-op — the filesystem is unchanged.
     setWorktreeSession(null);
 

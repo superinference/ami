@@ -60,7 +60,7 @@ function restoreEnv(saved: Record<string, string | undefined>): void {
 // supportsInterleavedThinking — Claude 4+ Opus/Sonnet families only.
 // ---------------------------------------------------------------------------
 describe('supportsInterleavedThinking', () => {
-  it('matches the reference 4+ Opus/Sonnet families', () => {
+  it('matches Claude 4+ Opus/Sonnet families', () => {
     assert.equal(supportsInterleavedThinking('claude-sonnet-4-6'), true);
     assert.equal(supportsInterleavedThinking('claude-opus-4-1'), true);
     assert.equal(supportsInterleavedThinking('claude-sonnet-45-beta'), true);
@@ -87,7 +87,7 @@ describe('experimentalBetasDisabled', () => {
   it('is false by default', () => {
     assert.equal(experimentalBetasDisabled(), false);
   });
-  it('honors the Claude-parity env name', () => {
+  it('honors the reference-parity env name', () => {
     process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1';
     assert.equal(experimentalBetasDisabled(), true);
   });

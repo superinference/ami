@@ -1,5 +1,5 @@
 /**
- * U007 / w91 — two confirmed Claude Code parity gaps on core/core/src/hooks.ts,
+ * U007 / w91 — two confirmed the reference parity gaps on core/core/src/hooks.ts,
  * both purely ADDITIVE (no existing behavior changes; no new cross-layer wiring):
  *
  *  A. StopHookInfo per-hook reporting fields `command` + `promptText`

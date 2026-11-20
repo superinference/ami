@@ -1,5 +1,5 @@
 /**
- * U007 (w94) — hook-layer parity gaps against Claude Code's hook system:
+ * U007 (w94) — hook-layer parity gaps against the reference's hook system:
  *
  *  - UserPromptSubmit VETO wording (processUserInput.ts:L193-L224,
  *    utils/hooks.ts:L1936-L1939): a UserPromptSubmit hook can BLOCK a prompt

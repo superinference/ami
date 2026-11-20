@@ -10,7 +10,7 @@ import { registerLspServers, resetLspServers } from '../src/lsp/config';
 
 /**
  * End-to-end coverage for the per-server config knobs honored by the client at
- * runtime (Claude-Code `ScopedLspServerConfig` parity): `settings` pushed via
+ * runtime (the reference `ScopedLspServerConfig` parity): `settings` pushed via
  * `workspace/didChangeConfiguration`, `restartOnCrash: false`, unsupported
  * `transport`, `shutdownTimeout`, plus propagation of document-sync write
  * failures. Servers are spawned as real child processes framing JSON-RPC over

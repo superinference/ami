@@ -1,7 +1,7 @@
 /**
  * UNS002 (w144) — Windows executable-discovery diagnostics + distinct configured-path error.
  *
- * Additive parity for core/core/src/utils/shell.ts against Claude Code's
+ * Additive parity for core/core/src/utils/shell.ts against the reference's
  * src/utils/windowsPaths.ts:
  *  - findExecutable emits a debug/introspection trace through the opt-in
  *    {@link shellHooks.onShellDebug} surface each time a `where.exe` candidate is

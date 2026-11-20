@@ -1,7 +1,7 @@
 /**
  * U064 (w80) — exit_worktree NON-DESTRUCTIVE "stash" action.
  *
- * Confirmed parity gaps against Claude's TeleportStash / stashToCleanState that
+ * Confirmed parity gaps against the reference's TeleportStash / stashToCleanState that
  * AMI's exit_worktree was missing: a recoverable "stash changes and continue"
  * affordance as the non-destructive alternative to force-removal.
  *

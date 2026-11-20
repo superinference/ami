@@ -1,5 +1,5 @@
 /**
- * analytics-batch-reliability — telemetry batching hardening (Claude parity):
+ * analytics-batch-reliability — telemetry batching hardening (the reference parity):
  *  - per-event-TYPE sampling (sample_rate map) with sample_rate stamping
  *  - mid-session boundary send via the onBatch hook (not only at shutdown)
  *  - permanently-dropped-batch diagnostics (onBatchDropped + droppedBatchCount)

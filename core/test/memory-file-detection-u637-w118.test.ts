@@ -1,7 +1,7 @@
 /**
  * U637 (w118) — memory file-access COUNTING + glob/pattern classification.
  *
- * Parity gaps (Claude Code utils/attribution.ts `countMemoryFileAccessFromEntries`
+ * Parity gaps (the reference utils/attribution.ts `countMemoryFileAccessFromEntries`
  * + MEMORY_ACCESS_TOOL_NAMES, and utils/memoryFileDetection.ts
  * `isAutoManagedMemoryPattern`):
  *  - a transcript walker that counts memory-file accesses across read/grep/glob/

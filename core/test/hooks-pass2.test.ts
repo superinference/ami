@@ -1,6 +1,6 @@
 /**
  * Hooks parity — second wiring pass (hooks2 gap file). Each block closes a
- * confirmed Claude Code parity gap that is closeable inside core/core/src/hooks.ts,
+ * confirmed the reference parity gap that is closeable inside core/core/src/hooks.ts,
  * with the red-green discriminator noted inline:
  *
  *  - Matcher scoping on the session-lifecycle + stopFailure events via their

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { isEmbeddedShellCommandAllowed } from '../src/plugins';
 
 // U028 — embedded prompt-shell execution scoped to a command's declared allowed-tools
-// (Claude parity: loadPluginCommands injects the command's allowed-tools into
+// (the reference parity: loadPluginCommands injects the command's allowed-tools into
 // toolPermissionContext.alwaysAllowRules.command before executeShellCommandsInPrompt
 // runs — loadPluginCommands.ts L378-398 + promptShellExecution.ts's permission gate).
 describe('isEmbeddedShellCommandAllowed', () => {

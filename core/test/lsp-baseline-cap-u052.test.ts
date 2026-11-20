@@ -1,7 +1,7 @@
 /**
  * U052 — Bounded-memory retention for the LSP diagnostic baseline tracker.
  *
- * PARITY (additive, resource-exhaustion boundary): Claude Code bounds its
+ * PARITY (additive, resource-exhaustion boundary): the reference bounds its
  * cross-session diagnostic bookkeeping with `LRUCache({ max: MAX_DELIVERED_FILES
  * = 500 })` (services/lsp/LSPDiagnosticRegistry.ts L46-56) to "prevent unbounded
  * memory growth in long sessions". AMI's `DiagnosticTracker` keeps a per-file

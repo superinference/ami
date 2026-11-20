@@ -19,7 +19,7 @@ const okOptions = [
 ];
 
 describe('validateAskUserQuestionInput — cardinality bounds', () => {
-  it('exposes the Claude-parity bound constants', () => {
+  it('exposes the reference-parity bound constants', () => {
     assert.equal(ASK_USER_MAX_QUESTIONS, 4);
     assert.equal(ASK_USER_MIN_OPTIONS, 2);
     assert.equal(ASK_USER_MAX_OPTIONS, 4);

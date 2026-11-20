@@ -1,6 +1,6 @@
 /**
  * analytics-otel-config — OTEL exporter/protocol/interval config knobs +
- * telemetry lifecycle hardening added for Claude-Code parity:
+ * telemetry lifecycle hardening added for the reference parity:
  *  - parseExporterTypes (OTEL spec 'none' sentinel, comma lists)
  *  - resolveOtlpProtocol (per-signal + generic OTEL_EXPORTER_OTLP_PROTOCOL, throws on unknown)
  *  - isTelemetrySuppressedForTest (NODE_ENV=test default + AMI override)

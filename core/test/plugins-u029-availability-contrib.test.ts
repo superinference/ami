@@ -14,7 +14,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// U029 — additive Claude-Code plugin parity for core/src/plugins.ts:
+// U029 — additive the reference plugin parity for core/src/plugins.ts:
 //  1. Declarative availability gate (`requires`) — Claude's isAvailable():
 //     a bundle whose platform/env/bin prerequisites aren't met is OMITTED.
 //  2. Inline MCP servers in the manifest `mcpServers` record/array

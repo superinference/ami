@@ -69,7 +69,7 @@ describe('mapChildToSubagentEvent', () => {
     assert.equal(r?.type === 'subagent_progress' && r.depth, 3);
   });
 
-  // Parity (Claude Code swarmWorkerHandler `pendingWorkerRequest` + AssistantToolUseMessage
+  // Parity (the reference swarmWorkerHandler `pendingWorkerRequest` + AssistantToolUseMessage
   // HookProgress "waiting for leader approval"): a sub-agent blocked on an interactive
   // question/consent must surface a dedicated `waiting` activity so the roster shows it is
   // stalled awaiting approval instead of freezing on its last tool/text row.

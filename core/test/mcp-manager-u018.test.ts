@@ -1,7 +1,7 @@
 /**
  * U018 parity tests for src/mcp/manager.ts — four additive capabilities:
  *   1. validateMcpServerName — add-time server-name character validation
- *      (Claude-parity addMcpConfig name check).
+ *      (the reference-parity addMcpConfig name check).
  *   2. Per-server tool-count cap (MAX_MCP_TOOLS_PER_SERVER) enforced during tool
  *      ingestion, with a surfaced config warning.
  *   3. Suppressed-duplicate surfacing — a lower-precedence config entry that

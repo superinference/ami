@@ -363,7 +363,7 @@ describe('process-manager ProcessManager signal/timer paths', () => {
       await new Promise(r => setTimeout(r, 400));
       mock.timers.tick(45000); // first tick: output changed since 0 -> records size
       mock.timers.tick(45000); // second tick: size stable + prompt-like -> notify (not kill)
-      // Claude parity: a stalled task is surfaced to the model, not silently killed.
+      // the reference parity: a stalled task is surfaced to the model, not silently killed.
       assert.equal(pm.get(id)!.status, 'running');
       assert.ok(stalled, 'a one-shot stalled event is emitted');
       pm.kill(id); // clean up the backgrounded sleep
@@ -867,7 +867,7 @@ describe('hooks — command/http decision return shapes', () => {
     assert.equal(r.action, 'modify');
     assert.deepEqual((r as any).updatedInput, { command: 'safe' });
 
-    // ask output -> the preToolUse hook surfaces a distinct 'ask' action (Claude parity:
+    // ask output -> the preToolUse hook surfaces a distinct 'ask' action (the reference parity:
     // permissionDecision 'ask' forces a permission prompt instead of silently allowing).
     const ask = load([{ event: 'preToolUse', hook: { type: 'command', command: `echo '{"decision":"ask"}'` } }]);
     assert.equal((await ask.executePreToolUse({ messages: [], turnCount: 1, toolName: 'bash', toolInput: {} } as any)).action, 'ask');

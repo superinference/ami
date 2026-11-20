@@ -54,7 +54,7 @@ describe('isModAllowed', () => {
     assert.equal(result.allowed, true);
   });
 
-  it('denies user with a legacy version-list entry (arrays are not a vouch — Claude parity)', () => {
+  it('denies user with a legacy version-list entry (arrays are not a vouch — the reference parity)', () => {
     // Boolean-authoritative enablement: the legacy `string[]` form is NOT an
     // enablement signal, so an array entry no longer silently vouches for a
     // user-tier mod under allow-only. See managed-mods-u112-w108-boolean-vouch.test.ts.
@@ -356,7 +356,7 @@ describe('getManagedPluginNames (org-locked name set)', () => {
       enabledPlugins: { 'on@m': true, 'off@m': false, 'arr@m': ['owner/repo'] },
     };
     const names = getManagedPluginNames(policy);
-    // Boolean pins lock BOTH the full id AND the first-'@' bare name (Claude parity).
+    // Boolean pins lock BOTH the full id AND the first-'@' bare name (the reference parity).
     assert.equal(names.has('on@m'), true);
     assert.equal(names.has('on'), true);
     assert.equal(names.has('off@m'), true);
@@ -560,7 +560,7 @@ describe('ManagedModsEnforcer', () => {
 });
 
 describe('resolveModEnabled — per-mod defaultEnabled + 3-level enablement waterfall', () => {
-  // Claude parity (builtinPlugins.ts:72-76): the effective-enabled state resolves via a
+  // the reference parity (builtinPlugins.ts:72-76): the effective-enabled state resolves via a
   // 3-level waterfall — explicit setting (enabledPlugins[id]) > the mod's own
   // defaultEnabled > a hardcoded `true`. A mod author can thus ship a mod that is
   // installed-but-disabled-by-default (defaultEnabled:false) or forced-on-by-default.

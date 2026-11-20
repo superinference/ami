@@ -13,7 +13,7 @@ import {
 } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// U018 (w81) — IDE MCP auto-connect waterfall (Claude-parity `addIde`,
+// U018 (w81) — IDE MCP auto-connect waterfall (the reference-parity `addIde`,
 // useIDEIntegration.ts:L32-36). The reserved `ide` server is auto-registered when
 // the waterfall (config knob / `--ide` flag / supported editor terminal /
 // inherited SSE port / pending extension / truthy override env) is satisfied and

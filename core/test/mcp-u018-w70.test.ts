@@ -21,7 +21,7 @@ import {
 } from '../src/mcp/log-sink';
 
 // ---------------------------------------------------------------------------
-// U018-w70 — additive MCP manager parity (Claude Code):
+// U018-w70 — additive MCP manager parity (the reference):
 //   * Per-MCP-server structured log sink (getMCPLogsPath + logMCPError/logMCPDebug):
 //     each server gets its own dated JSONL file with distinct error/debug record
 //     shapes, credential-redacted, wired into the manager's client-event handlers.

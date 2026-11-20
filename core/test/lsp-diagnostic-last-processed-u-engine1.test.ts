@@ -2,7 +2,7 @@
  * U-engine1 (gap: per-query-loop reset of tracking state + last-processed
  * timestamp cache).
  *
- * PARITY (additive): Claude Code's diagnosticTracking keeps a
+ * PARITY (additive): the reference's diagnosticTracking keeps a
  * `lastProcessedTimestamps: Map<path, number>` recording when each file was last
  * snapshotted, and `handleQueryStart` reset()s every tracking map at the start of
  * each new query loop so stale diagnostics from a prior turn don't leak into the

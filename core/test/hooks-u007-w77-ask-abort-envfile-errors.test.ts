@@ -1,5 +1,5 @@
 /**
- * U007 (w77) — four hook-layer parity gaps against Claude Code's hook system:
+ * U007 (w77) — four hook-layer parity gaps against the reference's hook system:
  *
  *  - PreToolUse `permissionDecision: 'ask'` (toolHooks.ts:L529-554, types/hooks.ts:L64-78):
  *    a PreToolUse hook can neither-allow-nor-deny and instead FORCE an interactive

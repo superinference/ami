@@ -67,7 +67,7 @@ describe('shortestDisplayPath — shorter of ~home vs ./cwd', () => {
 
   it('does not treat a sibling prefix dir as inside the boundary', () => {
     // '/home/user2' must NOT be considered inside '/home/user' (raw startsWith
-    // would wrongly match). Superset improvement over Claude's raw prefix check.
+    // would wrongly match). Superset improvement over the reference's raw prefix check.
     const home = '/home/user';
     const cwd = '/home/user/project';
     assert.equal(shortestDisplayPath('/home/user2/x', cwd, home), '/home/user2/x');

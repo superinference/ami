@@ -11,7 +11,7 @@ import {
 } from '../src/plugins';
 
 // ---------------------------------------------------------------------------
-// Additive Claude-Code plugin parity for core/src/plugins.ts:
+// Additive the reference plugin parity for core/src/plugins.ts:
 //  1. multi-line TOML basic strings (""" … """) in command files;
 //  2. full-line `#` TOML comments ignored by the command parser;
 //  3. bundled MCP server config (.mcp.json) enumerated on the PluginBundle,

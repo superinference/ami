@@ -45,7 +45,7 @@ describe('U088 — MCP resource tools expose a searchHint consumed by tool_searc
 });
 
 describe('U088 — maxResultSizeChars is a declared knob that drives the spill cap', () => {
-  it('declares maxResultSizeChars: 100_000 on both resource tools (Claude parity)', () => {
+  it('declares maxResultSizeChars: 100_000 on both resource tools (the reference parity)', () => {
     assert.equal(listMcpResourcesTool.maxResultSizeChars, 100_000);
     assert.equal(readMcpResourceTool.maxResultSizeChars, 100_000);
   });

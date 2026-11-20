@@ -9,7 +9,7 @@ import type { ToolContext } from '../src/types';
  * non-blocking read-formatting cases below pass `wait: false` to take a one-shot
  * snapshot of a still-running task instead of blocking for the (30s) timeout.
  *
- * Parity (additive superset) for task_output vs Claude Code BashOutput retrieval:
+ * Parity (additive superset) for task_output vs the reference BashOutput retrieval:
  *   - filter (regex) line selection, passed through to the process manager
  *   - invalid-filter clear error (not silent empty)
  *   - tail validation (NaN / string / negative) -> safe default / clamp

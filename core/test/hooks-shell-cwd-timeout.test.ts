@@ -1,5 +1,5 @@
 /**
- * Claude->AMI parity: per-hook shell selection, cwd validation, malformed-JSON
+ * the reference->AMI parity: per-hook shell selection, cwd validation, malformed-JSON
  * validation feedback, and per-callback (function-hook) timeouts.
  *
  * Covered gaps:

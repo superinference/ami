@@ -1,5 +1,5 @@
 /**
- * Parity tests for the async ('background') hook registry (Claude->AMI parity):
+ * Parity tests for the async ('background') hook registry (the reference->AMI parity):
  *  - async hooks are tracked (getPendingAsyncCount) instead of leaking as
  *    untracked fire-and-forget promises;
  *  - finalizePendingAsyncHooks() awaits in-flight async hooks (graceful shutdown);

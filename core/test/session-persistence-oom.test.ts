@@ -1,5 +1,5 @@
 /**
- * Claude-parity: session persistence opt-out (H26) + OOM read boundary (H27).
+ * the reference-parity: session persistence opt-out (H26) + OOM read boundary (H27).
  *
  * Run: cd core/core && node --import tsx --test test/session-persistence-oom.test.ts
  */

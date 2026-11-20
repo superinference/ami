@@ -19,7 +19,7 @@ import { fileReadTool } from '../src/tools/file-read';
 import { fileEditTool } from '../src/tools/file-edit';
 
 // ---------------------------------------------------------------------------
-// U069 (w78) — tool-utils.ts / credential-guard.ts Claude Code parity additions:
+// U069 (w78) — tool-utils.ts / credential-guard.ts the reference parity additions:
 //  - ACTION_VERBS + describeAction: out-of-workspace denials name the operation
 //    in human terms (Claude Code BashTool/pathValidation.ts ACTION_VERBS) in
 //    ADDITION to the already-present allowed-roots directory list.

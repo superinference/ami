@@ -14,7 +14,7 @@ import { resolveModel } from '../src/provider';
 // ---------------------------------------------------------------------------
 
 describe('normalizeModelStringForAPI', () => {
-  it('strips the [1m] bracket marker (Claude parity)', () => {
+  it('strips the [1m] bracket marker (the reference parity)', () => {
     assert.equal(normalizeModelStringForAPI('claude-opus-5[1m]'), 'claude-opus-5');
     assert.equal(normalizeModelStringForAPI('claude-sonnet-4-5[1m]'), 'claude-sonnet-4-5');
   });
@@ -80,7 +80,7 @@ describe('getSmallFastModel', () => {
     assert.equal(getSmallFastModel(undefined, env), undefined);
   });
 
-  it('honors ANTHROPIC_SMALL_FAST_MODEL over the fallback (Claude parity)', () => {
+  it('honors ANTHROPIC_SMALL_FAST_MODEL over the fallback (the reference parity)', () => {
     const env = { ANTHROPIC_SMALL_FAST_MODEL: 'claude-haiku-4' } as NodeJS.ProcessEnv;
     assert.equal(getSmallFastModel('claude-opus-5', env), 'claude-haiku-4');
   });

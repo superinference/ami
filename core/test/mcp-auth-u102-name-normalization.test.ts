@@ -5,7 +5,7 @@
  * Gap (confirmed, parity): `normalizeMcpNameSegment` used to replace EVERY
  * character outside `[a-zA-Z0-9_]` with `_`, collapsing a configured hyphen so a
  * `my-server` MCP config surfaced as `mcp__my_server__authenticate` — a name that
- * no longer matched the server the user configured and diverged from Claude Code's
+ * no longer matched the server the user configured and diverged from the reference's
  * `normalizeNameForMCP` (services/mcp/normalization.ts), which preserves hyphens
  * to stay inside the API pattern `^[a-zA-Z0-9_-]{1,64}$`.
  *

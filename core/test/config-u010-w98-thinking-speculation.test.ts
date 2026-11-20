@@ -17,10 +17,10 @@ import {
 
 // ---------------------------------------------------------------------------
 // U010 (w98) — two additive config off-/opt-switches:
-//   * ProjectConfig.speculationEnabled — Claude parity `speculationEnabled`
+//   * ProjectConfig.speculationEnabled — the reference parity `speculationEnabled`
 //     global-config knob for isSpeculationEnabled(); default ON, explicit `false`
 //     disables next-prompt speculation. Resolved by resolveSpeculationEnabled.
-//   * ProjectConfig.alwaysThinkingEnabled — Claude parity `alwaysThinkingEnabled`
+//   * ProjectConfig.alwaysThinkingEnabled — the reference parity `alwaysThinkingEnabled`
 //     consulted by shouldEnableThinkingByDefault(); AMI auto-adopts a reasoning
 //     model's default thinking level unless this is `false` (opt-out) or
 //     MAX_THINKING_TOKENS gates it.

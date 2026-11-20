@@ -16,7 +16,7 @@ import { mcpCredentialKey, mcpTokenFileName } from '../src/mcp/oauth';
 import { resolveConfigDir } from '../src/reference-journal';
 
 // ---------------------------------------------------------------------------
-// U018-w74 — additive MCP manager parity (Claude Code):
+// U018-w74 — additive MCP manager parity (the reference):
 //   * Transport inference from URL scheme (ide.tsx:L585-593) — a `url` with no
 //     explicit `transport` dispatches over the inferred remote transport, never stdio.
 //   * Add-time URL well-formedness validation (xaaIdpCommand.ts:L44-58).

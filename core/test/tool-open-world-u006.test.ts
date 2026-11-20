@@ -6,7 +6,7 @@ import { webSearchTool } from '../src/tools/web-search';
 import { fileReadTool } from '../src/tools/file-read';
 
 // ---------------------------------------------------------------------------
-// U006 — `ToolDefinition.isOpenWorld` (Claude Code parity, MCPTool.ts:L30-32).
+// U006 — `ToolDefinition.isOpenWorld` (the reference parity, MCPTool.ts:L30-32).
 // Marks tools whose effects reach OUTSIDE the local env / are non-deterministic.
 // Distinct from `isReadOnly`: a read-only tool (remote fetch / web search) can
 // still be open-world. Sourced from an MCP server's `annotations.openWorldHint`

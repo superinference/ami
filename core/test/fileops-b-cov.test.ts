@@ -156,7 +156,7 @@ describe('notebook-edit — uncovered paths', () => {
       ctx(),
     );
     assert.equal(result.isError, true);
-    // numeric-but-out-of-range cell_id alias gets a specific message (Claude parity)
+    // numeric-but-out-of-range cell_id alias gets a specific message (the reference parity)
     assert.match(result.output, /does not exist/);
   });
 

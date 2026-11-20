@@ -6,7 +6,7 @@ import * as path from 'path';
 import { expandPath, isPathSafe, toRelativePath, realpathNFC } from '../src/utils/path';
 
 // ===========================================================================
-// expandPath hardening — Claude Code path-utility parity (all additive).
+// expandPath hardening — the reference path-utility parity (all additive).
 //
 // Each block targets one confirmed gap vs. Claude Code's utils/path.ts and is
 // RED-GREEN validated: with the corresponding guard reverted the assertion

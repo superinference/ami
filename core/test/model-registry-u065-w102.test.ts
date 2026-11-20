@@ -1,7 +1,7 @@
 /**
  * U065 (w102) — model-registry: model-string initialization await-barrier.
  *
- * Parity gap (modelStrings.ts:L147-166): Claude Code exposes
+ * Parity gap (modelStrings.ts:L147-166): the reference exposes
  * `ensureModelStringsInitialized()` — an explicit async barrier called before
  * generating model-selection options so the displayed/region strings are correct
  * rather than interim defaults. For Bedrock it awaits the inference-profile fetch;

@@ -1,7 +1,7 @@
 /**
  * U064 (w72) — exit_worktree parity hardening, additive behaviors.
  *
- * Covers confirmed parity gaps against Claude's ExitWorktree/WorktreeExitDialog
+ * Covers confirmed parity gaps against the reference's ExitWorktree/WorktreeExitDialog
  * that AMI's exit_worktree was missing:
  *
  *   1. CWD-dependent cache invalidation on exit: enter_worktree fires

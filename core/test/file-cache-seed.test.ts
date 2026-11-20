@@ -219,7 +219,7 @@ describe('seedFileCacheFromTranscript', () => {
     assert.equal(cache.hasChanged(fp), true);
   });
 
-  it('respects an entry-count knob on the target cache (Claude ASK_READ_FILE_STATE_CACHE_SIZE parity)', () => {
+  it('respects an entry-count knob on the target cache (the reference ASK_READ_FILE_STATE_CACHE_SIZE parity)', () => {
     const cwd = tmp();
     const messages: Message[] = [];
     for (let i = 0; i < 5; i++) {

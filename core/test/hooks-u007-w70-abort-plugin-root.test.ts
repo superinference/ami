@@ -1,5 +1,5 @@
 /**
- * U007 / w70 — two Claude-Code parity features in the hook layer:
+ * U007 / w70 — two the reference parity features in the hook layer:
  *
  * 1. Abort-signal awareness during Stop / SubagentStop hook execution. A user
  *    interrupt (Ctrl-C / turn abort) mid-chain must STOP the remaining hook chain

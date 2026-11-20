@@ -13,7 +13,7 @@ import {
 } from '../src/mcp/manager';
 
 // ---------------------------------------------------------------------------
-// MCP config-source SCOPE model (Claude-parity MCPListPanel ConfigScope):
+// MCP config-source SCOPE model (the reference-parity MCPListPanel ConfigScope):
 // each live server carries the scope (enterprise|user|project|local|dynamic)
 // and the config file it was loaded from, and the listing groups + orders by
 // scope with alphabetical ordering within each group.
@@ -33,7 +33,7 @@ describe('MCP scope — labels + order', () => {
   it('orders scopes project→local→user→enterprise→dynamic', () => {
     assert.deepEqual([...MCP_SCOPE_ORDER], ['project', 'local', 'user', 'enterprise', 'dynamic']);
   });
-  it('gives each scope a Claude-parity heading label', () => {
+  it('gives each scope a reference-parity heading label', () => {
     assert.equal(mcpScopeLabel('project'), 'Project MCPs');
     assert.equal(mcpScopeLabel('local'), 'Local MCPs');
     assert.equal(mcpScopeLabel('user'), 'User MCPs');

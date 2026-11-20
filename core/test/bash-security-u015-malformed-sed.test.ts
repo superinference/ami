@@ -27,7 +27,7 @@ import {
 //   (multi-line scripts are too complex). AMI auto-approved both. We port the
 //   brace + embedded-newline rejection. (The crude `#`-comment rejection is
 //   intentionally NOT ported: AMI deliberately allows `/^#/d` — a /regex/ address
-//   matching a literal `#` — which is more precise than Claude's blanket block and
+//   matching a literal `#` — which is more precise than the reference's blanket block and
 //   is locked by bash-security.test.ts; keeping it is an AMI superset, not a gap.)
 // ---------------------------------------------------------------------------
 

@@ -6,7 +6,7 @@ import { validatePluginManifest } from '../src/plugins';
 // ---------------------------------------------------------------------------
 // U029 w66 — manifest `dependencies` validation + richer component-path forms.
 //
-// (1) `dependencies` (Claude parity: DependencyRefSchema, utils/plugins/schemas.ts
+// (1) `dependencies` (the reference parity: DependencyRefSchema, utils/plugins/schemas.ts
 //     L1367) declares plugins that must be enabled first. AMI's resolver
 //     (common/plugin-dependencies.ts) already consumes them, but the manifest
 //     VALIDATOR never flagged a malformed entry — an author typo (a number, an
@@ -15,7 +15,7 @@ import { validatePluginManifest } from '../src/plugins';
 //
 // (2) Component-path fields (skills/agents/commands/hooks/mcpServers) may be
 //     declared as a string, an array of strings, or (commands) an object mapping
-//     name → { source, ... } (Claude parity: schemas.ts L429-497). AMI previously
+//     name → { source, ... } (the reference parity: schemas.ts L429-497). AMI previously
 //     validated ONLY the string form (`typeof val !== 'string'` → skip), so an
 //     array or record entry containing `..` / an absolute path slipped past the
 //     traversal gate. These tests lock traversal validation across all forms.

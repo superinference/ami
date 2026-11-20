@@ -1,5 +1,5 @@
 /**
- * U010 / w105 — config.ts parity additions (Claude Code knobs AMI was missing):
+ * U010 / w105 — config.ts parity additions (the reference knobs AMI was missing):
  *   - diffTool ('terminal' | 'auto') + resolveDiffTool        (CC utils/config.ts DiffTool)
  *   - defaultShell ('bash' | 'powershell') + resolveDefaultShell
  *                                                             (CC utils/shell/resolveDefaultShell.ts)

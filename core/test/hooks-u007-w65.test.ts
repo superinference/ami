@@ -21,7 +21,7 @@ describe('U007/w65 — TeammateIdle hook event', () => {
   it('teammateIdle is in the introspectable HOOK_EVENTS catalog', () => {
     assert.ok(
       (HOOK_EVENTS as readonly string[]).includes('teammateIdle'),
-      'HOOK_EVENTS must advertise teammateIdle (Claude Code parity)',
+      'HOOK_EVENTS must advertise teammateIdle (the reference parity)',
     );
   });
 

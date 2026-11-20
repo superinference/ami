@@ -156,7 +156,7 @@ describe('httpGetWithRetry', () => {
 
   after(() => server.close());
 
-  it('exposes the Claude-parity 4-step backoff schedule', () => {
+  it('exposes the reference-parity 4-step backoff schedule', () => {
     assert.deepEqual([...DEFAULT_HTTP_RETRY_DELAYS_MS], [2000, 4000, 8000, 16000]);
   });
 

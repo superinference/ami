@@ -1,5 +1,5 @@
 /**
- * analytics-drain-circuit-breaker — shutdown-drain reliability (Claude parity with
+ * analytics-drain-circuit-breaker — shutdown-drain reliability (the reference parity with
  * SerialBatchEventUploader):
  *  - maxConsecutiveFailures: a cross-batch circuit breaker that ADVANCES past
  *    dropped batches (fresh per-batch budget) until N fail in a row, then gives up

@@ -18,7 +18,7 @@ import {
 } from '../src/mcp/needs-auth-cache';
 
 // ---------------------------------------------------------------------------
-// U018 — needs-auth skip cache (Claude Code parity, services/mcp/client.ts:
+// U018 — needs-auth skip cache (the reference parity, services/mcp/client.ts:
 //   mcp-needs-auth-cache.json, MCP_AUTH_CACHE_TTL_MS, isMcpAuthCached /
 //   hasMcpDiscoveryButNoToken short-circuit): a remote MCP server that returns
 //   401 within the TTL is a guaranteed-401, so the next connectAll pass SKIPS it
@@ -120,7 +120,7 @@ describe('needs-auth-cache pure helpers', () => {
     }
   });
 
-  it('exposes the Claude-parity 15-minute TTL default', () => {
+  it('exposes the reference-parity 15-minute TTL default', () => {
     assert.equal(MCP_NEEDS_AUTH_CACHE_TTL_MS, 15 * 60 * 1000);
   });
 });

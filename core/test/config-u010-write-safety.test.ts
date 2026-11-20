@@ -94,7 +94,7 @@ describe('U010 Gap E — backup-before-write', () => {
   beforeEach(() => { dir = mkTemp(); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-  it('exports Claude-parity rotation constants', () => {
+  it('exports the reference-parity rotation constants', () => {
     assert.equal(MAX_CONFIG_BACKUPS, 5);
     assert.equal(CONFIG_BACKUP_MIN_INTERVAL_MS, 60_000);
   });

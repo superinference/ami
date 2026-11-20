@@ -7,7 +7,7 @@ import { canonicalizePowerShellCommandName } from '../src/tools/powershell-secur
 // U003 / w105 — Canonical PowerShell alias cross-resolution in rule matching
 // with the deny-over-match / allow-no-over-match asymmetry.
 //
-// Claude parity: PowerShellTool/powershellPermissions.ts
+// the reference parity: PowerShellTool/powershellPermissions.ts
 // filterRulesByContentsMatchingInput — a deny rule for `Remove-Item` also blocks
 // `rm`/`del`/`ri`, a rule for `rm` blocks `Remove-Item`, matching is
 // case-insensitive, and a module prefix is stripped for deny/ask (fail-safe

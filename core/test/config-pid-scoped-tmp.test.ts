@@ -10,7 +10,7 @@ import { safeWriteConfig, cleanupStaleConfigTmp, fsHooks } from '../src/config';
 /**
  * U010 — PID-scoped runtime namespace for config atomic writes.
  *
- * Parity target: Claude's getSwarmSocketName() embeds process.pid so concurrent
+ * Parity target: the reference's getSwarmSocketName() embeds process.pid so concurrent
  * instances never clobber one shared ephemeral runtime path. AMI's config writer
  * now does the same for its atomic-write scratch file, and the crash-recovery
  * sweep reclaims a dead instance's orphan while leaving a LIVE concurrent

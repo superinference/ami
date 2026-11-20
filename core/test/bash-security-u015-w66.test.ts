@@ -11,7 +11,7 @@ import {
 // ===========================================================================
 // UNIT U015 (wave w66) — core/core/src/tools/bash-security.ts parity hardening
 //
-// Three confirmed Claude-Code parity gaps, all implemented as ADDITIVE deny
+// Three confirmed the reference parity gaps, all implemented as ADDITIVE deny
 // validators (no restyle, no behavior removed):
 //
 //  Gap A — git global-flag config-injection RCE guard

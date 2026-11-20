@@ -1,6 +1,6 @@
 /**
  * U513 — workload-context.ts: turn-scoped workload (execution-origin) tag via
- * AsyncLocalStorage (Claude workloadContext parity).
+ * AsyncLocalStorage (the reference workloadContext parity).
  *
  * Covers the canonical ALS primitive (getWorkload / hasWorkloadBoundary /
  * runWithWorkload / WORKLOAD_CRON) and that AnalyticsTracker consumes exactly

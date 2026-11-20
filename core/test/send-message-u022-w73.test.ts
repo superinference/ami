@@ -1,6 +1,6 @@
 /**
  * U022 wave-73 additions to the teammate send_message subsystem. Each block maps to
- * a confirmed Claude-Code parity gap that was NOT yet implemented on the file:
+ * a confirmed the reference parity gap that was NOT yet implemented on the file:
  *
  *  - Age-based self-healing mailbox pruning (MAILBOX_ENTRY_TTL_MS + prune-on-append) —
  *    utils/swarm/permissionSync.ts `cleanupOldResolutions` (prune entries older than

@@ -1,5 +1,5 @@
 /**
- * Claude-parity hardening for bash-security.ts (parity/bash-security campaign).
+ * the reference-parity hardening for bash-security.ts (parity/bash-security campaign).
  *
  * Each `describe` block corresponds to one strengthened guard family. Every block
  * pairs a RED case (a malicious command that MUST be blocked — this assertion

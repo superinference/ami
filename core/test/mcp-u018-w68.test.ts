@@ -11,7 +11,7 @@ import { createMcpTool } from '../src/tools/mcp-tool';
 // U018 (w68) — MCP manager parity additions:
 //  - stripJsonBom: strip a leading UTF-8 BOM before JSON.parse so a PowerShell /
 //    Windows-generated `.mcp.json` (BOM-prefixed) loads instead of silently
-//    dropping every server (Claude-parity utils/json.ts stripBOM,
+//    dropping every server (the reference-parity utils/json.ts stripBOM,
 //    remoteManagedSettings/syncCacheState.ts).
 //  - disabled-server hint no longer references the non-existent `/mcp start`
 //    subcommand (Claude's real affordance is the /mcp panel / `/mcp enable`).

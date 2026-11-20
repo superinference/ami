@@ -1,6 +1,6 @@
 /**
  * SessionManager.loadAsync — non-blocking lazy full-transcript load (parity:
- * Claude's async `loadFullLog`). loadAsync must be a drop-in async equivalent of
+ * the reference's async `loadFullLog`). loadAsync must be a drop-in async equivalent of
  * the sync `load`: same result for a normal session, the same blob rehydration
  * (including the missing-blob fallback), the same `null` for a missing /
  * oversized / corrupt file, and the same id sanitization — just off the event

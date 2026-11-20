@@ -87,7 +87,7 @@ describe('U003/w49: FlagArgType per-flag argument-type validation', () => {
 // nothing but a deny-rule scan, so a bash credential read/exfil that did not
 // match a hardline regex (e.g. `cat ~/.ssh/id_rsa`, `cp x ~/.aws/credentials`)
 // was silently auto-allowed — an asymmetric defense-in-depth hole vs file_read.
-// Claude keeps the sensitive-path safetyCheck in every mode; AMI now mirrors
+// the reference keeps the sensitive-path safetyCheck in every mode; AMI now mirrors
 // the bypassPermissions safety-path handling in auto-allow too.
 // ===========================================================================
 describe('U003/w49: sensitive-path safety still fires in auto-allow (yolo)', () => {

@@ -17,7 +17,7 @@ import { fileReadTool } from '../src/tools/file-read';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U069 (w70) — tool-utils.ts Claude Code parity additions:
+// U069 (w70) — tool-utils.ts the reference parity additions:
 //  [8]/[17] Special-file (FIFO/socket/device) lstat pre-guard in resolveFilePath,
 //           BEFORE realpathSync/readFileSync (which can block on a FIFO → DoS).
 //  [16]     UNC path blocking in resolveSearchPath (grep/glob), not only reads.

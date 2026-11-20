@@ -10,7 +10,7 @@ import {
 // ---------------------------------------------------------------------------
 // U003/w90 — schema-validated permission-update vocabulary at the trust boundary.
 //
-// Parity: the reference Code models every permission mutation as a strict Zod
+// Parity: the reference models every permission mutation as a strict Zod
 // `discriminatedUnion` over `type` with an enum `behavior`, an enum `destination`,
 // and typed rule/directory arrays, so a malformed update (unknown type, missing
 // behavior, non-array rules, bad destination, bogus mode, non-string directory)

@@ -1,7 +1,7 @@
 /**
  * mcp-client-u041-channel-capability.test.ts — parity for the MCP experimental
  * capability opt-in `claude/channel` + `claude/channel/permission`
- * (Claude-parity channelPermissions.ts:L177-194).
+ * (the reference-parity channelPermissions.ts:L177-194).
  *
  * A server opts IN to relaying permission prompts over a message channel by
  * declaring BOTH experimental capabilities under `capabilities.experimental` at
@@ -80,7 +80,7 @@ describe('McpClient.hasExperimentalCapability', () => {
     assert.equal(c.hasExperimentalCapability('tools'), false);
   });
 
-  it('treats a key explicitly mapped to undefined as absent (Claude parity)', async () => {
+  it('treats a key explicitly mapped to undefined as absent (the reference parity)', async () => {
     // JSON can't carry `undefined`; emit it from the server script directly.
     const c = await connect(`{ experimental:{ '${MCP_CHANNEL_CAPABILITY}': undefined } }`);
     assert.equal(c.hasExperimentalCapability(MCP_CHANNEL_CAPABILITY), false);

@@ -1,6 +1,6 @@
 /**
  * Unit tests for `formatSkillSourceSuffix` — the shared source-annotation formatter
- * (Claude parity: `formatDescriptionWithSource`). Pure, no I/O.
+ * (the reference parity: `formatDescriptionWithSource`). Pure, no I/O.
  */
 
 import { describe, it } from 'node:test';

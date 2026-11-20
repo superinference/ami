@@ -70,7 +70,7 @@ describe('sendMessageTool – isReadOnlyForInput (per-call read-only verdict)', 
 
 describe('sendMessageTool – isEnabled gate (teammate subsystem)', () => {
   it('exposes an isEnabled() capability gate', () => {
-    // PARITY: Claude gates visibility with isEnabled() = isAgentSwarmsEnabled().
+    // PARITY: the reference gates visibility with isEnabled() = isAgentSwarmsEnabled().
     assert.equal(typeof sendMessageTool.isEnabled, 'function');
   });
 });

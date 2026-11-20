@@ -15,7 +15,7 @@ import {
 // ---------------------------------------------------------------------------
 // U028 w117 — two CommandDefinition parity knobs missing from plugins.ts:
 //
-//   1. `shell` (Claude parity: parseShellFrontmatter / loadPluginCommands L298):
+//   1. `shell` (the reference parity: parseShellFrontmatter / loadPluginCommands L298):
 //      a command may declare the shell its embedded `!`-block execution runs in
 //      (`bash` | `powershell`). Validated to the enum — an unrecognized value
 //      degrades to undefined (caller defaults to bash), matching how `effort`
@@ -23,7 +23,7 @@ import {
 //      scoped to the command's `allowedTools` (alwaysAllowRules.command), can
 //      pick the shell.
 //
-//   2. `immediate` (Claude parity: Command.immediate, commands/bridge/index.ts
+//   2. `immediate` (the reference parity: Command.immediate, commands/bridge/index.ts
 //      L22): a command flagged `immediate` runs without the normal defer/confirm
 //      path. Declarative boolean, read via isImmediateCommand(); default false.
 // ---------------------------------------------------------------------------

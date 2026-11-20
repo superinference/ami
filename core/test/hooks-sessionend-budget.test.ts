@@ -1,5 +1,5 @@
 /**
- * Hooks parity — SessionEnd execution budget (Claude Code's
+ * Hooks parity — SessionEnd execution budget (the reference's
  * getSessionEndHookTimeoutMs / SESSION_END_HOOK_TIMEOUT_MS_DEFAULT).
  *
  * SessionEnd hooks run during shutdown/clear and must not block teardown. Before

@@ -18,7 +18,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U029 — per-command enablement / visibility / sensitivity gates + alias
-// collision avoidance + scan diagnostics (Claude parity):
+// collision avoidance + scan diagnostics (the reference parity):
 //   - CommandBase.isEnabled (types/command.ts L180, isCommandEnabled L213-216)
 //   - CommandBase.isHidden  (types/command.ts L182)
 //   - CommandBase.isSensitive (types/command.ts L200 — args redacted from history)
