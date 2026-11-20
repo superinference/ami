@@ -313,6 +313,12 @@ export { getMailbox, clearMailbox, resetAllMailboxes } from './send-message';
 export { sleepTool } from './sleep';
 export { workflowTool, MAX_WORKFLOW_SCRIPT_BYTES, sanitizeWorkflowRunId, persistWorkflowRun, loadWorkflowRun, listWorkflowRuns, saveWorkflowScript } from './workflow';
 export type { WorkflowRunRecord, WorkflowRunListing } from './workflow';
+export {
+  WORKFLOW_SIZES, WORKFLOW_SIZE_ENV, DEFAULT_WORKFLOW_SIZE,
+  normalizeWorkflowSize, resolveWorkflowSize, getWorkflowSizeGuideline,
+  workflowSizeGuidelineText, isLargeWorkflow,
+} from './workflow-size';
+export type { WorkflowSize, WorkflowSizeGuideline } from './workflow-size';
 export { briefTool } from './brief';
 export { userMessageTool, isOutputGateEnabled, OUTPUT_GATE_ENV, OUTPUT_GATE_ENV_COMPAT, USER_MESSAGE_MAX_CHARS } from './user-message';
 export { surfaceAttachmentTool, formatAttachmentDelivery, expandAttachmentPath, resolveSurfacedAttachments, SURFACE_ATTACHMENT_METADATA_KEY } from './surface-attachments';

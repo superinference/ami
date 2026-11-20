@@ -11,6 +11,7 @@ import { escapeRegExp } from './utils/string';
 import { getErrnoCode } from './utils/errno';
 import { levenshteinDistance } from './tools/path-suggest';
 import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT, featureFlagEnvName } from './tools/tool-gates';
+import { WORKFLOW_SIZE_ENV, normalizeWorkflowSize } from './tools/workflow-size';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 import { readNativeManagedPolicy } from './managed-policy-source';
 
@@ -58,6 +59,11 @@ export interface ProjectConfig {
   compactionModel?: string;
   maxTurns?: number;
   tokenBudget?: number;
+  /** Dynamic workflow size — soft agent-count guideline for a single workflow run +
+   *  the "Large workflow" warning threshold (small|medium|large|off; default medium).
+   *  Bridged to the AMI_DYNAMIC_WORKFLOW_SIZE env knob the workflow tool + /flows tree
+   *  read. See core/core/src/tools/workflow-size.ts. */
+  dynamicWorkflowSize?: 'small' | 'medium' | 'large' | 'off';
   /** Hard USD spend cap; session stops when estimated cost exceeds it. */
   maxBudgetUsd?: number;
   /** Opt-in SuperInference reflection gate (both default off). */
@@ -1999,6 +2005,7 @@ const PROJECT_CONFIG_ENUMS: ReadonlyArray<readonly [keyof ProjectConfig, readonl
   // surfaced instead of silently flowing through, and emitted in the JSON schema.
   ['diffTool', ['terminal', 'auto']],
   ['defaultShell', ['bash', 'powershell']],
+  ['dynamicWorkflowSize', ['small', 'medium', 'large', 'off']],
 ];
 
 /** The expected runtime base-type of each typed ProjectConfig field. */
@@ -4828,6 +4835,23 @@ export function applyConfigBackgroundTasks(
 }
 
 /**
+ * Bridge the persisted {@link ProjectConfig.dynamicWorkflowSize} knob into the
+ * AMI_DYNAMIC_WORKFLOW_SIZE env knob the workflow tool (description guideline) and
+ * the /flows progress tree ("Large workflow" warning) read. An explicit env value
+ * already in `target` WINS; otherwise a valid persisted size seeds it. An invalid
+ * value is ignored (the resolver falls back to the medium default). Parity: the
+ * reference's "Dynamic workflow size" /config setting.
+ */
+export function applyConfigWorkflowSize(
+  config: ProjectConfig | null | undefined,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  if (target[WORKFLOW_SIZE_ENV] !== undefined) return;
+  const size = normalizeWorkflowSize(config?.dynamicWorkflowSize);
+  if (size) target[WORKFLOW_SIZE_ENV] = size;
+}
+
+/**
  * Apply every startup config→runtime knob bridge in one call (the env-targeting
  * ones): CA certs, glob-gitignore, auto-compaction, plans directory, Anthropic betas,
  * the OSC 9;4 progress kill-switch, the per-turn duration suppression, and the cosmetic/
@@ -4886,6 +4910,7 @@ export function applyConfigStartupKnobs(
   applyConfigIdleNotifThreshold(config, target);
   applyConfigSpinnerVerbs(config, target);
   applyConfigBackgroundTasks(config, target);
+  applyConfigWorkflowSize(config, target);
 }
 
 /**

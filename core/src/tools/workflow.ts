@@ -12,6 +12,7 @@ import {
 import { createDefaultTools } from './index';
 import { normalizePermissionMode } from '../permissions';
 import { isWorkflowScriptsEnabled, isBackgroundTasksDisabled, DISABLE_BACKGROUND_TASKS_ENV } from './tool-gates';
+import { workflowSizeGuidelineText } from './workflow-size';
 import { parseOptionalBool } from '../utils/coerce';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -149,10 +150,16 @@ export const workflowTool: ToolDefinition = {
   name: 'workflow',
   // PARITY (additive): declarative per-tool gate for the workflow-scripts subsystem.
   isEnabled: () => isWorkflowScriptsEnabled(),
-  description:
-    'Execute a workflow script that orchestrates multiple subagents. ' +
-    'Workflows run agent(), parallel(), pipeline(), phase(), and log() to coordinate multi-step work. ' +
-    'Scripts must begin with `export const meta = { name, description }` followed by the workflow body.',
+  // Dynamic description (getter): the base contract + the current "Dynamic workflow
+  // size" guideline, read at advertisement time so a /config size change is reflected
+  // without a restart (parity: the reference surfaces the size guideline in the tool).
+  get description(): string {
+    return 'Execute a workflow script that orchestrates multiple subagents. ' +
+      'Workflows run agent(), parallel(), pipeline(), phase(), and log() to coordinate multi-step work. ' +
+      'Scripts must begin with `export const meta = { name, description }` followed by the workflow body. ' +
+      'The run launches in the BACKGROUND by default and returns a task id immediately — monitor, stop, and save it with /flows. ' +
+      workflowSizeGuidelineText();
+  },
   inputSchema: {
     type: 'object',
     properties: {
