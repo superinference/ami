@@ -93,8 +93,8 @@ describe('ProcessManager – task-kind discriminator', () => {
   let pm: ProcessManager;
   afterEach(async () => { await cleanupPm(pm); if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('TASK_KINDS enumerates the three kinds', () => {
-    assert.deepEqual([...TASK_KINDS], ['bash', 'monitor', 'agent']);
+  it('TASK_KINDS enumerates the launchable kinds (incl. the background workflow run)', () => {
+    assert.deepEqual([...TASK_KINDS], ['bash', 'monitor', 'agent', 'workflow']);
   });
 
   it('spawn → kind "bash"; list()/get() surface it', async () => {

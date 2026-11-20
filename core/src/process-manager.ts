@@ -222,7 +222,7 @@ export type TaskStatus = (typeof TASK_STATUS)[number];
  * '[agent]'` / `'monitor:'`), which miscounted a shell whose command merely began
  * with those words. Mirrors the reference's getPillLabel splitting "1 shell, 1 monitor".
  */
-export const TASK_KINDS = ['bash', 'monitor', 'agent'] as const;
+export const TASK_KINDS = ['bash', 'monitor', 'agent', 'workflow'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 /**
@@ -398,6 +398,14 @@ export function buildCompletionSummary(
     if (status === 'killed') return 'monitor stream stopped';
     if (status === 'failed') return hasExit ? `monitor stream ended with exit code ${exitCode}` : 'monitor stream ended';
     return 'monitor stream ended';
+  }
+  // A workflow run is a multi-agent ORCHESTRATION, not a single command — word its
+  // termination as the run finishing/failing/stopping (parity with the monitor-kind
+  // special-casing above) so the completion note reads naturally for a /flows run.
+  if (kind === 'workflow') {
+    if (status === 'killed') return 'workflow run stopped';
+    if (status === 'failed') return hasExit ? `workflow run failed (exit code ${exitCode})` : 'workflow run failed';
+    return 'workflow run completed';
   }
   if (status === 'killed') return 'was stopped';
   if (status === 'failed') return hasExit ? `failed with exit code ${exitCode}` : 'failed';
@@ -2875,6 +2883,13 @@ export class ProcessManager extends EventEmitter {
     /** The active swarm team's name, when the agent joined a team at spawn (see
      *  {@link BackgroundProcess.teamName}). */
     teamName?: string;
+    /** Task kind for this registered entry (default `'agent'`). The background
+     *  WORKFLOW run registers itself as kind `'workflow'` — a single tracked entry
+     *  for the whole run, distinct from the per-agent `'agent'` entries its
+     *  {@link WorkflowRuntime} spawns — so `/flows`, the progress tree, and the
+     *  introspect task-type catalog can tell a workflow run apart from a plain
+     *  background subagent. */
+    kind?: TaskKind;
   }): void {
     // On RESUME the taskId is reused (same agent continued), so an entry may already
     // exist from the prior run. Carry forward its ORIGINAL startTime so the agent's
@@ -2889,7 +2904,7 @@ export class ProcessManager extends EventEmitter {
       command: opts.command,
       description: opts.description,
       status: opts.pending ? 'pending' : 'running',
-      kind: 'agent',
+      kind: opts.kind ?? 'agent',
       exitCode: null,
       outputPath: opts.outputPath,
       startTime,

@@ -71,7 +71,7 @@ describe('U133x workflow — per-agent cancellation wiring', () => {
     const pm = fakePm();
     const { ctx, configs } = ctxWith(cwd, () => oneText('ok'), { pm });
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.equal(r.isError, false);
     // RED (unwired): config had no abortController and abortFn was `() => {}`.
     const cfg = configs[0];
@@ -90,7 +90,7 @@ describe('U133x workflow — per-agent cancellation wiring', () => {
       yield { type: 'text_delta', text: config.abortController.signal.aborted ? 'ABORTED' : 'LIVE' };
     }, { abortSignal: outer.signal });
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     // RED (no forwarding): aborting the outer signal never reaches the agent.
     assert.match(r.output, /ABORTED/);
   });
@@ -106,7 +106,7 @@ describe('U133x workflow — completion usage stats', () => {
       yield { type: 'text_delta', text: 'hi' };
     });
     const script = "export const meta = { name: 's', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.equal(r.isError, false);
     // RED (no stats line): completion output never mentioned tokens/tool uses/duration.
     assert.match(r.output, /Tokens: 123/);
@@ -121,7 +121,7 @@ describe('U133x workflow — completion usage stats', () => {
       yield { type: 'usage_update', stats: { totalTokens: 10 } };
     });
     const script = "export const meta = { name: 's', description: 'd' }\nawait agent('a')\nawait agent('b')\nreturn 1";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.match(r.output, /Tokens: 20/);
     assert.match(r.output, /Tool uses: 2/);
   });
@@ -147,7 +147,7 @@ describe('U133x workflow — live progress', () => {
       yield { type: 'usage_update', stats: { totalTokens: 7 } }; // triggers tokenCount update
     }, { pm });
     const script = "export const meta = { name: 'p', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.equal(r.isError, false);
     // RED (no live flush): file was empty until finish → fileAtTokenUpdate !== 'partial-live'.
     // RED (no live token mirror): updateEntry never got a tokenCount → fileAtTokenUpdate stays null.
@@ -162,7 +162,7 @@ describe('U133x workflow — self-describing high-entropy agent ids', () => {
     const pm = fakePm();
     const { ctx } = ctxWith(cwd, () => oneText('ok'), { pm });
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do', { label: 'Build Site' })";
-    await workflowTool.execute!({ script }, ctx);
+    await workflowTool.execute!({ script, run_in_background: false }, ctx);
     const id = pm.registered[0].id;
     // RED (old): id was `agent-<8 hex>` with NO embedded label and only 2^32 entropy.
     assert.match(id, /^agent-Build_Site-[0-9a-f]{16}$/);
@@ -173,7 +173,7 @@ describe('U133x workflow — self-describing high-entropy agent ids', () => {
     const pm = fakePm();
     const { ctx } = ctxWith(cwd, () => oneText('ok'), { pm });
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do', { label: '!!!' })";
-    await workflowTool.execute!({ script }, ctx);
+    await workflowTool.execute!({ script, run_in_background: false }, ctx);
     const id = pm.registered[0].id;
     assert.match(id, /^agent-[0-9a-f]{16}$/);
   });

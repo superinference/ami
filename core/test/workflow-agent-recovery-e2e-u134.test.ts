@@ -74,7 +74,7 @@ describe('U134 E2E — per-agent skip through the workflow tool', () => {
       reg.opts.skipFn!();
     }), pm);
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.equal(r.isError, false);
     assert.match(r.output, /completed/);
     assert.match(r.output, /Agents spawned: 1/);
@@ -98,7 +98,7 @@ describe('U134 E2E — per-agent retry through the workflow tool', () => {
       return (async function* () { yield { type: 'text_delta', text: 'recovered' }; })();
     }, pm);
     const script = "export const meta = { name: 'm', description: 'd' }\nreturn await agent('do')";
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
     assert.equal(r.isError, false);
     assert.match(r.output, /recovered/);
     // The retried agent is the SAME agent — the run still reports one agent.

@@ -78,7 +78,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
       _engineFactory: engineFactory,
     };
 
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
 
     assert.equal(r.isError, false);
     // The streamed deltas became the agent result and the workflow's return value.
@@ -143,7 +143,7 @@ describe('workflowTool agentHandler with processManager + engine factory', () =>
       _engineFactory: engineFactory,
     };
 
-    const r = await workflowTool.execute!({ script }, ctx);
+    const r = await workflowTool.execute!({ script, run_in_background: false }, ctx);
 
     // agent() swallows the thrown error and resolves null -> workflow completes
     // with no result line.

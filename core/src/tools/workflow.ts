@@ -11,7 +11,8 @@ import {
 } from './task';
 import { createDefaultTools } from './index';
 import { normalizePermissionMode } from '../permissions';
-import { isWorkflowScriptsEnabled } from './tool-gates';
+import { isWorkflowScriptsEnabled, isBackgroundTasksDisabled, DISABLE_BACKGROUND_TASKS_ENV } from './tool-gates';
+import { parseOptionalBool } from '../utils/coerce';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -145,6 +146,10 @@ export const workflowTool: ToolDefinition = {
         type: 'string',
         description: 'Resume a previous run saved under this runId: reloads the persisted script (no script/scriptPath/name needed) and reuses that run\'s agent cache so completed work is skipped. Takes precedence over script/scriptPath/name.',
       },
+      run_in_background: {
+        type: 'boolean',
+        description: 'Run the workflow DETACHED in the background (default: true). Returns immediately with a task id; monitor, stop, and save it with /flows, and collect its result with task_output. Set false to run inline and block until it finishes (the full result is returned in the tool output).',
+      },
     },
   },
   isReadOnly: true,
@@ -264,12 +269,46 @@ export const workflowTool: ToolDefinition = {
         ? `Re-run with resumeKey '${resumeKeyGiven}' to skip already-completed agents.`
         : undefined;
 
+    // Deploy mode: a workflow runs DETACHED in the background by DEFAULT (parity
+    // with the reference's background Workflow launch — "Running in background ·
+    // /flows to monitor and save"), returning a task id immediately. An explicit
+    // run_in_background:false runs it inline and blocks for the full result (the
+    // path the resume/parity/runtime tests exercise). Background can be globally
+    // disabled via the shared background-tasks gate (no separate workflow knob).
+    const ribParsed = parseOptionalBool(input.run_in_background, 'run_in_background', true);
+    if ('error' in ribParsed) {
+      return { output: `Error: ${ribParsed.error}`, isError: true };
+    }
+    // An EXPLICIT background request in an environment that forbids background work
+    // is an error; a DEFAULTED request silently falls back to foreground.
+    if (ribParsed.value && input.run_in_background !== undefined && isBackgroundTasksDisabled()) {
+      return {
+        output: `Error: background workflows are disabled (${DISABLE_BACKGROUND_TASKS_ENV} is set). ` +
+          'Run the workflow inline by setting run_in_background:false, or unset the env knob.',
+        isError: true,
+      };
+    }
+    // Backgrounding is only meaningful when there is a process manager to TRACK,
+    // monitor (/flows), and stop the detached run and to surface its completion
+    // notification. Without one (bare/programmatic contexts), run inline — so the
+    // tool still returns the full result and nothing is silently lost.
+    const runInBackground = (isBackgroundTasksDisabled() ? false : ribParsed.value) && !!context.processManager;
+
     // One flow per workflow invocation so the inspector shows "1 flow, many
     // agents" — each agent()/parallel()/pipeline() call joins it. Guarded on
     // processManager so the workflow runs unchanged when there is none.
     const pm = context.processManager;
     const fm = pm?.flowManager;
     const workflowFlowId = fm ? fm.createFlow(meta.name) : undefined;
+
+    // Run-level abort: a BACKGROUND run gets its OWN AbortController so it survives
+    // this tool call returning (linked from the parent turn's signal below, so an
+    // outer cancel / `/flows stop` still tears it down). A FOREGROUND run uses the
+    // tool call's own abort signal directly. The agent handler and executeWorkflow
+    // both key off `runAbortSignal`, so per-agent + whole-run cancellation work the
+    // same in either mode.
+    const workflowAbort = runInBackground ? new AbortController() : null;
+    const runAbortSignal: AbortSignal = workflowAbort ? workflowAbort.signal : context.abortSignal;
 
     // The live runtime for THIS workflow run, captured via executeWorkflow's
     // onRuntime hook, so a per-agent task_kill retry/skip can recover one wedged
@@ -333,8 +372,8 @@ export const workflowTool: ToolDefinition = {
       // in-flight agent; the listener is removed once the agent settles.
       const ac = new AbortController();
       const forwardAbort = (): void => ac.abort();
-      if (context.abortSignal.aborted) ac.abort();
-      else context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
+      if (runAbortSignal.aborted) ac.abort();
+      else runAbortSignal.addEventListener('abort', forwardAbort, { once: true });
 
       const label = String(opts?.label || prompt).slice(0, 80);
       let taskId: string | undefined;
@@ -515,14 +554,14 @@ export const workflowTool: ToolDefinition = {
           report?.({ toolUseCount: agentToolUses, tokenCount: agentTokens });
         }
       } catch (err) {
-        context.abortSignal.removeEventListener('abort', forwardAbort);
+        runAbortSignal.removeEventListener('abort', forwardAbort);
         totalAgentTokens += agentTokens;
         finish('failed', result, err instanceof Error ? err.message : String(err));
         (subEngine as any).shutdown?.();
         cleanupWorktree();
         throw err;
       }
-      context.abortSignal.removeEventListener('abort', forwardAbort);
+      runAbortSignal.removeEventListener('abort', forwardAbort);
       totalAgentTokens += agentTokens;
       (subEngine as any).shutdown?.();
       finish('completed', result);
@@ -547,7 +586,12 @@ export const workflowTool: ToolDefinition = {
       return scriptContent;
     };
 
-    try {
+    // Shared run body: execute the workflow and assemble the completion output
+    // text. Used VERBATIM by BOTH the foreground (blocking) and background
+    // (detached) paths so the result wording — agents, tokens, logs, result, resume
+    // hint — is identical regardless of how the run was launched (no semantic
+    // duplication between the two paths).
+    const runWorkflow = async (): Promise<string> => {
       // Opt-in resume cache (B2): keyed per run/resume id, else per resumeKey,
       // under a contained .cache subdir (segment sanitized to block traversal).
       const cacheNamespace = effectiveRunId
@@ -566,7 +610,7 @@ export const workflowTool: ToolDefinition = {
       const agentSummaries: string[] = [];
       const result = await executeWorkflow(script, agentHandler, {
         args: input.args,
-        abortSignal: context.abortSignal,
+        abortSignal: runAbortSignal,
         workflowResolver,
         maxConcurrent: typeof input.maxConcurrent === 'number' ? input.maxConcurrent : undefined,
         cache,
@@ -583,7 +627,7 @@ export const workflowTool: ToolDefinition = {
       });
 
       const durationS = ((Date.now() - workflowStartedAt) / 1000).toFixed(1);
-      const output = [
+      return [
         `Workflow '${meta.name}' completed.`,
         `Agents spawned: ${result.agentCount}`,
         `Tokens: ${totalAgentTokens} · Tool uses: ${totalToolUses} · Duration: ${durationS}s`,
@@ -593,14 +637,105 @@ export const workflowTool: ToolDefinition = {
         result.result !== null ? `\nResult: ${JSON.stringify(result.result, null, 2)}` : '',
         resumeHint ? `\n${resumeHint}` : '',
       ].filter(Boolean).join('\n');
+    };
 
-      return { output, isError: false };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const output = resumeHint
-        ? `Error executing workflow: ${message}\n${resumeHint}`
-        : `Error executing workflow: ${message}`;
-      return { output, isError: true };
+    // --- Foreground (blocking) path: run inline, return the full result. ---
+    if (!runInBackground) {
+      try {
+        const output = await runWorkflow();
+        return { output, isError: false };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const output = resumeHint
+          ? `Error executing workflow: ${message}\n${resumeHint}`
+          : `Error executing workflow: ${message}`;
+        return { output, isError: true };
+      }
     }
+
+    // --- Background (detached) path: register ONE tracked workflow task, kick the
+    // run on a detached promise, and return a task id immediately (parity with the
+    // task/bash run_in_background spawn-and-return pattern). The whole run is one
+    // process-manager entry of kind 'workflow'; its per-agent children register
+    // their own 'agent' entries + join the flow exactly as before. Completion
+    // surfaces a <task-notification> FOR FREE via the SHARED emitCompletion →
+    // drainCompletedTasks path — no separate workflow-completion bridge. ---
+    const wfTaskId = generateTaskId('workflow');
+    const wfOutputPath = path.join(projectStateDir(context.cwd, 'tasks'), `${wfTaskId}.output`);
+    try { fs.mkdirSync(path.dirname(wfOutputPath), { recursive: true }); } catch { /* best-effort */ }
+    try { writeTaskOutputNoFollow(wfOutputPath, `Workflow '${meta.name}' running in the background…\n`); } catch { /* ok */ }
+
+    // Link the parent turn's abort to the detached run so an outer cancel still
+    // stops it, while the run otherwise survives this tool call returning.
+    const onParentAbort = (): void => { workflowAbort!.abort(); };
+    if (context.abortSignal.aborted) workflowAbort!.abort();
+    else context.abortSignal.addEventListener('abort', onParentAbort, { once: true });
+    const unlinkParentAbort = (): void => {
+      try { context.abortSignal.removeEventListener('abort', onParentAbort); } catch { /* ok */ }
+    };
+
+    if (pm) {
+      pm.registerAgent(wfTaskId, {
+        command: `[workflow] ${meta.name}`,
+        description: `Workflow: ${meta.name}`,
+        outputPath: wfOutputPath,
+        abortFn: () => { workflowAbort!.abort(); },
+        abortSignal: workflowAbort!.signal,
+        kind: 'workflow',
+      });
+    }
+
+    void (async () => {
+      let sawError = false;
+      let out = '';
+      try {
+        out = await runWorkflow();
+      } catch (err) {
+        sawError = true;
+        const message = err instanceof Error ? err.message : String(err);
+        out = resumeHint
+          ? `Error executing workflow: ${message}\n${resumeHint}`
+          : `Error executing workflow: ${message}`;
+      }
+      // Classify the terminal state the same way the task background drain does: an
+      // external abort (/flows stop, task_kill, parent cancel) is a KILL; a thrown
+      // error is a FAILURE; otherwise COMPLETED.
+      const killed = workflowAbort!.signal.aborted;
+      const status: 'completed' | 'failed' | 'killed' = killed ? 'killed' : sawError ? 'failed' : 'completed';
+      const exitCode = status === 'completed' ? 0 : 1;
+      try { writeTaskOutputNoFollow(wfOutputPath, out || '(no output)'); } catch { /* dir gone / symlink */ }
+      unlinkParentAbort();
+      if (pm) {
+        // Record final-result stats distinct from the live counters, then route the
+        // completion through the DURABLE buffer (emitCompletion) so the engine's
+        // per-turn drain surfaces a <task-notification> exactly once — the SAME path
+        // a background agent/bash task uses (reused, not rebuilt).
+        pm.updateEntry(wfTaskId, {
+          status,
+          exitCode,
+          resultTokenCount: totalAgentTokens,
+          resultToolCount: totalToolUses,
+        });
+        pm.emitCompletion({
+          taskId: wfTaskId,
+          exitCode,
+          command: `[workflow] ${meta.name}`,
+          description: `Workflow: ${meta.name}`,
+          outputPath: wfOutputPath,
+          status,
+        });
+      }
+    })().catch(() => { /* detached: any error is already captured into the output file */ });
+
+    return {
+      output:
+        `Workflow '${meta.name}' started in the background. Task id: ${wfTaskId}.\n` +
+        `Monitor it live with /flows, or tail it with task_output({ task_id: "${wfTaskId}" }); ` +
+        `task_output({ task_id: "${wfTaskId}", wait: true }) blocks until it finishes and returns the result. ` +
+        `A completion notification surfaces automatically when the run ends.` +
+        (effectiveRunId ? `\nRun id: ${effectiveRunId}` : '') +
+        (resumeHint ? `\n${resumeHint}` : ''),
+      isError: false,
+    };
   },
 };
