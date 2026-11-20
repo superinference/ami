@@ -1396,6 +1396,22 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   // Active-skill env (e.g. CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) so imported Claude-Code skills
   // that shell out via $CLAUDE_SKILL_DIR work (issue #22). Applied last; never stripped.
   if (extra) for (const [k, v] of Object.entries(extra)) env[k] = v;
+  // Imported-skill helper resolution (issue #33): when a skill is active, PREPEND its
+  // `scripts/` dir and the skill dir to PATH — mirroring the python-shim prepend above and
+  // honoring issue #33's suggested fix ("put $CLAUDE_SKILL_DIR / the skill's scripts/ dir on
+  // PATH"). Imported Claude-Code skills frequently ship a helper under `<skillDir>/scripts/`;
+  // without this, invoking it by BARE name (e.g. `impeccable`) from a cwd that is NOT the
+  // skill dir failed with "command not found" (the agent's cwd is usually a scratch/project
+  // dir). PATH is composed FROM the already-scrubbed base (never REPLACED — putting PATH in
+  // skillEnv itself would clobber the base + python shim), so the skill dirs take precedence
+  // for bare-name lookups while every system binary still resolves. Set CLAUDE_SKILL_DIR
+  // (not SKILL_DIR, which is the same value) is the trigger. REGRESSION LOCK: if a skill is
+  // active and `<skillDir>/scripts` is NOT on PATH, imported-skill helpers break again.
+  const activeSkillDir = extra?.CLAUDE_SKILL_DIR;
+  if (activeSkillDir) {
+    const skillPathEntries = [path.join(activeSkillDir, 'scripts'), activeSkillDir].join(path.delimiter);
+    env.PATH = env.PATH ? skillPathEntries + path.delimiter + env.PATH : skillPathEntries;
+  }
   return env;
 }
 
