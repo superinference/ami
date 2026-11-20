@@ -2,7 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import type { ProviderConfig } from './types';
-import { MODEL_PREFERENCE } from './provider';
+import { MODEL_PREFERENCE } from './model-preference';
 import {
   discoverFromModelList,
   modelCapabilitiesCacheDir,

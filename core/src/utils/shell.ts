@@ -1,4 +1,5 @@
 import * as child_process from 'child_process';
+import { SHELL_DEBUG_ENV } from './shell-debug-env';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -782,7 +783,7 @@ export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
  * snapshot-source decision). Unset/blank disables it. Parity with the reference's
  * `logForDebugging` tracing in bashProvider.ts.
  */
-export const SHELL_DEBUG_ENV = 'AMI_SHELL_DEBUG';
+export { SHELL_DEBUG_ENV } from './shell-debug-env';
 
 /** True when {@link SHELL_SNAPSHOT_ENV} names an enabled value. */
 function shellSnapshotEnabled(): boolean {

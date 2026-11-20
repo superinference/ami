@@ -1,0 +1,1 @@
+export const SHELL_DEBUG_ENV = 'AMI_SHELL_DEBUG';

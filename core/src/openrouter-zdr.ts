@@ -12,7 +12,7 @@
 // Pure + deterministic (the network fetch takes an injectable fetch impl) so every
 // branch is unit-testable.
 
-import { stripOpenRouterPrefix } from './provider';
+import { stripOpenRouterPrefix } from './openrouter-prefix';
 import { createCombinedAbortSignal } from './utils/combined-abort-signal';
 import type { ProviderConfig } from './types';
 

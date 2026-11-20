@@ -37,7 +37,7 @@ import * as path from 'path';
 // Canonical shell debug knob lives in shell.ts; imported (not redefined) to keep a
 // single source of truth. Only read lazily inside onDebug at runtime, so the
 // shell.ts <-> tmux-socket.ts cycle never touches the binding during module eval.
-import { SHELL_DEBUG_ENV } from './shell';
+import { SHELL_DEBUG_ENV } from './shell-debug-env';
 
 /** Socket-name prefix for AMI's isolated tmux server (parity: `claude` -> `ami`). */
 export const AMI_TMUX_SOCKET_PREFIX = 'ami';

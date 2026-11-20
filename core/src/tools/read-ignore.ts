@@ -1,4 +1,4 @@
-import { globToRegexSource } from '../permissions';
+import { globToRegexSource } from '../glob-to-regex';
 
 /**
  * Read-ignore (file-READ deny) exclusions for the search tools.
