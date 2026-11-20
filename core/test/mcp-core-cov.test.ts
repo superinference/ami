@@ -15,7 +15,7 @@ import {
   findMcpConfigPaths,
   type McpServerConfig,
 } from '../src/mcp/manager';
-import { WorkspaceIndexer, findProjectRoot, indexerHooks } from '../src/workspace-indexer';
+import { WorkspaceIndexer, findProjectRoot, indexerHooks, SUMMARY_TRUNCATION_HINT } from '../src/workspace-indexer';
 
 // ===========================================================================
 // Helpers
@@ -25,6 +25,14 @@ import { WorkspaceIndexer, findProjectRoot, indexerHooks } from '../src/workspac
 function makeFakeProc(opts: { pid?: number | null; killThrows?: boolean; stdinThrows?: boolean } = {}) {
   const proc: any = new EventEmitter();
   proc.pid = 'pid' in opts ? opts.pid : 1234;
+  // A real ChildProcess exposes `exitCode`/`signalCode` as `null` while running
+  // (they only become non-null once the child has exited). startServer's
+  // post-spawn liveness guard bails with "exited during startup" when either is
+  // non-null, and `undefined !== null`, so a bare EventEmitter (missing these
+  // fields) would be treated as already-dead. Seed both to null so the fake is
+  // seen as a live, running child and the initialize handshake proceeds.
+  proc.exitCode = null;
+  proc.signalCode = null;
   const stdinWrites: string[] = [];
   const stdin: any = new EventEmitter();
   stdin.writable = true;
@@ -49,6 +57,19 @@ function makeFakeProc(opts: { pid?: number | null; killThrows?: boolean; stdinTh
   proc.stderr = new EventEmitter();
   proc.kill = () => { if (opts.killThrows) throw new Error('kill boom'); return true; };
   proc._writes = stdinWrites;
+  // A real spawned child emits 'spawn' once after a successful launch; LSPClient's
+  // awaitSpawn() blocks on it before writing the initialize frame. A bare EventEmitter
+  // never fires 'spawn', so ensureServer() would never settle and hang the test (and,
+  // under the coverage harness, the whole 30-min job). Emit 'spawn' as soon as a
+  // listener attaches (robust to attach timing — no creation-time race).
+  for (const m of ['on', 'once', 'addListener'] as const) {
+    const orig = (proc[m] as (e: string, cb: (...a: unknown[]) => void) => unknown).bind(proc);
+    proc[m] = (event: string, cb: (...a: unknown[]) => void) => {
+      const r = orig(event, cb);
+      if (event === 'spawn') setImmediate(() => proc.emit('spawn'));
+      return r;
+    };
+  }
   return proc;
 }
 
@@ -201,7 +222,7 @@ describe('LSPClient — spawn success path', () => {
     assert.match(proc._writes.join(''), /"languageId":"plaintext"/);
   });
 
-  it('swallows stdin write errors during initialize and notifications (no throw)', async () => {
+  it('swallows initialize write errors, surfaces document-sync write errors', async () => {
     const proc = makeFakeProc({ stdinThrows: true });
     client._isBinaryInstalled = () => true;
     client._spawn = (() => proc) as any;
@@ -209,13 +230,19 @@ describe('LSPClient — spawn success path', () => {
     // handshake can't complete, so the server fails to start (gracefully, no crash).
     assert.equal(await client.ensureServer('typescript', cwd), false);
 
-    // With an already-initialized server whose stdin throws, a notification
-    // write error is swallowed in rawNotify (no throw) rather than propagating.
+    // With an already-initialized server whose stdin throws, the didOpen
+    // notification (fire-and-forget rawNotify) swallows its write error, but the
+    // didChange document-sync notification routes through syncNotify, which records
+    // the desync on the server status and RE-THROWS so the caller learns the
+    // document is no longer in sync (client.ts syncNotify contract).
     const throwingProc = makeFakeProc({ stdinThrows: true });
     (client as any).servers.set('typescript', {
-      proc: throwingProc, buffer: Buffer.alloc(0), nextId: 0, pending: new Map(), capabilities: {}, initialized: true,
+      language: 'typescript', proc: throwingProc, buffer: Buffer.alloc(0), nextId: 0, pending: new Map(), capabilities: {}, initialized: true,
     });
-    await client.notifyDidChange(path.join(cwd, 's.ts'), 'code', cwd);
+    await assert.rejects(
+      () => client.notifyDidChange(path.join(cwd, 's.ts'), 'code', cwd),
+      /Failed to sync file change .*LSP server "typescript" write failed/,
+    );
   });
 
   it('shutdown kills tracked processes and swallows kill errors', async () => {
@@ -409,6 +436,7 @@ class FakeClient extends EventEmitter {
   async getPrompt() { return { messages: [] }; }
   async ping() {}
   async reconnect() { if (this.behavior.reconnect) return this.behavior.reconnect(); }
+  async revokeAuth() { if (this.behavior.revokeAuth) return this.behavior.revokeAuth(); }
   disconnect() {}
 }
 
@@ -431,9 +459,11 @@ describe('McpManager — targeted branches', () => {
     process.env.MCP_COV_TOKEN = 'sekret';
     const captured: any[] = [];
     mgr._createClient = ((opts: any) => { captured.push(opts); return new FakeClient() as any; });
-    mgr.addServer('h', { command: 'x', headers: { Authorization: 'Bearer ${MCP_COV_TOKEN}', Empty: '${MCP_COV_MISSING}' } });
+    mgr.addServer('h', { command: 'x', headers: { Authorization: 'Bearer ${MCP_COV_TOKEN}', Missing: '${MCP_COV_MISSING}' } });
     assert.equal(captured[0].headers.Authorization, 'Bearer sekret');
-    assert.equal(captured[0].headers.Empty, '');
+    // A missing env var is left as the literal `${VAR}` token (expandEnvVarsTracked
+    // leaves the unresolved placeholder visible rather than silently blanking it).
+    assert.equal(captured[0].headers.Missing, '${MCP_COV_MISSING}');
     delete process.env.MCP_COV_TOKEN;
   });
 
@@ -792,7 +822,9 @@ describe('WorkspaceIndexer — targeted branches', () => {
     await idx.buildIndex();
     const summary = idx.getSummary();
     assert.equal(summary.length, 500);
-    assert.ok(summary.endsWith('...'));
+    // A clipped summary ends with the actionable truncation hint (how to recover
+    // the dropped detail), not a silent '...' slice.
+    assert.ok(summary.endsWith(SUMMARY_TRUNCATION_HINT));
   });
 
   it('buildIndex uses the glob fallback for a non-git project directory', async () => {
