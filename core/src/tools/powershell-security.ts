@@ -527,6 +527,24 @@ function isPowerShellExecutable(name: string): boolean {
 const PS_CMD_POS_PREFIX = String.raw`(?:^|[;|&(){}\n\r])\s*(?:[\w.]+[\\/])?`;
 
 /**
+ * Cache of compiled command-position regexes keyed by cmdlet name. The cmdlet name
+ * Sets are constant, but `cmdletInCommandPosition` is called ~25-35 times per bash
+ * tool call (the whole PowerShell-detection chain); compiling a fresh RegExp (with
+ * an escapeRegExp pass) for every name on every call was pure repeated work. The
+ * regexes are stateless `.test()` (no `g` flag), so caching them is behavior-exact.
+ */
+const PS_CMD_POS_REGEX_CACHE = new Map<string, RegExp>();
+
+function psCmdPosRegex(name: string): RegExp {
+  let re = PS_CMD_POS_REGEX_CACHE.get(name);
+  if (re === undefined) {
+    re = new RegExp(PS_CMD_POS_PREFIX + escapeRegExp(name) + String.raw`\b`, 'i');
+    PS_CMD_POS_REGEX_CACHE.set(name, re);
+  }
+  return re;
+}
+
+/**
  * True if any of `names` is invoked in command position within `command`.
  * Returns the matched name (lowercased) so callers can build a message.
  */
@@ -535,8 +553,7 @@ function cmdletInCommandPosition(
   names: Iterable<string>,
 ): string | undefined {
   for (const name of names) {
-    const re = new RegExp(PS_CMD_POS_PREFIX + escapeRegExp(name) + String.raw`\b`, 'i');
-    if (re.test(command)) {
+    if (psCmdPosRegex(name).test(command)) {
       return name;
     }
   }

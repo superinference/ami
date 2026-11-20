@@ -80,10 +80,10 @@ describe('serializeHookEvent — new snake-case parity keys', () => {
 
 describe('boundedHookAppend — head-preserving in-memory cap', () => {
   it('appends in full below the cap', () => {
-    assert.deepEqual(boundedHookAppend('ab', 'cd', 10), { text: 'abcd', truncated: false });
+    assert.deepEqual(boundedHookAppend('ab', 'cd', 10), { text: 'abcd', truncated: false, bytes: 4 });
   });
   it('fills exactly to the cap without truncating', () => {
-    assert.deepEqual(boundedHookAppend('ab', 'cd', 4), { text: 'abcd', truncated: false });
+    assert.deepEqual(boundedHookAppend('ab', 'cd', 4), { text: 'abcd', truncated: false, bytes: 4 });
   });
   it('truncates the overflowing tail and flags truncation', () => {
     const r = boundedHookAppend('abc', 'defgh', 5);
@@ -92,7 +92,7 @@ describe('boundedHookAppend — head-preserving in-memory cap', () => {
   });
   it('is a no-op once already full', () => {
     const r = boundedHookAppend('abcde', 'xyz', 5);
-    assert.deepEqual(r, { text: 'abcde', truncated: true });
+    assert.deepEqual(r, { text: 'abcde', truncated: true, bytes: 5 });
   });
   it('counts UTF-8 bytes, not code units', () => {
     // '€' is 3 UTF-8 bytes; a 3-byte cap admits the one char but not the ASCII 'x'.

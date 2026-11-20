@@ -276,7 +276,7 @@ log(a + '|' + b);
       submit: async function* () { yield { type: 'text_delta', text: 'done' }; },
       shutdown() {},
     });
-    const r = await workflowTool.execute({ script }, ctx(pm, factory));
+    const r = await workflowTool.execute({ script, run_in_background: false }, ctx(pm, factory));
     assert.ok(!r.isError, r.output);
     const flows = pm.flowManager.listFlows();
     assert.equal(flows.length, 1, 'one flow per workflow invocation');
@@ -302,7 +302,7 @@ log(String(a));
     });
     // The workflow runtime turns a thrown agent into a null result; the tool
     // itself still completes, but the agent must be recorded as failed.
-    await workflowTool.execute({ script }, ctx(pm, factory));
+    await workflowTool.execute({ script, run_in_background: false }, ctx(pm, factory));
     const list = pm.list();
     assert.equal(list.length, 1);
     assert.equal(list[0].status, 'failed', 'thrown sub-engine marks the agent failed');

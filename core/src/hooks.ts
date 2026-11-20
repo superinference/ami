@@ -1015,18 +1015,25 @@ export function boundedHookAppend(
   current: string,
   chunk: string,
   maxBytes: number,
-): { text: string; truncated: boolean } {
-  const curBytes = Buffer.byteLength(current, 'utf-8');
-  if (curBytes >= maxBytes) return { text: current, truncated: true };
+  currentBytes?: number,
+): { text: string; truncated: boolean; bytes: number } {
+  // Accept the caller's running byte count to avoid re-measuring the WHOLE
+  // accumulated stream on every chunk (the old per-chunk Buffer.byteLength(current)
+  // made streaming a large hook output O(N·K) / quadratic). `bytes` is returned so
+  // the caller can thread it forward; when omitted we fall back to measuring
+  // `current` (backward-compatible for one-shot callers).
+  const curBytes = currentBytes ?? Buffer.byteLength(current, 'utf-8');
+  if (curBytes >= maxBytes) return { text: current, truncated: true, bytes: curBytes };
   const remaining = maxBytes - curBytes;
-  if (Buffer.byteLength(chunk, 'utf-8') <= remaining) {
-    return { text: current + chunk, truncated: false };
+  const chunkBytes = Buffer.byteLength(chunk, 'utf-8');
+  if (chunkBytes <= remaining) {
+    return { text: current + chunk, truncated: false, bytes: curBytes + chunkBytes };
   }
   // Keep exactly `remaining` bytes of the chunk (byte-accurate; a split
   // multibyte sequence degrades to the Unicode replacement char — acceptable at
   // a truncation boundary).
   const slice = Buffer.from(chunk, 'utf-8').subarray(0, remaining).toString('utf-8');
-  return { text: current + slice, truncated: true };
+  return { text: current + slice, truncated: true, bytes: curBytes + Buffer.byteLength(slice, 'utf-8') };
 }
 
 /** Terminal marker appended to a command hook's stream when it overflowed the
@@ -3301,6 +3308,10 @@ async function runCommandHookAsync(
     // tail is dropped and a one-time notice is appended at close.
     let stdoutTruncated = false;
     let stderrTruncated = false;
+    // Running UTF-8 byte counts threaded into boundedHookAppend so it never
+    // re-measures the whole accumulated stream per chunk (avoids O(N·K) growth).
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     // Interactive prompt-elicitation scanner: only active when a resolver is
     // supplied. It detects PromptRequest lines in the streaming stdout, resolves
     // each to a key, and writes a PromptResponse back to the hook's stdin. A
@@ -3325,13 +3336,13 @@ async function runCommandHookAsync(
     proc.stdout?.on('data', (d: Buffer) => {
       const chunk = d.toString();
       scanner?.feed(chunk);
-      const r = boundedHookAppend(stdout, chunk, MAX_HOOK_COMMAND_OUTPUT_BYTES);
-      stdout = r.text; if (r.truncated) stdoutTruncated = true;
+      const r = boundedHookAppend(stdout, chunk, MAX_HOOK_COMMAND_OUTPUT_BYTES, stdoutBytes);
+      stdout = r.text; stdoutBytes = r.bytes; if (r.truncated) stdoutTruncated = true;
       if (liveOutput) liveOutput.stdout = stdout;
     });
     proc.stderr?.on('data', (d: Buffer) => {
-      const r = boundedHookAppend(stderr, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES);
-      stderr = r.text; if (r.truncated) stderrTruncated = true;
+      const r = boundedHookAppend(stderr, d.toString(), MAX_HOOK_COMMAND_OUTPUT_BYTES, stderrBytes);
+      stderr = r.text; stderrBytes = r.bytes; if (r.truncated) stderrTruncated = true;
       if (liveOutput) liveOutput.stderr = stderr;
     });
 

@@ -131,10 +131,10 @@ describe('U011-w66 — worktree completion notice', () => {
     assert.ok(!noBranch.includes('on branch'));
   });
 
-  it('readWorktreeBranch returns the checked-out branch of a real repo, undefined for a non-git dir', () => {
+  it('readWorktreeBranch returns the checked-out branch of a real repo, undefined for a non-git dir', async () => {
     const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'si-nogit-'));
     try {
-      assert.equal(readWorktreeBranch(nogit), undefined);
+      assert.equal(await readWorktreeBranch(nogit), undefined);
     } finally {
       fs.rmSync(nogit, { recursive: true, force: true });
     }
@@ -145,7 +145,7 @@ describe('U011-w66 — worktree completion notice', () => {
       child_process.execSync('git config user.name t', { cwd: repo });
       fs.writeFileSync(path.join(repo, 'a.txt'), 'hi\n');
       child_process.execSync('git add -A && git commit -qm init', { cwd: repo });
-      assert.equal(readWorktreeBranch(repo), 'feature-x');
+      assert.equal(await readWorktreeBranch(repo), 'feature-x');
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

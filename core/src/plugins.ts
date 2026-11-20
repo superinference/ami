@@ -3429,8 +3429,15 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     // Security-relevant manifest errors (unsafe name, '..'/absolute component path)
     // turn a discovered dir into a structured failure rather than a silently-loaded
     // bundle. Lenient fields (missing name/version) still fall back below.
+    // A traversal in an ARRAY-element server declaration (mcpServers[i]/lspServers[i])
+    // is NOT bundle-dropping: the bad entry degrades gracefully (it is simply not
+    // enumerated/loaded) while the rest of the bundle — including its valid inline
+    // server entries — still loads, mirroring the list-form handling of
+    // commandsPaths/skillsPaths. The single-path OVERRIDE forms (string mcpServers/
+    // lspServers, and skills/agents/commands) remain hard errors.
     const hardErrors = validatePluginManifest(manifest).errors.filter(e =>
-      /Unsafe plugin name|contains "\.\."|must be relative/.test(e.message),
+      /Unsafe plugin name|contains "\.\."|must be relative/.test(e.message) &&
+      !/^(?:mcpServers|lspServers)\[\d+\]$/.test(e.path),
     );
     if (hardErrors.length > 0) {
       failures.push({ root, reason: `Invalid plugin.json: ${hardErrors.map(e => `${e.path}: ${e.message}`).join('; ')}`, error: { type: 'manifest-validation-error', source: root, plugin: typeof manifest.name === 'string' ? manifest.name : undefined, manifestPath, validationErrors: hardErrors.map(e => `${e.path}: ${e.message}`) } });

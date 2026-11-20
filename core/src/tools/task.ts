@@ -3,6 +3,13 @@ import { projectStateDir } from '../reference-journal';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as child_process from 'child_process';
+import { promisify } from 'util';
+
+/** Promisified execFile so the worktree-cleanup git calls (run from the detached,
+ *  concurrent background-drain path) do not block the event loop for the duration of
+ *  each git subprocess — unlike execFileSync, which freezes every other concurrent
+ *  drain, the foreground stream, and the TUI render while git runs. */
+const execFileAsyncTask = promisify(child_process.execFile);
 import { ToolDefinition, ToolContext, ToolResult, EngineConfig, ToolInputSchema, JsonSchemaProperty, Message } from '../types';
 import { createDefaultTools } from './index';
 import { isMcpTool } from './tool-categories';
@@ -1534,17 +1541,17 @@ export function setupIsolatedWorktree(baseCwd: string, name: string): string {
  * swallowed and reported as "not removed". Shared by the task tool and the
  * workflow tool so the cleanup policy lives in exactly one place.
  */
-export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, runningAgentCount: number): boolean {
+export async function removeWorktreeIfClean(baseCwd: string, worktreePath: string, runningAgentCount: number): Promise<boolean> {
   try {
     // `--no-optional-locks`: a read-only status/rev-list must not take git's
     // optional index lock, so this background cleanliness check can never contend
     // with a concurrent git operation the user is running in the worktree (parity:
     // the reference prefixes all read-only status reads with --no-optional-locks,
     // utils/git.ts getIsClean/getChangedFiles).
-    const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
-    const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
+    const status = (await execFileAsyncTask('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 })).stdout.trim();
+    const unpushed = (await execFileAsyncTask('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 })).stdout.trim();
     if (shouldRemoveWorktree(status, unpushed, runningAgentCount)) {
-      child_process.execFileSync('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', worktreePath], { cwd: baseCwd, timeout: 10000 });
+      await execFileAsyncTask('git', [...GIT_HARDENING_ARGS, 'worktree', 'remove', '--force', worktreePath], { cwd: baseCwd, timeout: 10000 });
       return true;
     }
   } catch { /* best-effort cleanup */ }
@@ -1559,12 +1566,12 @@ export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, run
  * "HEAD" when detached, which is not a branch to report). Used to surface the
  * agent's worktree branch to the model on completion.
  */
-export function readWorktreeBranch(worktreePath: string): string | undefined {
+export async function readWorktreeBranch(worktreePath: string): Promise<string | undefined> {
   try {
-    const branch = child_process.execFileSync(
+    const branch = (await execFileAsyncTask(
       'git', [...GIT_HARDENING_ARGS, 'rev-parse', '--abbrev-ref', 'HEAD'],
       { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 },
-    ).trim();
+    )).stdout.trim();
     return branch && branch !== 'HEAD' ? branch : undefined;
   } catch {
     return undefined;
@@ -2785,10 +2792,10 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   // of the output file learns where the work landed (or that it was cleaned up).
   if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
     const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-    if (removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
+    if (await removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents)) {
       bgFooter += '\n[Agent worktree cleaned up — no changes detected]';
     } else {
-      bgFooter += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
+      bgFooter += buildWorktreeCompletionNotice(effectiveCwd, await readWorktreeBranch(effectiveCwd));
     }
   }
   try { fs.appendFileSync(outputPath, bgFooter); } catch { /* dir removed */ }
@@ -4460,7 +4467,7 @@ export const taskTool: ToolDefinition = {
         // or unpushed worktree, and a worktree with a live background agent in it.
         if (isolation === 'worktree' && effectiveCwd !== context.cwd) {
           const runningAgents = context.processManager ? context.processManager.runningAgentCount() : 0;
-          worktreeRemoved = removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents);
+          worktreeRemoved = await removeWorktreeIfClean(context.cwd, effectiveCwd, runningAgents);
         }
       }
     }
@@ -4479,7 +4486,7 @@ export const taskTool: ToolDefinition = {
         // Worktree RETAINED (it has changes / unpushed commits / a live agent):
         // surface where the agent's work landed so the model can find it instead of
         // rediscovering it (parity: the reference's <worktree_path>/<worktree_branch>).
-        deliverable += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
+        deliverable += buildWorktreeCompletionNotice(effectiveCwd, await readWorktreeBranch(effectiveCwd));
       }
     }
 

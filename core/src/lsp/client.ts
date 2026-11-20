@@ -965,7 +965,11 @@ export class LSPClient implements DiagnosticSource {
   private onData(language: string, chunk: Buffer): void {
     const conn = this.servers.get(language);
     if (!conn) return;
-    conn.buffer = Buffer.concat([conn.buffer, chunk]);
+    // Fast-path the common fully-drained case (buffer empty): adopt the chunk
+    // directly instead of allocating a fresh buffer and copying the chunk for no
+    // reason. Node hands us a fresh Buffer per read, so there is no aliasing hazard,
+    // and the drain loop below uses subarray views, so framing is unchanged.
+    conn.buffer = conn.buffer.length === 0 ? chunk : Buffer.concat([conn.buffer, chunk]);
     // Drain as many complete Content-Length framed messages as are buffered.
     for (;;) {
       const headerEnd = conn.buffer.indexOf('\r\n\r\n');

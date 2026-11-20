@@ -157,25 +157,25 @@ describe('removeWorktreeIfClean — behavior with --no-optional-locks reads (U05
     return repo;
   }
 
-  it('removes a clean agent worktree when no agent is running', () => {
+  it('removes a clean agent worktree when no agent is running', async () => {
     const repo = makeRepoWithRemote(); tmps.push(repo);
     const session = createWorktreeSession(repo, 'agent-wt');
-    assert.equal(removeWorktreeIfClean(repo, session.worktreePath, 0), true);
+    assert.equal(await removeWorktreeIfClean(repo, session.worktreePath, 0), true);
     assert.equal(fs.existsSync(session.worktreePath), false);
   });
 
-  it('does NOT remove a worktree with uncommitted changes', () => {
+  it('does NOT remove a worktree with uncommitted changes', async () => {
     const repo = makeRepoWithRemote(); tmps.push(repo);
     const session = createWorktreeSession(repo, 'agent-dirty');
     fs.writeFileSync(path.join(session.worktreePath, 'wip.txt'), 'x\n');
-    assert.equal(removeWorktreeIfClean(repo, session.worktreePath, 0), false);
+    assert.equal(await removeWorktreeIfClean(repo, session.worktreePath, 0), false);
     assert.ok(fs.existsSync(session.worktreePath));
   });
 
-  it('does NOT remove a clean worktree while an agent is still running', () => {
+  it('does NOT remove a clean worktree while an agent is still running', async () => {
     const repo = makeRepoWithRemote(); tmps.push(repo);
     const session = createWorktreeSession(repo, 'agent-live');
-    assert.equal(removeWorktreeIfClean(repo, session.worktreePath, 1), false);
+    assert.equal(await removeWorktreeIfClean(repo, session.worktreePath, 1), false);
     assert.ok(fs.existsSync(session.worktreePath));
   });
 });

@@ -2794,25 +2794,33 @@ export class McpManager extends EventEmitter {
     if (serverFilter && !this.clients.has(serverFilter)) {
       throw new Error(`MCP server "${serverFilter}" not found. Available servers: ${this.availableServerNames()}`);
     }
-    const results: Array<McpResource & { server: string }> = [];
-    for (const [name, client] of this.clients) {
-      if (serverFilter && name !== serverFilter) continue;
-      try {
-        const resources = await this.listResourcesWithReconnect(name, client);
-        for (const r of resources) {
-          results.push({ ...r, server: name });
+    // Probe every server concurrently (each resources/list is an independent
+    // network round-trip, possibly with a reconnect) rather than serially — total
+    // latency drops from the SUM of per-server round-trips to the MAX. map() keeps
+    // client-iteration order, and each probe keeps its own try/catch, so output
+    // ordering and per-server error isolation/logging are unchanged.
+    const perServer = [...this.clients]
+      .filter(([name]) => !serverFilter || name === serverFilter)
+      .map(async ([name, client]): Promise<Array<McpResource & { server: string }>> => {
+        try {
+          const resources = await this.listResourcesWithReconnect(name, client);
+          return resources.map((r) => ({ ...r, server: name }));
+        } catch (err) {
+          // Isolate per-server failures (one server's error must not sink the whole
+          // aggregate) AND log EVERY failure — not only session-expiry — so a server
+          // that consistently errors on resources/list is observable instead of being
+          // silently swallowed (the reference-parity ListMcpResourcesTool). The URL goes
+          // through getLoggingSafeMcpBaseUrl so a token-bearing query string is never
+          // written to the log.
+          const safeUrl = getLoggingSafeMcpBaseUrl(this.configs.get(name));
+          const msg = err instanceof Error ? err.message : String(err);
+          coreLog('mcp', `listResources failed for ${name}${safeUrl ? ` (${safeUrl})` : ''}: ${msg}`);
+          return [];
         }
-      } catch (err) {
-        // Isolate per-server failures (one server's error must not sink the whole
-        // aggregate) AND log EVERY failure — not only session-expiry — so a server
-        // that consistently errors on resources/list is observable instead of being
-        // silently swallowed (the reference-parity ListMcpResourcesTool). The URL goes
-        // through getLoggingSafeMcpBaseUrl so a token-bearing query string is never
-        // written to the log.
-        const safeUrl = getLoggingSafeMcpBaseUrl(this.configs.get(name));
-        const msg = err instanceof Error ? err.message : String(err);
-        coreLog('mcp', `listResources failed for ${name}${safeUrl ? ` (${safeUrl})` : ''}: ${msg}`);
-      }
+      });
+    const results: Array<McpResource & { server: string }> = [];
+    for (const chunk of await Promise.all(perServer)) {
+      results.push(...chunk);
     }
     return results;
   }

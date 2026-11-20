@@ -1578,7 +1578,14 @@ export class SessionManager {
     assertPathWithin(filePath, this.sessionDir);
     // A user rename (customTitle) must never be clobbered by an auto-title save:
     // if this save doesn't carry one, preserve whatever is already on disk.
-    const customTitle = session.customTitle ?? this.readSessionFile(filePath, false)?.customTitle;
+    // Recover a prior user rename from a bounded ~64KB head/tail read
+    // ({@link readSessionMetaLite}) instead of a full fs.readFileSync + JSON.parse +
+    // sanitize of the whole transcript: saveSession() runs many times per turn and
+    // the transcript grows unbounded, so the old readSessionFile fallback was an
+    // O(filesize) re-parse on nearly every save. save() serializes scalar metadata
+    // before the messages array, so customTitle is always within the lite reader's
+    // head buffer (with the reader's own tail fallback for legacy message-first files).
+    const customTitle = session.customTitle ?? this.readSessionMetaLite(filePath)?.customTitle;
     // Serialize all scalar metadata BEFORE the (potentially huge) `messages` array
     // so a bounded head read ({@link readSessionMetaLite} / LITE_READ_BUF_SIZE) always
     // captures the session's metadata without parsing the whole transcript. Pulling
@@ -1699,14 +1706,20 @@ export class SessionManager {
     const files = this.listFiles();
     if (files.length === 0) return null;
 
-    // Sort by modification time descending
-    files.sort((a, b) => {
+    // Sort by modification time descending. Stat each file ONCE up front (a
+    // Schwartzian transform) rather than calling fs.statSync twice per comparison
+    // inside the comparator — the latter costs ~2·N·log(N) synchronous stat
+    // syscalls for N session files; this is O(N). Files that fail to stat sort to
+    // the end (mtime 0) and are harmlessly skipped by readSessionFile's own guard.
+    const withMtime = files.map((f) => {
       try {
-        return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+        return { f, m: fs.statSync(f).mtimeMs };
       } catch {
-        return 0;
+        return { f, m: 0 };
       }
     });
+    withMtime.sort((a, b) => b.m - a.m);
+    const sortedFiles = withMtime.map((e) => e.f);
 
     // Return the first file that parses successfully, falling through past any
     // corrupt/truncated newest file (e.g. a save() interrupted mid-write) so
@@ -1714,7 +1727,7 @@ export class SessionManager {
     // `skipBackground` (the no-arg `--continue` path) a `'bg'`/`'daemon'` session
     // is passed over so auto-resume picks the most-recent FOREGROUND session, not
     // a still-running backgrounded one (parity: the reference's --continue bg skip).
-    for (const file of files) {
+    for (const file of sortedFiles) {
       const session = this.readSessionFile(file);
       if (!session) continue;
       if (opts.skipBackground && isBgSession(session)) continue;
@@ -1892,8 +1905,16 @@ export class SessionManager {
       seenIds.add(idKey);
 
       enriched++;
-      const preview = this.extractPreview(session);
-      const lastPrompt = extractLastPrompt(session.messages);
+      // Walk the message list ONCE: both the preview (first meaningful prompt) and
+      // lastPrompt (last) come from the same collectMeaningfulPrompts pass, which is
+      // the expensive per-message scan (stripDisplayTags + regex + extractTag). The
+      // old code called extractPreview -> collectMeaningfulPrompts and then
+      // extractLastPrompt -> collectMeaningfulPrompts, scanning every message twice
+      // for every enriched row. Fallback semantics match extractMeaningfulPreview /
+      // extractLastPrompt exactly (commandFallback is '' when absent, so use `||`).
+      const { prompts, commandFallback } = collectMeaningfulPrompts(session.messages);
+      const preview = prompts.length > 0 ? prompts[0] : (commandFallback || '(no messages)');
+      const lastPrompt = prompts.length > 0 ? prompts[prompts.length - 1] : (commandFallback || '(no messages)');
       const summary = resolveSessionSummary(session, { lastPrompt, firstPrompt: preview });
       // Optionally drop a metadata-only session (no title and no real prompts),
       // matching the reference's listSessionsImpl which returns null for such logs.
@@ -2614,9 +2635,6 @@ export class SessionManager {
     }
   }
 
-  private extractPreview(session: Session): string {
-    return extractMeaningfulPreview(session.messages);
-  }
 
   /**
    * Recover a session's top-level metadata by a BOUNDED head (+ tail) read, without

@@ -3010,12 +3010,22 @@ export class AnalyticsTracker {
    * drain). Invoked from {@link flushOtlp} so all configured signals drain together.
    */
   private async _exportMetricsAndTraces(): Promise<void> {
+    // The metrics and traces exports hit different endpoints and share no mutable
+    // state, yet each can block for seconds of retry/backoff against a slow collector.
+    // Run them concurrently so the flush/shutdown drain pays max(metrics, traces)
+    // instead of the sum. Each source is evaluated synchronously in call order (as
+    // before) and each export is independently exception-isolated. Only await when a
+    // source is actually wired so the no-source case stays tick-for-tick as it was
+    // (an extra awaited microtask would let an instant grace timeout pre-empt the
+    // sibling logs flush).
+    const tasks: Promise<void>[] = [];
     if (this._metricsSource) {
-      try { await this.exportMetrics(this._metricsSource()); } catch { /* best effort */ }
+      tasks.push((async () => { try { await this.exportMetrics(this._metricsSource!()); } catch { /* best effort */ } })());
     }
     if (this._traceSource) {
-      try { await this.exportTrace(this._traceSource()); } catch { /* best effort */ }
+      tasks.push((async () => { try { await this.exportTrace(this._traceSource!()); } catch { /* best effort */ } })());
     }
+    if (tasks.length > 0) await Promise.all(tasks);
   }
 
   /**
@@ -3468,8 +3478,18 @@ export function truncateContent(
   if (Buffer.byteLength(content, 'utf8') <= maxSize) {
     return { value: content, truncated: false, originalLength };
   }
-  let sliced = content.slice(0, maxSize);
-  while (sliced.length > 0 && Buffer.byteLength(sliced, 'utf8') > maxSize) sliced = sliced.slice(0, -1);
+  // Binary-search the largest character count whose UTF-8 byte length stays <=
+  // maxSize (byteLength is monotonic in slice length), instead of trimming one char
+  // at a time while re-measuring the whole slice each step — the old loop was O(k·n)
+  // for multi-byte content overshooting the cap. Result is a byte-identical cut.
+  let lo = 0;
+  let hi = Math.min(content.length, maxSize);
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (Buffer.byteLength(content.slice(0, mid), 'utf8') <= maxSize) lo = mid;
+    else hi = mid - 1;
+  }
+  const sliced = content.slice(0, lo);
   return { value: `${sliced}…[TRUNCATED ${originalLength} chars]`, truncated: true, originalLength };
 }
 

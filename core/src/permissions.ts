@@ -8603,6 +8603,14 @@ export class PermissionManager {
     input: Record<string, unknown>,
     skipParamPattern = false,
   ): boolean {
+    // The file-path match forms (symlink-hop resolution, a fresh Set + lstat/
+    // readlink syscall walk) and the case-insensitivity flag depend only on
+    // toolName+input, not on the rule — so resolve them AT MOST ONCE, lazily on the
+    // first file-path deny rule encountered, and reuse across all rules. This avoids
+    // re-walking the symlink chain per deny rule while keeping bash-only / zero-match
+    // calls completely syscall-free.
+    let ci: boolean | undefined;
+    let forms: string[] | undefined;
     for (const rule of this.rules) {
       if (rule.action !== 'deny') continue;
       if (skipParamPattern && rule.paramPattern) continue;
@@ -8615,9 +8623,12 @@ export class PermissionManager {
           // File-path tools: match the rule against the literal path AND every
           // symlink-resolved form so a deny cannot be bypassed via an in-workspace
           // symlink to a denied target.
-          const ci = this.pathRuleCaseInsensitive(toolName);
-          for (const form of this.fileRuleMatchStrings(toolName, input)) {
-            if (matchPattern(rule.pattern, form, ci)) return true;
+          if (forms === undefined) {
+            ci = this.pathRuleCaseInsensitive(toolName);
+            forms = this.fileRuleMatchStrings(toolName, input);
+          }
+          for (const form of forms) {
+            if (matchPattern(rule.pattern, form, ci!)) return true;
           }
         }
       } else {

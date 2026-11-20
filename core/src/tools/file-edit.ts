@@ -1046,14 +1046,14 @@ async function applySequentialEdits(
     };
   }
 
-  const { additions, removals } = countLinesChanged(normalizeToLf(rawContent), content);
+  const { additions, removals } = countLinesChanged(originalLf, content);
   // Compute the structured patch once and reuse it for both the location tag and
   // the `structuredPatch` field. Surface the TRUE 1-based line where the first
   // change landed so the model/UI can locate the edit without re-reading the file
   // — the SAME `[edit: file:LINE, +a -b]` tag the single-replace path emits
   // (parity: the reference's readEditContext lineOffset, applied uniformly across
   // both replace modes).
-  const patch = buildStructuredPatch(normalizeToLf(rawContent), content);
+  const patch = buildStructuredPatch(originalLf, content);
   const editLine = firstChangedLine(patch);
   const locationNote = editLine !== undefined ? `:${editLine}` : '';
   const summary = [
@@ -1070,7 +1070,7 @@ async function applySequentialEdits(
 
   // Append a unified diff so the TUI diff view renders the multi-edit result,
   // just like the single-replace and full-write modes do.
-  const diff = buildUnifiedDiff(normalizeToLf(rawContent), content, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+  const diff = buildUnifiedDiff(originalLf, content, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
   if (diff !== '(no changes detected)') {
     summary.push(`\n${diff}`);
   }
@@ -1535,7 +1535,12 @@ export const fileEditTool: ToolDefinition = {
     await fileHistoryHooks.track(resolved, rawContent, context.cwd);
     const staleErr = recheckStaleBeforeWrite(resolved, 'editing', context);
     if (staleErr) return staleErr;
-    const writeErr = commitWrite(resolved, newContent, normalizeToLf(newContent), context);
+    // newContent is immutable here; normalizeToLf is a pure O(file) /\r\n/g replace.
+    // Compute the LF form ONCE and reuse it across commitWrite, the diff-cap check,
+    // the unified diff, the line count and the structured patch — the old code ran
+    // this full-file scan five separate times on the same value per successful edit.
+    const newLf = normalizeToLf(newContent);
+    const writeErr = commitWrite(resolved, newContent, newLf, context);
     if (writeErr) return { output: writeErr, isError: true };
 
     const strategyNote = strategy !== 'exact' ? ` (matched via ${strategy} strategy)` : '';
@@ -1543,7 +1548,7 @@ export const fileEditTool: ToolDefinition = {
     // Diff-cost cap: skip the O(file) unified + structured diff and the per-line
     // count past the cap, uniformly with the overwrite, replace_all and multi-edit
     // paths (parity: the reference's MAX_SCAN_BYTES diff fallback).
-    if (exceedsDiffScanCap(content, normalizeToLf(newContent))) {
+    if (exceedsDiffScanCap(content, newLf)) {
       return {
         output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
         structuredPatch: [],
@@ -1552,16 +1557,16 @@ export const fileEditTool: ToolDefinition = {
       };
     }
 
-    const diff = buildUnifiedDiff(content, normalizeToLf(newContent), resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
+    const diff = buildUnifiedDiff(content, newLf, resolved, { maxBytes: EDIT_DIFF_MAX_BYTES });
 
-    const { additions, removals } = countLinesChanged(content, normalizeToLf(newContent));
+    const { additions, removals } = countLinesChanged(content, newLf);
     // Surface the TRUE 1-based line where the edit landed (the first hunk's
     // oldStart), so the model/UI can locate the change in the file without
     // re-reading it — parity with the reference's readEditContext, which reports the
     // edit in its surrounding context at its real line number (lineOffset). The
     // structured patch is computed once and reused for both the location tag and
     // the `structuredPatch` field.
-    const patch = buildStructuredPatch(content, normalizeToLf(newContent));
+    const patch = buildStructuredPatch(content, newLf);
     const editLine = firstChangedLine(patch);
     const locationNote = editLine !== undefined ? `:${editLine}` : '';
     const patchInfo = `[edit: ${path.basename(resolved)}${locationNote}, +${additions} -${removals}]`;

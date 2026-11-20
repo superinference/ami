@@ -1193,11 +1193,14 @@ export const fileReadTool: ToolDefinition = {
         const bytesRead = fs.readSync(fd, buf, 0, MAX_READ_SIZE, 0);
         fs.closeSync(fd);
         const partial = buf.slice(0, bytesRead).toString('utf-8');
-        const lines = partial.split('\n').slice(0, PARTIAL_VIEW_LINES);
+        // Split the up-to-256KB buffer ONCE (the old code split it twice — once for
+        // the previewed slice, once discarded just to read `.length`).
+        const allLines = partial.split('\n');
+        const lines = allLines.slice(0, PARTIAL_VIEW_LINES);
         // Normalize leading tabs in the SOURCE line (not the gutter separator),
         // matching the full/range read paths. See convertLeadingTabsToSpaces.
         const numbered = lines.map((l, i) => formatLineNumber(i + 1, convertLeadingTabsToSpaces(l), lineNumberStyle)).join('\n');
-        const totalLines = partial.split('\n').length;
+        const totalLines = allLines.length;
         context.filesRead?.add(resolved);
         // Flag the cache so a later full-file overwrite is blocked until the model
         // reads the whole file — this view is truncated to the first slice.
@@ -1415,14 +1418,18 @@ export const fileReadTool: ToolDefinition = {
             // Per-cell large-output guard: sum text + image payload sizes; when a cell's
             // combined outputs exceed the threshold, replace them with a jq escape-hatch
             // hint rather than inlining a huge blob. Mirrors the reference's isLargeOutputs.
+            // Measure the combined output length WITHOUT joining the (possibly multi-MB
+            // base64 image) arrays into throwaway strings — sum element lengths directly
+            // (join('').length === Σ element.length). The large-output branch below only
+            // renders a short jq hint and never reaches the render-time joins, so joining
+            // here just to read .length was a pure duplicate allocation of the huge blob.
+            const strLen = (v: string | string[] | undefined): number =>
+              Array.isArray(v) ? v.reduce((a, s) => a + s.length, 0) : (v ? v.length : 0);
             let outSize = 0;
             for (const out of cell.outputs) {
-              const t = Array.isArray(out.text) ? out.text.join('') : (out.text || '');
-              const tp = out.data?.['text/plain'];
-              const tpStr = Array.isArray(tp) ? tp.join('') : (tp || '');
+              outSize += strLen(out.text) + strLen(out.data?.['text/plain']);
               const img = out.data?.['image/png'] ?? out.data?.['image/jpeg'];
-              const imgStr = Array.isArray(img) ? img.join('') : (img ? String(img) : '');
-              outSize += t.length + tpStr.length + imgStr.length;
+              outSize += Array.isArray(img) ? img.reduce((a, s) => a + s.length, 0) : (img ? String(img).length : 0);
             }
             if (!bypassLargeOutputGuard && outSize > NOTEBOOK_LARGE_OUTPUT_THRESHOLD) {
               parts.push(`[output] Outputs are too large to include. Use bash with: cat <notebook_path> | jq '.cells[${idx}].outputs'`);
@@ -1515,7 +1522,12 @@ export const fileReadTool: ToolDefinition = {
       ? fileCache.getCachedRead(resolved, stat.mtimeMs)
       : null;
     if (cached) {
-      const lineCount = cached.content.split('\n').length;
+      // Count newlines without materializing a full line array for a possibly
+      // multi-MB cached file (split('\n').length === newline count + 1). This keeps
+      // the mtime-hit accelerator allocation-free as intended.
+      let newlineCount = 0;
+      for (let i = cached.content.indexOf('\n'); i !== -1; i = cached.content.indexOf('\n', i + 1)) newlineCount++;
+      const lineCount = newlineCount + 1;
       // An unchanged-cache short-circuit is still a READ: the model has the full
       // content (served from an earlier read in this conversation), so mark the
       // file read. Without this, a cache-hit read (e.g. a clone-on-fork sub-agent

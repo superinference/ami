@@ -1641,7 +1641,7 @@ export class ProcessManager extends EventEmitter {
    * branch is the only latch site) so their abort completion, which carries the
    * partial result, always surfaces — matching the reference's bash-vs-agent split.
    */
-  kill(taskId: string, opts: { suppressCompletion?: boolean; reason?: string } = {}): boolean {
+  kill(taskId: string, opts: { suppressCompletion?: boolean; reason?: string; deferRegistrySync?: boolean } = {}): boolean {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return false;
 
@@ -1732,7 +1732,10 @@ export class ProcessManager extends EventEmitter {
     // The task left the running set — refresh the crash-safe registry. For a normal
     // bash task the later 'close' → finalize → emitComplete also syncs; for an
     // ADOPTED task (no 'close' event) this is the only sync, so it must run here.
-    this.syncRegistry();
+    // Bulk teardown loops pass `deferRegistrySync` and call syncRegistry() ONCE after
+    // the loop so killing N tasks is one registry rewrite, not N (persistRegistry
+    // always writes the full running set, so a single trailing sync is identical).
+    if (!opts.deferRegistrySync) this.syncRegistry();
 
     return true;
   }
@@ -1755,11 +1758,12 @@ export class ProcessManager extends EventEmitter {
       const entry = this.processes.get(taskId);
       if (!entry || entry.status !== 'running') continue;
       if (this.taskType(taskId) !== 'agent') continue;
-      if (this.kill(taskId)) {
+      if (this.kill(taskId, { deferRegistrySync: true })) {
         const snapshot = this.get(taskId);
         if (snapshot) stopped.push(snapshot);
       }
     }
+    if (stopped.length > 0) this.syncRegistry();
     const notification = formatStoppedByUserNotification(stopped.map((s) => s.description));
     return { stopped, notification };
   }
@@ -1782,11 +1786,12 @@ export class ProcessManager extends EventEmitter {
       const entry = this.processes.get(taskId);
       if (!entry || entry.status !== 'running' || entry.idle !== true) continue;
       if (this.taskType(taskId) !== 'agent') continue;
-      if (this.kill(taskId)) {
+      if (this.kill(taskId, { deferRegistrySync: true })) {
         const snapshot = this.get(taskId);
         if (snapshot) stopped.push(snapshot);
       }
     }
+    if (stopped.length > 0) this.syncRegistry();
     return stopped;
   }
 
@@ -1817,7 +1822,7 @@ export class ProcessManager extends EventEmitter {
         // `suppressCompletion` keeps a wiped conversation from re-surfacing an
         // exit-137 completion note for a task the user already discarded; `reason`
         // distinguishes a clear-driven teardown from an ESC/timeout in the trace.
-        this.kill(taskId, { suppressCompletion: true, reason: 'conversation cleared' });
+        this.kill(taskId, { suppressCompletion: true, reason: 'conversation cleared', deferRegistrySync: true });
         // Evict the killed task's output file + drop its table row (parity: the reference
         // evicting the task's disk output on clear). kill() has already transitioned
         // it to 'killed', so removeTask (which refuses a running task) accepts it.
@@ -1825,6 +1830,7 @@ export class ProcessManager extends EventEmitter {
       } catch { /* error boundary: a failing teardown must not abort the clear */ }
       if (snapshot) stopped.push(snapshot);
     }
+    if (stopped.length > 0) this.syncRegistry();
     return stopped;
   }
 
@@ -2147,8 +2153,9 @@ export class ProcessManager extends EventEmitter {
       if (!entry || entry.agentId !== agentId || entry.status !== 'running') continue;
       // Reason-bearing kill (parity with the reference's killShellTasksForAgent debug
       // line) so the emitted 'killed' event explains WHY the orphan shell vanished.
-      if (this.kill(taskId, { reason: `agent ${agentId} exiting` })) killed++;
+      if (this.kill(taskId, { reason: `agent ${agentId} exiting`, deferRegistrySync: true })) killed++;
     }
+    if (killed > 0) this.syncRegistry();
     return killed;
   }
 
@@ -2205,22 +2212,27 @@ export class ProcessManager extends EventEmitter {
       // "earlier output omitted" affordance. Without a ceiling the whole file is
       // read as before (bytesOmitted === 0, exact line count).
       let content: string;
+      let sampleBytesRead = 0;
       if (maxReadBytes !== undefined && Number.isFinite(maxReadBytes) && maxReadBytes > 0) {
         const read = readOutputTailBytes(entry.outputPath, Math.floor(maxReadBytes));
         content = read.content;
         bytesTotal = read.bytesTotal;
         bytesOmitted = read.bytesOmitted;
-        const sampleLines = content === '' ? 0 : content.split('\n').length;
-        totalLinesEstimate = bytesOmitted > 0 && read.bytesRead > 0
-          ? Math.round((bytesTotal / read.bytesRead) * sampleLines)
-          : sampleLines;
+        sampleBytesRead = read.bytesRead;
       } else {
         content = readOutputFileNoFollow(entry.outputPath);
         bytesTotal = Buffer.byteLength(content, 'utf-8');
         bytesOmitted = 0;
-        totalLinesEstimate = content === '' ? 0 : content.split('\n').length;
       }
-      let lines = content.split('\n');
+      // Split the content ONCE and derive the line count from the same array
+      // (the old code ran content.split('\n') twice — once for the count, once for
+      // `lines` — over a whole output file up to maxOutputBytes).
+      const allLines = content.split('\n');
+      const sampleLines = content === '' ? 0 : allLines.length;
+      totalLinesEstimate = bytesOmitted > 0 && sampleBytesRead > 0
+        ? Math.round((bytesTotal / sampleBytesRead) * sampleLines)
+        : sampleLines;
+      let lines = allLines;
       if (re) {
         lines = lines.filter((line) => re!.test(line));
       }
@@ -2266,7 +2278,7 @@ export class ProcessManager extends EventEmitter {
    * (truncated or rotated), `reset` is true and the chunk is the full file read
    * from the start so the caller can rebuild its buffer.
    */
-  getOutputTail(taskId: string, fromOffset = 0): { output: string; offset: number; reset: boolean } | null {
+  getOutputTail(taskId: string, fromOffset = 0, maxBytes?: number): { output: string; offset: number; reset: boolean; bytesOmitted?: number } | null {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
 
@@ -2282,17 +2294,30 @@ export class ProcessManager extends EventEmitter {
       if (start >= size) {
         return { output: '', offset: size, reset };
       }
+      // Bound the read to the trailing `maxBytes` of the appended region so a task
+      // that burst MBs between turns never reads the whole burst into the heap just
+      // to have it trimmed afterwards. The skipped prefix is reported as bytesOmitted
+      // so the delta's omitted-count semantics are preserved, and offset still
+      // advances to `size` so the cursor keeps up with the file.
+      let readStart = start;
+      let bytesOmitted = 0;
+      if (maxBytes !== undefined && maxBytes > 0 && size - start > maxBytes) {
+        readStart = size - maxBytes;
+        bytesOmitted = readStart - start;
+      }
       const fd = fs.openSync(entry.outputPath, secureReadFlags());
       let output = '';
       try {
-        const length = size - start;
+        const length = size - readStart;
         const buf = Buffer.allocUnsafe(length);
-        const bytesRead = fs.readSync(fd, buf, 0, length, start);
+        const bytesRead = fs.readSync(fd, buf, 0, length, readStart);
         output = buf.subarray(0, bytesRead).toString('utf-8');
       } finally {
         fs.closeSync(fd);
       }
-      return { output, offset: size, reset };
+      return maxBytes === undefined
+        ? { output, offset: size, reset }
+        : { output, offset: size, reset, bytesOmitted };
     } catch {
       // file may not exist yet
       return { output: '', offset: 0, reset: false };
@@ -3053,19 +3078,25 @@ export class ProcessManager extends EventEmitter {
     const entry = this.processes.get(taskId);
     if (!entry || !entry.outputPath) return undefined;
     const from = entry._lastReportedOutputOffset ?? 0;
-    const tail = this.getOutputTail(taskId, from);
+    // Bound the read at the source: getOutputTail now reads at most `maxBytes` of the
+    // trailing appended region (instead of the whole burst) and reports the skipped
+    // prefix via bytesOmitted, so a verbose background task no longer loads MBs into
+    // the heap each turn to produce a ~4 KB delta.
+    const tail = this.getOutputTail(taskId, from, maxBytes);
     if (!tail) return undefined;
     // Advance the cursor even when there is nothing new, so the next report keeps
     // comparing against the latest observed size (and a rotated file re-baselines).
     entry._lastReportedOutputOffset = tail.offset;
     if (tail.output === '') return undefined;
     let output = tail.output;
-    let bytesOmitted = 0;
+    let bytesOmitted = tail.bytesOmitted ?? 0;
+    // Defensive residual trim: the bounded read already caps bytes, but decode can
+    // leave the re-encoded string a few bytes over the cap at a multi-byte boundary.
     const buf = Buffer.from(output, 'utf-8');
     if (buf.length > maxBytes) {
       const sliced = buf.subarray(buf.length - maxBytes);
       output = sliced.toString('utf-8');
-      bytesOmitted = buf.length - Buffer.byteLength(output, 'utf-8');
+      bytesOmitted += buf.length - Buffer.byteLength(output, 'utf-8');
     }
     return { taskId, description: entry.description, kind: entry.kind, output, reset: tail.reset, bytesOmitted };
   }

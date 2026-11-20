@@ -945,6 +945,10 @@ export class McpClient extends EventEmitter {
   private httpStreamReq: { destroy: () => void } | null = null;
   /** Partial SSE buffer for the GET stream (events split on a blank line). */
   private httpStreamBuffer = '';
+  /** A trailing CR held back across SSE chunks: it may be the CR of a CRLF split at
+   *  a chunk boundary, so it is resolved against the next chunk's first byte instead
+   *  of re-normalizing the whole accumulated buffer each chunk (see processHttpStreamBuffer). */
+  private httpStreamCarryCr = false;
   /** Set when the stream was closed intentionally (disconnect) — stops reconnect. */
   private httpStreamClosed = false;
   private httpStreamReconnectAttempts = 0;
@@ -1111,8 +1115,16 @@ export class McpClient extends EventEmitter {
     });
 
     this.process.stdout!.on('data', (chunk: Buffer) => {
-      this.buffer += chunk.toString();
-      this.processBuffer();
+      const s = chunk.toString();
+      this.buffer += s;
+      // Only re-split the accumulated buffer when this chunk actually introduces a
+      // newline: the post-processBuffer remainder never contains one (lines.pop()),
+      // so a newline-free chunk can add no complete line. This avoids the O(n²)
+      // full-buffer split when a single large message arrives across many chunks.
+      // The overflow cap still runs unconditionally so an endless newline-free
+      // stream is still bounded.
+      if (s.includes('\n')) this.processBuffer();
+      else this.enforceStdioBufferCap();
     });
 
     this.process.stderr!.on('data', (chunk: Buffer) => {
@@ -2096,9 +2108,14 @@ export class McpClient extends EventEmitter {
         // Capture the session id the server assigns at initialize (2025 spec).
         const sid = res.headers?.['mcp-session-id'];
         if (typeof sid === 'string' && sid) this.httpSessionId = sid;
-        let data = '';
-        res.on('data', (d: Buffer) => data += d);
+        // Collect raw chunks and decode ONCE on end: the old `data += d` coerced
+        // every Buffer chunk to a UTF-8 string and built a cons-string (a redundant
+        // per-chunk decode plus a multi-byte-boundary corruption hazard). A single
+        // Buffer.concat + toString is behavior-identical for well-formed UTF-8.
+        const chunks: Buffer[] = [];
+        res.on('data', (d: Buffer) => chunks.push(d));
         res.on('end', () => {
+          const data = Buffer.concat(chunks).toString('utf-8');
           // Notifications: server responds with 202 Accepted (empty body)
           if (isNotification) {
             resolve(undefined);
@@ -2230,6 +2247,7 @@ export class McpClient extends EventEmitter {
     }
     if (this.httpStreamClosed) return;
     this.httpStreamBuffer = '';
+    this.httpStreamCarryCr = false;
     const req = http.request(streamUrl, { method: 'GET', headers }, (res: any) => {
       const statusCode = res.statusCode;
       // 405 / 404 / 501 → the server does not offer the GET stream: POST-only.
@@ -2266,8 +2284,7 @@ export class McpClient extends EventEmitter {
         // Inbound traffic also warms the proxy path, so gate the proactive
         // keepalive off the most recent data frame in EITHER direction.
         this.httpStreamLastDataActivity = Date.now();
-        this.httpStreamBuffer += chunk;
-        this.processHttpStreamBuffer();
+        this.processHttpStreamBuffer(chunk);
       });
       res.on('end', () => { this.clearHttpStreamLiveness(); this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
       res.on('error', () => { this.clearHttpStreamLiveness(); this.httpStreamReq = null; this.scheduleHttpStreamReconnect(); });
@@ -2287,9 +2304,28 @@ export class McpClient extends EventEmitter {
     return headers;
   }
 
-  /** Drain every complete SSE event from the GET stream buffer. */
-  private processHttpStreamBuffer(): void {
-    this.httpStreamBuffer = this.httpStreamBuffer.replace(/\r\n/g, '\n');
+  /**
+   * Append an SSE chunk and drain every complete event. CRLF→LF normalization is
+   * applied INCREMENTALLY to the newly appended chunk (carrying a trailing lone CR
+   * across chunks to resolve a CRLF split at a chunk boundary) instead of
+   * re-normalizing the ENTIRE accumulated buffer on every chunk — the old code made
+   * a single multi-chunk SSE event O(n²). Lone CRs are preserved exactly as before.
+   */
+  private processHttpStreamBuffer(chunk = ''): void {
+    let s = chunk;
+    // Put back a CR held from the previous chunk; the replace below collapses it
+    // into \n if this chunk's first byte is \n (a CRLF that straddled the boundary),
+    // otherwise it survives as a lone CR exactly like the whole-buffer replace did.
+    if (this.httpStreamCarryCr) {
+      this.httpStreamCarryCr = false;
+      s = '\r' + s;
+    }
+    // Hold back a trailing CR: it may be the CR of a CRLF whose LF is in the next chunk.
+    if (s.endsWith('\r')) {
+      this.httpStreamCarryCr = true;
+      s = s.slice(0, -1);
+    }
+    this.httpStreamBuffer += s.replace(/\r\n/g, '\n');
     let sep: number;
     while ((sep = this.httpStreamBuffer.indexOf('\n\n')) !== -1) {
       const rawEvent = this.httpStreamBuffer.slice(0, sep);
@@ -2666,11 +2702,18 @@ export class McpClient extends EventEmitter {
       }
     }
 
-    // L31: bound the accumulated read buffer. Every complete (newline-delimited)
-    // message above has already been routed; what remains is a single
-    // not-yet-terminated line. If that remainder exceeds the cap, a server is
-    // either never sending a newline or streaming one oversized line — drop it
-    // and signal the overflow rather than letting the buffer grow without bound.
+    this.enforceStdioBufferCap();
+  }
+
+  /**
+   * L31: bound the accumulated read buffer. Every complete (newline-delimited)
+   * message has already been routed; what remains is a single not-yet-terminated
+   * line. If that remainder exceeds the cap, a server is either never sending a
+   * newline or streaming one oversized line — drop it and signal the overflow
+   * rather than letting the buffer grow without bound. Runs on every chunk (even
+   * newline-free ones) so the bound holds regardless of framing.
+   */
+  private enforceStdioBufferCap(): void {
     if (this.buffer.length > MCP_MAX_STDIO_BUFFER) {
       const droppedBytes = this.buffer.length;
       this.buffer = '';

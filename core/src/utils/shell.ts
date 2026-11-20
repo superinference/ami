@@ -452,7 +452,15 @@ const SHELL_SEARCH_PATHS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew
 
 function createOutputBuffer(): { push: (chunk: string) => void; value: () => string; truncated: () => boolean } {
   let head = '';
-  let tail = '';
+  // Keep the retained tail as a list of chunks plus a running length instead of a
+  // single growing string. The old code did `tail += chunk; tail = tail.slice(...)`
+  // on every chunk once output exceeded TAIL_CHARS, forcing a full ~330k flatten +
+  // re-copy per chunk — O(chunks × TAIL_CHARS) for a large streamed log. Appending
+  // to an array and dropping whole leading chunks (partial-slicing only the first
+  // retained one) makes push amortized O(chunk); value() joins once. Output is
+  // byte-identical (same head + last TAIL_CHARS tail + dropped count).
+  const tailChunks: string[] = [];
+  let tailLen = 0;
   let dropped = 0;
   return {
     truncated() { return dropped > 0; },
@@ -463,13 +471,26 @@ function createOutputBuffer(): { push: (chunk: string) => void; value: () => str
         chunk = chunk.slice(room);
       }
       if (chunk.length === 0) return;
-      tail += chunk;
-      if (tail.length > TAIL_CHARS) {
-        dropped += tail.length - TAIL_CHARS;
-        tail = tail.slice(tail.length - TAIL_CHARS);
+      tailChunks.push(chunk);
+      tailLen += chunk.length;
+      if (tailLen > TAIL_CHARS) {
+        let over = tailLen - TAIL_CHARS;
+        dropped += over;
+        tailLen -= over;
+        while (over > 0) {
+          const first = tailChunks[0]!;
+          if (first.length <= over) {
+            over -= first.length;
+            tailChunks.shift();
+          } else {
+            tailChunks[0] = first.slice(over);
+            over = 0;
+          }
+        }
       }
     },
     value() {
+      const tail = tailChunks.join('');
       if (dropped === 0) return head + tail;
       // Report the magnitude so the caller/model knows the TRUE output size and
       // how much was kept, not just that some middle was dropped. The total is

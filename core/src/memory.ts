@@ -1848,12 +1848,11 @@ function isSuppressedToolReference(mem: MemoryEntry, recentTools: readonly strin
 }
 
 function computeRelevanceScore(
-  memoryText: string,
+  memTokens: string[],
   queryTokens: string[],
   idfMap: Map<string, number>,
   cfg: MemoryRelevanceConfig = DEFAULT_MEMORY_RELEVANCE,
 ): number {
-  const memTokens = tokenize(memoryText);
   if (memTokens.length === 0) return 0;
 
   const tf = new Map<string, number>();
@@ -3314,8 +3313,13 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       const N = all.length;
       const docFreq = new Map<string, number>();
       const allMemTexts = all.map(m => `${m.name || ''} ${m.description || ''} ${m.content}`);
-      for (const text of allMemTexts) {
-        const unique = new Set(tokenize(text));
+      // Tokenize each memory ONCE and reuse the token arrays for both the docFreq
+      // tally and the per-memory relevance score. The old code tokenized every
+      // memory twice per recall — once here and again inside computeRelevanceScore —
+      // doubling the toLowerCase + regex + split pass over the full corpus.
+      const allMemTokens = allMemTexts.map(tokenize);
+      for (const tokens of allMemTokens) {
+        const unique = new Set(tokens);
         for (const t of unique) {
           docFreq.set(t, (docFreq.get(t) || 0) + 1);
         }
@@ -3334,7 +3338,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       };
       const scored = all.map((mem, i) => ({
         mem,
-        score: computeRelevanceScore(allMemTexts[i], queryTokens, idfMap, relevanceCfg),
+        score: computeRelevanceScore(allMemTokens[i], queryTokens, idfMap, relevanceCfg),
       }));
 
       scored.sort((a, b) => b.score - a.score);

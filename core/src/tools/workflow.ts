@@ -473,10 +473,10 @@ export const workflowTool: ToolDefinition = {
           return `[Agent error: failed to create isolated worktree: ${msg}]`;
         }
       }
-      const cleanupWorktree = (): void => {
+      const cleanupWorktree = async (): Promise<void> => {
         if (!isolatedWorktree || isolatedWorktree === context.cwd) return;
         const running = context.processManager?.runningAgentCount() ?? 0;
-        removeWorktreeIfClean(context.cwd, isolatedWorktree, running);
+        await removeWorktreeIfClean(context.cwd, isolatedWorktree, running);
         isolatedWorktree = undefined;
       };
       // Per-agent model override (parity: AgentTool `model`). An explicit per-call
@@ -607,14 +607,14 @@ export const workflowTool: ToolDefinition = {
         totalAgentTokens += agentTokens;
         finish('failed', result, err instanceof Error ? err.message : String(err));
         (subEngine as any).shutdown?.();
-        cleanupWorktree();
+        await cleanupWorktree();
         throw err;
       }
       runAbortSignal.removeEventListener('abort', forwardAbort);
       totalAgentTokens += agentTokens;
       (subEngine as any).shutdown?.();
       finish('completed', result);
-      cleanupWorktree();
+      await cleanupWorktree();
       return result || '[Agent produced no output]';
     };
 

@@ -1615,10 +1615,14 @@ export function drainMailboxPrioritized(agentName: string): AgentMessage[] {
   const proactive: AgentMessage[] = [];
   const rest: AgentMessage[] = [];
   for (const m of messages) {
+    // Parse each message ONCE and reuse the result for both the shutdown and the
+    // permission-response classification (the old code re-parsed via
+    // isPermissionRelatedResponse, doubling the JSON.parse + validate per message).
     const parsed = parseStructuredMessage(m.content);
-    if (parsed && !('error' in parsed) && parsed.type === 'shutdown_request') {
+    const ok = parsed && !('error' in parsed);
+    if (ok && parsed.type === 'shutdown_request') {
       shutdowns.push(m);
-    } else if (isPermissionRelatedResponse(m.content)) {
+    } else if (ok && (parsed.type === 'permission_response' || parsed.type === 'sandbox_permission_response')) {
       permissions.push(m);
     } else if (m.from === TEAM_LEAD_NAME) {
       lead.push(m);

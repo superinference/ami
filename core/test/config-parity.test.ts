@@ -136,6 +136,8 @@ describe('config parity — Gap 1: unknown top-level keys are surfaced', () => {
       lastSessionMetrics: { turns: 1 }, projectOnboardingSeenCount: 0,
       hasCompletedProjectOnboarding: false, deepLinkTerminal: 'iTerm',
       backgroundSlowOpDelayMs: 600000, backgroundInteractionRecencyMs: 60000,
+      // Dynamic workflow-size knob (/config dynamicWorkflowSize).
+      dynamicWorkflowSize: 'medium',
     };
     assert.deepEqual(findUnknownConfigKeys(full), []);
     // Every declared key is in the known-key set (and vice-versa — no extras).
